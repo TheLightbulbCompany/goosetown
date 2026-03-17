@@ -1,0 +1,638 @@
+"""Town service for managing GooseTown agent registration and state (DynamoDB)."""
+
+import logging
+import uuid
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from typing import Optional
+
+from boto3.dynamodb.conditions import Attr, Key
+
+from core import dynamo
+from core.town_token import sign_town_token
+
+logger = logging.getLogger(__name__)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _decimal_to_native(obj):
+    """Recursively convert Decimal values from DynamoDB to int/float."""
+    if isinstance(obj, Decimal):
+        if obj == int(obj):
+            return int(obj)
+        return float(obj)
+    if isinstance(obj, dict):
+        return {k: _decimal_to_native(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_decimal_to_native(i) for i in obj]
+    return obj
+
+
+class TownService:
+    """Service for GooseTown CRUD operations (DynamoDB backend)."""
+
+    def __init__(self):
+        pass
+
+    # ------------------------------------------------------------------
+    # Agent CRUD
+    # ------------------------------------------------------------------
+
+    def _get_town_agent(self, user_id: str, agent_name: str) -> Optional[dict]:
+        """Get a town agent by user_id and agent_name."""
+        table = dynamo.agents_table()
+        resp = table.query(
+            IndexName="userId-agentName-index",
+            KeyConditionExpression=Key("userId").eq(user_id) & Key("agentName").eq(agent_name),
+        )
+        items = resp.get("Items", [])
+        if not items:
+            return None
+        return _decimal_to_native(items[0])
+
+    def get_town_agent_by_id(self, agent_id: str) -> Optional[dict]:
+        """Get a town agent by its UUID."""
+        table = dynamo.agents_table()
+        resp = table.get_item(Key={"id": agent_id})
+        item = resp.get("Item")
+        if not item:
+            return None
+        return _decimal_to_native(item)
+
+    def get_agent_by_name(self, user_id: str, agent_name: str) -> Optional[dict]:
+        """Look up an agent by user_id and agent_name (active only)."""
+        agent = self._get_town_agent(user_id, agent_name)
+        if agent and agent.get("isActive") == "true":
+            return agent
+        return None
+
+    def get_active_agents(self) -> list[dict]:
+        """Get all active town agents."""
+        table = dynamo.agents_table()
+        resp = table.query(
+            IndexName="isActive-joinedAt-index",
+            KeyConditionExpression=Key("isActive").eq("true"),
+        )
+        return [_decimal_to_native(item) for item in resp.get("Items", [])]
+
+    def get_town_state(self) -> list[dict]:
+        """Get current state of all active agents with ready sprites.
+
+        In DynamoDB the agent and state are merged into one item,
+        so we query active agents and filter for spriteReady=true.
+        """
+        table = dynamo.agents_table()
+        resp = table.query(
+            IndexName="isActive-joinedAt-index",
+            KeyConditionExpression=Key("isActive").eq("true"),
+            FilterExpression=Attr("spriteReady").eq(True),
+        )
+        items = resp.get("Items", [])
+        result = []
+        for item in items:
+            item = _decimal_to_native(item)
+            result.append(
+                {
+                    "agent_id": item["id"],
+                    "user_id": item.get("userId"),
+                    "display_name": item.get("displayName"),
+                    "agent_name": item.get("agentName"),
+                    "character": item.get("character"),
+                    "personality_summary": item.get("personalitySummary"),
+                    "home_location": item.get("homeLocation"),
+                    "current_location": item.get("currentLocation"),
+                    "current_activity": item.get("currentActivity"),
+                    "target_location": item.get("targetLocation"),
+                    "target_x": item.get("targetX"),
+                    "target_y": item.get("targetY"),
+                    "position_x": item.get("positionX"),
+                    "position_y": item.get("positionY"),
+                    "location_state": item.get("locationState"),
+                    "location_context": item.get("locationContext"),
+                    "speed": item.get("speed"),
+                    "facing_x": item.get("facingX"),
+                    "facing_y": item.get("facingY"),
+                    "current_conversation_id": item.get("currentConversationId"),
+                    "last_heartbeat_at": item.get("lastHeartbeatAt"),
+                    "mood": item.get("mood"),
+                    "energy": item.get("energy"),
+                    "status_message": item.get("statusMessage"),
+                    "last_decision_at": item.get("lastDecisionAt"),
+                    "last_conversation_at": item.get("lastConversationAt"),
+                    "wake_at": item.get("wakeAt"),
+                    "wake_timezone": item.get("wakeTimezone"),
+                    "sprite_ready": item.get("spriteReady", False),
+                    "sprite_url": item.get("spriteUrl"),
+                    "traits": item.get("traits", ""),
+                }
+            )
+        return result
+
+    def opt_in(
+        self,
+        user_id: str,
+        agent_name: str,
+        display_name: str,
+        personality_summary: Optional[str] = None,
+        avatar_config: Optional[dict] = None,
+    ) -> dict:
+        """Register an agent in GooseTown."""
+        existing = self._get_town_agent(user_id, agent_name)
+        if existing:
+            if existing.get("isActive") != "true":
+                table = dynamo.agents_table()
+                table.update_item(
+                    Key={"id": existing["id"]},
+                    UpdateExpression=(
+                        "SET isActive = :active, displayName = :dn, "
+                        "personalitySummary = :ps, avatarConfig = :ac, lastActiveAt = :now"
+                    ),
+                    ExpressionAttributeValues={
+                        ":active": "true",
+                        ":dn": display_name,
+                        ":ps": personality_summary,
+                        ":ac": avatar_config,
+                        ":now": _now_iso(),
+                    },
+                )
+                existing["isActive"] = "true"
+                existing["displayName"] = display_name
+                existing["personalitySummary"] = personality_summary
+                existing["avatarConfig"] = avatar_config
+                return existing
+            return existing
+
+        from core.apartment_constants import APARTMENT_SPOTS
+
+        bedroom = APARTMENT_SPOTS["bed_1"]
+        now = _now_iso()
+        agent_id = str(uuid.uuid4())
+
+        item = {
+            "id": agent_id,
+            "userId": user_id,
+            "agentName": agent_name,
+            "displayName": display_name,
+            "personalitySummary": personality_summary,
+            "avatarConfig": avatar_config,
+            "homeLocation": "apartment",
+            "isActive": "true",
+            "joinedAt": now,
+            "lastActiveAt": now,
+            "spriteReady": False,
+            "spriteUrl": None,
+            "character": None,
+            "traits": "",
+            # State fields (merged from TownState)
+            "positionX": Decimal(str(float(bedroom["x"]))),
+            "positionY": Decimal(str(float(bedroom["y"]))),
+            "currentLocation": "bedroom",
+            "locationContext": "apartment",
+            "locationState": "active",
+            "currentActivity": None,
+            "targetLocation": None,
+            "targetX": None,
+            "targetY": None,
+            "speed": Decimal("1"),
+            "facingX": Decimal("0"),
+            "facingY": Decimal("1"),
+            "currentConversationId": None,
+            "lastHeartbeatAt": None,
+            "mood": "neutral",
+            "energy": Decimal("100"),
+            "statusMessage": None,
+            "lastDecisionAt": None,
+            "lastConversationAt": None,
+            "wakeAt": None,
+            "wakeTimezone": None,
+        }
+
+        table = dynamo.agents_table()
+        table.put_item(Item=item)
+
+        logger.info("Agent '%s' opted into GooseTown as '%s'", agent_name, display_name)
+        return _decimal_to_native(item)
+
+    def opt_out(self, user_id: str, agent_name: str) -> bool:
+        """Remove an agent from GooseTown (deactivate, preserve data)."""
+        agent = self._get_town_agent(user_id, agent_name)
+        if not agent:
+            return False
+
+        table = dynamo.agents_table()
+        table.update_item(
+            Key={"id": agent["id"]},
+            UpdateExpression="SET isActive = :inactive",
+            ExpressionAttributeValues={":inactive": "false"},
+        )
+        logger.info("Agent '%s' opted out of GooseTown", agent_name)
+        return True
+
+    def update_agent_state(self, agent_id: str, **kwargs) -> Optional[dict]:
+        """Update an agent's town state fields."""
+        if not kwargs:
+            return self.get_town_agent_by_id(agent_id)
+
+        # Map snake_case kwargs to camelCase DynamoDB attribute names
+        field_map = {
+            "position_x": "positionX",
+            "position_y": "positionY",
+            "current_location": "currentLocation",
+            "location_context": "locationContext",
+            "location_state": "locationState",
+            "current_activity": "currentActivity",
+            "target_location": "targetLocation",
+            "target_x": "targetX",
+            "target_y": "targetY",
+            "facing_x": "facingX",
+            "facing_y": "facingY",
+            "current_conversation_id": "currentConversationId",
+            "last_heartbeat_at": "lastHeartbeatAt",
+            "last_decision_at": "lastDecisionAt",
+            "last_conversation_at": "lastConversationAt",
+            "status_message": "statusMessage",
+            "wake_at": "wakeAt",
+            "wake_timezone": "wakeTimezone",
+            "sprite_ready": "spriteReady",
+            "sprite_url": "spriteUrl",
+        }
+
+        update_parts = []
+        attr_values = {}
+        attr_names = {}
+        for i, (key, value) in enumerate(kwargs.items()):
+            dynamo_key = field_map.get(key, key)
+            placeholder_val = f":v{i}"
+            placeholder_name = f"#n{i}"
+            update_parts.append(f"{placeholder_name} = {placeholder_val}")
+            # Convert floats to Decimal for DynamoDB
+            if isinstance(value, float):
+                attr_values[placeholder_val] = Decimal(str(value))
+            else:
+                attr_values[placeholder_val] = value
+            attr_names[placeholder_name] = dynamo_key
+
+        update_expr = "SET " + ", ".join(update_parts)
+
+        table = dynamo.agents_table()
+        resp = table.update_item(
+            Key={"id": agent_id},
+            UpdateExpression=update_expr,
+            ExpressionAttributeValues=attr_values,
+            ExpressionAttributeNames=attr_names,
+            ReturnValues="ALL_NEW",
+        )
+        return _decimal_to_native(resp.get("Attributes"))
+
+    # ------------------------------------------------------------------
+    # Instance management
+    # ------------------------------------------------------------------
+
+    def get_instance_by_token(self, token: str) -> Optional[dict]:
+        """Look up an active instance by its town_token."""
+        table = dynamo.instances_table()
+        resp = table.query(
+            IndexName="townToken-index",
+            KeyConditionExpression=Key("townToken").eq(token),
+        )
+        items = resp.get("Items", [])
+        for item in items:
+            if item.get("isActive") == "true":
+                return _decimal_to_native(item)
+        return None
+
+    def get_active_instance(self, user_id: str) -> Optional[dict]:
+        """Return the user's active TownInstance, or None."""
+        table = dynamo.instances_table()
+        resp = table.query(
+            IndexName="userId-index",
+            KeyConditionExpression=Key("userId").eq(user_id),
+        )
+        for item in resp.get("Items", []):
+            if item.get("isActive") == "true":
+                return _decimal_to_native(item)
+        return None
+
+    def create_instance(self, user_id: str) -> dict:
+        """Create a new TownInstance with signed token."""
+        instance_id = str(uuid.uuid4())
+        now = _now_iso()
+        token = sign_town_token(user_id, instance_id)
+
+        # Scan for max apartment_unit (small table, acceptable)
+        table = dynamo.instances_table()
+        resp = table.scan(ProjectionExpression="apartmentUnit")
+        max_unit = 0
+        for item in resp.get("Items", []):
+            val = item.get("apartmentUnit", 0)
+            if isinstance(val, Decimal):
+                val = int(val)
+            if val > max_unit:
+                max_unit = val
+
+        item = {
+            "id": instance_id,
+            "userId": user_id,
+            "apartmentUnit": max_unit + 1,
+            "townToken": token,
+            "isActive": "true",
+            "createdAt": now,
+        }
+        table.put_item(Item=item)
+        return _decimal_to_native(item)
+
+    def deactivate_instance(self, instance_id: str) -> None:
+        """Deactivate a TownInstance."""
+        table = dynamo.instances_table()
+        table.update_item(
+            Key={"id": instance_id},
+            UpdateExpression="SET isActive = :inactive",
+            ExpressionAttributeValues={":inactive": "false"},
+        )
+
+    def get_instance_agents(self, instance_id: str) -> list[dict]:
+        """Return all active agents for a given instance."""
+        table = dynamo.agents_table()
+        resp = table.query(
+            IndexName="instanceId-index",
+            KeyConditionExpression=Key("instanceId").eq(instance_id),
+        )
+        return [_decimal_to_native(item) for item in resp.get("Items", []) if item.get("isActive") == "true"]
+
+    def deactivate_instance_agents(self, instance_id: str) -> int:
+        """Deactivate all agents for an instance. Returns count."""
+        agents = self.get_instance_agents(instance_id)
+        table = dynamo.agents_table()
+        for agent in agents:
+            table.update_item(
+                Key={"id": agent["id"]},
+                UpdateExpression="SET isActive = :inactive",
+                ExpressionAttributeValues={":inactive": "false"},
+            )
+        return len(agents)
+
+    def opt_in_instance(
+        self,
+        user_id: str,
+        agents_data: list,
+    ) -> tuple[dict, list[dict]]:
+        """Instance-level opt-in: create instance + all agents + states."""
+        existing = self.get_active_instance(user_id)
+        if existing:
+            raise ValueError("User already has an active GooseTown instance")
+
+        instance = self.create_instance(user_id)
+        created_agents = []
+
+        from core.apartment_constants import APARTMENT_SPOTS
+
+        bedroom = APARTMENT_SPOTS["bed_1"]
+        now = _now_iso()
+
+        table = dynamo.agents_table()
+        for agent_data in agents_data:
+            agent_id = str(uuid.uuid4())
+            item = {
+                "id": agent_id,
+                "userId": user_id,
+                "agentName": agent_data.agent_name,
+                "displayName": agent_data.display_name,
+                "personalitySummary": agent_data.personality_summary,
+                "homeLocation": "apartment",
+                "instanceId": instance["id"],
+                "isActive": "true",
+                "joinedAt": now,
+                "lastActiveAt": now,
+                "spriteReady": False,
+                "spriteUrl": None,
+                "character": None,
+                "traits": "",
+                # State fields
+                "positionX": Decimal(str(float(bedroom["x"]))),
+                "positionY": Decimal(str(float(bedroom["y"]))),
+                "currentLocation": "bedroom",
+                "locationContext": "apartment",
+                "locationState": "active",
+                "currentActivity": None,
+                "targetLocation": None,
+                "targetX": None,
+                "targetY": None,
+                "speed": Decimal("1"),
+                "facingX": Decimal("0"),
+                "facingY": Decimal("1"),
+                "currentConversationId": None,
+                "lastHeartbeatAt": None,
+                "mood": "neutral",
+                "energy": Decimal("100"),
+                "statusMessage": None,
+                "lastDecisionAt": None,
+                "lastConversationAt": None,
+                "wakeAt": None,
+                "wakeTimezone": None,
+            }
+            table.put_item(Item=item)
+            created_agents.append(_decimal_to_native(item))
+
+        logger.info(
+            "Instance opt-in for user %s: apartment_unit=%s, agents=%d",
+            user_id,
+            instance.get("apartmentUnit"),
+            len(created_agents),
+        )
+        return instance, created_agents
+
+    def opt_out_instance(self, user_id: str) -> tuple[Optional[dict], int]:
+        """Instance-level opt-out: deactivate instance + all agents."""
+        instance = self.get_active_instance(user_id)
+        if not instance:
+            return None, 0
+
+        count = self.deactivate_instance_agents(instance["id"])
+        self.deactivate_instance(instance["id"])
+
+        logger.info("Instance opt-out for user %s: deactivated %d agents", user_id, count)
+        return instance, count
+
+    # ------------------------------------------------------------------
+    # Relationships
+    # ------------------------------------------------------------------
+
+    def get_or_create_relationship(self, agent_a_id: str, agent_b_id: str) -> tuple[dict, bool]:
+        """Get or create a relationship between two agents."""
+        a_id, b_id = sorted([agent_a_id, agent_b_id])
+
+        table = dynamo.relationships_table()
+        resp = table.get_item(Key={"agentAId": a_id, "agentBId": b_id})
+        item = resp.get("Item")
+        if item:
+            return _decimal_to_native(item), False
+
+        now = _now_iso()
+        item = {
+            "agentAId": a_id,
+            "agentBId": b_id,
+            "relationshipType": "acquaintance",
+            "affinityScore": 0,
+            "interactionCount": 0,
+            "lastInteractionAt": None,
+            "createdAt": now,
+        }
+        table.put_item(Item=item)
+        return _decimal_to_native(item), True
+
+    def update_relationship(
+        self,
+        agent_a_id: str,
+        agent_b_id: str,
+        affinity_delta: int = 0,
+        new_type: Optional[str] = None,
+    ) -> dict:
+        """Update relationship after an interaction."""
+        a_id, b_id = sorted([agent_a_id, agent_b_id])
+        table = dynamo.relationships_table()
+
+        update_parts = [
+            "interactionCount = interactionCount + :one",
+            "lastInteractionAt = :now",
+        ]
+        attr_values: dict = {
+            ":one": 1,
+            ":now": _now_iso(),
+        }
+
+        if affinity_delta != 0:
+            # We need to clamp, so we do a get-then-set
+            resp = table.get_item(Key={"agentAId": a_id, "agentBId": b_id})
+            item = resp.get("Item", {})
+            current = int(item.get("affinityScore", 0))
+            new_score = max(-100, min(100, current + affinity_delta))
+            update_parts.append("affinityScore = :score")
+            attr_values[":score"] = new_score
+
+        if new_type:
+            update_parts.append("relationshipType = :rtype")
+            attr_values[":rtype"] = new_type
+
+        resp = table.update_item(
+            Key={"agentAId": a_id, "agentBId": b_id},
+            UpdateExpression="SET " + ", ".join(update_parts),
+            ExpressionAttributeValues=attr_values,
+            ReturnValues="ALL_NEW",
+        )
+        return _decimal_to_native(resp.get("Attributes", {}))
+
+    def get_all_relationships(self) -> list[dict]:
+        """Get all relationships with latest conversation topics."""
+        table = dynamo.relationships_table()
+        resp = table.scan()
+        rels = resp.get("Items", [])
+
+        conv_table = dynamo.conversations_table()
+        out = []
+        for r in rels:
+            r = _decimal_to_native(r)
+            a_id = r["agentAId"]
+            b_id = r["agentBId"]
+
+            # Query for last ended conversation between these two agents
+            last_topic = None
+            conv_resp = conv_table.query(
+                IndexName="participantA-endedAt-index",
+                KeyConditionExpression=Key("participantAId").eq(a_id),
+                FilterExpression=Attr("participantBId").eq(b_id) & Attr("status").eq("ended"),
+                ScanIndexForward=False,
+                Limit=1,
+            )
+            items = conv_resp.get("Items", [])
+            if items:
+                last_topic = items[0].get("topicSummary")
+
+            out.append(
+                {
+                    "agent_a_id": a_id,
+                    "agent_b_id": b_id,
+                    "relationship_type": r.get("relationshipType"),
+                    "interaction_count": r.get("interactionCount", 0),
+                    "last_topic": last_topic,
+                }
+            )
+        return out
+
+    # ------------------------------------------------------------------
+    # Conversations
+    # ------------------------------------------------------------------
+
+    def store_conversation(
+        self,
+        participant_a_id: str,
+        participant_b_id: str,
+        location: str,
+        public_log: list,
+        topic_summary: Optional[str] = None,
+    ) -> dict:
+        """Store a completed conversation."""
+        now = _now_iso()
+        conv_id = str(uuid.uuid4())
+
+        # Sort participant IDs canonically
+        a_id, b_id = sorted([participant_a_id, participant_b_id])
+
+        item = {
+            "id": conv_id,
+            "participantAId": a_id,
+            "participantBId": b_id,
+            "location": location,
+            "turnCount": len(public_log),
+            "topicSummary": topic_summary,
+            "publicLog": public_log,
+            "status": "ended",
+            "startedAt": now,
+            "endedAt": now,
+            "updatedAt": now,
+        }
+        table = dynamo.conversations_table()
+        table.put_item(Item=item)
+        return _decimal_to_native(item)
+
+    def get_recent_conversations(self, limit: int = 20) -> list[dict]:
+        """Get recent town conversations."""
+        table = dynamo.conversations_table()
+        # Query ended conversations sorted by startedAt descending
+        resp = table.query(
+            IndexName="status-startedAt-index",
+            KeyConditionExpression=Key("status").eq("ended"),
+            ScanIndexForward=False,
+            Limit=limit,
+        )
+        return [_decimal_to_native(item) for item in resp.get("Items", [])]
+
+    def get_recent_speech(self, since_seconds: float = 5.0) -> list[dict]:
+        """Get chat messages from the last N seconds for speech bubbles."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=since_seconds)).isoformat()
+        table = dynamo.conversations_table()
+
+        # Query active conversations updated recently
+        speeches = []
+        for status in ("active", "ended"):
+            resp = table.query(
+                IndexName="status-updatedAt-index",
+                KeyConditionExpression=Key("status").eq(status) & Key("updatedAt").gte(cutoff),
+                ScanIndexForward=False,
+                Limit=10,
+            )
+            for conv in resp.get("Items", []):
+                conv = _decimal_to_native(conv)
+                log = conv.get("publicLog") or []
+                if log:
+                    last_msg = log[-1]
+                    speeches.append(
+                        {
+                            "speaker": last_msg.get("speaker", "Unknown"),
+                            "text": last_msg.get("text", "")[:100],
+                            "conversation_id": conv["id"],
+                        }
+                    )
+        return speeches
