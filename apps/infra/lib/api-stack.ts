@@ -53,9 +53,14 @@ export class ApiStack extends cdk.Stack {
         TOWN_TOKEN_SECRET: props.secrets.townTokenSecret.secretName,
       },
       code: lambda_.Code.fromInline(`
+import base64
+import hashlib
+import hmac
 import json
 import logging
 import os
+import struct
+import urllib.request
 
 import boto3
 
@@ -71,6 +76,141 @@ def _get_secret(name):
         _cache[name] = resp["SecretString"]
     return _cache[name]
 
+def _b64url_decode(s):
+    padding = 4 - len(s) % 4
+    if padding != 4:
+        s += "=" * padding
+    return base64.urlsafe_b64decode(s)
+
+def _verify_town_token(token, secret):
+    """Verify HMAC-signed town token. Returns payload dict or None."""
+    parts = token.split(".")
+    if len(parts) != 2:
+        return None
+    payload_b64, sig_b64 = parts
+    try:
+        expected_sig = hmac.new(secret.encode(), payload_b64.encode(), hashlib.sha256).digest()
+        actual_sig = _b64url_decode(sig_b64)
+    except Exception:
+        return None
+    if not hmac.compare_digest(expected_sig, actual_sig):
+        return None
+    try:
+        payload = json.loads(_b64url_decode(payload_b64))
+        if "uid" not in payload or "iid" not in payload:
+            return None
+        return payload
+    except Exception:
+        return None
+
+def _b64url_to_int(s):
+    """Decode a base64url-encoded big-endian unsigned integer."""
+    data = _b64url_decode(s)
+    return int.from_bytes(data, "big")
+
+def _verify_rs256(message_bytes, signature_bytes, n_int, e_int):
+    """Verify RS256 signature using raw math (no external crypto libs)."""
+    sig_int = int.from_bytes(signature_bytes, "big")
+    key_len = (n_int.bit_length() + 7) // 8
+    if len(signature_bytes) != key_len:
+        return False
+    decrypted = pow(sig_int, e_int, n_int)
+    em = decrypted.to_bytes(key_len, "big")
+    # PKCS#1 v1.5: 0x00 0x01 [padding 0xFF] 0x00 [DigestInfo]
+    # SHA-256 DigestInfo prefix
+    sha256_prefix = bytes.fromhex(
+        "3031300d060960864801650304020105000420"
+    )
+    digest = hashlib.sha256(message_bytes).digest()
+    expected_suffix = sha256_prefix + digest
+    # em should be: 00 01 FF...FF 00 <expected_suffix>
+    if len(em) < len(expected_suffix) + 11:
+        return False
+    if em[0] != 0 or em[1] != 1:
+        return False
+    suffix_start = len(em) - len(expected_suffix)
+    if em[suffix_start - 1] != 0:
+        return False
+    if em[suffix_start:] != expected_suffix:
+        return False
+    # Check padding bytes are all 0xFF
+    for i in range(2, suffix_start - 1):
+        if em[i] != 0xFF:
+            return False
+    return True
+
+_jwks_cache = {}
+
+def _get_jwks(jwks_url):
+    if jwks_url in _jwks_cache:
+        return _jwks_cache[jwks_url]
+    req = urllib.request.Request(jwks_url, headers={"User-Agent": "GooseTown-Authorizer/1.0"})
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        data = json.loads(resp.read())
+    _jwks_cache[jwks_url] = data
+    return data
+
+def _verify_clerk_jwt(token, clerk_issuer):
+    """Verify a Clerk JWT using JWKS. Returns subject or None."""
+    import time as _time
+
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None
+    header_b64, payload_b64, sig_b64 = parts
+    try:
+        header = json.loads(_b64url_decode(header_b64))
+        payload = json.loads(_b64url_decode(payload_b64))
+        signature = _b64url_decode(sig_b64)
+    except Exception:
+        return None
+
+    if header.get("alg") != "RS256":
+        logger.warning("Unsupported JWT algorithm: %s", header.get("alg"))
+        return None
+
+    kid = header.get("kid")
+    if not kid:
+        return None
+
+    # Verify expiry
+    now = int(_time.time())
+    if payload.get("exp", 0) < now:
+        logger.warning("JWT expired")
+        return None
+
+    # Verify issuer
+    if payload.get("iss") != clerk_issuer:
+        logger.warning("JWT issuer mismatch: %s != %s", payload.get("iss"), clerk_issuer)
+        return None
+
+    # Fetch JWKS and find key
+    jwks_url = clerk_issuer.rstrip("/") + "/.well-known/jwks.json"
+    try:
+        jwks = _get_jwks(jwks_url)
+    except Exception as e:
+        logger.error("Failed to fetch JWKS: %s", e)
+        return None
+
+    rsa_key = None
+    for key in jwks.get("keys", []):
+        if key.get("kid") == kid and key.get("kty") == "RSA":
+            rsa_key = key
+            break
+    if not rsa_key:
+        logger.warning("No matching RSA key found for kid=%s", kid)
+        return None
+
+    # Verify signature
+    n_int = _b64url_to_int(rsa_key["n"])
+    e_int = _b64url_to_int(rsa_key["e"])
+    message = (header_b64 + "." + payload_b64).encode("ascii")
+    if not _verify_rs256(message, signature, n_int, e_int):
+        logger.warning("JWT signature verification failed")
+        return None
+
+    return payload.get("sub")
+
 def handler(event, context):
     logger.info("Authorizer event: %s", json.dumps(event, default=str))
     token = event.get("queryStringParameters", {}).get("token", "")
@@ -80,27 +220,28 @@ def handler(event, context):
         logger.warning("No token provided")
         return generate_policy("anonymous", "Deny", method_arn)
 
-    # Try town token first (simple HMAC comparison)
+    # Try town token first (HMAC-signed)
     try:
         town_secret = _get_secret(os.environ["TOWN_TOKEN_SECRET"])
-        if token.startswith("town_"):
-            # Town tokens are validated by the backend; allow if format is correct
-            return generate_policy("town-agent", "Allow", method_arn)
+        payload = _verify_town_token(token, town_secret)
+        if payload:
+            user_id = payload.get("uid", "town-agent")
+            logger.info("Town token verified for user %s", user_id)
+            return generate_policy(user_id, "Allow", method_arn)
     except Exception as e:
         logger.warning("Town token check failed: %s", e)
 
     # Try Clerk JWT
     try:
-        import urllib.request
         clerk_issuer = _get_secret(os.environ["CLERK_ISSUER"])
-        jwks_url = clerk_issuer.rstrip("/") + "/.well-known/jwks.json"
-        # Validate token structure (3-part JWT)
-        parts = token.split(".")
-        if len(parts) == 3:
-            return generate_policy("clerk-user", "Allow", method_arn)
+        subject = _verify_clerk_jwt(token, clerk_issuer)
+        if subject:
+            logger.info("Clerk JWT verified for user %s", subject)
+            return generate_policy(subject, "Allow", method_arn)
     except Exception as e:
         logger.warning("Clerk JWT check failed: %s", e)
 
+    logger.warning("All token verification methods failed")
     return generate_policy("anonymous", "Deny", method_arn)
 
 def generate_policy(principal_id, effect, method_arn):

@@ -96,10 +96,7 @@ class TestUpdateAgentState:
     def test_returns_none_for_missing_agent(self, dynamodb_tables):
         svc = TownService()
         result = svc.update_agent_state("nonexistent-id", mood="sad")
-        # DynamoDB update_item creates the item if not found with those attrs,
-        # but get_town_agent_by_id for a truly missing id returns None
-        # Actually update_item will create it — let's just verify no crash
-        assert result is not None or result is None  # no crash
+        assert result is None
 
 
 class TestInstances:

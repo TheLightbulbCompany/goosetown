@@ -47,9 +47,16 @@ async def get_town_token_user(
     """Validate a town_token from Authorization: Bearer <token>.
     Returns (user_id, token) or raises 401.
     """
+    from core.town_token import verify_town_token
+
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing Bearer token")
     token = authorization[7:]
+
+    # Verify HMAC signature before DB lookup
+    payload = verify_town_token(token)
+    if payload is None:
+        raise HTTPException(status_code=401, detail="Invalid token signature")
 
     service = TownService()
     instance = service.get_instance_by_token(token)

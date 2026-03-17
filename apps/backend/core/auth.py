@@ -5,7 +5,7 @@ Ported from Isol8 backend -- validates Clerk-issued JWTs using JWKS endpoint.
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import jwt
@@ -25,7 +25,7 @@ JWKS_CACHE_TTL = timedelta(hours=1)
 
 async def _get_cached_jwks(jwks_url: str) -> dict:
     """Fetch JWKS with TTL-based caching to avoid hitting Clerk on every request."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     # Return cached data if still valid
     if _jwks_cache["data"] and _jwks_cache["expires_at"] and now < _jwks_cache["expires_at"]:

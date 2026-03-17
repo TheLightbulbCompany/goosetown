@@ -278,13 +278,17 @@ class TownService:
         update_expr = "SET " + ", ".join(update_parts)
 
         table = dynamo.agents_table()
-        resp = table.update_item(
-            Key={"id": agent_id},
-            UpdateExpression=update_expr,
-            ExpressionAttributeValues=attr_values,
-            ExpressionAttributeNames=attr_names,
-            ReturnValues="ALL_NEW",
-        )
+        try:
+            resp = table.update_item(
+                Key={"id": agent_id},
+                UpdateExpression=update_expr,
+                ExpressionAttributeValues=attr_values,
+                ExpressionAttributeNames=attr_names,
+                ConditionExpression="attribute_exists(id)",
+                ReturnValues="ALL_NEW",
+            )
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            return None
         return _decimal_to_native(resp.get("Attributes"))
 
     # ------------------------------------------------------------------
@@ -322,21 +326,20 @@ class TownService:
         now = _now_iso()
         token = sign_town_token(user_id, instance_id)
 
-        # Scan for max apartment_unit (small table, acceptable)
+        # Use atomic counter for apartment unit assignment
         table = dynamo.instances_table()
-        resp = table.scan(ProjectionExpression="apartmentUnit")
-        max_unit = 0
-        for item in resp.get("Items", []):
-            val = item.get("apartmentUnit", 0)
-            if isinstance(val, Decimal):
-                val = int(val)
-            if val > max_unit:
-                max_unit = val
+        counter_response = table.update_item(
+            Key={"id": "__counter__"},
+            UpdateExpression="ADD apartmentUnit :inc",
+            ExpressionAttributeValues={":inc": 1},
+            ReturnValues="UPDATED_NEW",
+        )
+        next_unit = int(counter_response["Attributes"]["apartmentUnit"])
 
         item = {
             "id": instance_id,
             "userId": user_id,
-            "apartmentUnit": max_unit + 1,
+            "apartmentUnit": next_unit,
             "townToken": token,
             "isActive": "true",
             "createdAt": now,
