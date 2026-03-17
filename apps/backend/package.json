@@ -1,0 +1,9 @@
+{
+  "name": "@goosetown/backend",
+  "private": true,
+  "scripts": {
+    "dev": "uv run uvicorn main:app --reload --port 8001",
+    "lint": "uv run ruff check . && uv run ruff format --check .",
+    "test": "uv run pytest tests/ -v"
+  }
+}
