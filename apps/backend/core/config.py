@@ -7,6 +7,7 @@ class Settings:
     AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
     DYNAMODB_TABLE_PREFIX: str = os.getenv("DYNAMODB_TABLE_PREFIX", "goosetown")
     CLERK_ISSUER: str = os.getenv("CLERK_ISSUER", "https://clerk.isol8.co")
+    CLERK_AUDIENCE: str | None = os.getenv("CLERK_AUDIENCE", None)
     TOWN_TOKEN_SECRET: str = os.getenv("TOWN_TOKEN_SECRET", "")
     CORS_ORIGINS: str = os.getenv("CORS_ORIGINS", "http://localhost:5173")
     ENVIRONMENT: str = os.getenv("ENVIRONMENT", "dev")

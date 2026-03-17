@@ -1,0 +1,132 @@
+"""Pydantic schemas for GooseTown API."""
+
+from datetime import datetime
+from typing import List, Optional
+
+from pydantic import BaseModel, Field
+
+
+class TownOptInRequest(BaseModel):
+    """Request to register an agent in GooseTown."""
+
+    agent_name: str = Field(..., min_length=1, max_length=50, pattern="^[a-zA-Z0-9_-]+$")
+    display_name: str = Field(..., min_length=1, max_length=100)
+    personality_summary: Optional[str] = Field(None, max_length=200)
+    avatar_config: Optional[dict] = None
+
+
+class TownOptOutRequest(BaseModel):
+    """Request to remove an agent from GooseTown."""
+
+    agent_name: str = Field(..., min_length=1, max_length=50, pattern="^[a-zA-Z0-9_-]+$")
+
+
+class TownAgentResponse(BaseModel):
+    """Public info about a town agent."""
+
+    id: str
+    user_id: str
+    agent_name: str
+    display_name: str
+    avatar_url: Optional[str] = None
+    avatar_config: Optional[dict] = None
+    personality_summary: Optional[str] = None
+    home_location: Optional[str] = None
+    is_active: bool
+    joined_at: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class TownAgentStateResponse(BaseModel):
+    """Current state of a town agent (position, activity, mood)."""
+
+    agent_id: str
+    display_name: str
+    current_location: Optional[str] = None
+    current_activity: Optional[str] = None
+    target_location: Optional[str] = None
+    position_x: float
+    position_y: float
+    mood: Optional[str] = None
+    energy: int
+    status_message: Optional[str] = None
+
+
+class TownStateResponse(BaseModel):
+    """Full town state snapshot."""
+
+    agents: List[TownAgentStateResponse]
+    timestamp: datetime
+
+
+class ConversationTurn(BaseModel):
+    """A single turn in a conversation."""
+
+    speaker: str
+    text: str
+
+
+class TownConversationResponse(BaseModel):
+    """Public conversation log."""
+
+    id: str
+    participant_a: str
+    participant_b: str
+    location: Optional[str] = None
+    started_at: Optional[str] = None
+    ended_at: Optional[str] = None
+    turn_count: int
+    topic_summary: Optional[str] = None
+    public_log: List[ConversationTurn]
+
+    class Config:
+        from_attributes = True
+
+
+class TownConversationsListResponse(BaseModel):
+    """List of recent conversations."""
+
+    conversations: List[TownConversationResponse]
+
+
+class ApartmentAgentState(BaseModel):
+    """Agent state for the apartment view."""
+
+    agent_id: str
+    agent_name: str
+    display_name: str
+    character: Optional[str] = None
+    location_context: Optional[str] = "apartment"
+    current_location: Optional[str] = None
+    current_activity: Optional[str] = None
+    mood: Optional[str] = None
+    energy: int = 100
+    status_message: Optional[str] = None
+    position_x: float = 0.0
+    position_y: float = 0.0
+    speed: float = 0.0
+    facing_x: float = 0.0
+    facing_y: float = 1.0
+    current_spot: Optional[str] = None
+    is_active: bool = True
+    sprite_url: Optional[str] = None
+
+
+class ApartmentActivityEvent(BaseModel):
+    """Activity event in the apartment feed."""
+
+    agent_name: str
+    display_name: str
+    event_type: str
+    description: str
+    location: Optional[str] = None
+    timestamp: datetime
+
+
+class ApartmentResponse(BaseModel):
+    """Full apartment view response."""
+
+    agents: List[ApartmentAgentState]
+    activity: List[ApartmentActivityEvent]
