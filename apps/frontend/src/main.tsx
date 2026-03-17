@@ -7,6 +7,7 @@ import 'uplot/dist/uPlot.min.css';
 import 'react-toastify/dist/ReactToastify.css';
 import TownProvider from './components/TownProvider.tsx';
 
+console.log("[GooseTown] Frontend loaded — monorepo deploy test");
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <BrowserRouter basename="/ai-town">
