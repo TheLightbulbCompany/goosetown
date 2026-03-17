@@ -53,3 +53,12 @@ pixellab-sprites/**/*.zip
 
 # Map editor
 map-editor/godot-tilemap-mcp/node_modules/
+
+# Turborepo
+.turbo/
+
+# CDK
+cdk.out/
+
+# Dependencies (monorepo)
+node_modules/
