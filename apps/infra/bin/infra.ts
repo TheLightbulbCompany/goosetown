@@ -6,6 +6,7 @@ import { StorageStack } from "../lib/storage-stack";
 import { AuthStack } from "../lib/auth-stack";
 import { DnsStack } from "../lib/dns-stack";
 import { ComputeStack } from "../lib/compute-stack";
+import { ApiStack } from "../lib/api-stack";
 
 const app = new cdk.App();
 const env = app.node.tryGetContext("env") || "dev";
@@ -54,6 +55,15 @@ const compute = new ComputeStack(app, `goosetown-${env}-compute`, {
   spriteBucket: storage.spriteBucket,
   secrets: auth.secrets,
   certificate: dns.certificate,
+});
+
+// API (WebSocket API Gateway)
+const api = new ApiStack(app, `goosetown-${env}-api`, {
+  env: awsEnv,
+  environment: env,
+  connectionsTable: database.tables.connections,
+  secrets: auth.secrets,
+  fargateTaskRole: compute.service.taskDefinition.taskRole,
 });
 
 // Tag all resources
