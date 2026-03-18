@@ -1,52 +1,52 @@
 #!/usr/bin/env node
 import * as cdk from "aws-cdk-lib";
-import { NetworkStack } from "../lib/network-stack";
-import { DatabaseStack } from "../lib/database-stack";
-import { StorageStack } from "../lib/storage-stack";
-import { AuthStack } from "../lib/auth-stack";
-import { DnsStack } from "../lib/dns-stack";
-import { ComputeStack } from "../lib/compute-stack";
-import { ApiStack } from "../lib/api-stack";
+import { NetworkStack } from "./stacks/network-stack";
+import { DatabaseStack } from "./stacks/database-stack";
+import { StorageStack } from "./stacks/storage-stack";
+import { AuthStack } from "./stacks/auth-stack";
+import { DnsStack } from "./stacks/dns-stack";
+import { ComputeStack } from "./stacks/compute-stack";
+import { ApiStack } from "./stacks/api-stack";
 
 const app = new cdk.App();
 const env = app.node.tryGetContext("env") || "dev";
 const awsEnv = { account: "877352799272", region: "us-east-1" };
 
-// Network
+// --- Foundation (no cross-stack dependencies) ---
+
 const network = new NetworkStack(app, `goosetown-${env}-network`, {
   env: awsEnv,
   environment: env,
 });
 
-// Database (DynamoDB — no VPC dependency)
 const database = new DatabaseStack(app, `goosetown-${env}-database`, {
   env: awsEnv,
   environment: env,
 });
 
-// Storage (S3 + CloudFront)
-const storage = new StorageStack(app, `goosetown-${env}-storage`, {
-  env: awsEnv,
-  environment: env,
-});
-
-// Auth (Secrets Manager)
 const auth = new AuthStack(app, `goosetown-${env}-auth`, {
   env: awsEnv,
   environment: env,
 });
 
-// DNS (Route53 + ACM certificate)
-// Note: DNS records for ALB and CloudFront are created after compute stack
-// by passing references. On first deploy, create DNS stack first to get the cert.
+// --- DNS (cert must exist before compute and storage can use it) ---
+
 const dns = new DnsStack(app, `goosetown-${env}-dns`, {
   env: awsEnv,
   environment: env,
-  // ALB and distribution references will be wired after compute stack exists.
-  // For initial deploy, omit these — add them after first successful deploy.
 });
 
-// Compute (ECS Fargate + ALB)
+// --- Storage (depends on dns for cert + custom domain) ---
+
+const storage = new StorageStack(app, `goosetown-${env}-storage`, {
+  env: awsEnv,
+  environment: env,
+  certificate: dns.certificate,
+  hostedZone: dns.hostedZone,
+});
+
+// --- Compute (depends on network, database, storage, auth, dns) ---
+
 const compute = new ComputeStack(app, `goosetown-${env}-compute`, {
   env: awsEnv,
   environment: env,
@@ -55,9 +55,11 @@ const compute = new ComputeStack(app, `goosetown-${env}-compute`, {
   spriteBucket: storage.spriteBucket,
   secrets: auth.secrets,
   certificate: dns.certificate,
+  hostedZone: dns.hostedZone,
 });
 
-// API (WebSocket API Gateway)
+// --- API (depends on database, auth, compute) ---
+
 const api = new ApiStack(app, `goosetown-${env}-api`, {
   env: awsEnv,
   environment: env,
@@ -66,6 +68,7 @@ const api = new ApiStack(app, `goosetown-${env}-api`, {
   fargateTaskRole: compute.service.taskDefinition.taskRole,
 });
 
-// Tag all resources
+// --- Tags ---
+
 cdk.Tags.of(app).add("Project", "goosetown");
 cdk.Tags.of(app).add("Environment", env);

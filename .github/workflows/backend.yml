@@ -58,8 +58,8 @@ jobs:
           context: apps/backend
           push: true
           tags: |
-            ${{ steps.ecr.outputs.registry }}/goosetown-backend:${{ github.sha }}
-            ${{ steps.ecr.outputs.registry }}/goosetown-backend:latest
+            ${{ steps.ecr.outputs.registry }}/goosetown-dev-backend:${{ github.sha }}
+            ${{ steps.ecr.outputs.registry }}/goosetown-dev-backend:latest
 
   deploy-dev:
     name: Deploy to Dev
@@ -78,14 +78,14 @@ jobs:
       - name: Deploy to Fargate
         run: |
           aws ecs update-service \
-            --cluster goosetown-dev-compute \
+            --cluster goosetown-dev \
             --service goosetown-dev-backend \
             --force-new-deployment \
             --region us-east-1
       - name: Wait for deployment
         run: |
           aws ecs wait services-stable \
-            --cluster goosetown-dev-compute \
+            --cluster goosetown-dev \
             --services goosetown-dev-backend \
             --region us-east-1
       - name: Health check

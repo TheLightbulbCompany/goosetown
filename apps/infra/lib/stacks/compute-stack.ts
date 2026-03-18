@@ -9,6 +9,8 @@ import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
+import * as route53 from "aws-cdk-lib/aws-route53";
+import * as route53Targets from "aws-cdk-lib/aws-route53-targets";
 import { Construct } from "constructs";
 import { DatabaseTables } from "./database-stack";
 import { AuthSecrets } from "./auth-stack";
@@ -20,6 +22,7 @@ export interface ComputeStackProps extends cdk.StackProps {
   spriteBucket: s3.IBucket;
   secrets: AuthSecrets;
   certificate?: acm.ICertificate;
+  hostedZone?: route53.IHostedZone;
 }
 
 export class ComputeStack extends cdk.Stack {
@@ -119,7 +122,7 @@ export class ComputeStack extends cdk.Stack {
         SPRITE_BUCKET: props.spriteBucket.bucketName,
         CORS_ORIGINS: env === "prod"
           ? "https://goosetown.isol8.co"
-          : "https://dev.town.isol8.co,http://localhost:3000,http://localhost:5173",
+          : "https://dev.goosetown.isol8.co,http://localhost:3000,http://localhost:5173",
       },
       secrets: {
         CLERK_ISSUER: ecs.Secret.fromSecretsManager(props.secrets.clerkIssuer),
@@ -218,6 +221,17 @@ export class ComputeStack extends cdk.Stack {
       ec2.Port.tcp(8000),
       "ALB to Fargate"
     );
+
+    // DNS record: api-{env}.goosetown.isol8.co -> ALB
+    if (props.hostedZone) {
+      new route53.ARecord(this, "ApiDnsRecord", {
+        zone: props.hostedZone,
+        recordName: `api-${env}.goosetown.isol8.co`,
+        target: route53.RecordTarget.fromAlias(
+          new route53Targets.LoadBalancerTarget(this.alb)
+        ),
+      });
+    }
 
     // Outputs
     new cdk.CfnOutput(this, "AlbDnsName", {

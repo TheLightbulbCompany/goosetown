@@ -2,11 +2,15 @@ import * as cdk from "aws-cdk-lib";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
 import * as origins from "aws-cdk-lib/aws-cloudfront-origins";
-// Using S3BucketOrigin instead of deprecated S3Origin
+import * as acm from "aws-cdk-lib/aws-certificatemanager";
+import * as route53 from "aws-cdk-lib/aws-route53";
+import * as route53Targets from "aws-cdk-lib/aws-route53-targets";
 import { Construct } from "constructs";
 
 export interface StorageStackProps extends cdk.StackProps {
   environment: string;
+  certificate?: acm.ICertificate;
+  hostedZone?: route53.IHostedZone;
 }
 
 export class StorageStack extends cdk.Stack {
@@ -36,6 +40,7 @@ export class StorageStack extends cdk.Stack {
     });
 
     // CloudFront distribution with S3 bucket origin (OAC managed automatically)
+    const domainName = `assets-${env}.goosetown.isol8.co`;
     this.distribution = new cloudfront.Distribution(this, "Distribution", {
       comment: `GooseTown ${env} sprites`,
       defaultBehavior: {
@@ -46,7 +51,22 @@ export class StorageStack extends cdk.Stack {
         allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
       },
       priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
+      ...(props.certificate && {
+        domainNames: [domainName],
+        certificate: props.certificate,
+      }),
     });
+
+    // DNS record: assets-{env}.goosetown.isol8.co -> CloudFront
+    if (props.hostedZone) {
+      new route53.ARecord(this, "AssetsDnsRecord", {
+        zone: props.hostedZone,
+        recordName: domainName,
+        target: route53.RecordTarget.fromAlias(
+          new route53Targets.CloudFrontTarget(this.distribution)
+        ),
+      });
+    }
 
     // Outputs
     new cdk.CfnOutput(this, "SpriteBucketName", {
