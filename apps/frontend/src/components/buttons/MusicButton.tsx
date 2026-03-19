@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import volumeImg from '../../../assets/volume.svg';
 import Button from './Button';
 
-const MUSIC_URL = '/ai-town/assets/background.mp3';
+const MUSIC_URL = '/assets/background.mp3';
 
 export default function MusicButton() {
   const [isPlaying, setPlaying] = useState(false);

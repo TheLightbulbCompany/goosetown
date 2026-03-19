@@ -8,9 +8,9 @@ export default function TownNav() {
 
   const isActive = (path: string) => {
     if (path === '/') {
-      return location.pathname === '/' || location.pathname === '/ai-town' || location.pathname === '/ai-town/';
+      return location.pathname === '/';
     }
-    return location.pathname === path || location.pathname === `/ai-town${path}`;
+    return location.pathname === path;
   };
 
   return (

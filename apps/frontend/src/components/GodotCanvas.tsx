@@ -7,7 +7,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-const GODOT_JS_PATH = '/ai-town/godot/goosetown.js';
+const GODOT_JS_PATH = '/godot/goosetown.js';
 
 interface GodotEngine {
   startGame: (config?: Record<string, unknown>) => Promise<void>;
@@ -72,7 +72,7 @@ export default function GodotCanvas({ className }: GodotCanvasProps) {
 
         // Create and start the engine
         const engine = new window.Engine({
-          executable: '/ai-town/godot/goosetown',
+          executable: '/godot/goosetown',
           canvas,
         });
 
