@@ -32,7 +32,3 @@ def relationships_table():
 
 def conversations_table():
     return get_client().Table(table_name("conversations"))
-
-
-def connections_table():
-    return get_client().Table(table_name("connections"))
