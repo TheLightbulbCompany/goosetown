@@ -1,4 +1,5 @@
 import * as cdk from "aws-cdk-lib";
+import * as apigatewayv2 from "aws-cdk-lib/aws-apigatewayv2";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as ecr from "aws-cdk-lib/aws-ecr";
@@ -225,6 +226,80 @@ export class ComputeStack extends cdk.Stack {
       ec2.Port.tcp(8000),
       "ALB to Fargate"
     );
+
+    // ─── NLB + VPC Link for WebSocket $default route ─────────────────
+    // API Gateway WebSocket cannot use ALB directly — it requires an NLB
+    // via VPC Link for HTTP_PROXY integrations into the VPC.
+    if (props.wsApiId) {
+      const nlb = new elbv2.NetworkLoadBalancer(this, "WsNlb", {
+        loadBalancerName: `goosetown-${env}-ws-nlb`,
+        vpc: props.vpc,
+        internetFacing: false,
+        vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      });
+
+      const nlbTargetGroup = new elbv2.NetworkTargetGroup(this, "WsNlbTargetGroup", {
+        targetGroupName: `goosetown-${env}-ws-nlb-tg`,
+        vpc: props.vpc,
+        port: 8000,
+        protocol: elbv2.Protocol.TCP,
+        targetType: elbv2.TargetType.IP,
+        healthCheck: {
+          protocol: elbv2.Protocol.HTTP,
+          path: "/health",
+          interval: cdk.Duration.seconds(30),
+          healthyThresholdCount: 2,
+          unhealthyThresholdCount: 3,
+        },
+      });
+
+      nlb.addListener("WsNlbListener", {
+        port: 8000,
+        protocol: elbv2.Protocol.TCP,
+        defaultTargetGroups: [nlbTargetGroup],
+      });
+
+      // Register Fargate tasks with the NLB target group
+      this.service.attachToNetworkTargetGroup(nlbTargetGroup);
+
+      // Allow NLB to reach Fargate tasks
+      this.service.connections.allowFrom(
+        ec2.Peer.ipv4(props.vpc.vpcCidrBlock),
+        ec2.Port.tcp(8000),
+        "NLB to Fargate"
+      );
+
+      // VPC Link for API Gateway to reach the NLB
+      const vpcLink = new apigatewayv2.CfnVpcLink(this, "WsVpcLink", {
+        name: `goosetown-${env}-ws-vpclink`,
+        subnetIds: props.vpc.privateSubnets.map((s) => s.subnetId),
+        securityGroupIds: [],
+      });
+
+      // $default route integration — forwards WS messages to Fargate
+      const defaultIntegration = new apigatewayv2.CfnIntegration(
+        this,
+        "WsDefaultIntegration",
+        {
+          apiId: props.wsApiId,
+          integrationType: "HTTP_PROXY",
+          integrationMethod: "POST",
+          integrationUri: `http://${nlb.loadBalancerDnsName}:8000/api/v1/town/ws/message`,
+          connectionType: "VPC_LINK",
+          connectionId: vpcLink.ref,
+          requestParameters: {
+            "integration.request.header.connectionId":
+              "context.connectionId",
+          },
+        }
+      );
+
+      const defaultRoute = new apigatewayv2.CfnRoute(this, "WsDefaultRoute", {
+        apiId: props.wsApiId,
+        routeKey: "$default",
+        target: `integrations/${defaultIntegration.ref}`,
+      });
+    }
 
     // DNS record: api-{env}.goosetown.isol8.co -> ALB
     if (props.hostedZone) {

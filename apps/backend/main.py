@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from core.config import settings
 from core.services.town_simulation import TownSimulation
 from routers.town import router as town_router
+from routers.ws_messages import router as ws_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -50,6 +51,7 @@ app.add_middleware(
 )
 
 app.include_router(town_router, prefix="/api/v1/town", tags=["town"])
+app.include_router(ws_router, prefix="/api/v1/town", tags=["ws"])
 
 
 @app.get("/health")
