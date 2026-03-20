@@ -12,6 +12,9 @@ import { AuthSecrets } from "./auth-stack";
 export interface ApiStackProps extends cdk.StackProps {
   environment: string;
   connectionsTable: dynamodb.ITable;
+  agentsTable: dynamodb.ITable;
+  conversationsTable: dynamodb.ITable;
+  relationshipsTable: dynamodb.ITable;
   secrets: AuthSecrets;
 }
 
@@ -429,6 +432,67 @@ def handler(event, context):
       sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:${wsApi.ref}/*/$disconnect`,
     });
 
+    // ─── Default Lambda (inbound agent messages) ─────────────────────
+    const defaultLogGroup = new logs.LogGroup(this, "DefaultLogs", {
+      logGroupName: `/aws/lambda/goosetown-${env}-ws-default`,
+      retention: logs.RetentionDays.TWO_WEEKS,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    const defaultFn = new lambda_.Function(this, "DefaultFunction", {
+      functionName: `goosetown-${env}-ws-default`,
+      runtime: lambda_.Runtime.PYTHON_3_12,
+      handler: "index.handler",
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 256,
+      logGroup: defaultLogGroup,
+      environment: {
+        CONNECTIONS_TABLE: props.connectionsTable.tableName,
+        AGENTS_TABLE: props.agentsTable.tableName,
+        CONVERSATIONS_TABLE: props.conversationsTable.tableName,
+        RELATIONSHIPS_TABLE: props.relationshipsTable.tableName,
+        TOWN_TOKEN_SECRET: props.secrets.townTokenSecret.secretName,
+      },
+      code: lambda_.Code.fromAsset(
+        require("path").join(__dirname, "../lambdas/ws_default")
+      ),
+    });
+
+    // Grant DynamoDB access to all tables the handler needs
+    props.connectionsTable.grantReadWriteData(defaultFn);
+    props.agentsTable.grantReadWriteData(defaultFn);
+    props.conversationsTable.grantReadWriteData(defaultFn);
+    props.relationshipsTable.grantReadWriteData(defaultFn);
+
+    // Grant secrets read for token verification
+    props.secrets.townTokenSecret.grantRead(defaultFn);
+
+    // Grant Management API access so the Lambda can push messages back to clients
+    defaultFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["execute-api:ManageConnections"],
+        resources: [
+          `arn:aws:execute-api:${this.region}:${this.account}:${wsApi.ref}/${env}/POST/@connections/*`,
+          `arn:aws:execute-api:${this.region}:${this.account}:${wsApi.ref}/${env}/DELETE/@connections/*`,
+        ],
+      })
+    );
+
+    const defaultIntegration = new apigatewayv2.CfnIntegration(
+      this,
+      "DefaultIntegration",
+      {
+        apiId: wsApi.ref,
+        integrationType: "AWS_PROXY",
+        integrationUri: `arn:aws:apigateway:${this.region}:lambda:path/2015-03-31/functions/${defaultFn.functionArn}/invocations`,
+      }
+    );
+
+    defaultFn.addPermission("ApiGatewayInvokeDefault", {
+      principal: new iam.ServicePrincipal("apigateway.amazonaws.com"),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:${wsApi.ref}/*/$default`,
+    });
+
     // ─── Routes ──────────────────────────────────────────────────────
     const connectRoute = new apigatewayv2.CfnRoute(this, "ConnectRoute", {
       apiId: wsApi.ref,
@@ -444,6 +508,12 @@ def handler(event, context):
       target: `integrations/${disconnectIntegration.ref}`,
     });
 
+    const defaultRoute = new apigatewayv2.CfnRoute(this, "DefaultRoute", {
+      apiId: wsApi.ref,
+      routeKey: "$default",
+      target: `integrations/${defaultIntegration.ref}`,
+    });
+
     // ─── Stage ───────────────────────────────────────────────────────
     const stage = new apigatewayv2.CfnStage(this, "Stage", {
       apiId: wsApi.ref,
@@ -454,6 +524,7 @@ def handler(event, context):
     // Ensure routes are created before stage
     stage.addDependency(connectRoute);
     stage.addDependency(disconnectRoute);
+    stage.addDependency(defaultRoute);
 
     // ─── Management API URL ──────────────────────────────────────────
     this.wsApiEndpoint = `wss://${wsApi.ref}.execute-api.${this.region}.amazonaws.com/${env}`;

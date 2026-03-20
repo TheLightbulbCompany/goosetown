@@ -51,6 +51,9 @@ const api = new ApiStack(app, `goosetown-${env}-api`, {
   env: awsEnv,
   environment: env,
   connectionsTable: database.tables.connections,
+  agentsTable: database.tables.agents,
+  conversationsTable: database.tables.conversations,
+  relationshipsTable: database.tables.relationships,
   secrets: auth.secrets,
 });
 
