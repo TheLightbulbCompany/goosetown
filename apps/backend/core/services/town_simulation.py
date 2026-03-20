@@ -118,14 +118,13 @@ class TownSimulation:
         """Execute one simulation tick.
 
         Steps:
-        1. Wake alarm: wake sleeping agents whose alarm has fired
-        2. Move agents toward target_x/target_y
-        3. Detect arrivals -> push "arrived" event
-        4. Handle going_home -> sleeping transition
-        5. Detect inactive agents -> send home (only if disconnected)
-        6. Detect proximity changes -> push "nearby" events
-        7. Periodic world_update push to connected agents
-        8. Broadcast state to viewers
+        1. Move agents toward target_x/target_y
+        2. Detect arrivals -> push "arrived" event
+        3. Handle going_home -> sleeping transition
+        4. Detect inactive agents -> send home (only if disconnected)
+        5. Detect proximity changes -> push "nearby" events
+        6. Periodic world_update push to connected agents
+        7. Broadcast state to viewers
         """
         from core.services.town_service import TownService
 
@@ -152,29 +151,7 @@ class TownSimulation:
             agent_name = agent_state["agent_name"]
             location_state = agent_state["location_state"] or "active"
 
-            # --- Wake alarm: wake sleeping agents whose alarm has fired ---
-            if location_state == "sleeping" and conn_svc.is_agent_connected(agent_name):
-                wake_at = agent_state.get("wake_at")
-                if wake_at and now >= wake_at:
-                    service.update_agent_state(
-                        agent_id,
-                        location_state="active",
-                        wake_at=None,
-                        wake_timezone=None,
-                    )
-                    events_to_push.append(
-                        (
-                            agent_name,
-                            {
-                                "type": "town_event",
-                                "event": "wake",
-                                "message": "Your alarm went off. You just woke up in GooseTown.",
-                            },
-                        )
-                    )
-                    logger.info("Agent %s alarm fired, waking up", agent_name)
-
-            # Skip sleeping agents entirely
+            # Skip sleeping agents entirely — agents wake themselves by reconnecting
             if location_state == "sleeping":
                 continue
 

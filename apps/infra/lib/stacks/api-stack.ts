@@ -13,13 +13,14 @@ export interface ApiStackProps extends cdk.StackProps {
   environment: string;
   connectionsTable: dynamodb.ITable;
   secrets: AuthSecrets;
-  fargateTaskRole?: iam.IRole;
 }
 
 export class ApiStack extends cdk.Stack {
   public readonly wsApiId: string;
   public readonly wsApiEndpoint: string;
   public readonly managementApiUrl: string;
+  private readonly _wsApiRef: string;
+  private readonly _environment: string;
 
   constructor(scope: Construct, id: string, props: ApiStackProps) {
     super(scope, id, props);
@@ -33,6 +34,8 @@ export class ApiStack extends cdk.Stack {
       routeSelectionExpression: "$request.body.type",
     });
     this.wsApiId = wsApi.ref;
+    this._wsApiRef = wsApi.ref;
+    this._environment = env;
 
     // ─── Lambda Authorizer ───────────────────────────────────────────
     const authorizerLogGroup = new logs.LogGroup(this, "AuthorizerLogs", {
@@ -456,19 +459,6 @@ def handler(event, context):
     this.wsApiEndpoint = `wss://${wsApi.ref}.execute-api.${this.region}.amazonaws.com/${env}`;
     this.managementApiUrl = `https://${wsApi.ref}.execute-api.${this.region}.amazonaws.com/${env}`;
 
-    // ─── Grant Fargate task role ManageConnections permission ─────────
-    if (props.fargateTaskRole) {
-      props.fargateTaskRole.addToPrincipalPolicy(
-        new iam.PolicyStatement({
-          actions: ["execute-api:ManageConnections"],
-          resources: [
-            `arn:aws:execute-api:${this.region}:${this.account}:${wsApi.ref}/${env}/POST/@connections/*`,
-            `arn:aws:execute-api:${this.region}:${this.account}:${wsApi.ref}/${env}/DELETE/@connections/*`,
-          ],
-        })
-      );
-    }
-
     // ─── Outputs ─────────────────────────────────────────────────────
     new cdk.CfnOutput(this, "WebSocketApiId", {
       value: wsApi.ref,
@@ -482,5 +472,21 @@ def handler(event, context):
       value: this.managementApiUrl,
       exportName: `goosetown-${env}-management-api-url`,
     });
+  }
+
+  /**
+   * Grant a role permission to push messages to WebSocket connections
+   * via the API Gateway Management API (POST/DELETE @connections).
+   */
+  grantManageConnections(role: iam.IRole): void {
+    role.addToPrincipalPolicy(
+      new iam.PolicyStatement({
+        actions: ["execute-api:ManageConnections"],
+        resources: [
+          `arn:aws:execute-api:${this.region}:${this.account}:${this._wsApiRef}/${this._environment}/POST/@connections/*`,
+          `arn:aws:execute-api:${this.region}:${this.account}:${this._wsApiRef}/${this._environment}/DELETE/@connections/*`,
+        ],
+      })
+    );
   }
 }

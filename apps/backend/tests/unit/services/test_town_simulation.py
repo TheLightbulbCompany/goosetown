@@ -1,14 +1,13 @@
 """Tests for TownSimulation push/event logic.
 
 Tests cover:
-1. Wake alarm detection
-2. Arrived event generation
-3. Nearby event generation
-4. World update push (periodic)
-5. Context summary building
-6. Inactive detection (with connection guard)
-7. Viewer broadcast
-8. Conversation probability
+1. Arrived event generation
+2. Nearby event generation
+3. World update push (periodic)
+4. Context summary building
+5. Inactive detection (with connection guard)
+6. Viewer broadcast
+7. Conversation probability
 """
 
 import asyncio
@@ -87,102 +86,6 @@ def _make_agent_state(
         "home_location": "apartment",
         "character": None,
     }
-
-
-# ─── Wake Alarm Tests ────────────────────────────────────────────────
-
-
-class TestWakeAlarm:
-    @pytest.mark.asyncio
-    async def test_wake_alarm_fires_for_connected_sleeping_agent(self, dynamodb_tables):
-        """When a sleeping agent's wake_at has passed AND they are connected,
-        the simulation should transition them to active and push a wake event."""
-        sim = TownSimulation()
-        past_time = datetime.now(timezone.utc) - timedelta(minutes=1)
-
-        agent = _make_agent_state(
-            location_state="sleeping",
-            wake_at=past_time,
-        )
-
-        mock_service = MagicMock()
-        mock_service.get_town_state.return_value = [agent]
-
-        mock_conn_svc = MagicMock()
-        mock_conn_svc.is_agent_connected.return_value = True
-        mock_conn_svc.get_agent_connection_id.return_value = "conn-abc"
-
-        mock_mgmt = MagicMock()
-        mock_mgmt.send_message.return_value = True
-
-        with patch("core.services.town_service.TownService", return_value=mock_service), \
-             patch.object(sim, "_get_connection_service", return_value=mock_conn_svc), \
-             patch.object(sim, "_get_mgmt_client", return_value=mock_mgmt):
-            await sim._tick()
-
-        # Should update agent to active
-        mock_service.update_agent_state.assert_any_call(
-            "agent-1",
-            location_state="active",
-            wake_at=None,
-            wake_timezone=None,
-        )
-
-        # Should push wake event
-        mock_mgmt.send_message.assert_any_call(
-            "conn-abc",
-            {
-                "type": "town_event",
-                "event": "wake",
-                "message": "Your alarm went off. You just woke up in GooseTown.",
-            },
-        )
-
-    @pytest.mark.asyncio
-    async def test_wake_alarm_does_not_fire_for_disconnected_agent(self, dynamodb_tables):
-        """If the agent is not connected, wake alarm should not fire."""
-        sim = TownSimulation()
-        past_time = datetime.now(timezone.utc) - timedelta(minutes=1)
-
-        agent = _make_agent_state(location_state="sleeping", wake_at=past_time)
-
-        mock_service = MagicMock()
-        mock_service.get_town_state.return_value = [agent]
-
-        mock_conn_svc = MagicMock()
-        mock_conn_svc.is_agent_connected.return_value = False
-
-        with patch("core.services.town_service.TownService", return_value=mock_service), \
-             patch.object(sim, "_get_connection_service", return_value=mock_conn_svc), \
-             patch.object(sim, "_get_mgmt_client", return_value=None):
-            await sim._tick()
-
-        # Should NOT update agent state (agent stays sleeping)
-        for call in mock_service.update_agent_state.call_args_list:
-            args, kwargs = call
-            assert kwargs.get("location_state") != "active"
-
-    @pytest.mark.asyncio
-    async def test_wake_alarm_not_yet_due(self, dynamodb_tables):
-        """If wake_at is in the future, agent stays sleeping."""
-        sim = TownSimulation()
-        future_time = datetime.now(timezone.utc) + timedelta(hours=1)
-
-        agent = _make_agent_state(location_state="sleeping", wake_at=future_time)
-
-        mock_service = MagicMock()
-        mock_service.get_town_state.return_value = [agent]
-
-        mock_conn_svc = MagicMock()
-        mock_conn_svc.is_agent_connected.return_value = True
-
-        with patch("core.services.town_service.TownService", return_value=mock_service), \
-             patch.object(sim, "_get_connection_service", return_value=mock_conn_svc), \
-             patch.object(sim, "_get_mgmt_client", return_value=None):
-            await sim._tick()
-
-        # No state changes for sleeping agent
-        mock_service.update_agent_state.assert_not_called()
 
 
 # ─── Inactive Detection Tests ────────────────────────────────────────

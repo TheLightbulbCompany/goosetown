@@ -45,7 +45,16 @@ const storage = new StorageStack(app, `goosetown-${env}-storage`, {
   hostedZone: dns.hostedZone,
 });
 
-// --- Compute (depends on network, database, storage, auth, dns) ---
+// --- API (depends on database, auth) ---
+
+const api = new ApiStack(app, `goosetown-${env}-api`, {
+  env: awsEnv,
+  environment: env,
+  connectionsTable: database.tables.connections,
+  secrets: auth.secrets,
+});
+
+// --- Compute (depends on network, database, storage, auth, dns, api) ---
 
 const compute = new ComputeStack(app, `goosetown-${env}-compute`, {
   env: awsEnv,
@@ -56,17 +65,11 @@ const compute = new ComputeStack(app, `goosetown-${env}-compute`, {
   secrets: auth.secrets,
   certificate: dns.certificate,
   hostedZone: dns.hostedZone,
+  wsApiId: api.wsApiId,
 });
 
-// --- API (depends on database, auth, compute) ---
-
-const api = new ApiStack(app, `goosetown-${env}-api`, {
-  env: awsEnv,
-  environment: env,
-  connectionsTable: database.tables.connections,
-  secrets: auth.secrets,
-  fargateTaskRole: compute.service.taskDefinition.taskRole,
-});
+// Grant Fargate task role permission to push to WebSocket connections
+api.grantManageConnections(compute.service.taskDefinition.taskRole);
 
 // --- Tags ---
 

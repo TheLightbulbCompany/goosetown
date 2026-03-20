@@ -23,6 +23,7 @@ export interface ComputeStackProps extends cdk.StackProps {
   secrets: AuthSecrets;
   certificate?: acm.ICertificate;
   hostedZone?: route53.IHostedZone;
+  wsApiId?: string;
 }
 
 export class ComputeStack extends cdk.Stack {
@@ -122,6 +123,7 @@ export class ComputeStack extends cdk.Stack {
         SPRITE_BUCKET: props.spriteBucket.bucketName,
         CONNECTIONS_TABLE: props.tables.connections.tableName,
         WS_STAGE: env,
+        ...(props.wsApiId ? { WS_API_ID: props.wsApiId } : {}),
         CORS_ORIGINS: env === "prod"
           ? "https://goosetown.isol8.co"
           : "https://dev.goosetown.isol8.co,http://localhost:3000,http://localhost:5173",
