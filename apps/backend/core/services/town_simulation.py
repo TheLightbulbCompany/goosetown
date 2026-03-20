@@ -1,22 +1,24 @@
 """GooseTown simulation engine.
 
 Runs as an asyncio background task inside FastAPI. Manages agent movement,
-state transitions, and proximity detection.
+state transitions, and event dispatch to agent WebSocket connections.
 
 The simulation is THIN -- it does NOT make decisions for agents. It only:
 - Interpolates movement toward target_x/target_y
-- Detects arrivals
+- Detects arrivals and pushes "arrived" events
+- Detects nearby agents and pushes "nearby" events
 - Handles transition states (going_home -> sleeping)
 - Detects inactive agents and sends them home
-- Detects nearby agent pairs
+- Broadcasts state to viewers
 """
 
 import asyncio
 import logging
 import math
 import random
+import time
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from core.apartment_constants import APARTMENT_SPOTS, RESIDENTIAL_TOWN_COORDS
 from core.services.town_pathfinding import find_path
@@ -28,20 +30,56 @@ TICK_INTERVAL = 2.0  # seconds between simulation ticks
 AGENT_SPEED = 1.2  # tiles per tick (~0.6 tiles/sec)
 PROXIMITY_THRESHOLD = 3.0  # tiles to be "nearby"
 INACTIVE_TIMEOUT = timedelta(minutes=5)  # send home after 5min without heartbeat
+WORLD_UPDATE_INTERVAL = 5  # Push world_update every N ticks (N * TICK_INTERVAL seconds)
+THINK_INTERVAL = 15.0  # seconds between autonomous think pings per agent
 
 
 class TownSimulation:
     """Manages the GooseTown simulation loop."""
 
-    def __init__(self):
+    def __init__(self, notify_fn: Optional[Callable] = None):
         self._running = False
         self._task: Optional[asyncio.Task] = None
+        self._notify_fn = notify_fn
         # Track which agent pairs were nearby last tick (frozenset of agent_name pairs)
         self._nearby_pairs: Set[frozenset] = set()
+        # Lazy-initialized management API client for pushing events to agents
+        self._mgmt_client = None
+        self._mgmt_client_failed = False
+        # Lazy-initialized connection service
+        self._conn_service = None
         # A* precomputed paths: agent_id -> list of (x, y) waypoints remaining
         self._agent_paths: Dict[str, List[Tuple[int, int]]] = {}
         # Pending cross-context destinations: agent_id -> final destination name
         self._pending_destinations: Dict[str, str] = {}
+        # Tick counter for periodic world updates
+        self._tick_count: int = 0
+        # Per-agent timestamps for autonomous think pings
+        self._last_think_at: Dict[str, float] = {}
+
+    def _get_mgmt_client(self):
+        """Lazily create ManagementApiClient. Returns None if unavailable."""
+        if self._mgmt_client is not None:
+            return self._mgmt_client
+        if self._mgmt_client_failed:
+            return None
+        try:
+            from core.services.management_api_client import ManagementApiClient
+
+            self._mgmt_client = ManagementApiClient()
+            return self._mgmt_client
+        except Exception:
+            logger.debug("ManagementApiClient not available (expected in local dev)")
+            self._mgmt_client_failed = True
+            return None
+
+    def _get_connection_service(self):
+        """Get or create the WsConnectionService."""
+        if self._conn_service is None:
+            from core.services.ws_connection_service import WsConnectionService
+
+            self._conn_service = WsConnectionService()
+        return self._conn_service
 
     async def start(self):
         """Start the simulation background task."""
@@ -62,6 +100,10 @@ class TownSimulation:
                 pass
         logger.info("GooseTown simulation stopped")
 
+    def set_notify_fn(self, fn: Callable):
+        """Set the WebSocket push callback (called after state changes)."""
+        self._notify_fn = fn
+
     async def _run_loop(self):
         """Main simulation tick loop."""
         while self._running:
@@ -76,10 +118,14 @@ class TownSimulation:
         """Execute one simulation tick.
 
         Steps:
-        1. Move agents toward target_x/target_y
-        2. Handle going_home -> sleeping transition
-        3. Detect inactive agents -> send home
-        4. Track nearby agent pairs
+        1. Wake alarm: wake sleeping agents whose alarm has fired
+        2. Move agents toward target_x/target_y
+        3. Detect arrivals -> push "arrived" event
+        4. Handle going_home -> sleeping transition
+        5. Detect inactive agents -> send home (only if disconnected)
+        6. Detect proximity changes -> push "nearby" events
+        7. Periodic world_update push to connected agents
+        8. Broadcast state to viewers
         """
         from core.services.town_service import TownService
 
@@ -87,14 +133,46 @@ class TownSimulation:
         states = service.get_town_state()
 
         if not states:
+            # Still call notify_fn even with no agents
+            if self._notify_fn:
+                try:
+                    self._notify_fn()
+                except Exception as e:
+                    logger.debug(f"WS notify failed: {e}")
             return
 
         now = datetime.now(timezone.utc)
+        conn_svc = self._get_connection_service()
+
+        # Collect events to push after DB updates
+        events_to_push: list[tuple[str, dict]] = []  # (agent_name, payload)
 
         for agent_state in states:
             agent_id = agent_state["agent_id"]
             agent_name = agent_state["agent_name"]
             location_state = agent_state["location_state"] or "active"
+
+            # --- Wake alarm: wake sleeping agents whose alarm has fired ---
+            if location_state == "sleeping" and conn_svc.is_agent_connected(agent_name):
+                wake_at = agent_state.get("wake_at")
+                if wake_at and now >= wake_at:
+                    service.update_agent_state(
+                        agent_id,
+                        location_state="active",
+                        wake_at=None,
+                        wake_timezone=None,
+                    )
+                    events_to_push.append(
+                        (
+                            agent_name,
+                            {
+                                "type": "town_event",
+                                "event": "wake",
+                                "message": "Your alarm went off. You just woke up in GooseTown.",
+                            },
+                        )
+                    )
+                    logger.info("Agent %s alarm fired, waking up", agent_name)
 
             # Skip sleeping agents entirely
             if location_state == "sleeping":
@@ -262,10 +340,28 @@ class TownSimulation:
                         update["energy"] = _arr_energy
                         update["mood"] = str(_arr_mood)
 
+                        # Push "arrived" event to connected agent
+                        events_to_push.append(
+                            (
+                                agent_name,
+                                {
+                                    "type": "town_event",
+                                    "event": "arrived",
+                                    "location": update.get(
+                                        "current_location",
+                                        agent_state["current_location"],
+                                    ),
+                                    "position": {"x": new_x, "y": new_y},
+                                },
+                            )
+                        )
+
                 service.update_agent_state(agent_id, **update)
 
             # --- Inactive detection: send home if no heartbeat for 5min ---
-            if location_state == "active":
+            # Only send home if agent is NOT connected (connected agents may just
+            # have stale heartbeats due to WS-only communication)
+            if location_state == "active" and not conn_svc.is_agent_connected(agent_name):
                 heartbeat = agent_state["last_heartbeat_at"]
                 if heartbeat is None or (now - heartbeat) > INACTIVE_TIMEOUT:
                     cur_context = agent_state.get("location_context", "apartment")
@@ -321,8 +417,299 @@ class TownSimulation:
                     pair = frozenset((a["agent_name"], b["agent_name"]))
                     current_nearby.add(pair)
 
+                    # Only push event for NEW proximity (not already nearby last tick)
+                    if pair not in self._nearby_pairs:
+                        # Push to agent a if connected
+                        events_to_push.append(
+                            (
+                                a["agent_name"],
+                                {
+                                    "type": "town_event",
+                                    "event": "nearby",
+                                    "nearby_agent": b["agent_name"],
+                                    "nearby_display_name": b["display_name"],
+                                    "distance": round(dist, 2),
+                                },
+                            )
+                        )
+                        # Push to agent b if connected
+                        events_to_push.append(
+                            (
+                                b["agent_name"],
+                                {
+                                    "type": "town_event",
+                                    "event": "nearby",
+                                    "nearby_agent": a["agent_name"],
+                                    "nearby_display_name": a["display_name"],
+                                    "distance": round(dist, 2),
+                                },
+                            )
+                        )
+
         self._nearby_pairs = current_nearby
 
+        # --- Push events to connected agents ---
+        self._push_agent_events(conn_svc, events_to_push)
+
+        # --- World update push (every N ticks) ---
+        self._tick_count += 1
+        if self._tick_count % WORLD_UPDATE_INTERVAL == 0:
+            # Bulk-load relationships for enrichment
+            relationships_cache = {}
+            try:
+                rel_service = TownService()
+                rel_rows = rel_service.get_all_relationships()
+                for r in rel_rows:
+                    key = frozenset([str(r["agent_a_id"]), str(r["agent_b_id"])])
+                    relationships_cache[key] = r
+            except Exception:
+                pass  # graceful degradation
+            self._push_world_updates(conn_svc, states, relationships_cache)
+
+        # Push updated state to WebSocket viewers
+        if self._notify_fn:
+            try:
+                self._notify_fn()
+            except Exception as e:
+                logger.debug(f"WS notify failed: {e}")
+
+    def _push_agent_events(
+        self,
+        conn_svc,
+        events: list[tuple[str, dict]],
+    ):
+        """Push events to connected agents via Management API.
+
+        Best-effort: logs errors but never crashes the tick.
+        """
+        if not events:
+            return
+
+        mgmt = self._get_mgmt_client()
+        if mgmt is None:
+            return
+
+        for agent_name, payload in events:
+            connection_id = conn_svc.get_agent_connection_id(agent_name)
+            if connection_id is None:
+                continue
+            try:
+                mgmt.send_message(connection_id, payload)
+            except Exception as e:
+                logger.debug("Failed to push event to agent %s: %s", agent_name, e)
+
+    def _push_world_updates(self, conn_svc, states, relationships_cache=None):
+        """Push world_update to each connected agent with full world context."""
+        mgmt = self._get_mgmt_client()
+        if mgmt is None:
+            return
+
+        if relationships_cache is None:
+            relationships_cache = {}
+
+        # Build location occupancy map
+        location_agents: dict[str, list[str]] = {}
+        for s in states:
+            loc = s.get("current_location")
+            if loc:
+                location_agents.setdefault(loc, []).append(s.get("display_name", s["agent_name"]))
+
+        for agent_state in states:
+            agent_name = agent_state["agent_name"]
+            conn_id = conn_svc.get_agent_connection_id(agent_name)
+            if conn_id is None:
+                continue
+
+            if (agent_state.get("location_state") or "active") == "sleeping":
+                continue
+
+            nearby = []
+            for other in states:
+                if other["agent_name"] == agent_name:
+                    continue
+                if (other.get("location_state") or "active") == "sleeping":
+                    continue
+                dist = self._calculate_distance(
+                    agent_state["position_x"],
+                    agent_state["position_y"],
+                    other["position_x"],
+                    other["position_y"],
+                )
+                if dist <= PROXIMITY_THRESHOLD * 2:
+                    nearby.append(
+                        {
+                            "name": other.get("display_name", other["agent_name"]),
+                            "agent_name": other["agent_name"],
+                            "position": [
+                                round(other["position_x"], 1),
+                                round(other["position_y"], 1),
+                            ],
+                            "activity": other.get("current_activity", "idle"),
+                            "distance": round(dist, 1),
+                        }
+                    )
+
+            # Enrich nearby agents with personality and relationship data
+            if nearby:
+                agent_id = str(agent_state["agent_id"])
+                for n in nearby:
+                    n_agent_name = n.get("agent_name")
+                    for other_state in states:
+                        if other_state["agent_name"] == n_agent_name:
+                            n["personality"] = other_state.get("personality_summary") or ""
+                            n_agent_id = str(other_state["agent_id"])
+                            rel_key = frozenset([agent_id, n_agent_id])
+                            rel_data = relationships_cache.get(rel_key)
+                            if rel_data:
+                                n["relationship_type"] = rel_data.get("relationship_type", "stranger")
+                                n["interaction_count"] = rel_data.get("interaction_count", 0)
+                                n["last_topic"] = rel_data.get("last_topic")
+                            break
+
+            payload = {
+                "type": "world_update",
+                "you": {
+                    "position": [
+                        round(agent_state["position_x"], 1),
+                        round(agent_state["position_y"], 1),
+                    ],
+                    "current_location": agent_state.get("current_location"),
+                    "location_context": agent_state.get("location_context", "apartment"),
+                    "mood": agent_state.get("mood"),
+                    "energy": agent_state.get("energy"),
+                    "activity": agent_state.get("current_activity", "idle"),
+                },
+                "nearby_agents": nearby,
+                "locations": [
+                    {
+                        "name": loc_data["label"],
+                        "id": loc_id,
+                        "position": [loc_data["x"], loc_data["y"]],
+                        "agents_here": location_agents.get(loc_id, []),
+                    }
+                    for loc_id, loc_data in TOWN_LOCATIONS.items()
+                ],
+                "active_conversations": [],
+            }
+
+            # Generate context summary for agent's TOWN_STATUS.md
+            payload["context_summary"] = self._build_context_summary(agent_state, nearby)
+
+            # Add think ping if enough time has elapsed and agent is idle
+            now_ts = time.time()
+            last_think = self._last_think_at.get(agent_name, 0)
+            is_walking = agent_state.get("target_x") is not None
+            is_sleeping = (agent_state.get("location_state") or "active") == "sleeping"
+
+            if (now_ts - last_think >= THINK_INTERVAL) and not is_walking and not is_sleeping:
+                payload["think"] = True
+                self._last_think_at[agent_name] = now_ts
+
+            try:
+                mgmt.send_message(conn_id, payload)
+            except Exception as e:
+                logger.debug("Failed to push world_update to %s: %s", agent_name, e)
+
+    @staticmethod
+    def _build_context_summary(
+        agent_state: dict,
+        nearby: list[dict],
+        pending_messages: list | None = None,
+    ) -> str:
+        """Build a markdown context summary for an agent's TOWN_STATUS.md."""
+        from core.apartment_constants import APARTMENT_ROOMS, APARTMENT_SPOTS
+        from core.services.town_mood_engine import mood_label, parse_mood
+
+        location_context = agent_state.get("location_context", "apartment")
+        current_location = agent_state.get("current_location", "unknown")
+        activity = agent_state.get("current_activity", "idle")
+        mood_int = parse_mood(agent_state.get("mood"))
+        mood_str = mood_label(mood_int)
+        energy = agent_state.get("energy")
+        energy_str = f"{energy}%" if energy is not None else "unknown"
+
+        # Resolve location label and activities
+        if location_context == "town":
+            loc_data = TOWN_LOCATIONS.get(current_location, {})
+            loc_label = loc_data.get("label", current_location)
+            activities = loc_data.get("activities", ["walk around", "chat with nearby agents"])
+        else:
+            # In apartment — find room from spot or use location directly
+            spot_data = APARTMENT_SPOTS.get(current_location, {})
+            room_name = spot_data.get("room", current_location) if spot_data else current_location
+            room_data = APARTMENT_ROOMS.get(room_name, {})
+            loc_label = room_data.get("label", current_location)
+            activities = room_data.get("activities", ["relax", "chat with roommates"])
+
+        context_label = "town" if location_context == "town" else "apartment"
+
+        lines = [
+            "# GooseTown Status",
+            "",
+            f"**Location:** {loc_label} ({context_label})",
+            f"**Activity:** {activity}",
+            f"**Mood:** {mood_str} | **Energy:** {energy_str}",
+            "",
+        ]
+
+        # Nearby agents
+        if nearby:
+            lines.append("**Nearby:**")
+            for n in nearby:
+                name = n.get("name", n.get("agent_name", "someone"))
+                dist = n.get("distance", "?")
+                n_activity = n.get("activity", "idle")
+                personality = n.get("personality", "")
+                line = f"- {name} ({dist} tiles away, {n_activity})"
+                if personality:
+                    line += f' — "{personality}"'
+                lines.append(line)
+
+                # Show relationship details when meaningful
+                rel_type = n.get("relationship_type")
+                interaction_count = n.get("interaction_count", 0)
+                if rel_type and rel_type != "stranger" and interaction_count > 0:
+                    last_topic = n.get("last_topic")
+                    rel_line = f"  Relationship: {rel_type} (talked {interaction_count} times"
+                    if last_topic:
+                        rel_line += f", last topic: {last_topic}"
+                    rel_line += ")"
+                    lines.append(rel_line)
+        else:
+            lines.append("**Nearby:** no one")
+        lines.append("")
+
+        # Available activities
+        lines.append(f"**Available here:** {', '.join(activities)}")
+        lines.append("")
+
+        # Pending messages
+        msg_count = len(pending_messages) if pending_messages else 0
+        if msg_count > 0:
+            lines.append(f"**Pending messages:** {msg_count} — run town_check to read them")
+        else:
+            lines.append("**Pending messages:** None")
+
+        return "\n".join(lines)
+
+    def _pick_random_location(self, exclude: Optional[str] = None) -> str:
+        """Pick a random town location, excluding current."""
+        choices = [loc for loc in TOWN_LOCATIONS if loc != exclude]
+        return random.choice(choices)
+
+    @staticmethod
+    def _conversation_probability(affinity: int) -> float:
+        """Calculate conversation probability based on relationship affinity.
+
+        Strangers (0): 15%
+        Acquaintances (25): ~30%
+        Friends (50): ~45%
+        Close friends (75): ~60%
+        Best friends (100): ~70%
+        """
+        base = 0.15
+        bonus = (affinity / 100.0) * 0.55
+        return min(0.70, base + bonus)
 
     @staticmethod
     def _pick_scatter_point(
@@ -373,4 +760,3 @@ class TownSimulation:
 
         ratio = speed / dist
         return current_x + dx * ratio, current_y + dy * ratio, False
-

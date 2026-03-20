@@ -132,6 +132,34 @@ def _create_tables(dynamodb):
         BillingMode="PAY_PER_REQUEST",
     )
 
+    # Connections table (WebSocket state)
+    dynamodb.create_table(
+        TableName="goosetown-connections",
+        KeySchema=[{"AttributeName": "connectionId", "KeyType": "HASH"}],
+        AttributeDefinitions=[
+            {"AttributeName": "connectionId", "AttributeType": "S"},
+            {"AttributeName": "agentName", "AttributeType": "S"},
+            {"AttributeName": "connectionType", "AttributeType": "S"},
+        ],
+        GlobalSecondaryIndexes=[
+            {
+                "IndexName": "agentName-index",
+                "KeySchema": [
+                    {"AttributeName": "agentName", "KeyType": "HASH"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+            {
+                "IndexName": "connectionType-index",
+                "KeySchema": [
+                    {"AttributeName": "connectionType", "KeyType": "HASH"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
 
 @pytest.fixture
 def dynamodb_tables():

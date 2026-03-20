@@ -120,6 +120,23 @@ export class DatabaseStack extends cdk.Stack {
       },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy,
+      timeToLiveAttribute: "ttl",
+    });
+
+    connections.addGlobalSecondaryIndex({
+      indexName: "agentName-index",
+      partitionKey: {
+        name: "agentName",
+        type: dynamodb.AttributeType.STRING,
+      },
+    });
+
+    connections.addGlobalSecondaryIndex({
+      indexName: "connectionType-index",
+      partitionKey: {
+        name: "connectionType",
+        type: dynamodb.AttributeType.STRING,
+      },
     });
 
     this.tables = { agents, instances, relationships, conversations, connections };

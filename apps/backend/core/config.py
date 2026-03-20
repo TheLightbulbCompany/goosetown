@@ -14,6 +14,8 @@ class Settings:
     PIXELLAB_API_KEY: str = os.getenv("PIXELLAB_API_KEY", "")
     SPRITE_S3_BUCKET: str = os.getenv("SPRITE_S3_BUCKET", "")
     SPRITE_CDN_URL: str = os.getenv("SPRITE_CDN_URL", "")
+    WS_API_ID: str = os.getenv("WS_API_ID", "")
+    WS_STAGE: str = os.getenv("WS_STAGE", "dev")
 
 
 settings = Settings()

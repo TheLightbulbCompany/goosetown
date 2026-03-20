@@ -320,6 +320,8 @@ logger.setLevel(logging.INFO)
 dynamodb = boto3.resource("dynamodb")
 table = dynamodb.Table(os.environ["CONNECTIONS_TABLE"])
 
+TTL_SECONDS = 86400  # 24 hours
+
 def handler(event, context):
     connection_id = event["requestContext"]["connectionId"]
     # Extract userId from authorizer context if available
@@ -327,15 +329,22 @@ def handler(event, context):
     principal_id = authorizer_ctx.get("principalId", "unknown")
     query_params = event.get("queryStringParameters") or {}
     connection_type = query_params.get("type", "viewer")
+    agent_name = query_params.get("agent_name")
 
-    logger.info("Connect: %s (principal=%s, type=%s)", connection_id, principal_id, connection_type)
+    logger.info("Connect: %s (principal=%s, type=%s, agent=%s)", connection_id, principal_id, connection_type, agent_name)
 
-    table.put_item(Item={
+    now = int(time.time())
+    item = {
         "connectionId": connection_id,
         "userId": principal_id,
         "connectionType": connection_type,
-        "connectedAt": str(int(time.time())),
-    })
+        "connectedAt": str(now),
+        "ttl": now + TTL_SECONDS,
+    }
+    if agent_name:
+        item["agentName"] = agent_name
+
+    table.put_item(Item=item)
 
     return {"statusCode": 200, "body": "Connected"}
 `),

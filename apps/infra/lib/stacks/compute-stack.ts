@@ -120,6 +120,8 @@ export class ComputeStack extends cdk.Stack {
         ENVIRONMENT: env,
         DYNAMODB_TABLE_PREFIX: `goosetown-${env}`,
         SPRITE_BUCKET: props.spriteBucket.bucketName,
+        CONNECTIONS_TABLE: props.tables.connections.tableName,
+        WS_STAGE: env,
         CORS_ORIGINS: env === "prod"
           ? "https://goosetown.isol8.co"
           : "https://dev.goosetown.isol8.co,http://localhost:3000,http://localhost:5173",
