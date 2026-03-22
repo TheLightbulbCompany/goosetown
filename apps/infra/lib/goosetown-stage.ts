@@ -6,6 +6,7 @@ import { AuthStack } from "./stacks/auth-stack";
 import { DnsStack } from "./stacks/dns-stack";
 import { StorageStack } from "./stacks/storage-stack";
 import { ComputeStack } from "./stacks/compute-stack";
+import { GameServerStack } from "./stacks/gameserver-stack";
 import { ApiStack } from "./stacks/api-stack";
 
 export interface GooseTownStageProps extends cdk.StageProps {
@@ -45,6 +46,16 @@ export class GooseTownStage extends cdk.Stage {
       hostedZone: dns.hostedZone,
     });
 
+    const gameServer = new GameServerStack(
+      this,
+      `goosetown-${env}-gameserver`,
+      {
+        stackName: `goosetown-${env}-gameserver`,
+        environment: env,
+        vpc: network.vpc,
+      }
+    );
+
     const compute = new ComputeStack(this, `goosetown-${env}-compute`, {
       stackName: `goosetown-${env}-compute`,
       environment: env,
@@ -54,6 +65,8 @@ export class GooseTownStage extends cdk.Stage {
       secrets: auth.secrets,
       certificate: dns.certificate,
       hostedZone: dns.hostedZone,
+      gameServerUrl: gameServer.serviceUrl,
+      gameServerSg: gameServer.securityGroup,
     });
 
     new ApiStack(this, `goosetown-${env}-api`, {
@@ -62,6 +75,9 @@ export class GooseTownStage extends cdk.Stage {
       connectionsTable: database.tables.connections,
       secrets: auth.secrets,
       fargateTaskRole: compute.service.taskDefinition.taskRole,
+      vpc: network.vpc,
+      // Pass as string to avoid circular dependency (ApiStack already depends on ComputeStack via fargateTaskRole)
+      backendUrl: `http://api-${env}.goosetown.isol8.co`,
     });
 
     cdk.Tags.of(this).add("Project", "goosetown");

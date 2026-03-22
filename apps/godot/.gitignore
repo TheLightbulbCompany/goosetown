@@ -1,0 +1,14 @@
+# Godot editor cache
+.godot/
+
+# Import cache
+*.import
+
+# UID files
+*.uid
+
+# Export artifacts (built by CI/editor, not source)
+export_presets.cfg
+
+# PixelLab terrain imports (generated, large)
+pixellab_import/

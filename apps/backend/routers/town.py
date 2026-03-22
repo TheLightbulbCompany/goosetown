@@ -17,6 +17,8 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user
+from core.services.game_server_client import get_game_server_client
+from core.services.town_agent_ws import get_town_agent_ws_manager
 from core.services.town_service import TownService
 from schemas.town import (
     ApartmentAgentState,
@@ -141,16 +143,13 @@ def _build_ai_town_state() -> dict:
         player_id = f"p:{i}"
         agent_id = f"a:{i}"
 
-        facing_x = s.get("facing_x", 0.0)
-        facing_y = s.get("facing_y", 1.0)
-        speed = s.get("speed", 0.0)
-
+        # Positions come from game server, not DynamoDB — use zeros as placeholders
         players.append(
             {
                 "id": player_id,
-                "position": {"x": s["position_x"], "y": s["position_y"]},
-                "facing": {"dx": facing_x, "dy": facing_y},
-                "speed": speed,
+                "position": {"x": 0, "y": 0},
+                "facing": {"dx": 0, "dy": 1},
+                "speed": 0,
                 "lastInput": now_ms,
             }
         )
@@ -338,8 +337,6 @@ async def register_agent(
     token_info: tuple = Depends(get_town_token_user),
 ):
     """Register a new agent in GooseTown. Authenticated via town_token."""
-    from core.apartment_constants import APARTMENT_SPOTS
-
     user_id, token = token_info
 
     service = TownService()
@@ -358,8 +355,6 @@ async def register_agent(
         display_name=request.display_name,
         personality_summary=request.personality[:200] if request.personality else None,
     )
-
-    spawn = APARTMENT_SPOTS["bed_1"]
 
     # Trigger PixelLab sprite generation in background
     logger.info(
@@ -455,7 +450,6 @@ async def register_agent(
         "agent_id": agent["id"],
         "agent_name": agent.get("agentName", request.agent_name),
         "display_name": agent.get("displayName", request.display_name),
-        "position": {"x": float(spawn["x"]), "y": float(spawn["y"])},
         "status": "generating_sprite",
         "ws_url": _TOWN_WS_URL,
         "api_url": _TOWN_API_URL,
@@ -535,8 +529,6 @@ async def get_apartment(
     auth: AuthContext = Depends(get_current_user),
 ):
     """Get the user's apartment view -- their agents and recent activity."""
-    from core.apartment_constants import APARTMENT_SPOTS
-
     service = TownService()
     active_agents = service.get_active_agents()
 
@@ -545,15 +537,7 @@ async def get_apartment(
 
     agents = []
     for item in user_agents:
-        # Determine current spot from position
-        current_spot = None
-        pos_x = item.get("positionX", 0.0)
-        pos_y = item.get("positionY", 0.0)
-        if pos_x is not None and pos_y is not None:
-            for spot_id, spot in APARTMENT_SPOTS.items():
-                if abs(pos_x - spot["x"]) < 0.5 and abs(pos_y - spot["y"]) < 0.5:
-                    current_spot = spot_id
-                    break
+        last_location = item.get("lastKnownLocation", "")
 
         agents.append(
             ApartmentAgentState(
@@ -562,17 +546,17 @@ async def get_apartment(
                 display_name=item.get("displayName", ""),
                 character=item.get("character"),
                 location_context=item.get("locationContext", "apartment"),
-                current_location=item.get("currentLocation"),
+                current_location=last_location or item.get("currentLocation"),
                 current_activity=item.get("currentActivity"),
                 mood=item.get("mood"),
                 energy=item.get("energy", 100),
                 status_message=item.get("statusMessage"),
-                position_x=float(pos_x) if pos_x is not None else 0.0,
-                position_y=float(pos_y) if pos_y is not None else 0.0,
-                speed=float(item.get("speed", 0.0)),
-                facing_x=float(item.get("facingX", 0.0)),
-                facing_y=float(item.get("facingY", 1.0)),
-                current_spot=current_spot,
+                position_x=0.0,
+                position_y=0.0,
+                speed=0.0,
+                facing_x=0.0,
+                facing_y=1.0,
+                current_spot=last_location or None,
                 is_active=item.get("isActive") == "true",
                 sprite_url=item.get("spriteUrl") if item.get("spriteReady") else None,
             )
@@ -622,6 +606,23 @@ async def get_or_create_instance(
     }
 
 
+@router.get("/viewer-token")
+async def get_viewer_token(
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Issue a viewer session token for Godot WebSocket connection.
+
+    Returns an HMAC-signed token that the frontend passes to the Godot
+    WebGL client so it can open an authenticated WebSocket to the
+    API Gateway.  The token uses iid="viewer" to distinguish viewer
+    connections from agent connections.
+    """
+    from core.town_token import sign_town_token
+
+    token = sign_town_token(auth.user_id, "viewer")
+    return {"token": token}
+
+
 @router.get("/conversations", response_model=TownConversationsListResponse)
 async def get_conversations(
     limit: int = 20,
@@ -653,3 +654,31 @@ async def get_conversations(
         )
 
     return TownConversationsListResponse(conversations=responses)
+
+
+# ===========================================================================
+# WebSocket message forwarding (from API Gateway $default Lambda)
+# ===========================================================================
+
+
+class WsMessageRequest(BaseModel):
+    connectionId: str
+    principalId: str
+    body: dict
+
+
+@router.post("/ws-message")
+async def handle_ws_message(request: WsMessageRequest):
+    """Receive forwarded WebSocket messages from API Gateway $default Lambda."""
+    ws_manager = get_town_agent_ws_manager()
+    agent_conn = ws_manager.get_by_connection(request.connectionId)
+
+    if not agent_conn:
+        return {"statusCode": 400, "error": "unknown_connection"}
+
+    body = request.body
+    if "cmd" in body:
+        gs_client = get_game_server_client()
+        await gs_client.send_command(agent_conn.agent_id, body)
+
+    return {"statusCode": 200}

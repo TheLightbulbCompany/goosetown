@@ -1,11 +1,11 @@
 import * as cdk from "aws-cdk-lib";
 import * as apigatewayv2 from "aws-cdk-lib/aws-apigatewayv2";
+import { WebSocketLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
-import * as ecs from "aws-cdk-lib/aws-ecs";
+import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda_ from "aws-cdk-lib/aws-lambda";
 import * as logs from "aws-cdk-lib/aws-logs";
-import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import { Construct } from "constructs";
 import { AuthSecrets } from "./auth-stack";
 
@@ -14,6 +14,8 @@ export interface ApiStackProps extends cdk.StackProps {
   connectionsTable: dynamodb.ITable;
   secrets: AuthSecrets;
   fargateTaskRole?: iam.IRole;
+  vpc: ec2.IVpc;
+  backendUrl?: string;
 }
 
 export class ApiStack extends cdk.Stack {
@@ -25,14 +27,6 @@ export class ApiStack extends cdk.Stack {
     super(scope, id, props);
 
     const env = props.environment;
-
-    // ─── WebSocket API ───────────────────────────────────────────────
-    const wsApi = new apigatewayv2.CfnApi(this, "WebSocketApi", {
-      name: `goosetown-${env}-ws`,
-      protocolType: "WEBSOCKET",
-      routeSelectionExpression: "$request.body.type",
-    });
-    this.wsApiId = wsApi.ref;
 
     // ─── Lambda Authorizer ───────────────────────────────────────────
     const authorizerLogGroup = new logs.LogGroup(this, "AuthorizerLogs", {
@@ -274,21 +268,6 @@ def generate_policy(principal_id, effect, method_arn):
     props.secrets.clerkIssuer.grantRead(authorizerFn);
     props.secrets.townTokenSecret.grantRead(authorizerFn);
 
-    // Authorizer
-    const authorizer = new apigatewayv2.CfnAuthorizer(this, "Authorizer", {
-      apiId: wsApi.ref,
-      authorizerType: "REQUEST",
-      name: `goosetown-${env}-ws-auth`,
-      authorizerUri: `arn:aws:apigateway:${this.region}:lambda:path/2015-03-31/functions/${authorizerFn.functionArn}/invocations`,
-      identitySource: ["route.request.querystring.token"],
-    });
-
-    // Permission for API Gateway to invoke authorizer
-    authorizerFn.addPermission("ApiGatewayInvoke", {
-      principal: new iam.ServicePrincipal("apigateway.amazonaws.com"),
-      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:${wsApi.ref}/authorizers/${authorizer.ref}`,
-    });
-
     // ─── Connect Lambda ──────────────────────────────────────────────
     const connectLogGroup = new logs.LogGroup(this, "ConnectLogs", {
       logGroupName: `/aws/lambda/goosetown-${env}-ws-connect`,
@@ -385,67 +364,154 @@ def handler(event, context):
 
     props.connectionsTable.grantReadWriteData(disconnectFn);
 
-    // ─── Lambda Integrations ─────────────────────────────────────────
+    // ─── Default Route Lambda (forwards WS messages to backend ALB) ──
+    const defaultLogGroup = new logs.LogGroup(this, "DefaultRouteLogs", {
+      logGroupName: `/aws/lambda/goosetown-${env}-ws-default`,
+      retention: logs.RetentionDays.TWO_WEEKS,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    const backendUrl =
+      props.backendUrl ?? `http://api-${env}.goosetown.isol8.co`;
+
+    const defaultFn = new lambda_.Function(this, "DefaultRouteFunction", {
+      functionName: `goosetown-${env}-ws-default`,
+      runtime: lambda_.Runtime.PYTHON_3_12,
+      handler: "index.handler",
+      timeout: cdk.Duration.seconds(15),
+      memorySize: 128,
+      logGroup: defaultLogGroup,
+      vpc: props.vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      environment: {
+        BACKEND_URL: backendUrl,
+      },
+      code: lambda_.Code.fromInline(`
+import json
+import logging
+import os
+import urllib.request
+import urllib.error
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+BACKEND_URL = os.environ["BACKEND_URL"].rstrip("/")
+
+def handler(event, context):
+    connection_id = event["requestContext"]["connectionId"]
+    authorizer_ctx = event.get("requestContext", {}).get("authorizer", {})
+    principal_id = authorizer_ctx.get("principalId", "unknown")
+    body = event.get("body", "")
+
+    logger.info("Default route: connection=%s principal=%s body=%s", connection_id, principal_id, body[:200])
+
+    payload = json.dumps({
+        "connectionId": connection_id,
+        "principalId": principal_id,
+        "body": json.loads(body) if body else {},
+    }).encode("utf-8")
+
+    url = f"{BACKEND_URL}/api/v1/town/ws-message"
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            resp_body = resp.read().decode("utf-8")
+            logger.info("Backend responded: %s %s", resp.status, resp_body[:200])
+        return {"statusCode": 200}
+    except urllib.error.HTTPError as e:
+        logger.error("Backend HTTP error: %s %s", e.code, e.read().decode("utf-8")[:500])
+        return {"statusCode": 500}
+    except Exception as e:
+        logger.error("Backend request failed: %s", e)
+        return {"statusCode": 500}
+`),
+    });
+
+    // ─── L2 WebSocket API ────────────────────────────────────────────
+    // The L2 WebSocketApi does not natively support REQUEST authorizers
+    // on connectRouteOptions, so we create the API with disconnect/default
+    // routes via L2 and attach the $connect route + authorizer via L1.
+
+    const disconnectIntegration = new WebSocketLambdaIntegration(
+      "DisconnectInteg",
+      disconnectFn
+    );
+    const defaultIntegration = new WebSocketLambdaIntegration(
+      "DefaultInteg",
+      defaultFn
+    );
+
+    const wsApi = new apigatewayv2.WebSocketApi(this, "WebSocketApi", {
+      apiName: `goosetown-${env}-ws`,
+      routeSelectionExpression: "$request.body.type",
+      disconnectRouteOptions: {
+        integration: disconnectIntegration,
+      },
+      defaultRouteOptions: {
+        integration: defaultIntegration,
+      },
+    });
+
+    this.wsApiId = wsApi.apiId;
+
+    // ─── $connect route with authorizer (L1 — L2 lacks authorizer support) ─
+    // We use L1 CfnIntegration + CfnRoute for $connect because the L2
+    // WebSocketApi doesn't support REQUEST authorizers on connectRouteOptions.
     const connectIntegration = new apigatewayv2.CfnIntegration(
       this,
       "ConnectIntegration",
       {
-        apiId: wsApi.ref,
+        apiId: wsApi.apiId,
         integrationType: "AWS_PROXY",
         integrationUri: `arn:aws:apigateway:${this.region}:lambda:path/2015-03-31/functions/${connectFn.functionArn}/invocations`,
       }
     );
 
-    const disconnectIntegration = new apigatewayv2.CfnIntegration(
-      this,
-      "DisconnectIntegration",
-      {
-        apiId: wsApi.ref,
-        integrationType: "AWS_PROXY",
-        integrationUri: `arn:aws:apigateway:${this.region}:lambda:path/2015-03-31/functions/${disconnectFn.functionArn}/invocations`,
-      }
-    );
-
-    // Permission for API Gateway to invoke Lambdas
-    connectFn.addPermission("ApiGatewayInvokeConnect", {
-      principal: new iam.ServicePrincipal("apigateway.amazonaws.com"),
-      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:${wsApi.ref}/*/$connect`,
+    const authorizer = new apigatewayv2.CfnAuthorizer(this, "Authorizer", {
+      apiId: wsApi.apiId,
+      authorizerType: "REQUEST",
+      name: `goosetown-${env}-ws-auth`,
+      authorizerUri: `arn:aws:apigateway:${this.region}:lambda:path/2015-03-31/functions/${authorizerFn.functionArn}/invocations`,
+      identitySource: ["route.request.querystring.token"],
     });
 
-    disconnectFn.addPermission("ApiGatewayInvokeDisconnect", {
+    // Permission for API Gateway to invoke authorizer
+    authorizerFn.addPermission("ApiGatewayInvoke", {
       principal: new iam.ServicePrincipal("apigateway.amazonaws.com"),
-      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:${wsApi.ref}/*/$disconnect`,
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:${wsApi.apiId}/authorizers/${authorizer.ref}`,
     });
 
-    // ─── Routes ──────────────────────────────────────────────────────
     const connectRoute = new apigatewayv2.CfnRoute(this, "ConnectRoute", {
-      apiId: wsApi.ref,
+      apiId: wsApi.apiId,
       routeKey: "$connect",
       authorizationType: "CUSTOM",
       authorizerId: authorizer.ref,
       target: `integrations/${connectIntegration.ref}`,
     });
 
-    const disconnectRoute = new apigatewayv2.CfnRoute(this, "DisconnectRoute", {
-      apiId: wsApi.ref,
-      routeKey: "$disconnect",
-      target: `integrations/${disconnectIntegration.ref}`,
+    // Permission for API Gateway to invoke connect Lambda
+    connectFn.addPermission("ApiGatewayInvokeConnect", {
+      principal: new iam.ServicePrincipal("apigateway.amazonaws.com"),
+      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:${wsApi.apiId}/*/$connect`,
     });
 
     // ─── Stage ───────────────────────────────────────────────────────
-    const stage = new apigatewayv2.CfnStage(this, "Stage", {
-      apiId: wsApi.ref,
+    const stage = new apigatewayv2.WebSocketStage(this, "Stage", {
+      webSocketApi: wsApi,
       stageName: env,
       autoDeploy: true,
     });
 
-    // Ensure routes are created before stage
-    stage.addDependency(connectRoute);
-    stage.addDependency(disconnectRoute);
-
     // ─── Management API URL ──────────────────────────────────────────
-    this.wsApiEndpoint = `wss://${wsApi.ref}.execute-api.${this.region}.amazonaws.com/${env}`;
-    this.managementApiUrl = `https://${wsApi.ref}.execute-api.${this.region}.amazonaws.com/${env}`;
+    this.wsApiEndpoint = `wss://${wsApi.apiId}.execute-api.${this.region}.amazonaws.com/${env}`;
+    this.managementApiUrl = `https://${wsApi.apiId}.execute-api.${this.region}.amazonaws.com/${env}`;
 
     // ─── Grant Fargate task role ManageConnections permission ─────────
     if (props.fargateTaskRole) {
@@ -453,8 +519,8 @@ def handler(event, context):
         new iam.PolicyStatement({
           actions: ["execute-api:ManageConnections"],
           resources: [
-            `arn:aws:execute-api:${this.region}:${this.account}:${wsApi.ref}/${env}/POST/@connections/*`,
-            `arn:aws:execute-api:${this.region}:${this.account}:${wsApi.ref}/${env}/DELETE/@connections/*`,
+            `arn:aws:execute-api:${this.region}:${this.account}:${wsApi.apiId}/${env}/POST/@connections/*`,
+            `arn:aws:execute-api:${this.region}:${this.account}:${wsApi.apiId}/${env}/DELETE/@connections/*`,
           ],
         })
       );
@@ -462,7 +528,7 @@ def handler(event, context):
 
     // ─── Outputs ─────────────────────────────────────────────────────
     new cdk.CfnOutput(this, "WebSocketApiId", {
-      value: wsApi.ref,
+      value: wsApi.apiId,
       exportName: `goosetown-${env}-ws-api-id`,
     });
     new cdk.CfnOutput(this, "WebSocketUrl", {

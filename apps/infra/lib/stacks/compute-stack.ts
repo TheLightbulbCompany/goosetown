@@ -24,6 +24,8 @@ export interface ComputeStackProps extends cdk.StackProps {
   secrets: AuthSecrets;
   certificate?: acm.ICertificate;
   hostedZone?: route53.IHostedZone;
+  gameServerUrl?: string;
+  gameServerSg?: ec2.ISecurityGroup;
 }
 
 export class ComputeStack extends cdk.Stack {
@@ -117,6 +119,9 @@ export class ComputeStack extends cdk.Stack {
         CORS_ORIGINS: env === "prod"
           ? "https://goosetown.isol8.co"
           : "https://dev.goosetown.isol8.co,http://localhost:3000,http://localhost:5173",
+        ...(props.gameServerUrl && {
+          GAME_SERVER_URL: `ws://${props.gameServerUrl}:8080`,
+        }),
       },
       secrets: {
         CLERK_ISSUER: ecs.Secret.fromSecretsManager(props.secrets.clerkIssuer),
@@ -215,6 +220,15 @@ export class ComputeStack extends cdk.Stack {
       ec2.Port.tcp(8000),
       "ALB to Fargate"
     );
+
+    // Allow backend to reach game server
+    if (props.gameServerSg) {
+      this.service.connections.allowTo(
+        props.gameServerSg,
+        ec2.Port.tcp(8080),
+        "Backend to GameServer"
+      );
+    }
 
     // DNS record: api-{env}.goosetown.isol8.co -> ALB
     if (props.hostedZone) {

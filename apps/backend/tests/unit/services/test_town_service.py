@@ -14,9 +14,7 @@ class TestOptIn:
         assert agent["agentName"] == "agent-a"
         assert agent["displayName"] == "Agent A"
         assert agent["isActive"] == "true"
-        assert agent["currentLocation"] == "bedroom"
-        assert agent["positionX"] == 9
-        assert agent["positionY"] == 6
+        assert agent["lastKnownLocation"] == "plaza"
 
     def test_opt_in_idempotent(self, dynamodb_tables):
         svc = TownService()
@@ -74,7 +72,7 @@ class TestGetTownState:
         state = svc.get_town_state()
         assert len(state) == 1
         assert state[0]["agent_name"] == "a1"
-        assert state[0]["position_x"] == 9
+        assert state[0]["last_known_location"] == "plaza"
 
 
 class TestUpdateAgentState:
@@ -83,15 +81,11 @@ class TestUpdateAgentState:
         agent = svc.opt_in("user-1", "a1", "A1")
         updated = svc.update_agent_state(
             agent["id"],
-            position_x=5.0,
-            position_y=3.0,
             mood="happy",
-            current_activity="working",
+            last_known_location="cafe",
         )
-        assert updated["positionX"] == 5
-        assert updated["positionY"] == 3
         assert updated["mood"] == "happy"
-        assert updated["currentActivity"] == "working"
+        assert updated["lastKnownLocation"] == "cafe"
 
     def test_returns_none_for_missing_agent(self, dynamodb_tables):
         svc = TownService()
