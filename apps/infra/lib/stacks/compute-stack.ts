@@ -1,8 +1,9 @@
 import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
-import * as ecr from "aws-cdk-lib/aws-ecr";
+import { DockerImageAsset, Platform } from "aws-cdk-lib/aws-ecr-assets";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
+import * as path from "path";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
@@ -28,23 +29,16 @@ export interface ComputeStackProps extends cdk.StackProps {
 export class ComputeStack extends cdk.Stack {
   public readonly alb: elbv2.ApplicationLoadBalancer;
   public readonly service: ecs.FargateService;
-  public readonly repository: ecr.Repository;
 
   constructor(scope: Construct, id: string, props: ComputeStackProps) {
     super(scope, id, props);
 
     const env = props.environment;
 
-    // ECR repository
-    this.repository = new ecr.Repository(this, "Repository", {
-      repositoryName: `goosetown-${env}-backend`,
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
-      lifecycleRules: [
-        {
-          maxImageCount: 10,
-          description: "Keep last 10 images",
-        },
-      ],
+    // Docker image asset (built & pushed by CDK Pipeline)
+    const backendImage = new DockerImageAsset(this, "BackendImage", {
+      directory: path.join(__dirname, "..", "..", "..", "backend"),
+      platform: Platform.LINUX_AMD64,
     });
 
     // ECS Cluster
@@ -110,7 +104,7 @@ export class ComputeStack extends cdk.Stack {
     );
 
     const container = taskDefinition.addContainer("backend", {
-      image: ecs.ContainerImage.fromEcrRepository(this.repository, "latest"),
+      image: ecs.ContainerImage.fromDockerImageAsset(backendImage),
       logging: ecs.LogDrivers.awsLogs({
         logGroup,
         streamPrefix: "backend",
@@ -236,9 +230,6 @@ export class ComputeStack extends cdk.Stack {
     // Outputs
     new cdk.CfnOutput(this, "AlbDnsName", {
       value: this.alb.loadBalancerDnsName,
-    });
-    new cdk.CfnOutput(this, "EcrRepositoryUri", {
-      value: this.repository.repositoryUri,
     });
     new cdk.CfnOutput(this, "ClusterName", {
       value: cluster.clusterName,

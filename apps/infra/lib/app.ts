@@ -1,74 +1,155 @@
 #!/usr/bin/env node
 import * as cdk from "aws-cdk-lib";
-import { NetworkStack } from "./stacks/network-stack";
-import { DatabaseStack } from "./stacks/database-stack";
-import { StorageStack } from "./stacks/storage-stack";
-import { AuthStack } from "./stacks/auth-stack";
-import { DnsStack } from "./stacks/dns-stack";
-import { ComputeStack } from "./stacks/compute-stack";
-import { ApiStack } from "./stacks/api-stack";
+import { ShellStep } from "aws-cdk-lib/pipelines";
+import {
+  AwsCredentials,
+  GitHubWorkflow,
+  GitHubActionStep,
+  StackCapabilities,
+  JobPermission,
+} from "cdk-pipelines-github";
+import { GooseTownStage } from "./goosetown-stage";
 
 const app = new cdk.App();
-const env = app.node.tryGetContext("env") || "dev";
 const awsEnv = { account: "877352799272", region: "us-east-1" };
 
-// --- Foundation (no cross-stack dependencies) ---
+// Vercel env vars used in all Vercel deploy steps
+const vercelEnv = {
+  VERCEL_TOKEN: "${{ secrets.VERCEL_TOKEN }}",
+  VERCEL_ORG_ID: "${{ secrets.VERCEL_ORG_ID }}",
+  VERCEL_PROJECT_ID: "${{ secrets.VERCEL_PROJECT_ID }}",
+};
 
-const network = new NetworkStack(app, `goosetown-${env}-network`, {
-  env: awsEnv,
-  environment: env,
+// ---------------------------------------------------------------------------
+// CDK Pipeline (generates .github/workflows/deploy.yml)
+// ---------------------------------------------------------------------------
+const pipeline = new GitHubWorkflow(app, "goosetown-pipeline", {
+  synth: new ShellStep("Synth", {
+    commands: [
+      "cd apps/infra",
+      "npm ci",
+      "npx cdk synth",
+    ],
+    primaryOutputDirectory: "apps/infra/cdk.out",
+  }),
+  awsCreds: AwsCredentials.fromOpenIdConnect({
+    gitHubActionRoleArn: "arn:aws:iam::877352799272:role/goosetown-github-actions",
+  }),
+  workflowPath: "../../.github/workflows/deploy.yml",
 });
 
-const database = new DatabaseStack(app, `goosetown-${env}-database`, {
-  env: awsEnv,
-  environment: env,
+// ---------------------------------------------------------------------------
+// Dev stage — auto-deploy infra + frontend on merge to main
+// ---------------------------------------------------------------------------
+pipeline.addStageWithGitHubOptions(
+  new GooseTownStage(app, "dev", { env: awsEnv, environment: "dev" }),
+  {
+    stackCapabilities: [
+      StackCapabilities.NAMED_IAM,
+      StackCapabilities.AUTO_EXPAND,
+    ],
+    post: [
+      new GitHubActionStep("DeployVercelDev", {
+        jobSteps: [
+          { name: "Checkout", uses: "actions/checkout@v4" },
+          { name: "Setup pnpm", uses: "pnpm/action-setup@v4" },
+          { name: "Setup Node.js", uses: "actions/setup-node@v4", with: { "node-version": "20", cache: "pnpm" } },
+          { name: "Install Vercel CLI", run: "npm install -g vercel" },
+          { name: "Pull Vercel Settings", run: "vercel pull --yes --token=$VERCEL_TOKEN", env: vercelEnv },
+          {
+            name: "Build Frontend",
+            run: "vercel build --token=$VERCEL_TOKEN",
+            env: {
+              ...vercelEnv,
+              VITE_CLERK_PUBLISHABLE_KEY: "${{ secrets.VITE_CLERK_PUBLISHABLE_KEY_DEV }}",
+              VITE_BACKEND_URL: "https://api-dev.goosetown.isol8.co/api/v1",
+              VITE_WS_URL: "wss://ws-dev.goosetown.isol8.co",
+            },
+          },
+          {
+            name: "Deploy to Vercel (Preview)",
+            id: "vercel-deploy-dev",
+            run: 'DEPLOY_URL=$(vercel deploy --prebuilt --token=$VERCEL_TOKEN) && echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT',
+            env: vercelEnv,
+          },
+          {
+            name: "Alias to dev.goosetown.isol8.co",
+            run: "vercel alias ${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }} dev.goosetown.isol8.co --token=$VERCEL_TOKEN",
+            env: vercelEnv,
+          },
+        ],
+      }),
+    ],
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Manual approval gate between dev and prod
+// ---------------------------------------------------------------------------
+const approvalStep = new GitHubActionStep("ApproveProduction", {
+  jobSteps: [
+    {
+      name: "Approval Required",
+      uses: "trstringer/manual-approval@v1",
+      with: {
+        secret: "${{ github.TOKEN }}",
+        approvers: "prez2307",
+        "issue-title": "Approve production deployment",
+        "issue-body":
+          "A new deployment is ready for production. Review the dev deployment at https://dev.goosetown.isol8.co and approve or deny.",
+        "minimum-approvals": "1",
+      },
+    },
+  ],
+  permissions: {
+    issues: JobPermission.WRITE,
+  },
 });
 
-const auth = new AuthStack(app, `goosetown-${env}-auth`, {
-  env: awsEnv,
-  environment: env,
-});
+// ---------------------------------------------------------------------------
+// Prod stage — deploy after manual approval
+// ---------------------------------------------------------------------------
+pipeline.addStageWithGitHubOptions(
+  new GooseTownStage(app, "prod", { env: awsEnv, environment: "prod" }),
+  {
+    stackCapabilities: [
+      StackCapabilities.NAMED_IAM,
+      StackCapabilities.AUTO_EXPAND,
+    ],
+    pre: [approvalStep],
+    post: [
+      new GitHubActionStep("DeployVercelProd", {
+        jobSteps: [
+          { name: "Checkout", uses: "actions/checkout@v4" },
+          { name: "Setup pnpm", uses: "pnpm/action-setup@v4" },
+          { name: "Setup Node.js", uses: "actions/setup-node@v4", with: { "node-version": "20", cache: "pnpm" } },
+          { name: "Install Vercel CLI", run: "npm install -g vercel" },
+          { name: "Pull Vercel Settings", run: "vercel pull --yes --environment=production --token=$VERCEL_TOKEN", env: vercelEnv },
+          {
+            name: "Build Frontend (Production)",
+            run: "vercel build --prod --token=$VERCEL_TOKEN",
+            env: {
+              ...vercelEnv,
+              VITE_CLERK_PUBLISHABLE_KEY: "${{ secrets.VITE_CLERK_PUBLISHABLE_KEY_PROD }}",
+              VITE_BACKEND_URL: "https://api.goosetown.isol8.co/api/v1",
+              VITE_WS_URL: "wss://ws.goosetown.isol8.co",
+            },
+          },
+          {
+            name: "Deploy to Vercel (Production)",
+            id: "vercel-deploy-prod",
+            run: 'DEPLOY_URL=$(vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN) && echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT',
+            env: vercelEnv,
+          },
+          {
+            name: "Alias to goosetown.isol8.co",
+            run: "vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} goosetown.isol8.co --token=$VERCEL_TOKEN",
+            env: vercelEnv,
+          },
+        ],
+      }),
+    ],
+  },
+);
 
-// --- DNS (cert must exist before compute and storage can use it) ---
-
-const dns = new DnsStack(app, `goosetown-${env}-dns`, {
-  env: awsEnv,
-  environment: env,
-});
-
-// --- Storage (depends on dns for cert + custom domain) ---
-
-const storage = new StorageStack(app, `goosetown-${env}-storage`, {
-  env: awsEnv,
-  environment: env,
-  certificate: dns.certificate,
-  hostedZone: dns.hostedZone,
-});
-
-// --- Compute (depends on network, database, storage, auth, dns) ---
-
-const compute = new ComputeStack(app, `goosetown-${env}-compute`, {
-  env: awsEnv,
-  environment: env,
-  vpc: network.vpc,
-  tables: database.tables,
-  spriteBucket: storage.spriteBucket,
-  secrets: auth.secrets,
-  certificate: dns.certificate,
-  hostedZone: dns.hostedZone,
-});
-
-// --- API (depends on database, auth, compute) ---
-
-const api = new ApiStack(app, `goosetown-${env}-api`, {
-  env: awsEnv,
-  environment: env,
-  connectionsTable: database.tables.connections,
-  secrets: auth.secrets,
-  fargateTaskRole: compute.service.taskDefinition.taskRole,
-});
-
-// --- Tags ---
-
-cdk.Tags.of(app).add("Project", "goosetown");
-cdk.Tags.of(app).add("Environment", env);
+app.synth();
