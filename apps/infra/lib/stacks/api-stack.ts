@@ -409,7 +409,7 @@ def handler(event, context):
     payload = json.dumps({
         "connectionId": connection_id,
         "principalId": principal_id,
-        "body": body,
+        "body": json.loads(body) if body else {},
     }).encode("utf-8")
 
     url = f"{BACKEND_URL}/api/v1/town/ws-message"

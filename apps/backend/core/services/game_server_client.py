@@ -30,6 +30,7 @@ class GameServerClient:
     def __init__(self, base_url: str | None = None):
         self._base_url = base_url or settings.GAME_SERVER_URL
         self._agent_connections: dict[str, ClientConnection] = {}
+        self._agent_connect_params: dict[str, dict[str, str]] = {}
         self._viewer_connection: ClientConnection | None = None
         self._event_handlers: dict[str, list[Callable[..., Coroutine[Any, Any, Any]]]] = {}
         self._listen_tasks: dict[str, asyncio.Task] = {}
@@ -49,16 +50,17 @@ class GameServerClient:
 
         ws = await websockets.connect(self._base_url)
 
-        connect_msg = json.dumps({
+        connect_params = {
             "type": "agent",
             "agent_id": agent_id,
-            "display_name": display_name,
+            "name": display_name,
             "sprite_url": sprite_url,
             "location": location,
-        })
-        await ws.send(connect_msg)
+        }
+        await ws.send(json.dumps(connect_params))
 
         self._agent_connections[agent_id] = ws
+        self._agent_connect_params[agent_id] = connect_params
         task = asyncio.create_task(self._listen_agent(agent_id, ws))
         self._listen_tasks[agent_id] = task
 
@@ -75,6 +77,7 @@ class GameServerClient:
                 pass
 
         ws = self._agent_connections.pop(agent_id, None)
+        self._agent_connect_params.pop(agent_id, None)
         if ws is not None:
             await ws.close()
             logger.info("Agent %s disconnected from game server", agent_id)
@@ -118,7 +121,7 @@ class GameServerClient:
                     logger.warning("Non-JSON message from game server for agent %s", agent_id)
                     continue
 
-                msg_type = message.get("type", "")
+                msg_type = message.get("event", "")
 
                 # Cache locations if present
                 if "locations" in message:
@@ -135,7 +138,9 @@ class GameServerClient:
                         )
 
         except websockets.ConnectionClosed:
-            logger.warning("Game server connection closed for agent %s", agent_id)
+            logger.warning("Game server connection closed for agent %s, reconnecting...", agent_id)
+            await self._reconnect_agent(agent_id)
+            return
         except asyncio.CancelledError:
             logger.debug("Listener cancelled for agent %s", agent_id)
             raise
@@ -143,6 +148,35 @@ class GameServerClient:
         # Clean up on unexpected disconnect
         self._agent_connections.pop(agent_id, None)
         self._listen_tasks.pop(agent_id, None)
+
+    async def _reconnect_agent(self, agent_id: str) -> None:
+        """Reconnect an agent with exponential backoff."""
+        params = self._agent_connect_params.get(agent_id)
+        if params is None:
+            logger.warning("No connect params for agent %s, cannot reconnect", agent_id)
+            self._agent_connections.pop(agent_id, None)
+            self._listen_tasks.pop(agent_id, None)
+            return
+
+        delay = 1.0
+        while agent_id in self._agent_connect_params:
+            try:
+                await asyncio.sleep(delay)
+                ws = await websockets.connect(self._base_url)
+                await ws.send(json.dumps(params))
+                self._agent_connections[agent_id] = ws
+                logger.info("Reconnected agent %s to game server", agent_id)
+                # Restart listening on the new connection
+                task = asyncio.create_task(self._listen_agent(agent_id, ws))
+                self._listen_tasks[agent_id] = task
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                delay = min(delay * 2, 10.0)
+                logger.warning(
+                    "Reconnect failed for agent %s: %s, retrying in %ss", agent_id, e, delay
+                )
 
     async def _listen_viewer(self) -> None:
         """Listen loop for the viewer WebSocket connection."""
@@ -158,7 +192,7 @@ class GameServerClient:
                     logger.warning("Non-JSON message from game server on viewer connection")
                     continue
 
-                msg_type = message.get("type", "")
+                msg_type = message.get("event", "")
 
                 if "locations" in message:
                     self._locations = message["locations"]

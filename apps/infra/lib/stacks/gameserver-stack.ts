@@ -38,7 +38,6 @@ export class GameServerStack extends cdk.Stack {
 
     // ECS cluster (separate from backend cluster)
     const cluster = new ecs.Cluster(this, "Cluster", {
-      clusterName: `goosetown-${env}-gameserver`,
       vpc: props.vpc,
     });
 
@@ -51,7 +50,6 @@ export class GameServerStack extends cdk.Stack {
 
     // Task definition - 512 CPU, 1GB RAM
     const taskDef = new ecs.FargateTaskDefinition(this, "TaskDef", {
-      family: `goosetown-${env}-gameserver`,
       cpu: 512,
       memoryLimitMiB: 1024,
     });
@@ -77,7 +75,6 @@ export class GameServerStack extends cdk.Stack {
 
     // Fargate service with Cloud Map
     const service = new ecs.FargateService(this, "Service", {
-      serviceName: `goosetown-${env}-gameserver`,
       cluster,
       taskDefinition: taskDef,
       desiredCount: 1,

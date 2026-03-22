@@ -129,14 +129,14 @@ func get_world_state_for_viewer() -> Dictionary:
 		var agent_id: String = _peer_to_id.get(peer_id, "")
 		var location_id: String = _get_agent_location(agent_node.global_position)
 		agents_arr.append({
-			"agent_id": agent_id,
+			"id": agent_id,
 			"name": agent_node.display_name,
 			"x": agent_node.global_position.x,
 			"y": agent_node.global_position.y,
 			"facing": agent_node.facing,
 			"is_moving": not agent_node.nav_agent.is_navigation_finished(),
 			"location": location_id,
-			"sprite_url": agent_node.sprite_url,
+			"spriteUrl": agent_node.sprite_url,
 		})
 	return { "agents": agents_arr }
 
@@ -159,7 +159,7 @@ func _process(delta: float) -> void:
 # ---------------------------------------------------------------------------
 
 func _handle_move(peer_id: int, data: Dictionary) -> void:
-	var location_id: String = str(data.get("location", ""))
+	var location_id: String = str(data.get("destination", ""))
 	var marker: Marker2D = _find_location(location_id)
 	if marker == null:
 		send_to_peer.emit(peer_id, {
@@ -319,6 +319,8 @@ func _broadcast_agent_states() -> void:
 			"location": location_id,
 			"facing": agent_node.facing,
 			"speed": speed,
+			"context": "town",
+			"activity": "idle" if speed < 0.1 else "walking",
 			"nearby_agents": nearby,
 			"available_actions": available,
 			"environment": {

@@ -64,8 +64,8 @@ func _process(delta: float) -> void:
 	_viewer_timer += delta
 	if _viewer_timer >= VIEWER_STATE_INTERVAL:
 		_viewer_timer -= VIEWER_STATE_INTERVAL
-		var state: Dictionary = _controller.get_world_state_for_viewer()
-		var data: Dictionary = { "event": "world_state", "state": state }
+		var data: Dictionary = _controller.get_world_state_for_viewer()
+		data["event"] = "world_state"
 		for peer_id in _viewer_peers:
 			_protocol.send_to(peer_id, data)
 
