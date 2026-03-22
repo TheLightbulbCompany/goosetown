@@ -624,6 +624,23 @@ async def get_or_create_instance(
     }
 
 
+@router.get("/viewer-token")
+async def get_viewer_token(
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Issue a viewer session token for Godot WebSocket connection.
+
+    Returns an HMAC-signed token that the frontend passes to the Godot
+    WebGL client so it can open an authenticated WebSocket to the
+    API Gateway.  The token uses iid="viewer" to distinguish viewer
+    connections from agent connections.
+    """
+    from core.town_token import sign_town_token
+
+    token = sign_town_token(auth.user_id, "viewer")
+    return {"token": token}
+
+
 @router.get("/conversations", response_model=TownConversationsListResponse)
 async def get_conversations(
     limit: int = 20,

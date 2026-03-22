@@ -5,6 +5,7 @@
  * and handles resize/cleanup lifecycle.
  */
 
+import { useAuth } from '@clerk/clerk-react';
 import { useEffect, useRef, useState } from 'react';
 
 const GODOT_JS_PATH = '/godot/goosetown.js';
@@ -35,6 +36,7 @@ export default function GodotCanvas({ className }: GodotCanvasProps) {
   const engineRef = useRef<GodotEngine | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { getToken } = useAuth();
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -84,6 +86,25 @@ export default function GodotCanvas({ className }: GodotCanvasProps) {
           return;
         }
 
+        // Pass authenticated WS URL to Godot so it can open a WebSocket
+        const wsUrl = import.meta.env.VITE_WS_URL;
+        if (wsUrl && getToken) {
+          try {
+            const clerkToken = await getToken();
+            const backendUrl = import.meta.env.VITE_BACKEND_URL;
+            const resp = await fetch(`${backendUrl}/town/viewer-token`, {
+              headers: { Authorization: `Bearer ${clerkToken}` },
+            });
+            if (resp.ok) {
+              const { token } = await resp.json();
+              (window as unknown as Record<string, unknown>)._goosetown_ws_url =
+                `${wsUrl}?token=${token}&type=viewer`;
+            }
+          } catch (e) {
+            console.warn('Could not get viewer token:', e);
+          }
+        }
+
         setLoading(false);
       } catch (err) {
         if (!cancelled) {
@@ -115,6 +136,7 @@ export default function GodotCanvas({ className }: GodotCanvasProps) {
         engineRef.current = null;
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
