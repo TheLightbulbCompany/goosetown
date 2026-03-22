@@ -89,11 +89,11 @@ func _update_facing_from_velocity(vel: Vector2) -> void:
 
 func _physics_process(delta: float) -> void:
 	if _use_navigation:
-		# Navigation-based movement (server/headless mode)
+		# Navigation-based movement (server and viewer use the same code)
 		if not nav_agent.is_navigation_finished():
 			var next_pos: Vector2 = nav_agent.get_next_path_position()
-			var direction: Vector2 = next_pos - global_position
-			velocity = direction.normalized() * move_speed
+			var direction: Vector2 = (next_pos - global_position).normalized()
+			velocity = direction * move_speed
 			_update_facing_from_velocity(velocity)
 			move_and_slide()
 			_is_moving = true
