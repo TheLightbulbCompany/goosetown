@@ -16,17 +16,8 @@
     "jsx": "preserve",
     "incremental": true,
     "allowImportingTsExtensions": true,
-    "plugins": [
-      {
-        "name": "next"
-      }
-    ],
     "paths": {
-      "@/*": ["./src/*"],
-      "convex/react": ["./convex/isol8/react"],
-      "convex/values": ["./convex/isol8/values"],
-      "convex/server": ["./convex/isol8/server"],
-      "convex/react-clerk": ["./convex/isol8/react"]
+      "@/*": ["./src/*"]
     }
   },
   "include": ["**/*.ts", "**/*.tsx", "**/*.js", "postcss.config.js"],
