@@ -25,9 +25,13 @@ const vercelEnv = {
 // ---------------------------------------------------------------------------
 const pipeline = new GitHubWorkflow(app, "goosetown-pipeline", {
   synth: new ShellStep("Synth", {
+    installCommands: [
+      "corepack enable",
+      "corepack prepare pnpm@latest --activate",
+    ],
     commands: [
       "cd apps/infra",
-      "npm ci",
+      "pnpm install --frozen-lockfile",
       "npx cdk synth",
     ],
     primaryOutputDirectory: "apps/infra/cdk.out",

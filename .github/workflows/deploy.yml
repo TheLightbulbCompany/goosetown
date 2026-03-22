@@ -19,10 +19,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Install
+        run: |-
+          corepack enable
+          corepack prepare pnpm@latest --activate
       - name: Build
         run: |-
           cd apps/infra
-          npm ci
+          pnpm install --frozen-lockfile
           npx cdk synth
       - name: Upload cdk.out
         uses: actions/upload-artifact@v4
