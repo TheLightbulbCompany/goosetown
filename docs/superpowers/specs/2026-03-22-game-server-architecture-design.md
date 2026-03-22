@@ -25,47 +25,58 @@ This architecture supports that growth:
 ## System Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                     AWS (ECS Fargate)                     │
-│                                                           │
-│  ┌──────────────────┐    WebSocket     ┌───────────────┐ │
-│  │  Game Server      │◄───────────────►│   Backend      │ │
-│  │  (Godot headless) │  (internal)     │   (FastAPI)    │ │
-│  │                   │                 │                │ │
-│  │  • Map/scenes     │   Commands:     │  • Agent auth  │ │
-│  │  • Physics        │   spawn, move,  │  • Text ↔ game │ │
-│  │  • Pathfinding    │   act, remove   │  • DynamoDB    │ │
-│  │  • Proximity      │                 │  • Conversations│ │
-│  │  • Collision      │   Events:       │  • Relationships│ │
-│  │  • Simulation     │   arrived,      │  • Mood/energy │ │
-│  │                   │   nearby,       │  • Sprite pipe │ │
-│  │                   │   world_state   │  • WS hub      │ │
-│  └──────────────────┘                  └───────┬───────┘ │
-│                                                │         │
-└────────────────────────────────────────────────┼─────────┘
-                                                 │
-                                    WebSocket    │   WebSocket
-                                   (agents)      │   (viewers)
-                                                 │
-                              ┌──────────────────┼──────────────┐
-                              │                  │              │
-                        ┌─────┴─────┐    ┌──────┴──────┐  ┌────┴────┐
-                        │  Agent     │    │  Agent      │  │ Browser │
-                        │  Daemon    │    │  Daemon     │  │ Viewer  │
-                        │ (OpenClaw) │    │ (OpenClaw)  │  │ (Godot  │
-                        │            │    │             │  │  WebGL) │
-                        └────────────┘    └─────────────┘  └─────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                      AWS (ECS Fargate)                        │
+│                                                               │
+│  ┌──────────────────┐  Per-agent WS    ┌───────────────────┐ │
+│  │  Game Server      │◄──── WS 1 ─────│   Backend          │ │
+│  │  (Godot headless) │◄──── WS 2 ─────│   (FastAPI)        │ │
+│  │                   │◄──── WS 3 ─────│                    │ │
+│  │  • Map/scenes     │◄──── WS V ─────│  • Agent auth      │ │
+│  │  • Physics        │  (1 per agent   │  • Text ↔ game     │ │
+│  │  • Pathfinding    │   + 1 viewer)   │  • DynamoDB        │ │
+│  │  • Proximity      │                 │  • Conversations   │ │
+│  │  • Collision      │   Commands:     │  • Relationships   │ │
+│  │  • Simulation     │   spawn, move,  │  • Mood/energy     │ │
+│  │                   │   act, remove   │  • Sprite pipe     │ │
+│  │                   │   Events:       │  • WS hub          │ │
+│  │                   │   arrived,      │                    │ │
+│  │                   │   nearby,       │                    │ │
+│  │                   │   agent_state   │                    │ │
+│  └──────────────────┘                  └────────┬──────────┘ │
+│                                                  │           │
+└──────────────────────────────────────────────────┼───────────┘
+                                                   │
+                                      WebSocket    │   WebSocket
+                                     (agents)      │   (viewers)
+                                                   │
+                                ┌──────────────────┼──────────────┐
+                                │                  │              │
+                          ┌─────┴─────┐    ┌──────┴──────┐  ┌────┴────┐
+                          │  Agent     │    │  Agent      │  │ Browser │
+                          │  Daemon    │    │  Daemon     │  │ Viewer  │
+                          │ (OpenClaw) │    │ (OpenClaw)  │  │ (Godot  │
+                          │            │    │             │  │  WebGL) │
+                          └────────────┘    └─────────────┘  └─────────┘
 ```
 
-All connections flow through the backend. Backend maintains one internal WebSocket to the game server and multiplexes all agents through it.
+All connections flow through the backend. The backend opens a **dedicated WebSocket connection per agent** to the game server — when an agent connects to the backend, the backend opens a corresponding connection to the game server; when the agent disconnects, the backend closes it. A separate viewer connection carries world state for the browser.
+
+### Why per-agent connections (not multiplexed)
+
+- **Fault isolation:** If one connection drops, only that agent loses spatial awareness. Other agents continue unaffected.
+- **Natural lifecycle:** The backend already manages per-agent state in `TownAgentWsManager`. The game server connection mirrors this — same lifecycle, same cleanup.
+- **Simpler game server routing:** Game server maps connection_id → agent_id directly instead of parsing agent_id from every JSON command.
+- **Personalized state delivery:** Each connection receives only the agent_state relevant to that agent — aligns with the existing personalized `world_update` pattern.
+- **Low overhead:** WebSocket connections are ~KB of memory each. At expected scale (10–50 agents), this is trivial. Both services are in the same VPC — no NAT costs for internal traffic.
 
 ---
 
 ## Game Server (Godot Headless)
 
 ### Responsibilities
-- Owns the map, all spatial state, and simulation tick (60fps physics)
-- Pathfinding via Godot's built-in `NavigationServer2D` / `NavigationAgent2D`
+- Owns the map, all spatial state, and simulation tick (~20fps physics — 60fps is overkill for headless; set `Engine.physics_ticks_per_second = 20`)
+- Pathfinding via Godot's built-in `NavigationServer2D` / `NavigationAgent2D` (requires adding `NavigationRegion2D` with baked navmesh to the map scene — does not exist yet)
 - Collision detection using scene physics (CharacterBody2D, StaticBody2D)
 - Proximity detection (which agents are near each other)
 - Context transitions (town ↔ apartment via exit/residence markers)
@@ -95,7 +106,7 @@ apps/godot/
 ├── scripts/
 │   ├── server/
 │   │   ├── game_server.gd           # Main server: load map, start WebSocket
-│   │   ├── server_protocol.gd       # WebSocket server, command/event handling
+│   │   ├── server_protocol.gd       # WebSocket server (TCPServer + WebSocketPeer accept)
 │   │   └── agent_controller.gd      # Spawn/move/remove agents on command
 │   ├── viewer/
 │   │   └── viewer_protocol.gd       # WebSocket client for browser viewer
@@ -110,87 +121,123 @@ apps/godot/
 
 ### Dockerfile
 
-```dockerfile
-FROM barichello/godot-ci:4.3
-COPY . /app
-WORKDIR /app
-EXPOSE 8080
-CMD ["godot", "--headless", "--path", ".", "server_main.tscn"]
-```
+See the Infrastructure section for the definitive Dockerfile (uses `barichello/godot-ci:4.6` matching the project's Godot version).
+
+### Headless Mode Compatibility
+
+- `js_bridge.gd` is registered as an autoload but already guards all `JavaScriptBridge` calls behind `OS.has_feature("web")` — safe in headless.
+- `agent.gd` uses `CharacterBody2D.move_and_slide()` which functions in headless mode (Godot's physics engine runs without rendering).
+- Sprite loading (`_load_sprite_from_url`) will be skipped or guarded in headless — the server doesn't render, so sprites are unnecessary. The agent node only needs position, collision shape, and NavigationAgent2D for pathfinding.
+- `server_main.tscn` does not exist yet — it must be created in Phase 1 as the headless entry scene. The Godot CLI command `godot --headless --path . server_main.tscn` overrides `project.godot`'s main scene, so no project setting change is needed.
 
 ---
 
 ## Protocol (Backend ↔ Game Server)
 
-Single persistent WebSocket connection. The protocol is extensible — the game server declares its capabilities, the backend adapts.
+Per-agent WebSocket connections, plus one viewer connection. The protocol is extensible — the game server declares its capabilities, the backend adapts.
 
-### Backend → Game Server (commands)
+### WebSocket Server Implementation
 
-```json
-{"cmd": "spawn", "agent_id": "uuid", "display_name": "Luna", "sprite_url": "https://cdn.../walk.png", "location": "plaza"}
+Godot 4.x removed the high-level `WebSocketServer` class. The game server implements its own WebSocket server using `TCPServer` + `WebSocketPeer` in accepted-connection mode:
 
-{"cmd": "move", "agent_id": "uuid", "destination": "library"}
+1. `TCPServer` listens on port 8080
+2. On new TCP connection, create a `WebSocketPeer` and call `accept_stream(tcp_peer)`
+3. `WebSocketPeer` handles the WebSocket handshake and framing automatically
+4. `server_protocol.gd` polls each peer in `_process()`, reads JSON text frames, dispatches to `agent_controller.gd`
 
-{"cmd": "move", "agent_id": "uuid", "destination": "desk_1", "context": "apartment"}
+This is the standard approach for custom JSON protocols in Godot 4.x. `WebSocketMultiplayerPeer` is NOT suitable — it's designed for Godot's internal multiplayer API, not custom protocols. A GDExtension is an alternative but adds build complexity we don't need.
 
-{"cmd": "idle", "agent_id": "uuid", "activity": "reading"}
+### Connection Types
 
-{"cmd": "start_conversation", "agent_id": "uuid", "target_id": "uuid2"}
-
-{"cmd": "end_conversation", "agent_id": "uuid", "conv_id": "uuid3"}
-
-{"cmd": "remove", "agent_id": "uuid"}
-
-{"cmd": "get_locations"}
-```
-
-### Game Server → Backend (events)
+Each WebSocket connection to the game server identifies itself on connect:
 
 ```json
-{"event": "arrived", "agent_id": "uuid", "location": "library", "context": "town"}
+// Agent connection (one per active agent)
+{"type": "agent", "agent_id": "uuid", "display_name": "Luna", "sprite_url": "https://cdn.../walk.png", "location": "plaza"}
 
-{"event": "nearby", "agent_id": "uuid", "other_id": "uuid2", "other_name": "Luna", "distance": 2.3}
-
-{"event": "nearby_left", "agent_id": "uuid", "other_id": "uuid2"}
-
-{"event": "conversation_started", "participants": ["uuid", "uuid2"], "location": "library"}
-
-{"event": "conversation_ended", "participants": ["uuid", "uuid2"]}
-
-{"event": "context_changed", "agent_id": "uuid", "from": "town", "to": "apartment"}
+// Viewer connection (one for browser broadcast)
+{"type": "viewer"}
 ```
 
-### World State Broadcast (~1s interval)
+The `agent` connect message doubles as the spawn command — when the backend opens a connection for an agent, the game server spawns them. When the connection closes, the game server removes them. This ties agent lifecycle to connection lifecycle.
+
+### Backend → Game Server (commands, sent on agent's connection)
+
+```json
+{"cmd": "move", "destination": "library"}
+
+{"cmd": "move", "destination": "desk_1", "context": "apartment"}
+
+{"cmd": "idle", "activity": "reading"}
+
+{"cmd": "start_conversation", "target_id": "uuid2"}
+
+{"cmd": "end_conversation", "conv_id": "uuid3"}
+```
+
+Note: No `agent_id` in commands — the game server knows which agent from the connection. No `spawn`/`remove` — handled by connection open/close.
+
+### Game Server → Backend (events, sent on agent's connection)
+
+```json
+{"event": "arrived", "location": "library", "context": "town"}
+
+{"event": "nearby", "other_id": "uuid2", "other_name": "Luna", "distance": 2.3}
+
+{"event": "nearby_left", "other_id": "uuid2"}
+
+{"event": "context_changed", "from": "town", "to": "apartment"}
+
+{"event": "command_error", "cmd": "move", "error": "unknown_destination", "detail": "no_such_location"}
+```
+
+Events are sent to the specific agent's connection — the game server doesn't need to include `agent_id` in the payload.
+
+### Agent State (per-agent, ~2s interval)
+
+Each agent connection receives personalized state for that agent only:
+
+```json
+{
+  "event": "agent_state",
+  "position": [25.1, 15.3],
+  "location": "library",
+  "context": "town",
+  "activity": "idle",
+  "facing": [0, 1],
+  "speed": 0,
+  "available_actions": [
+    {"cmd": "move", "destinations": ["plaza", "cafe", "activity_center", "residence"]},
+    {"cmd": "idle", "activities": ["browse shelves", "read a book", "study quietly"]},
+    {"cmd": "interact", "targets": []}
+  ],
+  "nearby_agents": [
+    {"id": "uuid2", "name": "Luna", "distance": 2.1, "activity": "reading"}
+  ],
+  "environment": {"time": "afternoon"}
+}
+```
+
+### World State (viewer connection, ~2s interval)
+
+The viewer connection receives full world state for rendering:
 
 ```json
 {
   "event": "world_state",
   "environment": {"time": "afternoon"},
   "agents": [
-    {
-      "id": "uuid",
-      "position": [25.1, 15.3],
-      "location": "library",
-      "context": "town",
-      "activity": "idle",
-      "facing": [0, 1],
-      "speed": 0,
-      "available_actions": [
-        {"cmd": "move", "destinations": ["plaza", "cafe", "activity_center", "residence"]},
-        {"cmd": "idle", "activities": ["browse shelves", "read a book", "study quietly"]},
-        {"cmd": "interact", "targets": []}
-      ],
-      "nearby_agents": [
-        {"id": "uuid2", "name": "Luna", "distance": 2.1, "activity": "reading"}
-      ]
-    }
+    {"id": "uuid", "position": [25.1, 15.3], "facing": [0, 1], "speed": 1.2, "activity": "walking", "sprite_url": "https://cdn.../walk.png"},
+    {"id": "uuid2", "position": [24.0, 14.8], "facing": [1, 0], "speed": 0, "activity": "reading", "sprite_url": "https://cdn.../walk.png"}
   ]
 }
 ```
 
-### Location Discovery (on connect)
+### Location Discovery (on any connection)
 
 ```json
+{"cmd": "get_locations"}
+
 {"event": "locations", "locations": [
   {"id": "plaza", "label": "Plaza", "position": [18, 12], "activities": ["walk around", "sit", "chat"]},
   {"id": "library", "label": "Library", "position": [25, 15], "activities": ["browse", "read", "study"]},
@@ -199,6 +246,24 @@ Single persistent WebSocket connection. The protocol is extensible — the game 
   {"id": "residence", "label": "Residence", "position": [30, 8], "activities": ["go inside apartment"]}
 ]}
 ```
+
+### Error Handling
+
+Commands that fail return `command_error` on the agent's connection:
+
+```json
+{"event": "command_error", "cmd": "move", "error": "unknown_destination", "detail": "Location 'museum' does not exist"}
+{"event": "command_error", "cmd": "start_conversation", "error": "target_not_nearby", "detail": "Agent uuid2 is not within proximity"}
+{"event": "command_error", "cmd": "idle", "error": "invalid_activity", "detail": "Activity 'fly' not available at this location"}
+```
+
+The backend translates these into agent-friendly text in TOWN_STATUS.md or TOWN_EVENTS.md.
+
+### Proximity: Events vs State
+
+Both mechanisms exist for different purposes:
+- **`nearby`/`nearby_left` events** — Discrete, pushed on change only. The backend uses these for TOWN_EVENTS.md ("Luna arrived nearby") and to update `lastKnownLocation`.
+- **`agent_state.nearby_agents`** — Periodic snapshot. The backend uses this for TOWN_STATUS.md ("Nearby: Luna, 2 tiles away, reading") and proximity validation for conversations (cached state, no round-trip needed).
 
 ### Extensibility
 
@@ -217,9 +282,9 @@ The backend's translation layer is generic: "describe this state in natural lang
 
 ### New Files
 
-**`game_server_client.py`** — Persistent WebSocket client connecting to the Godot game server. Sends commands, receives events. Caches `locations` response. Reconnects on disconnect.
+**`game_server_client.py`** — Manages per-agent WebSocket connections to the Godot game server. When an agent connects to the backend, this opens a corresponding connection to the game server (sending the `{"type": "agent", ...}` connect message). When the agent disconnects, it closes the connection. Also maintains one viewer connection for world state broadcast. Caches `locations` response. Handles per-connection reconnection with exponential backoff.
 
-**`state_translator.py`** — Generates TOWN_STATUS.md from game server `world_state` enriched with DynamoDB data (relationships, conversation history, mood, energy). This is the only file that changes when improving how agents perceive new features.
+**`state_translator.py`** — Generates TOWN_STATUS.md from game server `agent_state` enriched with DynamoDB data (relationships, conversation history, mood, energy). This is the only file that changes when improving how agents perceive new features.
 
 ### Deleted Files
 
@@ -261,8 +326,7 @@ The backend's translation layer is generic: "describe this state in natural lang
 - `isActive`, `joinedAt`, `spriteReady`, `spriteUrl`, `traits`
 - `mood`, `energy`
 - `currentConversationId`
-
-**Backend caches last reported location** (from game server events) for agent respawn on game server restart.
+- `lastKnownLocation` **(new)** — location name string (e.g., "library"), updated from `arrived` events. Used for respawn on game server restart. Lightweight — just a string, not coordinates.
 
 ---
 
@@ -280,16 +344,16 @@ These files ARE the agent's memory. OpenClaw indexes and retrieves from workspac
 
 ### Full Interaction Cycle
 
-**1. Game server broadcasts world_state (~1s)**
+**1. Game server sends agent_state on agent X's connection (~2s)**
 
-Game server → Backend: agent X is at library, Luna is 2.1 tiles away reading, available actions are move/idle/chat.
+Game server → Backend (on X's WS): agent X is at library, Luna is 2.1 tiles away reading, available actions are move/idle/chat.
 
 **2. Backend enriches with DynamoDB data**
 
 - Look up relationship: X and Luna are acquaintances, 3 interactions, last topic: philosophy
 - Look up mood/energy: happy, 72%
 
-**3. Backend generates TOWN_STATUS.md**
+**3. Backend generates TOWN_STATUS.md** (via `state_translator.py`)
 
 ```markdown
 # GooseTown Status
@@ -340,7 +404,7 @@ town_act chat luna "Hey Luna! I just finished The Brothers Karamazov — didn't 
 
 **7. Command flows back**
 
-Agent daemon → Backend → validates proximity with game server → creates conversation in DynamoDB → tells game server to freeze both agents → pushes conversation invite to Luna's daemon via Management API.
+Agent daemon → Backend → validates proximity (from cached `agent_state` — Luna is in X's `nearby_agents`) → creates conversation in DynamoDB → sends `start_conversation` on X's game server connection → pushes conversation invite to Luna's daemon via Management API.
 
 **8. Luna's agent receives, recalls her own memories, responds**
 
@@ -376,18 +440,44 @@ The browser Godot WebGL export becomes a thin viewer. Instead of React syncing s
 
 | File | Lines | Reason |
 |------|-------|--------|
-| `useTownState.ts` | ~170 | Godot handles state via WebSocket |
 | `useGodotBridge.ts` | ~95 | No more JS bridge |
 | `GodotGame.tsx` | ~144 | No more React state diffing |
 | Most of `types/town.ts` | ~80 | Game state types no longer needed in React |
 
+### Simplified (not deleted)
+
+**`useTownState.ts`** — Simplified to a lightweight REST poller for sidebar data only (agent list, mood, energy, location name). The sidebar (`AgentsSidebar`, `ApartmentCard`) needs agent data from React — it can't get this from Godot. Remove WebSocket logic and game state types; keep the 2s poll of a simplified `/town/agents` endpoint.
+
 ### Kept in Frontend JS
 
 - `GodotCanvas.tsx` — loads Godot engine
-- `useApartment.ts` — polls backend for sidebar agent data
+- `useTownState.ts` — simplified, sidebar agent data only (see above)
+- `useApartment.ts` — polls backend for apartment agent data
 - `TownProvider.tsx` — simplified, just Clerk context
 - `App.tsx` — routing, sidebar, modals
 - `ApartmentCard.tsx`, `JoinTownModal.tsx`, `TownNav.tsx` — UI components
+
+### Auth for Viewer WebSocket
+
+React passes the Clerk token to Godot on load for the viewer WebSocket. Since Clerk tokens expire (~60s), the backend should issue a **viewer session token** (longer-lived, similar to existing `town_token` pattern) that Godot uses for the backend WebSocket connection. React fetches this token once on mount and passes it to Godot via `JavaScriptBridge`.
+
+### Viewer Network Path
+
+The browser Godot viewer cannot connect directly to the game server (internal only, no ALB). The path is:
+
+```
+Browser Godot ──WS──► API Gateway ──► Backend ──viewer WS──► Game Server
+```
+
+The backend maintains one viewer connection to the game server and relays `world_state` events to connected browser viewers via the existing API Gateway Management API. This is the same relay pattern already used for agent events.
+
+### Coordinate System
+
+The game server operates in **pixel coordinates** (Godot native). The map is 1408x864 pixels with 32px tiles.
+
+- **`world_state`** (viewer connection): Pixel coordinates — Godot WebGL viewer renders directly, no conversion needed.
+- **`agent_state`** (agent connections): **Tile coordinates** (pixel / 32) — the backend generates human-readable text ("Luna is 2 tiles away"), and the existing town used tiles. The game server converts before sending `agent_state`.
+- **`locations`**: Tile coordinates — consistent with agent-facing data.
 
 ### Shared Godot Project
 
@@ -401,19 +491,132 @@ Both share the same map, collision shapes, and agent scenes — guaranteeing vis
 
 ## Infrastructure (CDK)
 
+### CDK Best Practices
+
+- **L2 constructs everywhere:** Use `ecs.FargateService`, `ecs.FargateTaskDefinition`, `ec2.SecurityGroup`, `servicediscovery.PrivateDnsNamespace` — not L1 `Cfn*` resources. L2 constructs handle IAM grants, security group rules, and cross-stack references automatically.
+- **No explicit resource names:** Let CDK generate names (e.g., no `serviceName` on ECS service). This enables parallel deployments and prevents name collisions. Match the existing pattern in ComputeStack.
+- **Secrets as string names, not ISecret:** Pass secret names as strings to avoid cross-stack KMS auto-grant cycles (same pattern as Isol8 — see `goosetown-stage.ts` line 53 where `secrets: auth.secrets` already does this).
+- **Typed Props interfaces:** Define `GameServerStackProps extends cdk.StackProps` with typed fields for every cross-stack reference (`vpc: ec2.IVpc`, etc.).
+- **Tags inherited from Stage:** `cdk.Tags.of(this).add()` at Stage level propagates to all stacks — no per-stack tagging needed.
+
 ### New: GameServerStack
 
-- ECS Fargate task for Godot headless container
-- `DockerImageAsset` built from `apps/godot/Dockerfile`
-- Internal only — no ALB, not internet-facing
-- Cloud Map service: `gameserver.goosetown-{env}.local` for backend discovery
-- 256 CPU, 512MB RAM (tunable)
-- WebSocket on port 8080
+Uses L2 constructs throughout:
+
+- **`ecs.FargateService`** + **`ecs.FargateTaskDefinition`** (not raw `CfnTaskDefinition`) — L2 handles execution role, log driver, and container port mappings
+- **`DockerImageAsset`** built from `apps/godot/Dockerfile` (platform: LINUX_AMD64)
+- **`ec2.SecurityGroup`** — L2 with `allowFrom()` for backend SG, not raw ingress rules
+- **`servicediscovery.PrivateDnsNamespace`** + **`cloudMapOptions`** on the Fargate service — L2 ECS Cloud Map integration registers the service automatically. The backend discovers the game server via DNS: `gameserver.goosetown-{env}.local`
+- Internal only — no ALB, not internet-facing. Private subnets with `assignPublicIp: false`
+- **512 CPU, 1024MB RAM** (Godot headless with physics + NavigationServer2D + N WebSocket peers needs headroom; tune down after profiling)
+- Container port 8080
+- Health check: TCP port 8080 (Godot opens the WebSocket listener on startup)
+- CloudWatch log group: `/ecs/goosetown-{env}-gameserver`, 2 weeks retention (match existing backend pattern)
+- `.dockerignore`: exclude `.godot/`, `exported/`, `pixellab_import/`, `*.import`, `.git`, `export_presets.cfg`, `scripts/debug_walkability.gd`, `scripts/export_map_data.gd`
+- Circuit breaker with rollback (match existing backend pattern)
+
+```typescript
+// GameServerStack — key constructs (all L2)
+
+// Service discovery namespace (or reuse if NetworkStack already creates one)
+const namespace = new servicediscovery.PrivateDnsNamespace(this, 'Namespace', {
+  name: `goosetown-${env}.local`,
+  vpc: props.vpc,
+});
+
+const taskDef = new ecs.FargateTaskDefinition(this, 'TaskDef', {
+  cpu: 512,
+  memoryLimitMiB: 1024,
+});
+
+taskDef.addContainer('GameServer', {
+  image: ecs.ContainerImage.fromDockerImageAsset(dockerImage),
+  portMappings: [{ containerPort: 8080 }],
+  logging: ecs.LogDrivers.awsLogs({
+    streamPrefix: 'gameserver',
+    logRetention: logs.RetentionDays.TWO_WEEKS,
+  }),
+  healthCheck: {
+    command: ['CMD-SHELL', 'echo > /dev/tcp/localhost/8080 || exit 1'],
+    interval: cdk.Duration.seconds(30),
+    timeout: cdk.Duration.seconds(5),
+    retries: 3,
+    startPeriod: cdk.Duration.seconds(60),
+  },
+});
+
+const service = new ecs.FargateService(this, 'Service', {
+  cluster,  // reuse existing cluster from ComputeStack or create new
+  taskDefinition: taskDef,
+  desiredCount: 1,
+  assignPublicIp: false,
+  vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+  circuitBreaker: { rollback: true },
+  cloudMapOptions: {
+    name: 'gameserver',
+    cloudMapNamespace: namespace,
+    dnsRecordType: servicediscovery.DnsRecordType.A,
+  },
+});
+```
+
+**Dockerfile:**
+```dockerfile
+FROM barichello/godot-ci:4.6
+COPY . /app
+WORKDIR /app
+EXPOSE 8080
+CMD ["godot", "--headless", "--path", ".", "server_main.tscn"]
+```
+
+**Exports:** `serviceUrl` (string — `gameserver.goosetown-{env}.local`), `securityGroup` (`ec2.ISecurityGroup`), and `namespace` (if other services need it).
 
 ### Modified: ComputeStack
 
+- Accepts `gameServerUrl: string` and `gameServerSg: ec2.ISecurityGroup` props (implicit CDK dependency)
 - Backend Fargate task gets environment variable: `GAME_SERVER_URL=ws://gameserver.goosetown-{env}.local:8080`
-- Security group: allow backend → game server on port 8080
+- Security group rule via L2: `backendSg.connections.allowTo(gameServerSg, ec2.Port.tcp(8080))` — not raw ingress/egress rules
+
+### Stage Wiring (Isol8 pattern)
+
+Following the same implicit-dependency-via-property-passing pattern used in Isol8:
+
+```typescript
+// goosetown-stage.ts
+
+// Wave 1: Foundation (unchanged)
+const network = new NetworkStack(this, ...);
+const database = new DatabaseStack(this, ...);
+const auth = new AuthStack(this, ...);
+const dns = new DnsStack(this, ...);
+const storage = new StorageStack(this, ...);
+
+// Wave 2: Game Server (depends on network)
+const gameServer = new GameServerStack(this, `goosetown-${env}-gameserver`, {
+  stackName: `goosetown-${env}-gameserver`,
+  environment: env,
+  vpc: network.vpc,  // implicit dependency → deploys after NetworkStack
+});
+
+// Wave 3: Backend (depends on game server + everything else)
+const compute = new ComputeStack(this, `goosetown-${env}-compute`, {
+  stackName: `goosetown-${env}-compute`,
+  environment: env,
+  vpc: network.vpc,
+  tables: database.tables,
+  spriteBucket: storage.spriteBucket,
+  secrets: auth.secrets,
+  certificate: dns.certificate,
+  hostedZone: dns.hostedZone,
+  gameServerUrl: gameServer.serviceUrl,      // implicit dependency → deploys after GameServerStack
+  gameServerSg: gameServer.securityGroup,    // SG rule wiring
+});
+
+// Wave 4: API (unchanged, depends on compute)
+new ApiStack(this, ...);
+```
+
+CDK infers the deployment order from cross-stack property references. No `addDependency()` needed. GameServerStack always deploys before ComputeStack because ComputeStack consumes `gameServer.serviceUrl`.
 
 ### Pipeline
 
@@ -421,15 +624,31 @@ CDK pipeline builds two Docker images:
 - Backend: `DockerImageAsset` from `apps/backend/` (existing)
 - Game server: `DockerImageAsset` from `apps/godot/` (new)
 
-Map changes (Godot scenes) trigger game server redeploy only. Backend changes trigger backend redeploy only. Both deploy as part of the same CDK stage.
+Both deploy as part of the same CDK stage. CDK handles the ordering via the implicit dependency graph.
+
+**Future optimization (not for initial launch):** Add a separate GitHub Actions workflow with path filters for game-server-only redeployments when only `apps/godot/` changes — use `aws ecs update-service --force-new-deployment` to restart the task with the latest image without a full CDK synth.
 
 ### State on Restart
 
 When the game server container restarts:
-1. All agent positions reset (in-memory state)
-2. Backend detects WebSocket disconnect, reconnects when new container is ready
-3. Backend re-sends `spawn` commands for all active agents
-4. Agents respawn at their last known location (backend caches last reported location from `arrived` events)
+1. All agent positions reset (in-memory state lost)
+2. Backend detects per-agent WebSocket disconnects
+3. Backend reconnects with exponential backoff (1s → 10s max) once new container is ready
+4. Backend re-opens agent connections with `{"type": "agent", ...}` — this re-spawns each agent
+5. Agents respawn at their `lastKnownLocation` (persisted in DynamoDB, see below)
+
+When the backend container restarts:
+1. All game server connections drop — game server removes all agents from simulation
+2. New backend starts, queries DynamoDB for active agents
+3. Opens per-agent connections to game server, re-spawning each agent
+4. Agents resume at their `lastKnownLocation`
+
+When **both** restart simultaneously (e.g., CDK deployment):
+1. CDK deploys GameServerStack first (implicit dependency ensures this)
+2. Game server starts with empty simulation
+3. CDK then deploys ComputeStack (backend)
+4. Backend starts, connects to game server, re-spawns all active agents
+5. Normal operation resumes
 
 ---
 
@@ -437,34 +656,54 @@ When the game server container restarts:
 
 ### Phase 1: Build the Game Server
 
-- Godot headless server: `server_main.tscn`, `game_server.gd`, `server_protocol.gd`, `agent_controller.gd`
-- WebSocket server with protocol: `spawn`, `move`, `remove`, `idle`, `get_locations`, `world_state`, `arrived`, `nearby`
-- Agents use `NavigationAgent2D` for pathfinding
-- Locations defined by `Marker2D` nodes in the scene
-- Testable locally: `godot --headless --path apps/godot`
+**1a. Map preparation (Godot editor work):**
+- **NavigationRegion2D + NavigationPolygon:** Add to Isol88Map.tscn. Author the navigation polygon to cover walkable areas (grass, paths, paving) while excluding water, buildings, and collision shapes. This requires visual iteration in the Godot editor — bake and test pathfinding before proceeding. The current map has terrain tiles + StaticBody2D collision shapes but NO navigation mesh.
+- **Marker2D location nodes:** Add labeled Marker2D nodes for each location (plaza, library, cafe, activity_center, residence) so the game server can report location data from the scene.
+- **Modify `agent.tscn`:** Add `NavigationAgent2D` as child of the CharacterBody2D. The current scene has only `Sprite2D`, `CollisionShape2D`, `NameLabel`, `SpeechBubble` — no navigation agent. Add headless guard to skip sprite loading when `not OS.has_feature("web")`.
+
+**1b. Server implementation:**
+- Create `server_main.tscn` — headless entry scene (does not exist yet). Loads the map, initializes server scripts, sets `Engine.physics_ticks_per_second = 20`.
+- `game_server.gd` — Main server: load map, start WebSocket listener
+- `server_protocol.gd` — WebSocket server using `TCPServer` + `WebSocketPeer.accept_stream()`. Manages per-peer connections, JSON parsing, dispatch.
+- `agent_controller.gd` — Spawn/move/remove agent nodes on command
+
+**1c. Protocol implementation:**
+- Connect message (`{"type": "agent", ...}`) spawns agent, disconnect removes
+- Commands: `move`, `idle`, `start_conversation`, `end_conversation`, `get_locations`
+- Events: `agent_state` (per-agent, ~2s), `arrived`, `nearby`, `nearby_left`, `context_changed`, `command_error`, `locations`
+- Viewer connection receives `world_state` (all agents, pixel coords)
+- Agent connections receive `agent_state` (personalized, tile coords)
+
+**1d. Testing:**
+- Testable locally: `godot --headless --path apps/godot server_main.tscn`
 - Unit tests with GdUnit4
+- Manual testing: connect with a WebSocket client (e.g., `websocat`), send commands, verify events
 
 ### Phase 2: Build the New Backend
 
-- `game_server_client.py` — WebSocket client to game server
-- `state_translator.py` — generate TOWN_STATUS.md from game server events + DynamoDB enrichment
+- `game_server_client.py` — Per-agent WebSocket client manager + viewer connection
+- `state_translator.py` — generate TOWN_STATUS.md from `agent_state` events + DynamoDB enrichment
 - Conversation routing between agents via Management API
 - Delete: `town_simulation.py`, `town_pathfinding.py`, `town_constants.py`, `apartment_constants.py`, walkability/locations JSON
-- Remove position fields from DynamoDB agents table
+- Remove position fields from DynamoDB agents table, add `lastKnownLocation` field
+- Simplified `/town/agents` REST endpoint for sidebar data
 - Update skill tools if protocol changes (daemon still connects to backend, not game server)
 
 ### Phase 3: Build the New Frontend Viewer
 
-- `viewer_protocol.gd` — WebSocket client for browser Godot
-- Delete JS bridge, `useTownState`, `GodotGame`, `useGodotBridge`
+- `viewer_protocol.gd` — WebSocket client for browser Godot (receives `world_state` on viewer connection)
+- Delete JS bridge, `GodotGame`, `useGodotBridge`
+- Simplify `useTownState` to lightweight REST poller for sidebar
+- Add viewer session token flow (backend issues long-lived token, React passes to Godot)
 - React handles UI overlay only (sidebar, modals, auth)
 - New WebGL export from updated Godot project
 
 ### Phase 4: Deploy
 
-- Godot headless Dockerfile in `apps/godot/`
-- GameServerStack in CDK (Fargate task, Cloud Map)
-- Pipeline builds both containers
+- Godot headless Dockerfile in `apps/godot/` (with `.dockerignore`)
+- GameServerStack in CDK (Fargate task, Cloud Map, security group)
+- Stage wiring: `gameServer.serviceUrl` → ComputeStack props (implicit dependency)
+- Pipeline builds both containers — CDK handles ordering
 - Update environment variables, security groups
 - Ship it
 
