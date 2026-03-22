@@ -17,6 +17,8 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user
+from core.services.game_server_client import get_game_server_client
+from core.services.town_agent_ws import get_town_agent_ws_manager
 from core.services.town_service import TownService
 from schemas.town import (
     ApartmentAgentState,
@@ -653,3 +655,31 @@ async def get_conversations(
         )
 
     return TownConversationsListResponse(conversations=responses)
+
+
+# ===========================================================================
+# WebSocket message forwarding (from API Gateway $default Lambda)
+# ===========================================================================
+
+
+class WsMessageRequest(BaseModel):
+    connectionId: str
+    principalId: str
+    body: dict
+
+
+@router.post("/ws-message")
+async def handle_ws_message(request: WsMessageRequest):
+    """Receive forwarded WebSocket messages from API Gateway $default Lambda."""
+    ws_manager = get_town_agent_ws_manager()
+    agent_conn = ws_manager.get_by_connection(request.connectionId)
+
+    if not agent_conn:
+        return {"statusCode": 400, "error": "unknown_connection"}
+
+    body = request.body
+    if "cmd" in body:
+        gs_client = get_game_server_client()
+        await gs_client.send_command(agent_conn.agent_id, body)
+
+    return {"statusCode": 200}
