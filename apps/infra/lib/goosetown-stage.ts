@@ -75,6 +75,8 @@ export class GooseTownStage extends cdk.Stage {
       connectionsTable: database.tables.connections,
       secrets: auth.secrets,
       fargateTaskRole: compute.service.taskDefinition.taskRole,
+      vpc: network.vpc,
+      backendUrl: `http://${compute.alb.loadBalancerDnsName}`,
     });
 
     cdk.Tags.of(this).add("Project", "goosetown");
