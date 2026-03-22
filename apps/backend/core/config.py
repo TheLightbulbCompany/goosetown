@@ -15,6 +15,7 @@ class Settings:
     SPRITE_S3_BUCKET: str = os.getenv("SPRITE_S3_BUCKET", "")
     SPRITE_CDN_URL: str = os.getenv("SPRITE_CDN_URL", "")
     WS_MANAGEMENT_API_URL: str = os.getenv("WS_MANAGEMENT_API_URL", "")
+    GAME_SERVER_URL: str = os.getenv("GAME_SERVER_URL", "ws://localhost:8080")
 
 
 settings = Settings()
