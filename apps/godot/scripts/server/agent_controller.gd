@@ -1,0 +1,402 @@
+## Manages agent nodes in the scene tree for the headless game server.
+##
+## Handles spawning, removal, movement commands, arrival/proximity detection,
+## and periodic state broadcasts. Emits events to peers via send_to_peer signal.
+class_name AgentController
+extends Node
+
+const AgentScene: PackedScene = preload("res://scenes/agent.tscn")
+
+## 3 tiles * 32px per tile
+const PROXIMITY_THRESHOLD: float = 96.0
+## Seconds between periodic agent_state broadcasts
+const STATE_INTERVAL: float = 2.0
+## Pixels per tile for coordinate conversion
+const TILE_SIZE: float = 32.0
+
+## Emitted when the controller needs to send data to a specific peer.
+## game_server.gd connects this to protocol.send_to.
+signal send_to_peer(peer_id: int, data: Dictionary)
+
+## peer_id → agent node (CharacterBody2D)
+var _agents: Dictionary = {}
+## peer_id → agent_id string
+var _peer_to_id: Dictionary = {}
+## agent_id string → peer_id
+var _id_to_peer: Dictionary = {}
+## Marker2D nodes for named locations
+var _locations: Array[Marker2D] = []
+## peer_id → location_id (dedup arrivals — only emit when changed)
+var _arrived_at: Dictionary = {}
+## "peerA:peerB" → distance (proximity change detection)
+var _prev_nearby: Dictionary = {}
+## Accumulator for periodic state broadcast
+var _state_timer: float = 0.0
+
+
+func initialize(location_markers: Array[Marker2D]) -> void:
+	_locations = location_markers
+
+
+func spawn_agent(peer_id: int, data: Dictionary) -> void:
+	if _agents.has(peer_id):
+		push_warning("AgentController: peer %d already has an agent" % peer_id)
+		return
+
+	var agent_node: CharacterBody2D = AgentScene.instantiate()
+
+	# Determine spawn position from requested location
+	var location_id: String = str(data.get("location", "plaza"))
+	var marker: Marker2D = _find_location(location_id)
+	var spawn_pos: Vector2 = marker.global_position if marker else Vector2(576.0, 384.0)
+
+	var agent_id: String = str(data.get("agent_id", "agent_%d" % peer_id))
+	var display: String = str(data.get("name", agent_id))
+	var sprite_url: String = str(data.get("sprite_url", ""))
+	var facing_str: String = str(data.get("facing", ""))
+
+	agent_node.setup(agent_id, sprite_url, spawn_pos.x, spawn_pos.y, facing_str, display)
+	agent_node._use_navigation = true
+
+	_agents[peer_id] = agent_node
+	_peer_to_id[peer_id] = agent_id
+	_id_to_peer[agent_id] = peer_id
+	_arrived_at[peer_id] = location_id
+
+	add_child(agent_node)
+
+	send_to_peer.emit(peer_id, {
+		"event": "spawned",
+		"agent_id": agent_id,
+		"location": location_id,
+		"position": { "x": spawn_pos.x / TILE_SIZE, "y": spawn_pos.y / TILE_SIZE },
+	})
+
+
+func remove_agent(peer_id: int) -> void:
+	if not _agents.has(peer_id):
+		return
+
+	var agent_node: CharacterBody2D = _agents[peer_id]
+	var agent_id: String = _peer_to_id.get(peer_id, "")
+
+	# Clean up proximity tracking for this peer
+	var keys_to_erase: Array = []
+	for key in _prev_nearby.keys():
+		var k: String = str(key)
+		if k.begins_with(str(peer_id) + ":") or k.ends_with(":" + str(peer_id)):
+			keys_to_erase.append(key)
+	for key in keys_to_erase:
+		_prev_nearby.erase(key)
+
+	_agents.erase(peer_id)
+	_peer_to_id.erase(peer_id)
+	if agent_id != "":
+		_id_to_peer.erase(agent_id)
+	_arrived_at.erase(peer_id)
+
+	agent_node.queue_free()
+
+
+func handle_command(peer_id: int, data: Dictionary) -> void:
+	if not _agents.has(peer_id):
+		send_to_peer.emit(peer_id, {
+			"event": "command_error",
+			"error": "No agent spawned for this peer",
+		})
+		return
+
+	var cmd: String = str(data.get("cmd", ""))
+	match cmd:
+		"move":
+			_handle_move(peer_id, data)
+		"idle":
+			_handle_idle(peer_id)
+		"get_locations":
+			_handle_get_locations(peer_id)
+		_:
+			send_to_peer.emit(peer_id, {
+				"event": "command_error",
+				"error": "Unknown command: %s" % cmd,
+				"cmd": cmd,
+			})
+
+
+func get_world_state_for_viewer() -> Dictionary:
+	var agents_arr: Array = []
+	for peer_id in _agents.keys():
+		var agent_node: CharacterBody2D = _agents[peer_id]
+		var agent_id: String = _peer_to_id.get(peer_id, "")
+		var location_id: String = _get_agent_location(agent_node.global_position)
+		agents_arr.append({
+			"agent_id": agent_id,
+			"name": agent_node.display_name,
+			"x": agent_node.global_position.x,
+			"y": agent_node.global_position.y,
+			"facing": agent_node.facing,
+			"is_moving": not agent_node.nav_agent.is_navigation_finished(),
+			"location": location_id,
+			"sprite_url": agent_node.sprite_url,
+		})
+	return { "agents": agents_arr }
+
+
+func _process(delta: float) -> void:
+	if _agents.is_empty():
+		return
+
+	_check_arrivals()
+	_check_proximity()
+
+	_state_timer += delta
+	if _state_timer >= STATE_INTERVAL:
+		_state_timer -= STATE_INTERVAL
+		_broadcast_agent_states()
+
+
+# ---------------------------------------------------------------------------
+# Command handlers
+# ---------------------------------------------------------------------------
+
+func _handle_move(peer_id: int, data: Dictionary) -> void:
+	var location_id: String = str(data.get("location", ""))
+	var marker: Marker2D = _find_location(location_id)
+	if marker == null:
+		send_to_peer.emit(peer_id, {
+			"event": "command_error",
+			"error": "Unknown location: %s" % location_id,
+			"cmd": "move",
+		})
+		return
+
+	var agent_node: CharacterBody2D = _agents[peer_id]
+	agent_node.set_navigation_target(marker.global_position)
+
+	# Clear arrival state so we can detect arrival at new destination
+	_arrived_at.erase(peer_id)
+
+	send_to_peer.emit(peer_id, {
+		"event": "move_started",
+		"location": location_id,
+		"target": { "x": marker.global_position.x / TILE_SIZE, "y": marker.global_position.y / TILE_SIZE },
+	})
+
+
+func _handle_idle(peer_id: int) -> void:
+	var agent_node: CharacterBody2D = _agents[peer_id]
+	agent_node.velocity = Vector2.ZERO
+	# Reset navigation so the agent stops
+	agent_node.set_navigation_target(agent_node.global_position)
+
+	send_to_peer.emit(peer_id, {
+		"event": "idle",
+		"location": _get_agent_location(agent_node.global_position),
+	})
+
+
+func _handle_get_locations(peer_id: int) -> void:
+	var locs: Array = []
+	for marker in _locations:
+		var loc_id: String = marker.name.to_snake_case()
+		locs.append({
+			"id": loc_id,
+			"x": marker.global_position.x / TILE_SIZE,
+			"y": marker.global_position.y / TILE_SIZE,
+		})
+	send_to_peer.emit(peer_id, {
+		"event": "locations",
+		"locations": locs,
+	})
+
+
+# ---------------------------------------------------------------------------
+# Arrival detection
+# ---------------------------------------------------------------------------
+
+func _check_arrivals() -> void:
+	for peer_id in _agents.keys():
+		var agent_node: CharacterBody2D = _agents[peer_id]
+
+		var nav_finished: bool = agent_node.nav_agent.is_navigation_finished()
+		var stopped: bool = agent_node.velocity.length() < 1.0
+
+		if nav_finished and stopped:
+			var current_loc: String = _get_agent_location(agent_node.global_position)
+			var prev_loc: String = _arrived_at.get(peer_id, "")
+
+			# Only emit arrived if location changed (dedup)
+			if current_loc != prev_loc:
+				_arrived_at[peer_id] = current_loc
+				send_to_peer.emit(peer_id, {
+					"event": "arrived",
+					"location": current_loc,
+					"position": {
+						"x": agent_node.global_position.x / TILE_SIZE,
+						"y": agent_node.global_position.y / TILE_SIZE,
+					},
+				})
+		else:
+			# Agent is moving — clear arrival state so next stop triggers arrived
+			if _arrived_at.has(peer_id) and not nav_finished:
+				_arrived_at.erase(peer_id)
+
+
+# ---------------------------------------------------------------------------
+# Proximity detection
+# ---------------------------------------------------------------------------
+
+func _check_proximity() -> void:
+	var peer_ids: Array = _agents.keys()
+	var current_nearby: Dictionary = {}
+
+	for i in range(peer_ids.size()):
+		for j in range(i + 1, peer_ids.size()):
+			var pid_a: int = peer_ids[i]
+			var pid_b: int = peer_ids[j]
+			var agent_a: CharacterBody2D = _agents[pid_a]
+			var agent_b: CharacterBody2D = _agents[pid_b]
+			var dist: float = agent_a.global_position.distance_to(agent_b.global_position)
+
+			var key: String = "%d:%d" % [pid_a, pid_b]
+
+			if dist <= PROXIMITY_THRESHOLD:
+				current_nearby[key] = dist
+				# Emit nearby only on change (was not nearby before)
+				if not _prev_nearby.has(key):
+					var tile_dist: float = dist / TILE_SIZE
+					var id_a: String = _peer_to_id.get(pid_a, "")
+					var id_b: String = _peer_to_id.get(pid_b, "")
+					send_to_peer.emit(pid_a, {
+						"event": "nearby",
+						"agent_id": id_b,
+						"agent_name": agent_b.display_name,
+						"distance": tile_dist,
+					})
+					send_to_peer.emit(pid_b, {
+						"event": "nearby",
+						"agent_id": id_a,
+						"agent_name": agent_a.display_name,
+						"distance": tile_dist,
+					})
+			else:
+				# Emit nearby_left only on change (was nearby before)
+				if _prev_nearby.has(key):
+					var id_a: String = _peer_to_id.get(pid_a, "")
+					var id_b: String = _peer_to_id.get(pid_b, "")
+					send_to_peer.emit(pid_a, {
+						"event": "nearby_left",
+						"agent_id": id_b,
+						"agent_name": agent_b.display_name,
+					})
+					send_to_peer.emit(pid_b, {
+						"event": "nearby_left",
+						"agent_id": id_a,
+						"agent_name": agent_a.display_name,
+					})
+
+	_prev_nearby = current_nearby
+
+
+# ---------------------------------------------------------------------------
+# Periodic state broadcast
+# ---------------------------------------------------------------------------
+
+func _broadcast_agent_states() -> void:
+	for peer_id in _agents.keys():
+		var agent_node: CharacterBody2D = _agents[peer_id]
+		var location_id: String = _get_agent_location(agent_node.global_position)
+		var nearby: Array = _get_nearby_for(peer_id)
+		var available: Array = _get_available_actions(location_id, peer_id)
+
+		var speed: float = agent_node.velocity.length() / TILE_SIZE
+
+		send_to_peer.emit(peer_id, {
+			"event": "agent_state",
+			"position": {
+				"x": agent_node.global_position.x / TILE_SIZE,
+				"y": agent_node.global_position.y / TILE_SIZE,
+			},
+			"location": location_id,
+			"facing": agent_node.facing,
+			"speed": speed,
+			"nearby_agents": nearby,
+			"available_actions": available,
+			"environment": {
+				"location_id": location_id,
+			},
+		})
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+func _find_location(location_id: String) -> Marker2D:
+	var search: String = location_id.to_snake_case()
+	for marker in _locations:
+		if marker.name.to_snake_case() == search:
+			return marker
+	return null
+
+
+func _get_agent_location(agent_pos: Vector2) -> String:
+	var closest_id: String = "unknown"
+	var closest_dist: float = INF
+
+	for marker in _locations:
+		var dist: float = agent_pos.distance_to(marker.global_position)
+		if dist < closest_dist:
+			closest_dist = dist
+			closest_id = marker.name.to_snake_case()
+
+	return closest_id
+
+
+func _get_nearby_for(peer_id: int) -> Array:
+	if not _agents.has(peer_id):
+		return []
+
+	var agent_node: CharacterBody2D = _agents[peer_id]
+	var result: Array = []
+
+	for other_pid in _agents.keys():
+		if other_pid == peer_id:
+			continue
+		var other_node: CharacterBody2D = _agents[other_pid]
+		var dist: float = agent_node.global_position.distance_to(other_node.global_position)
+		if dist <= PROXIMITY_THRESHOLD:
+			result.append({
+				"agent_id": _peer_to_id.get(other_pid, ""),
+				"name": other_node.display_name,
+				"distance": dist / TILE_SIZE,
+				"facing": other_node.facing,
+			})
+
+	return result
+
+
+func _get_available_actions(location_id: String, peer_id: int) -> Array:
+	var actions: Array = []
+
+	# Move destinations: all locations except current
+	for marker in _locations:
+		var loc_id: String = marker.name.to_snake_case()
+		if loc_id != location_id:
+			actions.append({
+				"type": "move",
+				"location": loc_id,
+			})
+
+	# Idle action always available
+	actions.append({ "type": "idle" })
+
+	# Interact with nearby agents
+	var nearby: Array = _get_nearby_for(peer_id)
+	for agent_info in nearby:
+		actions.append({
+			"type": "interact",
+			"agent_id": agent_info["agent_id"],
+			"agent_name": agent_info["name"],
+		})
+
+	return actions
