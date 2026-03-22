@@ -100,33 +100,15 @@ class TownService:
                     "user_id": item.get("userId"),
                     "display_name": item.get("displayName"),
                     "agent_name": item.get("agentName"),
-                    "character": item.get("character"),
                     "personality_summary": item.get("personalitySummary"),
-                    "home_location": item.get("homeLocation"),
-                    "current_location": item.get("currentLocation"),
-                    "current_activity": item.get("currentActivity"),
-                    "target_location": item.get("targetLocation"),
-                    "target_x": item.get("targetX"),
-                    "target_y": item.get("targetY"),
-                    "position_x": item.get("positionX"),
-                    "position_y": item.get("positionY"),
-                    "location_state": item.get("locationState"),
-                    "location_context": item.get("locationContext"),
-                    "speed": item.get("speed"),
-                    "facing_x": item.get("facingX"),
-                    "facing_y": item.get("facingY"),
-                    "current_conversation_id": item.get("currentConversationId"),
-                    "last_heartbeat_at": item.get("lastHeartbeatAt"),
-                    "mood": item.get("mood"),
-                    "energy": item.get("energy"),
-                    "status_message": item.get("statusMessage"),
-                    "last_decision_at": item.get("lastDecisionAt"),
-                    "last_conversation_at": item.get("lastConversationAt"),
-                    "wake_at": item.get("wakeAt"),
-                    "wake_timezone": item.get("wakeTimezone"),
+                    "is_active": item.get("isActive"),
                     "sprite_ready": item.get("spriteReady", False),
                     "sprite_url": item.get("spriteUrl"),
                     "traits": item.get("traits", ""),
+                    "mood": item.get("mood"),
+                    "energy": item.get("energy"),
+                    "current_conversation_id": item.get("currentConversationId"),
+                    "last_known_location": item.get("lastKnownLocation"),
                 }
             )
         return result
@@ -165,9 +147,6 @@ class TownService:
                 return existing
             return existing
 
-        from core.apartment_constants import APARTMENT_SPOTS
-
-        bedroom = APARTMENT_SPOTS["bed_1"]
         now = _now_iso()
         agent_id = str(uuid.uuid4())
 
@@ -186,25 +165,13 @@ class TownService:
             "spriteUrl": None,
             "character": None,
             "traits": "",
-            # State fields (merged from TownState)
-            "positionX": Decimal(str(float(bedroom["x"]))),
-            "positionY": Decimal(str(float(bedroom["y"]))),
-            "currentLocation": "bedroom",
-            "locationContext": "apartment",
-            "locationState": "active",
-            "currentActivity": None,
-            "targetLocation": None,
-            "targetX": None,
-            "targetY": None,
-            "speed": Decimal("1"),
-            "facingX": Decimal("0"),
-            "facingY": Decimal("1"),
+            # Lightweight location for respawn after game server restart
+            "lastKnownLocation": "plaza",
             "currentConversationId": None,
             "lastHeartbeatAt": None,
             "mood": "neutral",
             "energy": Decimal("100"),
             "statusMessage": None,
-            "lastDecisionAt": None,
             "lastConversationAt": None,
             "wakeAt": None,
             "wakeTimezone": None,
@@ -238,20 +205,9 @@ class TownService:
 
         # Map snake_case kwargs to camelCase DynamoDB attribute names
         field_map = {
-            "position_x": "positionX",
-            "position_y": "positionY",
-            "current_location": "currentLocation",
-            "location_context": "locationContext",
-            "location_state": "locationState",
-            "current_activity": "currentActivity",
-            "target_location": "targetLocation",
-            "target_x": "targetX",
-            "target_y": "targetY",
-            "facing_x": "facingX",
-            "facing_y": "facingY",
+            "last_known_location": "lastKnownLocation",
             "current_conversation_id": "currentConversationId",
             "last_heartbeat_at": "lastHeartbeatAt",
-            "last_decision_at": "lastDecisionAt",
             "last_conversation_at": "lastConversationAt",
             "status_message": "statusMessage",
             "wake_at": "wakeAt",
@@ -390,9 +346,6 @@ class TownService:
         instance = self.create_instance(user_id)
         created_agents = []
 
-        from core.apartment_constants import APARTMENT_SPOTS
-
-        bedroom = APARTMENT_SPOTS["bed_1"]
         now = _now_iso()
 
         table = dynamo.agents_table()
@@ -413,25 +366,13 @@ class TownService:
                 "spriteUrl": None,
                 "character": None,
                 "traits": "",
-                # State fields
-                "positionX": Decimal(str(float(bedroom["x"]))),
-                "positionY": Decimal(str(float(bedroom["y"]))),
-                "currentLocation": "bedroom",
-                "locationContext": "apartment",
-                "locationState": "active",
-                "currentActivity": None,
-                "targetLocation": None,
-                "targetX": None,
-                "targetY": None,
-                "speed": Decimal("1"),
-                "facingX": Decimal("0"),
-                "facingY": Decimal("1"),
+                # Lightweight location for respawn after game server restart
+                "lastKnownLocation": "plaza",
                 "currentConversationId": None,
                 "lastHeartbeatAt": None,
                 "mood": "neutral",
                 "energy": Decimal("100"),
                 "statusMessage": None,
-                "lastDecisionAt": None,
                 "lastConversationAt": None,
                 "wakeAt": None,
                 "wakeTimezone": None,
