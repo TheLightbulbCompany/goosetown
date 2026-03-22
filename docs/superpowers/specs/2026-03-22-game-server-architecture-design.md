@@ -577,6 +577,41 @@ CMD ["godot", "--headless", "--path", ".", "server_main.tscn"]
 - Backend Fargate task gets environment variable: `GAME_SERVER_URL=ws://gameserver.goosetown-{env}.local:8080`
 - Security group rule via L2: `backendSg.connections.allowTo(gameServerSg, ec2.Port.tcp(8080))` — not raw ingress/egress rules
 
+### Modified: ApiStack (refactor L1 → L2 + add $default route)
+
+The current ApiStack uses L1 `Cfn*` constructs (`CfnApi`, `CfnRoute`, `CfnIntegration`, `CfnStage`, `CfnAuthorizer`). Refactor to L2:
+
+- **`WebSocketApi`** (from `aws-cdk-lib/aws-apigatewayv2`) replaces `CfnApi`
+- **`WebSocketStage`** replaces `CfnStage`
+- **`WebSocketLambdaIntegration`** (from `aws-cdk-lib/aws-apigatewayv2-integrations`) replaces `CfnIntegration`
+- **`WebSocketRouteOptions`** replaces manual `CfnRoute` wiring
+
+**New: `$default` route** — enables bidirectional WebSocket. Currently only `$connect` and `$disconnect` routes exist. Agent daemons can only receive events (via Management API push) but cannot send messages over the WebSocket. Adding `$default` allows agents to send commands (like `town_act`) over the WebSocket instead of REST.
+
+The `$default` Lambda receives the WebSocket message, extracts connection context, and POSTs to the backend ALB:
+
+```typescript
+const defaultFn = new lambda_.Function(this, 'DefaultFunction', {
+  runtime: lambda_.Runtime.PYTHON_3_12,
+  handler: 'index.handler',
+  vpc: props.vpc,  // needs ALB access
+  code: lambda_.Code.fromInline(`
+    # Receives WebSocket message, forwards to Fargate via ALB
+    # POST /api/v1/town/ws-message with body + connectionId + principalId
+  `),
+});
+
+const wsApi = new WebSocketApi(this, 'WebSocketApi', {
+  apiName: 'goosetown-' + env + '-ws',
+  routeSelectionExpression: '$request.body.type',
+  connectRouteOptions: { integration: new WebSocketLambdaIntegration('ConnectInteg', connectFn), authorizer },
+  disconnectRouteOptions: { integration: new WebSocketLambdaIntegration('DisconnectInteg', disconnectFn) },
+  defaultRouteOptions: { integration: new WebSocketLambdaIntegration('DefaultInteg', defaultFn) },
+});
+```
+
+**Backend new endpoint:** `POST /api/v1/town/ws-message` — receives forwarded WebSocket messages from the `$default` Lambda. Parses the agent command, dispatches to `game_server_client.py`. This replaces/augments the REST-based `town_act` flow.
+
 ### Stage Wiring (Isol8 pattern)
 
 Following the same implicit-dependency-via-property-passing pattern used in Isol8:
