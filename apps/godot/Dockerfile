@@ -7,5 +7,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY . /app
 WORKDIR /app
+
+# Re-import project resources in headless mode (generates .godot/imported/ cache)
+RUN godot --headless --import 2>&1 || true
+
 EXPOSE 8080
 CMD ["godot", "--headless", "--path", ".", "server_main.tscn"]

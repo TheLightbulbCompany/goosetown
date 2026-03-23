@@ -1,8 +1,6 @@
-.godot/
-exported/
-pixellab_import/
-*.import
+# Only exclude truly unnecessary files
 .git
 export_presets.cfg
 scripts/debug_walkability.gd
 scripts/export_map_data.gd
+README.md
