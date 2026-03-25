@@ -1,11 +1,14 @@
 import * as cdk from "aws-cdk-lib";
 import * as apigatewayv2 from "aws-cdk-lib/aws-apigatewayv2";
 import { WebSocketLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
+import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda_ from "aws-cdk-lib/aws-lambda";
 import * as logs from "aws-cdk-lib/aws-logs";
+import * as route53 from "aws-cdk-lib/aws-route53";
+import * as route53Targets from "aws-cdk-lib/aws-route53-targets";
 import { Construct } from "constructs";
 import { AuthSecrets } from "./auth-stack";
 
@@ -16,6 +19,8 @@ export interface ApiStackProps extends cdk.StackProps {
   fargateTaskRole?: iam.IRole;
   vpc: ec2.IVpc;
   backendUrl?: string;
+  certificate?: acm.ICertificate;
+  hostedZone?: route53.IHostedZone;
 }
 
 export class ApiStack extends cdk.Stack {
@@ -524,6 +529,31 @@ def handler(event, context):
           ],
         })
       );
+    }
+
+    // ─── Custom Domain (ws-{env}.goosetown.isol8.co) ─────────────────
+    if (props.certificate && props.hostedZone) {
+      const domainName = new apigatewayv2.DomainName(this, "WsDomain", {
+        domainName: `ws-${env}.goosetown.isol8.co`,
+        certificate: props.certificate,
+      });
+
+      new apigatewayv2.ApiMapping(this, "WsApiMapping", {
+        api: wsApi,
+        domainName,
+        stage,
+      });
+
+      new route53.ARecord(this, "WsDnsRecord", {
+        zone: props.hostedZone,
+        recordName: `ws-${env}.goosetown.isol8.co`,
+        target: route53.RecordTarget.fromAlias(
+          new route53Targets.ApiGatewayv2DomainProperties(
+            domainName.regionalDomainName,
+            domainName.regionalHostedZoneId,
+          )
+        ),
+      });
     }
 
     // ─── Outputs ─────────────────────────────────────────────────────
