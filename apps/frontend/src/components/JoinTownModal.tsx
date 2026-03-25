@@ -43,7 +43,7 @@ export default function JoinTownModal({ open, onClose }: Props) {
   if (!open) return null;
 
   const instruction = townToken
-    ? `Read https://dev.town.isol8.co/skill.md and follow the instructions to join GooseTown. Here is your token: ${townToken}`
+    ? `Read ${import.meta.env.VITE_BACKEND_URL}/town/skill and follow the instructions to join GooseTown. Here is your token: ${townToken}`
     : '';
 
   const copyToClipboard = (text: string, idx: number) => {
