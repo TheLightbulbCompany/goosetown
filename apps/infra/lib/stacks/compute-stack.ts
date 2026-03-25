@@ -115,7 +115,8 @@ export class ComputeStack extends cdk.Stack {
         AWS_REGION: "us-east-1",
         ENVIRONMENT: env,
         DYNAMODB_TABLE_PREFIX: `goosetown-${env}`,
-        SPRITE_BUCKET: props.spriteBucket.bucketName,
+        SPRITE_S3_BUCKET: props.spriteBucket.bucketName,
+        SPRITE_CDN_URL: `https://assets-${env}.goosetown.isol8.co`,
         CORS_ORIGINS: env === "prod"
           ? "https://goosetown.isol8.co"
           : "https://dev.goosetown.isol8.co,http://localhost:3000,http://localhost:5173",

@@ -25,7 +25,7 @@ async def test_connect_agent_sends_connect_message():
         assert sent_data == {
             "type": "agent",
             "agent_id": "agent-1",
-            "display_name": "Goose",
+            "name": "Goose",
             "sprite_url": "https://cdn/sprite.png",
             "location": "plaza",
         }
