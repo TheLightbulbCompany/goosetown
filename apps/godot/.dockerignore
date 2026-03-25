@@ -1,5 +1,8 @@
-# Only exclude truly unnecessary files
+# Exclude local editor cache (Docker build regenerates via --import)
+.godot/
+# Git
 .git
+# Editor-only files
 export_presets.cfg
 scripts/debug_walkability.gd
 scripts/export_map_data.gd

@@ -64,12 +64,12 @@ export class GameServerStack extends cdk.Stack {
       healthCheck: {
         command: [
           "CMD-SHELL",
-          "echo > /dev/tcp/localhost/8080 || exit 1",
+          "bash -c 'echo > /dev/tcp/localhost/8080' || exit 1",
         ],
         interval: cdk.Duration.seconds(30),
         timeout: cdk.Duration.seconds(5),
-        retries: 3,
-        startPeriod: cdk.Duration.seconds(60),
+        retries: 5,
+        startPeriod: cdk.Duration.seconds(120),
       },
     });
 
