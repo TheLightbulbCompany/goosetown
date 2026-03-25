@@ -77,7 +77,7 @@ export class GooseTownStage extends cdk.Stage {
       fargateTaskRole: compute.service.taskDefinition.taskRole,
       vpc: network.vpc,
       // Pass as string to avoid circular dependency (ApiStack already depends on ComputeStack via fargateTaskRole)
-      backendUrl: `http://api-${env}.goosetown.isol8.co`,
+      backendUrl: `https://api-${env}.goosetown.isol8.co`,
       certificate: dns.certificate,
       hostedZone: dns.hostedZone,
     });

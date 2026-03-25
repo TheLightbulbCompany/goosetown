@@ -671,14 +671,109 @@ class WsMessageRequest(BaseModel):
 async def handle_ws_message(request: WsMessageRequest):
     """Receive forwarded WebSocket messages from API Gateway $default Lambda."""
     ws_manager = get_town_agent_ws_manager()
-    agent_conn = ws_manager.get_by_connection(request.connectionId)
+    body = request.body
+    msg_type = body.get("type", "")
 
+    # Handle agent connection handshake
+    if msg_type == "town_agent_connect":
+        return await _handle_agent_connect(request, ws_manager)
+
+    # Handle agent action commands
+    if msg_type == "town_agent_act":
+        agent_conn = ws_manager.get_by_connection(request.connectionId)
+        if not agent_conn:
+            return {"statusCode": 400, "error": "unknown_connection"}
+        gs_client = get_game_server_client()
+        action = body.get("action", "")
+        if action == "move":
+            destination = body.get("destination", "")
+            await gs_client.send_command(
+                agent_conn.agent_id,
+                {"type": "move", "destination": destination},
+            )
+        return {"statusCode": 200}
+
+    # Legacy: forward raw commands
+    agent_conn = ws_manager.get_by_connection(request.connectionId)
     if not agent_conn:
         return {"statusCode": 400, "error": "unknown_connection"}
-
-    body = request.body
     if "cmd" in body:
         gs_client = get_game_server_client()
         await gs_client.send_command(agent_conn.agent_id, body)
+
+    return {"statusCode": 200}
+
+
+async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
+    """Process a town_agent_connect message: verify token, register connection, send connected event."""
+    from core.services.management_api_client import ManagementApiClient
+    from core.town_token import verify_town_token
+
+    body = request.body
+    token = body.get("token", "")
+    agent_name = body.get("agent_name", "")
+
+    if not token or not agent_name:
+        logger.warning("Agent connect missing token or agent_name")
+        return {"statusCode": 400, "error": "missing_token_or_agent_name"}
+
+    # Verify town_token
+    payload = verify_town_token(token)
+    if not payload:
+        logger.warning("Invalid town_token for agent connect: %s", agent_name)
+        return {"statusCode": 401, "error": "invalid_token"}
+
+    user_id = payload["uid"]
+    instance_id = payload["iid"]
+
+    # Look up the agent
+    service = TownService()
+    agent = service.get_agent_by_name(user_id, agent_name)
+    if not agent:
+        logger.warning("Agent not found: %s for user %s", agent_name, user_id)
+        return {"statusCode": 404, "error": "agent_not_found"}
+
+    agent_id = agent["id"]
+
+    # Register connection in ws_manager
+    ws_manager.register(
+        connection_id=request.connectionId,
+        user_id=user_id,
+        agent_name=agent_name,
+        agent_id=agent_id,
+        instance_id=instance_id,
+    )
+
+    # Connect agent to game server if sprite is ready
+    if agent.get("spriteReady"):
+        gs_client = get_game_server_client()
+        try:
+            await gs_client.connect_agent(
+                agent_id=agent_id,
+                display_name=agent.get("displayName", agent_name),
+                sprite_url=agent.get("spriteUrl", ""),
+                initial_location="plaza",
+            )
+            logger.info("Agent %s connected to game server", agent_name)
+        except Exception as e:
+            logger.warning("Failed to connect agent %s to game server: %s", agent_name, e)
+
+    # Send connected event back to the agent via Management API
+    try:
+        mgmt = ManagementApiClient()
+        mgmt.send_message(request.connectionId, {
+            "event": "connected",
+            "agent": {
+                "id": agent_id,
+                "name": agent.get("displayName", agent_name),
+                "location": agent.get("currentLocation", "plaza"),
+                "mood": agent.get("mood", 0),
+                "energy": agent.get("energy", 100),
+                "spriteReady": agent.get("spriteReady", False),
+            },
+        })
+        logger.info("Sent connected event to agent %s", agent_name)
+    except Exception as e:
+        logger.error("Failed to send connected event to %s: %s", agent_name, e)
 
     return {"statusCode": 200}

@@ -129,6 +129,9 @@ export class ComputeStack extends cdk.Stack {
         TOWN_API_URL: env === "prod"
           ? "https://api.goosetown.isol8.co/api/v1"
           : "https://api-dev.goosetown.isol8.co/api/v1",
+        // Uses Fn.importValue from ApiStack — requires ApiStack to exist first.
+        // Safe for existing environments; for fresh deploys, deploy ApiStack first.
+        WS_MANAGEMENT_API_URL: cdk.Fn.importValue(`goosetown-${env}-management-api-url`),
       },
       secrets: {
         CLERK_ISSUER: ecs.Secret.fromSecretsManager(props.secrets.clerkIssuer),
