@@ -31,8 +31,8 @@ from schemas.town import (
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_TOWN_WS_URL = os.environ.get("TOWN_WS_URL", "wss://ws-dev.isol8.co")
-_TOWN_API_URL = os.environ.get("TOWN_API_URL", "https://api-dev.isol8.co/api/v1")
+_TOWN_WS_URL = os.environ.get("TOWN_WS_URL", "wss://ws-dev.goosetown.isol8.co")
+_TOWN_API_URL = os.environ.get("TOWN_API_URL", "https://api-dev.goosetown.isol8.co/api/v1")
 
 # Strong references to background sprite tasks to prevent GC
 _background_sprite_tasks: set = set()

@@ -4,28 +4,28 @@ source "$(dirname "$0")/../env.sh"
 ACTION="${1:?Usage: town_act <action> [args...]}"
 shift
 
-# Build JSON payload
+# Build JSON payload safely using Python to handle special characters
 case "$ACTION" in
     move)
-        PAYLOAD="{\"action\":\"move\",\"destination\":\"$1\"}"
+        PAYLOAD=$(python3 -c "import json; print(json.dumps({'action':'move','destination':'$1'}))")
         ;;
     chat)
         TARGET="$1"; shift
         MESSAGE="$*"
-        PAYLOAD="{\"action\":\"chat\",\"target\":\"$TARGET\",\"message\":\"$MESSAGE\"}"
+        PAYLOAD=$(python3 -c "import json,sys; print(json.dumps({'action':'chat','target':sys.argv[1],'message':sys.argv[2]}))" "$TARGET" "$MESSAGE")
         ;;
     say)
         CONV_ID="$1"; shift
         MESSAGE="$*"
-        PAYLOAD="{\"action\":\"say\",\"conv_id\":\"$CONV_ID\",\"message\":\"$MESSAGE\"}"
+        PAYLOAD=$(python3 -c "import json,sys; print(json.dumps({'action':'say','conv_id':sys.argv[1],'message':sys.argv[2]}))" "$CONV_ID" "$MESSAGE")
         ;;
     idle)
         ACTIVITY="${1:-idle}"
-        PAYLOAD="{\"action\":\"idle\",\"activity\":\"$ACTIVITY\"}"
+        PAYLOAD=$(python3 -c "import json; print(json.dumps({'action':'idle','activity':'$ACTIVITY'}))")
         ;;
     end)
         CONV_ID="$1"
-        PAYLOAD="{\"action\":\"end_conversation\",\"conv_id\":\"$CONV_ID\"}"
+        PAYLOAD=$(python3 -c "import json; print(json.dumps({'action':'end_conversation','conv_id':'$CONV_ID'}))")
         ;;
     *)
         echo "{\"error\":\"Unknown action: $ACTION. Use: move, chat, say, idle, end\"}"

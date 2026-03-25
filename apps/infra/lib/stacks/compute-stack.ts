@@ -122,6 +122,12 @@ export class ComputeStack extends cdk.Stack {
         ...(props.gameServerUrl && {
           GAME_SERVER_URL: `ws://${props.gameServerUrl}:8080`,
         }),
+        TOWN_WS_URL: env === "prod"
+          ? "wss://ws.goosetown.isol8.co"
+          : "wss://ws-dev.goosetown.isol8.co",
+        TOWN_API_URL: env === "prod"
+          ? "https://api.goosetown.isol8.co/api/v1"
+          : "https://api-dev.goosetown.isol8.co/api/v1",
       },
       secrets: {
         CLERK_ISSUER: ecs.Secret.fromSecretsManager(props.secrets.clerkIssuer),
