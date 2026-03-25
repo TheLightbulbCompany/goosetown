@@ -754,6 +754,7 @@ jobs:
       - dev-goosetown-dev-network-Deploy
       - dev-goosetown-dev-auth-Deploy
       - dev-goosetown-dev-database-Deploy
+      - dev-goosetown-dev-dns-Deploy
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
@@ -1191,6 +1192,7 @@ jobs:
       - prod-goosetown-prod-network-Deploy
       - prod-goosetown-prod-auth-Deploy
       - prod-goosetown-prod-database-Deploy
+      - prod-goosetown-prod-dns-Deploy
       - prod-ApproveProduction
       - dev-goosetown-dev-auth-Deploy
       - dev-goosetown-dev-database-Deploy
