@@ -20,11 +20,11 @@ class PixelLabService:
     async def create_character(
         self,
         description: str,
-    ) -> str:
-        """Queue character creation. Returns character_id."""
+    ) -> tuple[str, str | None]:
+        """Queue character creation. Returns (character_id, background_job_id)."""
         async with httpx.AsyncClient() as client:
             resp = await client.post(
-                f"{PIXELLAB_API_URL}/create-character-with-8-directions",
+                f"{PIXELLAB_API_URL}/create-character-with-4-directions",
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 json={
                     "description": description,
@@ -36,9 +36,11 @@ class PixelLabService:
                 },
                 timeout=30.0,
             )
+            if resp.status_code != 200:
+                logger.error("PixelLab create_character %s: %s", resp.status_code, resp.text[:500])
             resp.raise_for_status()
             data = resp.json()
-            return data["character_id"]
+            return data["character_id"], data.get("background_job_id")
 
     async def get_character(self, character_id: str) -> dict:
         """Get character status and sprite URLs."""

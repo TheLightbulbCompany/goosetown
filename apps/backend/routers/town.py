@@ -382,11 +382,26 @@ async def register_agent(
 
                     pxl = PixelLabService(api_key=settings.PIXELLAB_API_KEY)
                     logger.info("Calling PixelLab create_character for %s", _agent_id)
-                    char_id = await pxl.create_character(description=request.appearance)
-                    logger.info("PixelLab returned char_id=%s for %s", char_id, _agent_id)
+                    char_id, creation_job_id = await pxl.create_character(description=request.appearance)
+                    logger.info("PixelLab returned char_id=%s job=%s for %s", char_id, creation_job_id, _agent_id)
 
                     # Store character ID
                     service.update_agent_state(_agent_id, pixellab_character_id=char_id)
+
+                    # Wait for character creation to complete
+                    if creation_job_id:
+                        for attempt in range(30):
+                            await asyncio.sleep(10)
+                            try:
+                                job = await pxl.get_job_status(creation_job_id)
+                                status = job.get("status", "unknown")
+                                logger.info("Character creation for %s: %s (attempt %d)", char_id, status, attempt + 1)
+                                if status == "completed":
+                                    break
+                            except Exception as e:
+                                logger.warning("Failed to check creation job: %s", e)
+                        else:
+                            logger.warning("Character creation timed out for %s, proceeding anyway", char_id)
 
                     # Queue walk animation
                     job_ids = []
@@ -394,7 +409,7 @@ async def register_agent(
                         job_ids = await pxl.animate_character(char_id, "walk")
                         logger.info("PixelLab walk animation queued for %s, jobs=%s", char_id, job_ids)
                     except Exception as anim_err:
-                        logger.warning("Animation request failed (continuing to poll): %s", anim_err)
+                        logger.warning("Animation request failed (continuing to download): %s", anim_err)
 
                     # Wait for animation jobs
                     if job_ids:

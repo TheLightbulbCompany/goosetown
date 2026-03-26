@@ -37,39 +37,56 @@ def extract_walk_spritesheet(zip_bytes: bytes) -> Optional[bytes]:
         logger.error("Invalid ZIP file from PixelLab")
         return None
 
-    # Find walk animation frames in the ZIP
-    # Expected structure: animations/walk/<direction>/<frame>.png
-    walk_files = [f for f in zf.namelist() if "/walk/" in f.lower() and f.endswith(".png")]
-    if not walk_files:
-        logger.info("No walk animation frames found in ZIP. Files: %s", zf.namelist()[:20])
+    all_files = zf.namelist()
+
+    # Try walk animation frames first: animations/walk/<direction>/<frame>.png
+    walk_files = [f for f in all_files if "/walk/" in f.lower() and f.endswith(".png")]
+
+    # Fallback: static rotation PNGs (rotations/<direction>.png) — use as single-frame sprites
+    rotation_files = [f for f in all_files if f.startswith("rotations/") and f.endswith(".png")]
+
+    if not walk_files and not rotation_files:
+        logger.info("No walk or rotation frames found in ZIP. Files: %s", all_files[:20])
         return None
 
     sheet = Image.new("RGBA", (SHEET_WIDTH, SHEET_HEIGHT), (0, 0, 0, 0))
     directions_found = 0
 
     for direction_name, row_index in DIRECTION_ROWS.items():
-        # Find frames for this direction
-        dir_frames = sorted(
-            [f for f in walk_files if f"/{direction_name}/" in f],
-        )
-        if not dir_frames:
-            logger.warning("No walk frames for direction %s", direction_name)
-            continue
-
-        directions_found += 1
-        for frame_idx, frame_path in enumerate(dir_frames[:FRAME_COUNT]):
+        if walk_files:
+            # Multi-frame walk animation
+            dir_frames = sorted([f for f in walk_files if f"/{direction_name}/" in f])
+            if not dir_frames:
+                continue
+            directions_found += 1
+            for frame_idx, frame_path in enumerate(dir_frames[:FRAME_COUNT]):
+                try:
+                    with zf.open(frame_path) as fp:
+                        frame_img = Image.open(fp).convert("RGBA")
+                        if frame_img.size != (FRAME_SIZE, FRAME_SIZE):
+                            frame_img = frame_img.resize((FRAME_SIZE, FRAME_SIZE), Image.NEAREST)
+                        sheet.paste(frame_img, (frame_idx * FRAME_SIZE, row_index * FRAME_SIZE))
+                except Exception as e:
+                    logger.warning("Failed to process frame %s: %s", frame_path, e)
+        else:
+            # Single-frame static rotation fallback
+            rot_path = f"rotations/{direction_name}.png"
+            if rot_path not in all_files:
+                continue
+            directions_found += 1
             try:
-                with zf.open(frame_path) as fp:
+                with zf.open(rot_path) as fp:
                     frame_img = Image.open(fp).convert("RGBA")
-                    # Resize if needed (should be FRAME_SIZE x FRAME_SIZE)
                     if frame_img.size != (FRAME_SIZE, FRAME_SIZE):
                         frame_img = frame_img.resize((FRAME_SIZE, FRAME_SIZE), Image.NEAREST)
-                    sheet.paste(frame_img, (frame_idx * FRAME_SIZE, row_index * FRAME_SIZE))
+                    # Repeat the single frame across all columns
+                    for frame_idx in range(FRAME_COUNT):
+                        sheet.paste(frame_img, (frame_idx * FRAME_SIZE, row_index * FRAME_SIZE))
             except Exception as e:
-                logger.warning("Failed to process frame %s: %s", frame_path, e)
+                logger.warning("Failed to process rotation %s: %s", rot_path, e)
 
     if directions_found == 0:
-        logger.info("No matching directions found in walk animation")
+        logger.info("No matching directions found in ZIP")
         return None
 
     logger.info("Composited walk spritesheet: %d directions", directions_found)
