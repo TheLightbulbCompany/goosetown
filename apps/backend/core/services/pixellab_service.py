@@ -28,7 +28,7 @@ class PixelLabService:
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 json={
                     "description": description,
-                    "image_size": {"width": 48, "height": 48},
+                    "image_size": {"width": 96, "height": 96},
                     "outline": "single color black outline",
                     "shading": "basic shading",
                     "detail": "medium detail",
