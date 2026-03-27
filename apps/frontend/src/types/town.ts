@@ -88,10 +88,25 @@ export interface TownStatusResponse {
   isDefault: boolean;
 }
 
-/** WS push message for town_state */
+/** WS push message for town_state (legacy backend) */
 export interface TownWsMessage {
   type: 'town_state';
   worldState: { world: TownWorld; engine: TownEngine };
   gameDescriptions: TownDescriptionsResponse;
   speechBubbles: SpeechBubble[];
+}
+
+/** WS push message from game server (world_state event) */
+export interface GameServerWorldState {
+  event: 'world_state';
+  agents: Array<{
+    id: string;
+    name: string;
+    x: number;
+    y: number;
+    facing: string;
+    is_moving: boolean;
+    location: string;
+    spriteUrl: string;
+  }>;
 }

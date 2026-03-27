@@ -136,7 +136,10 @@ export default function GodotCanvas({ className }: GodotCanvasProps) {
         engineRef.current = null;
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- getToken is a new
+    // function reference on every render (from useAuth), so including it in deps
+    // would cause the engine to reload in an infinite loop. We only need it once
+    // at mount time to fetch the viewer token.
   }, []);
 
   return (

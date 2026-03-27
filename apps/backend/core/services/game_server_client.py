@@ -149,8 +149,8 @@ class GameServerClient:
         self._agent_connections.pop(agent_id, None)
         self._listen_tasks.pop(agent_id, None)
 
-    async def _reconnect_agent(self, agent_id: str) -> None:
-        """Reconnect an agent with exponential backoff."""
+    async def _reconnect_agent(self, agent_id: str, max_retries: int = 5) -> None:
+        """Reconnect an agent with exponential backoff, giving up after max_retries."""
         params = self._agent_connect_params.get(agent_id)
         if params is None:
             logger.warning("No connect params for agent %s, cannot reconnect", agent_id)
@@ -159,7 +159,9 @@ class GameServerClient:
             return
 
         delay = 1.0
-        while agent_id in self._agent_connect_params:
+        for attempt in range(1, max_retries + 1):
+            if agent_id not in self._agent_connect_params:
+                break
             try:
                 await asyncio.sleep(delay)
                 ws = await websockets.connect(self._base_url)
@@ -175,8 +177,17 @@ class GameServerClient:
             except Exception as e:
                 delay = min(delay * 2, 10.0)
                 logger.warning(
-                    "Reconnect failed for agent %s: %s, retrying in %ss", agent_id, e, delay
+                    "Reconnect failed for agent %s (attempt %d/%d): %s, retrying in %ss",
+                    agent_id, attempt, max_retries, e, delay,
                 )
+
+        # Exhausted all retries — clean up
+        logger.error(
+            "Failed to reconnect agent %s after %d attempts, giving up", agent_id, max_retries
+        )
+        self._agent_connections.pop(agent_id, None)
+        self._agent_connect_params.pop(agent_id, None)
+        self._listen_tasks.pop(agent_id, None)
 
     async def _listen_viewer(self) -> None:
         """Listen loop for the viewer WebSocket connection."""

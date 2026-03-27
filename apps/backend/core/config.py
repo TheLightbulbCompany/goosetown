@@ -1,6 +1,9 @@
 """GooseTown backend configuration."""
 
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 
 class Settings:
@@ -16,6 +19,25 @@ class Settings:
     SPRITE_CDN_URL: str = os.getenv("SPRITE_CDN_URL", "")
     WS_MANAGEMENT_API_URL: str = os.getenv("WS_MANAGEMENT_API_URL", "")
     GAME_SERVER_URL: str = os.getenv("GAME_SERVER_URL", "ws://localhost:8080")
+
+    def validate(self) -> None:
+        """Validate required env vars. Raises RuntimeError in non-dev environments if critical vars are missing."""
+        if self.ENVIRONMENT == "dev":
+            return
+
+        missing = []
+        if not self.TOWN_TOKEN_SECRET:
+            missing.append("TOWN_TOKEN_SECRET")
+        if not self.WS_MANAGEMENT_API_URL:
+            missing.append("WS_MANAGEMENT_API_URL")
+        if not self.CLERK_ISSUER:
+            missing.append("CLERK_ISSUER")
+
+        if missing:
+            raise RuntimeError(
+                f"Missing required environment variables for {self.ENVIRONMENT}: {', '.join(missing)}"
+            )
+        logger.info("Configuration validated for environment: %s", self.ENVIRONMENT)
 
 
 settings = Settings()

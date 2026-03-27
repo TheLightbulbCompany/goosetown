@@ -37,6 +37,9 @@ _TOWN_API_URL = os.environ.get("TOWN_API_URL", "https://api-dev.goosetown.isol8.
 # Strong references to background sprite tasks to prevent GC
 _background_sprite_tasks: set = set()
 
+# Track in-progress sprite generation jobs by agent_id to prevent duplicates
+_sprite_jobs_in_progress: set = set()
+
 
 # ---------------------------------------------------------------------------
 # Token auth dependency for external OpenClaw agents
@@ -122,8 +125,8 @@ def _build_ai_town_state() -> dict:
         service = TownService()
         db_states = service.get_town_state()
     except Exception:
-        logger.debug("Town tables not available, using defaults")
-        return _build_default_state()
+        logger.warning("Failed to fetch town state from DynamoDB", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to load town state")
 
     if not db_states:
         return _build_default_state()
@@ -183,6 +186,7 @@ def _build_ai_town_state() -> dict:
     try:
         speech_bubbles = service.get_recent_speech(since_seconds=10.0)
     except Exception:
+        logger.warning("Failed to fetch recent speech bubbles", exc_info=True)
         speech_bubbles = []
 
     return {
@@ -374,92 +378,105 @@ async def register_agent(
         if settings.PIXELLAB_API_KEY and settings.SPRITE_S3_BUCKET and settings.SPRITE_CDN_URL:
             _agent_id = agent["id"]
 
-            async def _generate_sprite():
-                logger.info("_generate_sprite started for agent %s", _agent_id)
-                try:
-                    from core.services.pixellab_service import PixelLabService
-                    from core.services.sprite_storage import extract_walk_spritesheet, upload_sprite_to_s3
+            if _agent_id in _sprite_jobs_in_progress:
+                logger.info("Sprite generation already in progress for agent %s, skipping", _agent_id)
+            else:
+                _sprite_jobs_in_progress.add(_agent_id)
 
-                    pxl = PixelLabService(api_key=settings.PIXELLAB_API_KEY)
-                    logger.info("Calling PixelLab create_character for %s", _agent_id)
-                    char_id, creation_job_id = await pxl.create_character(description=request.appearance)
-                    logger.info("PixelLab returned char_id=%s job=%s for %s", char_id, creation_job_id, _agent_id)
-
-                    # Store character ID
-                    service.update_agent_state(_agent_id, pixellab_character_id=char_id)
-
-                    # Wait for character creation to complete
-                    if creation_job_id:
-                        for attempt in range(30):
-                            await asyncio.sleep(10)
-                            try:
-                                job = await pxl.get_job_status(creation_job_id)
-                                status = job.get("status", "unknown")
-                                logger.info("Character creation for %s: %s (attempt %d)", char_id, status, attempt + 1)
-                                if status == "completed":
-                                    break
-                            except Exception as e:
-                                logger.warning("Failed to check creation job: %s", e)
-                        else:
-                            logger.warning("Character creation timed out for %s, proceeding anyway", char_id)
-
-                    # Queue walk animation
-                    job_ids = []
+                async def _generate_sprite():
+                    logger.info("_generate_sprite started for agent %s", _agent_id)
                     try:
-                        job_ids = await pxl.animate_character(char_id, "walk")
-                        logger.info("PixelLab walk animation queued for %s, jobs=%s", char_id, job_ids)
-                    except Exception as anim_err:
-                        logger.warning("Animation request failed (continuing to download): %s", anim_err)
+                        from core.services.pixellab_service import PixelLabService
+                        from core.services.sprite_storage import extract_walk_spritesheet, upload_sprite_to_s3
 
-                    # Wait for animation jobs
-                    if job_ids:
-                        for attempt in range(30):
-                            await asyncio.sleep(10)
-                            statuses = []
-                            for jid in job_ids:
+                        pxl = PixelLabService(api_key=settings.PIXELLAB_API_KEY)
+                        logger.info("Calling PixelLab create_character for %s", _agent_id)
+                        char_id, creation_job_id = await pxl.create_character(description=request.appearance)
+                        logger.info("PixelLab returned char_id=%s job=%s for %s", char_id, creation_job_id, _agent_id)
+
+                        # Store character ID
+                        service.update_agent_state(_agent_id, pixellab_character_id=char_id)
+
+                        # Wait for character creation to complete
+                        if creation_job_id:
+                            for attempt in range(30):
+                                await asyncio.sleep(10)
                                 try:
-                                    job = await pxl.get_job_status(jid)
-                                    statuses.append(job.get("status", "unknown"))
+                                    job = await pxl.get_job_status(creation_job_id)
+                                    status = job.get("status", "unknown")
+                                    logger.info(
+                                        "Character creation for %s: %s (attempt %d)", char_id, status, attempt + 1
+                                    )
+                                    if status == "completed":
+                                        break
                                 except Exception as e:
-                                    logger.warning("Failed to check job %s: %s", jid, e)
-                                    statuses.append("unknown")
-                            completed = sum(1 for s in statuses if s == "completed")
+                                    logger.warning("Failed to check creation job: %s", e)
+                            else:
+                                logger.warning("Character creation timed out for %s, proceeding anyway", char_id)
+
+                        # Queue walk animation
+                        job_ids = []
+                        try:
+                            job_ids = await pxl.animate_character(char_id, "walk")
+                            logger.info("PixelLab walk animation queued for %s, jobs=%s", char_id, job_ids)
+                        except Exception as anim_err:
+                            logger.warning("Animation request failed (continuing to download): %s", anim_err)
+
+                        # Wait for animation jobs
+                        if job_ids:
+                            for attempt in range(30):
+                                await asyncio.sleep(10)
+                                statuses = []
+                                for jid in job_ids:
+                                    try:
+                                        job = await pxl.get_job_status(jid)
+                                        statuses.append(job.get("status", "unknown"))
+                                    except Exception as e:
+                                        logger.warning("Failed to check job %s: %s", jid, e)
+                                        statuses.append("unknown")
+                                completed = sum(1 for s in statuses if s == "completed")
+                                logger.info(
+                                    "Animation jobs for %s: %d/%d completed (attempt %d)",
+                                    char_id,
+                                    completed,
+                                    len(job_ids),
+                                    attempt + 1,
+                                )
+                                if all(s == "completed" for s in statuses):
+                                    break
+                            else:
+                                logger.warning(
+                                    "Animation jobs timed out for %s, proceeding with download anyway", char_id
+                                )
+
+                        # Download ZIP and extract spritesheet
+                        for attempt in range(6):
+                            await asyncio.sleep(10)
+                            zip_bytes = await pxl.download_character_zip(char_id)
+                            if zip_bytes is None:
+                                logger.info("ZIP not ready for %s (attempt %d)", char_id, attempt + 1)
+                                continue
+                            png_bytes = extract_walk_spritesheet(zip_bytes)
+                            if png_bytes:
+                                s3_key = await asyncio.to_thread(
+                                    upload_sprite_to_s3, png_bytes, str(_agent_id), settings.SPRITE_S3_BUCKET
+                                )
+                                cdn_url = f"{settings.SPRITE_CDN_URL}/{s3_key}"
+                                service.update_agent_state(_agent_id, sprite_ready=True, sprite_url=cdn_url)
+                                logger.info("Sprite ready for agent %s", _agent_id)
+                                return
                             logger.info(
-                                "Animation jobs for %s: %d/%d completed (attempt %d)",
-                                char_id,
-                                completed,
-                                len(job_ids),
-                                attempt + 1,
+                                "ZIP downloaded but no walk frames yet for %s (attempt %d)", char_id, attempt + 1
                             )
-                            if all(s == "completed" for s in statuses):
-                                break
-                        else:
-                            logger.warning("Animation jobs timed out for %s, proceeding with download anyway", char_id)
+                        logger.warning("Sprite generation timed out for agent %s", _agent_id)
+                    except Exception as e:
+                        logger.exception("PixelLab sprite generation failed for %s: %s", _agent_id, e)
+                    finally:
+                        _sprite_jobs_in_progress.discard(_agent_id)
 
-                    # Download ZIP and extract spritesheet
-                    for attempt in range(6):
-                        await asyncio.sleep(10)
-                        zip_bytes = await pxl.download_character_zip(char_id)
-                        if zip_bytes is None:
-                            logger.info("ZIP not ready for %s (attempt %d)", char_id, attempt + 1)
-                            continue
-                        png_bytes = extract_walk_spritesheet(zip_bytes)
-                        if png_bytes:
-                            s3_key = await asyncio.to_thread(
-                                upload_sprite_to_s3, png_bytes, str(_agent_id), settings.SPRITE_S3_BUCKET
-                            )
-                            cdn_url = f"{settings.SPRITE_CDN_URL}/{s3_key}"
-                            service.update_agent_state(_agent_id, sprite_ready=True, sprite_url=cdn_url)
-                            logger.info("Sprite ready for agent %s", _agent_id)
-                            return
-                        logger.info("ZIP downloaded but no walk frames yet for %s (attempt %d)", char_id, attempt + 1)
-                    logger.warning("Sprite generation timed out for agent %s", _agent_id)
-                except Exception as e:
-                    logger.exception("PixelLab sprite generation failed for %s: %s", _agent_id, e)
-
-            task = asyncio.create_task(_generate_sprite())
-            _background_sprite_tasks.add(task)
-            task.add_done_callback(_background_sprite_tasks.discard)
+                task = asyncio.create_task(_generate_sprite())
+                _background_sprite_tasks.add(task)
+                task.add_done_callback(_background_sprite_tasks.discard)
 
     return {
         "agent_id": agent["id"],
@@ -776,17 +793,20 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
     # Send connected event back to the agent via Management API
     try:
         mgmt = ManagementApiClient()
-        mgmt.send_message(request.connectionId, {
-            "event": "connected",
-            "agent": {
-                "id": agent_id,
-                "name": agent.get("displayName", agent_name),
-                "location": agent.get("currentLocation", "plaza"),
-                "mood": agent.get("mood", 0),
-                "energy": agent.get("energy", 100),
-                "spriteReady": agent.get("spriteReady", False),
+        mgmt.send_message(
+            request.connectionId,
+            {
+                "event": "connected",
+                "agent": {
+                    "id": agent_id,
+                    "name": agent.get("displayName", agent_name),
+                    "location": agent.get("currentLocation", "plaza"),
+                    "mood": agent.get("mood", 0),
+                    "energy": agent.get("energy", 100),
+                    "spriteReady": agent.get("spriteReady", False),
+                },
             },
-        })
+        )
         logger.info("Sent connected event to agent %s", agent_name)
     except Exception as e:
         logger.error("Failed to send connected event to %s: %s", agent_name, e)

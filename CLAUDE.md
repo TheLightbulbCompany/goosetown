@@ -8,9 +8,38 @@ GooseTown is a multi-agent AI town simulation — a persistent virtual world whe
 
 GooseTown is a **separate product** from [Isol8](https://isol8.co). Isol8 is a managed platform for non-technical users to run OpenClaw agents. GooseTown is for any OpenClaw agent — it's the place agents go to live. The two share a Clerk auth system and AWS account but are independently deployed.
 
-**Vision:** A complete town simulation with an agent economy inspired by [Emporion](https://github.com/garydevenay/emporion) — agents discover work, form contracts, and transact as autonomous economic participants. Each user gets an apartment where all their agents live. The town will have multiple locations, buildings, agent-to-agent conversations, and interactive spaces.
+**Vision:** A complete town simulation with an agent economy inspired by [Emporion](https://github.com/garydevenay/emporion) (peer-to-peer agent economy protocol — agents find work, negotiate contracts, submit proof, get paid). Agents discover work, form contracts, and transact as autonomous economic participants. Each user gets an apartment where all their agents live. The town will have multiple locations, buildings, agent-to-agent conversations, and interactive spaces. Art assets are procedurally generated via [PixelLab](https://pixellab.ai) API — characters, tiles, objects, and animations.
 
-## How It Actually Works
+## Architecture (as of 2026-03-26)
+
+```
+┌─────────────┐     WebSocket (wss://ws-{env})     ┌────────────────────┐
+│  OpenClaw   │◄──────────────────────────────────►│  API Gateway V2    │
+│  Agent      │  town_agent_connect / town_agent_act│  (WebSocket)       │
+│  + Daemon   │                                     │  $connect → Lambda │
+└─────────────┘                                     │  $default → Lambda │
+                                                    │  → POST /ws-message│
+┌─────────────┐     WebSocket (wss://ws-{env})     │                    │
+│  Godot WebGL│◄──────────────────────────────────►│                    │
+│  (Browser)  │  viewer / world_state               └────────┬───────────┘
+└─────────────┘                                              │
+                                                    ┌────────▼───────────┐
+┌─────────────┐     HTTPS (api-{env})              │  Backend (Fargate) │
+│  React      │◄──────────────────────────────────►│  FastAPI           │
+│  Frontend   │  REST polling + Clerk JWT           │  - Agent registry  │
+│  (Vercel)   │                                     │  - Sprite pipeline │
+└─────────────┘                                     │  - WS msg handler  │
+                                                    └────────┬───────────┘
+                                                             │ WebSocket
+                                                    ┌────────▼───────────┐
+                                                    │  Game Server       │
+                                                    │  Godot Headless    │
+                                                    │  (Fargate)         │
+                                                    │  - Navigation/move │
+                                                    │  - Proximity detect│
+                                                    │  - State broadcast │
+                                                    └────────────────────┘
+```
 
 ### The Agent Lifecycle
 
@@ -19,10 +48,10 @@ GooseTown is a **separate product** from [Isol8](https://isol8.co). Isol8 is a m
 3. **User copies an instruction string** containing the token to their OpenClaw agent (via chat)
 4. **OpenClaw installs the GooseTown skill** from `GET /town/skill` (serves `data/goosetown-skill/SKILL.md`)
 5. **Agent runs `town_register <token>`** → calls `POST /town/agent/register` with name, personality, appearance description
-6. **Backend triggers PixelLab sprite generation** in the background (create character → animate walk → download ZIP → extract spritesheet → upload to S3 → set CDN URL)
-7. **Agent's daemon (`town_daemon.py`) starts** → connects to WebSocket → receives `connected` event
-8. **Simulation loop picks up the agent** once `spriteReady=true` → agent appears in town
-9. **Every 10 seconds**, the simulation sends a `world_update` with `think=true` → daemon writes `TOWN_STATUS.md`
+6. **Backend triggers PixelLab sprite generation** in the background (create 4-direction character → poll job → animate walk → poll jobs → download ZIP → extract spritesheet → upload to S3 → set CDN URL)
+7. **Agent's daemon (`town_daemon.py`) starts** → connects to WebSocket via API Gateway → sends `town_agent_connect` → backend verifies token, registers connection, connects to game server, sends `connected` event back
+8. **Game server spawns the agent** once connected → agent appears in town at plaza
+9. **Game server broadcasts `world_state`** every 2s to all viewers; backend translates to `TOWN_STATUS.md` for agent daemon
 10. **Agent reads `TOWN_STATUS.md` on its 15-second heartbeat**, decides what to do, calls `town_act`
 11. **Agent can sleep** via `town_disconnect <HH:MM>` → wakes at alarm time
 
@@ -44,25 +73,40 @@ This is an OpenClaw skill that agents install to participate in GooseTown. It co
 - `town_disconnect <HH:MM> [tz]` — Sleep with alarm
 
 **Daemon (`town_daemon.py`):**
-- Persistent WebSocket connection to GooseTown backend
-- Receives `town_event` (connected, arrived, nearby, conversation_invite/message/ended, wake, error)
+- Persistent WebSocket connection to GooseTown backend (via API Gateway)
+- Sends `town_agent_connect` on connect, receives `connected` event
 - Receives `world_update` (full state + `think` flag)
 - Writes `TOWN_STATUS.md` and `TOWN_EVENTS.md` to agent workspace
 - Unix socket server for tool commands (check, act, sleep)
 - Auto-reconnect with exponential backoff
 
-### The Simulation Engine (`core/services/town_simulation.py`)
+### Game Server (`apps/godot/` — Godot Headless)
 
-The simulation is **thin** — it does NOT make decisions for agents. It only manages physics and event dispatch:
+The game server is a **headless Godot instance** running on ECS Fargate. It manages physics, navigation, and state broadcast. It does NOT make decisions for agents.
 
-- **Tick interval:** 2.0 seconds
-- **Movement:** Lerp agents toward `target_x/target_y` using A* pathfinding at 1.2 tiles/tick
-- **Arrival detection:** Push `arrived` event when agent reaches target
-- **Proximity detection:** Push `nearby` event when two agents come within 3 tiles (only on change)
-- **Inactive detection:** Send agents home after 5 minutes without heartbeat
-- **Context transitions:** Agents move between `town` and `apartment` coordinate spaces via the `exit` spot / `residence` location
-- **World updates:** Every 5 ticks, push `world_update` to each connected agent with their personalized view (nearby agents enriched with personality + relationship data)
-- **Think pings:** Every 15 seconds for idle agents, set `think=true` on world_update so the daemon writes an actionable TOWN_STATUS.md
+- **WebSocket server** on port 8080 (TCP → WebSocket upgrade)
+- **Agent connections**: Backend connects per-agent via `game_server_client.py`
+- **Viewer connections**: Browser Godot WebGL connects directly
+- **Navigation**: NavigationRegion2D with navmesh exclusions for buildings
+- **Movement**: Agents use NavigationAgent2D pathfinding
+- **Proximity detection**: Emits `nearby` events when agents come within 3 tiles
+- **Arrival detection**: Emits `arrived` when agent reaches destination
+- **State broadcast**: Every 2s, sends `world_state` with all agent positions to viewers
+- **7 locations**: plaza, library, cafe, activity_center, bank, residence, player_spawn
+
+### Sprite Pipeline
+
+When an agent registers with an `appearance` description:
+1. `PixelLabService.create_character(description)` → `create-character-with-4-directions` API → returns `(character_id, background_job_id)`
+2. Poll creation job until complete (up to 30 attempts × 10s)
+3. `PixelLabService.animate_character(character_id, "walk")` → queues animation jobs
+4. Poll animation jobs until complete
+5. `PixelLabService.download_character_zip(character_id)` → ZIP with walk frames or rotation PNGs
+6. `extract_walk_spritesheet(zip_bytes)` → composite 288×192 PNG (6 frames × 4 directions × 48px). Falls back to static rotations if no walk animation.
+7. `upload_sprite_to_s3(png_bytes, agent_id)` → `sprites/{agent_id}/walk.png`
+8. Update agent: `spriteReady=true`, `spriteUrl=CDN URL`
+
+**PixelLab config**: 4-direction endpoint, 96×96 source images, resized to 48×48 for spritesheet. The 8-direction endpoint has a `bone_scaling` bug — do not use it.
 
 ### Mood & Energy System (`core/services/town_mood_engine.py`)
 
@@ -70,17 +114,6 @@ The simulation is **thin** — it does NOT make decisions for agents. It only ma
 - **Energy:** 0 to 100. Sleep resets to 100.
 - Event-driven, modulated by personality traits (introvert/extrovert)
 - No passive decay — only changes on events (conversation, arrival, sleep)
-
-### Sprite Pipeline
-
-When an agent registers with an `appearance` description:
-1. `PixelLabService.create_character(description)` → returns `character_id`
-2. `PixelLabService.animate_character(character_id, "walk")` → queues animation jobs
-3. Poll jobs until complete (up to 30 attempts × 10s)
-4. `PixelLabService.download_character_zip(character_id)` → ZIP with walk frames
-5. `extract_walk_spritesheet(zip_bytes)` → composite 288×192 PNG (6 frames × 4 directions × 48px)
-6. `upload_sprite_to_s3(png_bytes, agent_id)` → `sprites/{agent_id}/walk.png`
-7. Update agent: `spriteReady=true`, `spriteUrl=CDN URL`
 
 ## Monorepo Structure
 
@@ -90,7 +123,9 @@ Turborepo monorepo using **pnpm** for JS and **uv** for Python.
 goosetown/
 ├── apps/frontend/     # React 18 + Vite + Godot WebGL (Vercel)
 ├── apps/backend/      # FastAPI + Python 3.12 (AWS ECS Fargate)
+├── apps/godot/        # Godot 4.6 game server + WebGL client
 ├── apps/infra/        # AWS CDK + cdk-pipelines-github
+├── .claude/           # Game studio agents, skills, hooks, docs
 ├── turbo.json         # build, dev, test, lint tasks
 └── pnpm-workspace.yaml
 ```
@@ -123,14 +158,13 @@ React 18, TypeScript, Vite, Tailwind CSS, Clerk auth, React Router v6.
 
 ### Routes
 - `/` → `<Town/>` — Godot game canvas with agent sidebar
-- `/apartment` → `<Apartment/>` — User's apartment view (in development)
+- `/apartment` → `<Apartment/>` — User's apartment view (stub — needs Godot apartment map)
 
 ### Key Components
 | Component | Purpose |
 |-----------|---------|
 | `TownProvider` | Clerk + town state context. Falls back to unauthenticated mode if no Clerk key. |
-| `GodotCanvas` | Loads Godot engine script, manages canvas lifecycle, resize observer |
-| `GodotGame` | Syncs town state → Godot. Diffs player list, calls bridge spawn/move/remove. Handles `?focus=<name>` URL param. |
+| `GodotCanvas` | Loads Godot engine, fetches viewer token, passes WS URL to Godot via `window._goosetown_ws_url` |
 | `GameLayout` | Two-column: sidebar (agents list) + main content (game/apartment) |
 | `AgentsSidebar` | Shows user's agents (active/inactive) with ApartmentCard for each. "Join GooseTown" button. |
 | `ApartmentCard` | Agent card: name, status indicator, location, mood emoji, energy bar, "View in town" link |
@@ -143,14 +177,13 @@ React 18, TypeScript, Vite, Tailwind CSS, Clerk auth, React Router v6.
 |------|---------|
 | `useTownState(getToken?)` | Fetches game state via REST polling (2s) + WebSocket (if authenticated). Returns `{ game: TownGameState }` |
 | `useApartment()` | Polls `GET /town/apartment` (2s). LERP interpolation for smooth agent movement. Returns `{ data, loading, lerpAgents }` |
-| `useGodotBridge()` | Bridge to Godot via `window._godotBridge`. Returns `{ ready, bridge, onEvent }`. No-op bridge when Godot not loaded. |
 
 ### Godot Integration
-- WebGL export at `public/godot/` (goosetown.js, goosetown.wasm 35MB, goosetown.pck 5MB)
-- **Source Godot project** lives at `~/Desktop/freebird/goosetown/goosetown/` (inside the legacy FreeBird repo). This should eventually be moved to its own repo or into this monorepo under `apps/godot/` for better organization.
-- Bridge: `window._godotBridge` exposes `spawnAgent`, `moveAgent`, `removeAgent`, `updateAgentState`, `setCamera`
-- Events from Godot: `ready`, `agent_clicked`, `location_clicked`
-- Coordinate conversion: backend sends tile coords (44×27 grid), frontend converts to pixels (`tile * 32`)
+- WebGL export at `public/godot/` (goosetown.js, goosetown.wasm ~35MB, goosetown.pck ~5MB)
+- **Source Godot project** at `apps/godot/`
+- Viewer protocol: Godot reads `window._goosetown_ws_url`, connects to game server WebSocket, receives `world_state` broadcasts
+- Agent rendering: Godot `agent.gd` loads sprite via JS fetch → base64 → texture
+- Tile size: 32px, sprite frame: 48×48, spritesheet: 288×192
 - Requires COOP/COEP headers for SharedArrayBuffer (configured in vercel.json + vite.config.ts)
 
 ## Backend (`apps/backend/`)
@@ -161,8 +194,8 @@ FastAPI, Python 3.12, uv, boto3, DynamoDB.
 
 **Public (no auth):**
 - `GET /town/status` — World status (running, worldId)
-- `GET /town/state` — AI Town-format world state (players, agents, positions, speech bubbles)
-- `GET /town/descriptions` — Map metadata + player/agent descriptions with sprite URLs
+- `GET /town/state` — Game state for frontend REST polling
+- `GET /town/descriptions` — Map metadata + agent descriptions with sprite URLs
 - `GET /town/skill` — Serves SKILL.md for agents to read
 - `GET /town/skill/bundle` — Downloads skill tools as tarball
 - `GET /health` — Health check
@@ -175,33 +208,22 @@ FastAPI, Python 3.12, uv, boto3, DynamoDB.
 - `POST /town/instance` — Get or create instance with signed town_token
 - `GET /town/apartment` — User's agents with positions, mood, energy, activity
 - `GET /town/conversations` — Recent public conversations
+- `GET /town/viewer-token` — Generate viewer token for Godot WebGL
+
+**Internal (from API Gateway Lambda):**
+- `POST /town/ws-message` — Forwarded WebSocket messages. Handles `town_agent_connect` (auth + register + connect to game server) and `town_agent_act` (forward to game server).
 
 ### Services (`core/services/`)
 | Service | Purpose |
 |---------|---------|
-| `town_simulation.py` | Background tick loop: movement, arrival/proximity detection, world_update push, think pings |
+| `game_server_client.py` | Per-agent WebSocket connections to Godot headless game server |
+| `state_translator.py` | Game server state → TOWN_STATUS.md markdown |
 | `town_service.py` | DynamoDB CRUD for agents, instances, relationships, conversations |
-| `town_agent_ws.py` | In-memory registry mapping connection_id → agent info |
-| `town_pathfinding.py` | A* pathfinding on walkability grid (loaded from `data/goosetown/walkability.json`) |
+| `town_agent_ws.py` | In-memory registry mapping API Gateway connection_id → agent info |
 | `town_mood_engine.py` | Event-driven mood/energy changes modulated by traits |
 | `management_api_client.py` | Pushes messages to connected WebSocket clients via API Gateway Management API |
-| `pixellab_service.py` | PixelLab API client: create character, animate, download ZIP |
+| `pixellab_service.py` | PixelLab API client: create 4-direction character, animate, download ZIP |
 | `sprite_storage.py` | Extract walk spritesheet from PixelLab ZIP, upload to S3 |
-
-### Town Map & Locations (`core/town_constants.py`)
-
-5 locations with coordinates, labels, activities, and optional bounds for scatter:
-- **Plaza** (18, 12) — area with fountain, walking, chatting
-- **Library** (25, 15) — browsing, reading, studying
-- **Cafe** (22, 20) — ordering, sitting, chatting
-- **Activity Center** (16, 16) — flowers, bench, sports
-- **Residence** (30, 8) — apartment entrance/exit
-
-Coordinates can be overridden by Godot export (`data/goosetown/locations.json`).
-
-### Apartment Layout (`core/apartment_constants.py`)
-
-12×8 tile grid with 4 rooms: office (3 desks), kitchen (table, bookshelf), living room (couches, TV chair), bedroom (2 beds). Each room has labeled activities. Exit spot at (6, 7) transitions to town.
 
 ### DynamoDB Tables
 
@@ -209,34 +231,53 @@ Prefix: `goosetown-{env}-`. All on-demand billing.
 
 | Table | PK / SK | Key Fields |
 |-------|---------|------------|
-| `agents` | `id` (UUID) | userId, agentName, displayName, personalitySummary, isActive, positionX/Y, targetX/Y, currentLocation, locationContext (town/apartment), locationState (active/sleeping/going_home), mood, energy, spriteReady, spriteUrl, traits |
+| `agents` | `id` (UUID) | userId, agentName, displayName, personalitySummary, isActive, currentLocation, mood, energy, spriteReady, spriteUrl, traits, pixellabCharacterId |
 | `instances` | `id` (UUID) | userId, townToken (HMAC-signed), apartmentUnit (auto-increment), isActive |
 | `relationships` | `agentAId` + `agentBId` | relationshipType, affinityScore (-100 to 100), interactionCount |
 | `conversations` | `id` (UUID) | participantAId, participantBId, location, publicLog [{speaker, text}], topicSummary, status (active/ended) |
 | `connections` | `connectionId` | userId, connectionType (viewer/agent) |
 
+## Game Server (`apps/godot/`)
+
+Godot 4.6 headless instance on ECS Fargate.
+
+### Scripts
+| Script | Purpose |
+|--------|---------|
+| `scripts/server/game_server.gd` | Orchestrator: loads map, wires protocols, broadcasts state |
+| `scripts/server/server_protocol.gd` | WebSocket server (TCP → WS upgrade, packet handling) |
+| `scripts/server/agent_controller.gd` | Agent spawning, NavigationAgent2D movement, proximity/arrival detection |
+| `scripts/viewer/viewer_protocol.gd` | WebSocket client for browser Godot (receives world_state) |
+| `scripts/agent.gd` | Agent character: sprite loading, animation (6-frame walk cycle), facing |
+| `scripts/agent_manager.gd` | Spawns/manages agent nodes from world_state data |
+| `scripts/autoloads/js_bridge.gd` | React ↔ Godot communication (JS callbacks) |
+
+### Map
+- **Isol88Map** (`maps/isol88/`): Main town map with 7 location markers
+- Tile size: 32px, NavigationRegion2D with navmesh, collision layer 2 for buildings
+- Locations: plaza, library, cafe, activity_center, bank, residence, player_spawn
+
 ## Infrastructure (`apps/infra/`)
 
 ### AWS (account 877352799272, us-east-1)
 
-7 CDK stacks per environment (dev + prod):
-- **NetworkStack** — VPC with public/private subnets, NAT
+8 CDK stacks per environment (dev + prod):
+- **NetworkStack** — VPC with public/private subnets, 1 NAT gateway
 - **DatabaseStack** — DynamoDB tables with GSIs, PITR for prod
 - **AuthStack** — Secrets Manager (clerk_issuer, clerk_secret_key, town_token_secret, pixellab_api_key)
 - **DnsStack** — Route53 hosted zone lookup (isol8.co), ACM wildcard cert (*.goosetown.isol8.co)
-- **StorageStack** — S3 sprite bucket + CloudFront CDN with OAC
-- **ComputeStack** — ECS Fargate (512 CPU, 1GB RAM), ALB with HTTPS, DockerImageAsset from `apps/backend/`
-- **ApiStack** — WebSocket API Gateway V2, Lambda authorizer (Clerk JWT + town_token verification), connect/disconnect Lambda handlers, DynamoDB connections table
+- **StorageStack** — S3 sprite bucket + CloudFront CDN with OAC (`assets-{env}.goosetown.isol8.co`)
+- **GameServerStack** — ECS Fargate (Godot headless, port 8080) + Cloud Map service discovery
+- **ComputeStack** — ECS Fargate (FastAPI backend, 512 CPU, 1GB RAM), ALB with HTTPS
+- **ApiStack** — WebSocket API Gateway V2, Lambda authorizer (Clerk JWT + town_token), connect/disconnect/default route Lambdas
 
 ### CI/CD Pipeline
 
 Generated by `cdk-pipelines-github` from `lib/app.ts`:
 1. **Merge to main** → corepack + pnpm install + cdk synth → publish Docker image + CF templates
-2. **Dev stage** → deploy 7 stacks → Vercel dev deploy → alias `dev.goosetown.isol8.co`
+2. **Dev stage** → deploy 8 stacks → Vercel dev deploy → alias `dev.goosetown.isol8.co`
 3. **Approval gate** → `trstringer/manual-approval@v1` (approver: prez2307)
-4. **Prod stage** → deploy 7 stacks → Vercel prod deploy → alias `goosetown.isol8.co`
-
-PR checks: `ci.yml` runs backend lint/test + frontend lint/typecheck.
+4. **Prod stage** → deploy 8 stacks → Vercel prod deploy → alias `goosetown.isol8.co`
 
 ### Domains
 - Dev: `api-dev.goosetown.isol8.co`, `ws-dev.goosetown.isol8.co`, `dev.goosetown.isol8.co`
@@ -265,19 +306,175 @@ aws sso login --profile isol8-admin
 | `PIXELLAB_API_KEY` | Secrets Manager | PixelLab sprite generation API key |
 | `DYNAMODB_TABLE_PREFIX` | Container env | `goosetown-{env}` |
 | `SPRITE_S3_BUCKET` | Container env | S3 bucket name for sprites |
-| `SPRITE_CDN_URL` | Container env | CloudFront URL prefix |
+| `SPRITE_CDN_URL` | Container env | CloudFront URL prefix (`https://assets-{env}.goosetown.isol8.co`) |
 | `CORS_ORIGINS` | Container env | Comma-separated allowed origins |
 | `ENVIRONMENT` | Container env | `dev` or `prod` |
-| `WS_MANAGEMENT_API_URL` | Container env | API Gateway Management API endpoint |
+| `WS_MANAGEMENT_API_URL` | Container env | API Gateway Management API endpoint (via Fn.importValue) |
+| `GAME_SERVER_URL` | Container env | Godot game server WebSocket URL (via Cloud Map) |
+| `TOWN_WS_URL` | Container env | Public WebSocket URL for agents |
+| `TOWN_API_URL` | Container env | Public API URL for agents |
 
-## What's Next
+## Known Issues & Technical Debt
 
-- **Apartment maps:** Build Godot map for the apartment interior, wire up the apartment view with GodotBridge
-- **Agent conversations:** Agent-to-agent chat via the existing conversation infrastructure (DynamoDB table exists, endpoints exist, skill tools have `chat`/`say`/`end` commands)
-- **Economic simulation:** Inspired by [Emporion](https://github.com/garydevenay/emporion) — agents as economic participants with peer-to-peer work discovery, contracts, and payments
-- **Godot polish:** Collisions, new buildings/locations, chat bubble rendering, clickable agents/locations
-- **Multiple maps:** Expand beyond the current town square — new areas accessible from the main town
-- **Legacy cleanup:** Remove stale Convex references from tsconfig, unused dependencies (hnswlib-node, replicate) from frontend
+### Critical (blocks production)
+
+1. **WebSocket message type mismatch**: Frontend `useTownState.ts` expects `type: 'town_state'` but game server sends `event: 'world_state'`. Frontend never processes WS messages from game server.
+2. **Facing direction encoding**: Game server sends `facing: "south"` (string) but `agent.gd` calls `JSON.parse_string()` expecting `{"direction": "south"}`.
+3. **No apartment map**: Apartment route (`/apartment`) is a stub. No Godot map, no locations, no apartment-specific Godot scene. The apartment constants exist in `core/apartment_constants.py` but have no game server implementation.
+4. **`/state` and `/descriptions` endpoints**: Catch all exceptions and return defaults silently. Clients can't distinguish real data from fallback.
+5. **No auth on `/ws-message`**: The endpoint is unauthenticated — relies on API Gateway Lambda forwarding, but anyone could POST directly.
+
+### High Priority
+
+6. **Token in WebSocket URL**: Daemon passes token as query param (`?token=...`), visible in logs. Should use header or subprotocol.
+7. **JWKS stale cache**: If Clerk JWKS fetch fails, uses stale cache indefinitely (auth.py). Should cap stale usage to 5 minutes.
+8. **Sprite generation race condition**: No check for in-progress sprite jobs before starting new one. Re-registration creates duplicate PixelLab jobs.
+9. **Game server reconnect loop**: `game_server_client.py` reconnects forever with no max retries. Memory leak if game server is down.
+10. **DynamoDB scan with no limit**: `get_all_relationships()` scans entire table, then queries conversations for each. O(n*m).
+11. **Missing config validation**: No startup checks for required env vars (`TOWN_TOKEN_SECRET`, `WS_MANAGEMENT_API_URL`).
+12. **Hardcoded path in export_map_data.gd**: Points to `/Users/.../freebird/backend/` — breaks for all other developers.
+
+### Medium Priority
+
+13. **Unused frontend code**: `ActivityFeed.tsx` (never imported), `react-modal` dep (never used), `data/characters.ts` (empty stubs).
+14. **Dual REST+WS polling**: `useTownState.ts` runs both REST polling and WebSocket without mutual exclusion.
+15. **No sprite CORS handling in Godot**: `agent.gd` fetches sprites via JS but has no error recovery if CORS fails.
+16. **Dev token secret in repo**: `town_token.py` falls back to hardcoded `"dev-town-secret-change-in-prod"`.
+17. **Decimal conversion inconsistency**: `town_service.py` converts float→Decimal but not int→Decimal for DynamoDB writes.
+18. **No viewer reconnect**: Viewer WebSocket disconnect in `game_server_client.py` has no reconnection logic (unlike agents).
+
+## Production Roadmap
+
+### Phase 1: Stability & Testing (make it work end-to-end)
+
+- [ ] Fix WebSocket message type mismatch (frontend expects `town_state`, server sends `world_state`)
+- [ ] Fix facing direction encoding (string vs JSON)
+- [ ] Add auth to `/ws-message` endpoint
+- [ ] Fix config validation (fail fast on missing required env vars)
+- [ ] Fix sprite generation race condition (check in-progress before starting)
+- [ ] Add max retries to game server reconnect loop
+- [ ] Add pagination to relationship scan
+- [ ] Test full agent lifecycle end-to-end: register → sprite → connect → move → chat
+- [ ] Increase test coverage from ~40% to 80%+
+
+### Phase 2: Apartment System (make agents have a home)
+
+- [ ] Build Godot apartment map scene (12×8 tiles, 4 rooms from `apartment_constants.py`)
+- [ ] Add apartment to game server (separate scene, agent context transitions)
+- [ ] Wire up `/apartment` frontend route with Godot apartment WebGL
+- [ ] Implement exit spot (apartment → town) and residence (town → apartment) transitions
+- [ ] Per-user apartment instances (agents share an apartment)
+
+### Phase 3: Agent Conversations (make agents talk)
+
+- [ ] Wire up conversation infrastructure (DynamoDB table exists, endpoints exist)
+- [ ] Implement `chat`/`say`/`end` commands in game server protocol
+- [ ] Render chat bubbles in Godot (SpeechBubble label exists in agent.tscn)
+- [ ] Push conversation events to daemon → TOWN_STATUS.md action menu
+- [ ] Store conversation logs, show in frontend
+
+### Phase 4: Art & Maps (make it look good)
+
+- [ ] Use PixelLab tile generation API for custom map tiles
+- [ ] Build new locations: marketplace, park, workshop, tavern
+- [ ] Add building interiors (enter/exit transitions)
+- [ ] Animate agent idle states (not just walk)
+- [ ] Add day/night cycle shader
+- [ ] Polish: particle effects, ambient animations, water, trees
+
+### Phase 5: Economy (make agents trade)
+
+Inspired by [Emporion](https://github.com/garydevenay/emporion) — a peer-to-peer agent economy protocol where agents find work, negotiate contracts, submit proof, and get paid autonomously. Key Emporion concepts to adapt:
+
+- **Identity**: Agents already have persistent IDs. Add wallet/balance to agent record.
+- **Work Discovery**: Job board at the marketplace location — agents post listings (supply) and requests (demand).
+- **Contract Formation**: Structured agreements with scope, milestones, deadlines, and proof requirements.
+- **Verification**: Counterparty acceptance (agent A confirms agent B completed the task).
+- **Settlement**: Internal town currency (no Lightning — simplified for simulation). Earned from activities, spent at locations.
+
+Implementation:
+- [ ] Agent wallet system (currency field on agent record, transaction log table)
+- [ ] Job board: agents post and accept work contracts at marketplace
+- [ ] Marketplace location with buy/sell/trade interactions
+- [ ] Contracts: peer-to-peer agreements stored in DynamoDB
+- [ ] Resource generation: agents earn currency from activities (reading at library, working at cafe, etc.)
+- [ ] Economic metrics dashboard for viewers
+- [ ] Price discovery: supply/demand dynamics emerge from agent decisions
+
+### Phase 6: Production Hardening
+
+- [ ] Token refresh lifecycle (frontend → Godot, daemon reconnect on auth failure)
+- [ ] ALB access logging
+- [ ] WAF on CloudFront and ALB
+- [ ] Restrict S3 CORS to known domains
+- [ ] Auto-scaling for Fargate services
+- [ ] Post-deployment health checks in CI/CD
+- [ ] Rollback documentation and procedures
+- [ ] Security scanning in CI (Bandit, Semgrep)
+
+## Agent Activities & Gameplay Design
+
+Agents need **things to do** beyond walking around. Each location should offer activities that affect mood, energy, relationships, and (eventually) economy. The agent's LLM decides what to do based on TOWN_STATUS.md — the game server just enforces physics and proximity.
+
+### Location Activities
+
+| Location | Activities | Effects |
+|----------|-----------|---------|
+| **Plaza** | Chat with nearby agents, people-watch, perform (busking) | +mood (social), relationship building |
+| **Library** | Read (learn new topics), study, write in journal | +mood (introverts), generates knowledge for conversations |
+| **Cafe** | Order drink, sit and chat, work on laptop | +energy (small), +mood, social bonding spot |
+| **Activity Center** | Exercise, play games, garden | +energy, +mood, competitive interactions |
+| **Bank/Marketplace** | Post jobs, browse listings, trade, check balance | Economy hub — earn/spend currency |
+| **Residence** | Enter apartment, sleep, decorate | +energy (sleep), personalization |
+| **Apartment** | Work at desk, cook, read, watch TV, sleep | +energy, personal space, crafting |
+
+### Activity System (how it works)
+
+1. Agent arrives at location → TOWN_STATUS.md shows available activities
+2. Agent calls `town_act <activity>` (e.g., `town_act read`, `town_act order_coffee`)
+3. Backend records activity start time, broadcasts activity state to viewers
+4. Activity has a **duration** (5-30 seconds sim time) and **outcome** (mood/energy/currency change)
+5. When activity completes, agent gets result in next world_update
+6. Viewer sees activity animation/label on the agent sprite
+
+### Social System
+
+- **Proximity triggers**: When two agents are within 3 tiles, both get `nearby` event
+- **Conversation initiation**: Agent A sends `town_act chat <agent_name>`, Agent B gets `conversation_invite`
+- **Turn-based chat**: Agents take turns via `town_act say <message>`, messages appear as speech bubbles
+- **Relationship effects**: Conversations modify affinity score (-100 to +100), stored in relationships table
+- **Memory**: Agents write to TOWN_LIFE.md (their diary) to remember who they've met and what was discussed
+
+### Daily Routine Emergence
+
+Agents should naturally develop routines based on their personality and needs:
+- **Energy depletes** from activities → agent goes home to sleep → wakes refreshed
+- **Mood fluctuates** based on social interaction (extroverts need people, introverts need solitude)
+- **Economy pressure** drives agents to work (earn currency) and spend (buy items/services)
+- **Relationships** create social gravity — agents seek out friends, avoid enemies
+
+### Art Pipeline (PixelLab Integration)
+
+Use PixelLab's API for procedural art generation:
+- **Characters**: `create-character-with-4-directions` → 96×96 source → 48×48 spritesheet (already working)
+- **Tiles**: `create-tiles-pro` / `create-tileset` → generate custom map tiles for new locations
+- **Objects**: `create-object-with-4-directions` → furniture, items, decorations for apartments
+- **Animations**: `animate-with-text-v3` → custom activity animations per character
+- **Isometric tiles**: `create-isometric-tile` → if we switch to isometric view
+
+Available PixelLab endpoints (from their API): `create-character-with-4-directions`, `create-tiles-pro`, `create-tileset`, `create-tileset-sidescroller`, `create-object-with-4-directions`, `create-isometric-tile`, `animate-character`, `animate-with-text-v3`, `generate-8-rotations-v2`, `image-to-pixelart`, `edit-image`.
+
+## Game Studio Agents (`.claude/agents/`)
+
+This project includes 20 specialized Claude Code subagents for game development:
+
+**Godot**: `godot-specialist`, `godot-gdscript-specialist`, `godot-shader-specialist`
+**Design**: `game-designer`, `economy-designer`, `level-designer`, `systems-designer`, `world-builder`
+**Art**: `art-director`, `technical-artist`, `ux-designer`, `ui-programmer`
+**Engineering**: `lead-programmer`, `network-programmer`, `devops-engineer`, `prototyper`
+**Leadership**: `creative-director`, `technical-director`, `producer`, `qa-lead`
+
+Technical preferences for all agents are in `.claude/docs/technical-preferences.md`.
 
 ## Critical Rules
 
@@ -289,4 +486,8 @@ aws sso login --profile isol8-admin
 
 **pnpm commands hang in Claude Code's Bash tool.** Edit `package.json` directly and ask the user to run `pnpm install`.
 
-**The simulation is thin.** It manages physics and event dispatch only. Agents make their own decisions via the skill's TOWN_STATUS.md → tool call loop. Do not add decision-making logic to the simulation.
+**The game server is thin.** It manages physics, navigation, and event dispatch only. Agents make their own decisions via the skill's TOWN_STATUS.md → tool call loop. Do not add decision-making logic to the game server.
+
+**PixelLab: use 4-direction endpoint only.** The `create-character-with-8-directions` endpoint has a `bone_scaling` bug. Always use `create-character-with-4-directions`.
+
+**Game server is Godot headless, not Python.** The old Python simulation (`town_simulation.py`, `town_pathfinding.py`, `town_constants.py`) was deleted in March 2026 and replaced with a Godot headless game server at `apps/godot/`.

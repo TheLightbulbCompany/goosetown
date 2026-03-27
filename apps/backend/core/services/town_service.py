@@ -471,7 +471,7 @@ class TownService:
     def get_all_relationships(self) -> list[dict]:
         """Get all relationships with latest conversation topics."""
         table = dynamo.relationships_table()
-        resp = table.scan()
+        resp = table.scan(Limit=100)
         rels = resp.get("Items", [])
 
         conv_table = dynamo.conversations_table()

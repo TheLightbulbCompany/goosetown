@@ -152,10 +152,15 @@ func _update_sprite_frame() -> void:
 	sprite.texture = atlas
 
 
-func _parse_facing(facing_json: String) -> void:
-	if facing_json == "":
+func _parse_facing(facing_str: String) -> void:
+	if facing_str == "":
 		return
-	var parsed = JSON.parse_string(facing_json)
+	# Accept plain direction strings (e.g. "south") from game server
+	if facing_str in DIR_ROW:
+		facing = facing_str
+		return
+	# Also accept JSON object format (e.g. {"direction": "south"}) for legacy callers
+	var parsed = JSON.parse_string(facing_str)
 	if parsed is Dictionary:
 		var dir: String = str(parsed.get("direction", ""))
 		if dir in DIR_ROW:

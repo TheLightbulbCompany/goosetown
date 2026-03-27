@@ -2,18 +2,19 @@
  * Hook to fetch and subscribe to GooseTown state.
  *
  * Data sources (in priority order):
- * 1. WebSocket push (town_state messages) — real-time, ~2s tick
+ * 1. WebSocket push (world_state or town_state messages) — real-time, ~2s tick
  * 2. REST polling fallback — every 2s for unauthenticated observers
  *
  * Godot handles visual interpolation, so this hook provides raw server state only.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   TownGameState,
   TownStateResponse,
   TownDescriptionsResponse,
   TownWsMessage,
+  GameServerWorldState,
   PlayerDescription,
   AgentDescription,
   SpeechBubble,
@@ -32,6 +33,7 @@ export function useTownState(getToken?: () => Promise<string | null>): {
   game: TownGameState | undefined;
 } {
   const [game, setGame] = useState<TownGameState>();
+  const wsConnectedRef = useRef(false);
 
   // Process incoming state data (from REST or WS)
   const processState = useCallback(
@@ -91,21 +93,69 @@ export function useTownState(getToken?: () => Promise<string | null>): {
           return;
         }
         reconnectDelay = 1000;
+        wsConnectedRef.current = true;
         ws!.send(JSON.stringify({ type: 'town_subscribe' }));
       };
 
       ws.onmessage = (event) => {
         try {
-          const msg = JSON.parse(event.data) as TownWsMessage;
-          if (msg.type === 'town_state' && msg.worldState && msg.gameDescriptions) {
+          const msg = JSON.parse(event.data);
+
+          // Game server world_state event (Godot headless server)
+          if (msg.event === 'world_state' && Array.isArray(msg.agents)) {
+            const gsMsg = msg as GameServerWorldState;
+            const now = Date.now();
+            const players = gsMsg.agents.map((a, i) => ({
+              id: `p:${i}`,
+              position: { x: a.x, y: a.y },
+              facing: {
+                dx: a.facing === 'east' ? 1 : a.facing === 'west' ? -1 : 0,
+                dy: a.facing === 'south' ? 1 : a.facing === 'north' ? -1 : 0,
+              },
+              speed: a.is_moving ? 1.2 : 0,
+              lastInput: now,
+            }));
+            const agents = gsMsg.agents.map((a, i) => ({
+              id: `a:${i}`,
+              playerId: `p:${i}`,
+            }));
+            const playerDescs: PlayerDescription[] = gsMsg.agents.map((a, i) => ({
+              playerId: `p:${i}`,
+              name: a.name,
+              description: '',
+              character: a.spriteUrl || 'c1',
+            }));
+            const agentDescs: AgentDescription[] = gsMsg.agents.map((a, i) => ({
+              agentId: `a:${i}`,
+              identity: a.name,
+              plan: '',
+            }));
             processState(
               {
-                world: msg.worldState.world,
-                engine: msg.worldState.engine,
-                speechBubbles: msg.speechBubbles ?? [],
+                world: { nextId: gsMsg.agents.length, players, agents, conversations: [] },
+                engine: { currentTime: now, lastStepTs: now },
+                speechBubbles: [],
               },
-              msg.gameDescriptions,
-              msg.speechBubbles,
+              {
+                worldMap: { width: 44, height: 27, tileDim: 32, tileSetUrl: '', mapUrl: '' },
+                playerDescriptions: playerDescs,
+                agentDescriptions: agentDescs,
+              },
+            );
+            return;
+          }
+
+          // Legacy backend town_state message
+          const legacyMsg = msg as TownWsMessage;
+          if (legacyMsg.type === 'town_state' && legacyMsg.worldState && legacyMsg.gameDescriptions) {
+            processState(
+              {
+                world: legacyMsg.worldState.world,
+                engine: legacyMsg.worldState.engine,
+                speechBubbles: legacyMsg.speechBubbles ?? [],
+              },
+              legacyMsg.gameDescriptions,
+              legacyMsg.speechBubbles,
             );
           }
         } catch {
@@ -114,6 +164,7 @@ export function useTownState(getToken?: () => Promise<string | null>): {
       };
 
       ws.onclose = () => {
+        wsConnectedRef.current = false;
         if (cancelled) return;
         ws = null;
         setTimeout(connect, reconnectDelay);
@@ -129,6 +180,7 @@ export function useTownState(getToken?: () => Promise<string | null>): {
 
     return () => {
       cancelled = true;
+      wsConnectedRef.current = false;
       if (ws) {
         ws.onclose = null;
         ws.onerror = null;
@@ -144,6 +196,11 @@ export function useTownState(getToken?: () => Promise<string | null>): {
 
     const poll = async () => {
       if (cancelled) return;
+      // Skip REST polling when WebSocket is actively delivering state updates
+      if (wsConnectedRef.current) {
+        if (!cancelled) setTimeout(poll, POLL_INTERVAL);
+        return;
+      }
       try {
         const [stateRes, descRes] = await Promise.all([
           fetch(`${API_URL}/town/state`),

@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     logger.info("GooseTown backend starting")
 
+    # Validate configuration before proceeding
+    settings.validate()
+
     # Start game server client (viewer connection)
     gs_client = get_game_server_client()
     try:
