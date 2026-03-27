@@ -723,6 +723,9 @@ async def handle_ws_message(request: WsMessageRequest):
                 agent_conn.agent_id,
                 {"type": "move", "destination": destination},
             )
+        elif action not in ("chat", "say", "end_conversation", "idle"):
+            # Treat any unrecognised action as an activity name
+            await _handle_agent_activity(request.connectionId, action, agent_conn)
         return {"statusCode": 200}
 
     # Legacy: forward raw commands
@@ -812,3 +815,241 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
         logger.error("Failed to send connected event to %s: %s", agent_name, e)
 
     return {"statusCode": 200}
+
+
+# ===========================================================================
+# Activity system
+# ===========================================================================
+
+# Strong references to activity timer tasks to prevent GC
+_activity_tasks: set = set()
+
+
+async def _handle_agent_activity(connection_id: str, activity_name: str, agent_conn) -> None:
+    """Validate and start a timed activity for a connected agent.
+
+    Sends an ``activity_rejected`` event back to the agent if validation
+    fails, or an ``act_ok`` followed by an asyncio background timer that
+    sends ``activity_complete`` (or ``activity_interrupted``) when the
+    duration elapses.
+
+    For apartment activities that have a ``spot`` field the agent is first
+    navigated to that furniture marker via the game server; the activity
+    timer starts only after the ``arrived`` event for that spot.
+
+    Args:
+        connection_id: API Gateway connection ID for the acting agent.
+        activity_name: The ``town_act`` argument (e.g. ``"read"``).
+        agent_conn: Connection record from ``TownAgentWsManager``.
+    """
+    from core.services.activity_registry import (
+        canonical_location,
+        get_activity,
+        get_context_mismatch_message,
+    )
+    from core.services.management_api_client import ManagementApiClient
+
+    mgmt = ManagementApiClient()
+    service = TownService()
+    agent_id = agent_conn.agent_id
+
+    def _reject(reason: str, message: Optional[str] = None) -> None:
+        payload: dict = {"event": "activity_rejected", "activity": activity_name, "reason": reason}
+        if message:
+            payload["message"] = message
+        try:
+            mgmt.send_message(connection_id, payload)
+        except Exception as exc:
+            logger.warning("Failed to send activity_rejected to %s: %s", agent_id, exc)
+
+    # --- Look up activity ---
+    activity = get_activity(activity_name)
+    if activity is None:
+        _reject("unknown_activity")
+        return
+
+    # --- Load agent from DB ---
+    agent = service.get_town_agent_by_id(agent_id)
+    if not agent:
+        _reject("agent_not_found")
+        return
+
+    # --- Validate location context (town vs apartment) ---
+    # This must happen before the fine-grained location check so the agent
+    # receives a useful navigation hint rather than a bare "wrong_location".
+    agent_location_context = agent.get("locationContext", "town")
+    mismatch_msg = get_context_mismatch_message(activity, agent_location_context)
+    if mismatch_msg:
+        _reject("wrong_context", mismatch_msg)
+        return
+
+    # --- Validate fine-grained location within the correct context ---
+    current_location = agent.get("currentLocation", "")
+    if canonical_location(current_location) != activity.location:
+        _reject("wrong_location")
+        return
+
+    # --- Validate not already busy ---
+    if agent.get("currentActivity"):
+        _reject("already_busy")
+        return
+
+    # --- Mark agent as busy in DB ---
+    import time as _time
+
+    service.update_agent_activity(agent_id, activity_name, _time.time())
+
+    # --- Acknowledge to the agent ---
+    try:
+        mgmt.send_message(
+            connection_id,
+            {
+                "event": "act_ok",
+                "activity": activity_name,
+                "duration_seconds": activity.duration_seconds,
+            },
+        )
+    except Exception as exc:
+        logger.warning("Failed to send act_ok to %s: %s", agent_id, exc)
+
+    # --- Schedule the activity timer ---
+    task = asyncio.create_task(_activity_timer(connection_id, agent_id, activity, agent))
+    _activity_tasks.add(task)
+    task.add_done_callback(_activity_tasks.discard)
+
+
+async def _activity_timer(
+    connection_id: str,
+    agent_id: str,
+    activity,
+    agent_snapshot: dict,
+) -> None:
+    """Background timer that completes a timed activity.
+
+    For apartment activities with a ``spot`` the agent is first navigated
+    to the furniture marker.  The activity duration begins only after the
+    game server confirms arrival at the spot (``arrived`` event).
+
+    Args:
+        connection_id: API Gateway connection ID — used to push events back.
+        agent_id: Internal agent UUID.
+        activity: The ``Activity`` being performed.
+        agent_snapshot: Agent DB record captured at activity start (used for
+            initial energy/mood; fresh values are re-fetched before applying
+            effects so concurrent updates are handled correctly).
+    """
+    from core.services.activity_registry import apply_activity_effect
+    from core.services.management_api_client import ManagementApiClient
+
+    mgmt = ManagementApiClient()
+    service = TownService()
+    gs_client = get_game_server_client()
+
+    import time as _time
+
+    start_time = _time.time()
+
+    # --- For apartment activities, move to the furniture spot first ---
+    if activity.spot:
+        try:
+            await gs_client.send_command(
+                agent_id,
+                {"type": "move", "destination": activity.spot},
+            )
+            # Wait for arrival confirmation (game server arrival event for this
+            # agent is forwarded via world_update; the game server client exposes
+            # a per-agent arrived event if available, otherwise we conservatively
+            # wait for the navigation timeout ceiling of 60 s).
+            await asyncio.wait_for(
+                gs_client.wait_for_arrival(agent_id),
+                timeout=60.0,
+            )
+            # Reset start time: timer begins from when agent arrives at spot
+            start_time = _time.time()
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Agent %s timed out navigating to spot %s for activity %s",
+                agent_id,
+                activity.spot,
+                activity.name,
+            )
+            _clear_activity_and_notify(service, mgmt, connection_id, agent_id, activity.name, "navigation_timeout")
+            return
+        except Exception as exc:
+            logger.warning("Navigation error for agent %s activity %s: %s", agent_id, activity.name, exc)
+            _clear_activity_and_notify(service, mgmt, connection_id, agent_id, activity.name, "navigation_error")
+            return
+
+    # --- Run the activity timer ---
+    await asyncio.sleep(activity.duration_seconds)
+
+    elapsed = _time.time() - start_time
+
+    # --- Fetch fresh agent state before applying effects ---
+    agent = service.get_town_agent_by_id(agent_id)
+    if not agent:
+        logger.warning("Agent %s not found when completing activity %s", agent_id, activity.name)
+        return
+
+    current_energy = int(agent.get("energy", 100))
+    current_mood = int(agent.get("mood", 0))
+    traits = agent.get("traits", "")
+
+    new_energy, new_mood, interrupted = apply_activity_effect(activity, current_energy, current_mood, traits, elapsed)
+
+    # --- Persist updated mood/energy and clear activity ---
+    service.update_agent_mood_energy(agent_id, new_mood, new_energy)
+    service.update_agent_activity(agent_id, None, None)
+
+    # --- Send outcome event to agent ---
+    event_name = "activity_interrupted" if interrupted else "activity_complete"
+    try:
+        mgmt.send_message(
+            connection_id,
+            {
+                "event": event_name,
+                "activity": activity.name,
+                "mood_delta": new_mood - current_mood,
+                "energy_delta": new_energy - current_energy,
+                "new_mood": new_mood,
+                "new_energy": new_energy,
+                "interrupted": interrupted,
+            },
+        )
+        logger.info(
+            "Activity %s %s for agent %s (mood %d→%d, energy %d→%d)",
+            activity.name,
+            "interrupted" if interrupted else "complete",
+            agent_id,
+            current_mood,
+            new_mood,
+            current_energy,
+            new_energy,
+        )
+    except Exception as exc:
+        logger.warning("Failed to send %s to %s: %s", event_name, agent_id, exc)
+
+
+def _clear_activity_and_notify(
+    service: TownService,
+    mgmt,
+    connection_id: str,
+    agent_id: str,
+    activity_name: str,
+    reason: str,
+) -> None:
+    """Clear the agent's busy state and send an activity_rejected event.
+
+    Used when navigation fails before the activity timer even starts.
+    """
+    try:
+        service.update_agent_activity(agent_id, None, None)
+    except Exception as exc:
+        logger.warning("Failed to clear activity for %s: %s", agent_id, exc)
+    try:
+        mgmt.send_message(
+            connection_id,
+            {"event": "activity_rejected", "activity": activity_name, "reason": reason},
+        )
+    except Exception as exc:
+        logger.warning("Failed to send activity_rejected for navigation failure %s: %s", agent_id, exc)

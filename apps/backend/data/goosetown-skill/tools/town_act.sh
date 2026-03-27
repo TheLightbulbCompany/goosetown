@@ -28,8 +28,8 @@ case "$ACTION" in
         PAYLOAD=$(python3 -c "import json; print(json.dumps({'action':'end_conversation','conv_id':'$CONV_ID'}))")
         ;;
     *)
-        echo "{\"error\":\"Unknown action: $ACTION. Use: move, chat, say, idle, end\"}"
-        exit 1
+        # Treat any unknown action as an activity (read, cook, sleep, work_at_desk, etc.)
+        PAYLOAD=$(python3 -c "import json,sys; print(json.dumps({'action':sys.argv[1]}))" "$ACTION")
         ;;
 esac
 

@@ -23,6 +23,182 @@ from pathlib import Path
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("town_daemon")
 
+# ---------------------------------------------------------------------------
+# Lightweight activity catalogue (mirrors backend activity_registry.py)
+# The daemon runs on the agent's machine and cannot import backend packages.
+# Keep this in sync with core/services/activity_registry.py.
+# ---------------------------------------------------------------------------
+
+_APARTMENT_SPOTS = frozenset(
+    {
+        "desk",
+        "chair",
+        "couch",
+        "coffee_table",
+        "bookshelf",
+        "rug",
+        "aquarium",
+        "record_player",
+        "bed",
+        "coat_rack",
+        "shoe_rack",
+        "fridge",
+        "stove",
+        "exit",
+        "apartment",
+    }
+)
+
+
+def _canonical_location(location: str) -> str:
+    """Normalise an apartment spot name to the 'apartment' registry key."""
+    return "apartment" if location in _APARTMENT_SPOTS else location
+
+
+# Each entry: (name, description, duration_seconds, agent_prompt)
+_LOCATION_ACTIVITIES: dict[str, list[dict]] = {
+    "plaza": [
+        {
+            "name": "people_watch",
+            "description": "People-watching",
+            "duration_seconds": 10,
+            "agent_prompt": "Sit by the fountain and observe the town. Write a brief reflection in TOWN_LIFE.md if inspired.",
+        },
+        {
+            "name": "perform",
+            "description": "Performing (busking)",
+            "duration_seconds": 20,
+            "agent_prompt": "Perform for passersby. Decide what you perform and write about it in TOWN_LIFE.md.",
+        },
+    ],
+    "library": [
+        {
+            "name": "read",
+            "description": "Reading",
+            "duration_seconds": 15,
+            "agent_prompt": "Pick a topic that interests you. Research it and write your findings in TOWN_LIFE.md.",
+        },
+        {
+            "name": "study",
+            "description": "Studying",
+            "duration_seconds": 20,
+            "agent_prompt": "Work through a problem using your tools. Write conclusions in TOWN_LIFE.md.",
+        },
+        {
+            "name": "write_journal",
+            "description": "Writing in journal",
+            "duration_seconds": 10,
+            "agent_prompt": "Reflect on recent events. Append an entry to TOWN_LIFE.md dated today.",
+        },
+    ],
+    "cafe": [
+        {
+            "name": "order_coffee",
+            "description": "Getting coffee",
+            "duration_seconds": 5,
+            "agent_prompt": "Order a drink. Note what you chose and why in TOWN_LIFE.md.",
+        },
+        {
+            "name": "sit_and_chat",
+            "description": "Sitting and chatting",
+            "duration_seconds": 15,
+            "agent_prompt": "Enjoy the atmosphere. If someone is nearby, consider starting a conversation.",
+        },
+        {
+            "name": "work_on_laptop",
+            "description": "Working on laptop",
+            "duration_seconds": 20,
+            "agent_prompt": "Use your skills and tools to do real work. Log what you accomplished in TOWN_LIFE.md.",
+        },
+    ],
+    "activity_center": [
+        {
+            "name": "exercise",
+            "description": "Exercising",
+            "duration_seconds": 15,
+            "agent_prompt": "Decide what workout you are doing. Note energy before/after in TOWN_LIFE.md.",
+        },
+        {
+            "name": "play_game",
+            "description": "Playing a game",
+            "duration_seconds": 20,
+            "agent_prompt": "Choose a game and play a round. Write a brief match report in TOWN_LIFE.md.",
+        },
+        {
+            "name": "garden",
+            "description": "Gardening",
+            "duration_seconds": 15,
+            "agent_prompt": "Tend the community garden. Write a short note about the garden in TOWN_LIFE.md.",
+        },
+    ],
+    "bank": [
+        {
+            "name": "check_balance",
+            "description": "Checking balance",
+            "duration_seconds": 5,
+            "agent_prompt": "Check your account. Note your balance in TOWN_LIFE.md.",
+        },
+        {
+            "name": "browse_listings",
+            "description": "Browsing job listings",
+            "duration_seconds": 10,
+            "agent_prompt": "Look through available work. Note interesting opportunities in TOWN_LIFE.md.",
+        },
+    ],
+    "residence": [
+        {
+            "name": "enter_apartment",
+            "description": "Entering apartment",
+            "duration_seconds": 3,
+            "agent_prompt": "Walk into your apartment building.",
+        },
+    ],
+    "apartment": [
+        {
+            "name": "sleep",
+            "description": "Sleeping (walk to bed)",
+            "duration_seconds": 30,
+            "agent_prompt": "Sleep in your bed. Write a morning thought in TOWN_LIFE.md when you wake.",
+        },
+        {
+            "name": "work_at_desk",
+            "description": "Working at desk",
+            "duration_seconds": 20,
+            "agent_prompt": "Do real work at your desk using your tools. Log what you accomplished in TOWN_LIFE.md.",
+        },
+        {
+            "name": "cook",
+            "description": "Cooking (walk to stove)",
+            "duration_seconds": 15,
+            "agent_prompt": "Cook a meal. Look up a recipe and write how it turned out in TOWN_LIFE.md.",
+        },
+        {
+            "name": "watch_tv",
+            "description": "Watching TV (walk to couch)",
+            "duration_seconds": 15,
+            "agent_prompt": "Relax in front of the TV. Write a note about what you watched in TOWN_LIFE.md.",
+        },
+        {
+            "name": "read_book",
+            "description": "Reading a book (walk to bookshelf)",
+            "duration_seconds": 15,
+            "agent_prompt": "Read a book you enjoy. Write thoughts in TOWN_LIFE.md under 'Currently Reading'.",
+        },
+        {
+            "name": "listen_to_music",
+            "description": "Listening to music (walk to record player)",
+            "duration_seconds": 15,
+            "agent_prompt": "Put on a record. Write about the mood the music creates in TOWN_LIFE.md.",
+        },
+        {
+            "name": "watch_aquarium",
+            "description": "Watching the aquarium",
+            "duration_seconds": 10,
+            "agent_prompt": "Watch the fish and reflect. Write a reflective entry in TOWN_LIFE.md.",
+        },
+    ],
+}
+
 # Config from environment
 WS_URL = os.environ.get("TOWN_WS_URL", "")
 TOKEN = os.environ.get("TOWN_TOKEN", "")
@@ -115,6 +291,35 @@ class TownDaemon:
         elif event == "conversation_ended":
             self.state.pop("active_conversation", None)
             self._append_event(f"CHAT_ENDED (conv_id: {data.get('conv_id', '?')})")
+        elif event == "activity_complete":
+            activity_name = data.get("activity", "?")
+            mood_delta = data.get("mood_delta", 0)
+            energy_delta = data.get("energy_delta", 0)
+            new_mood = data.get("new_mood")
+            new_energy = data.get("new_energy")
+            # Update local state so next think cycle reflects the new values
+            if "agent" in self.state:
+                if new_mood is not None:
+                    self.state["agent"]["mood"] = new_mood
+                if new_energy is not None:
+                    self.state["agent"]["energy"] = new_energy
+                self.state["agent"]["activity"] = "idle"
+            self._write_state()
+            mood_sign = "+" if mood_delta >= 0 else ""
+            energy_sign = "+" if energy_delta >= 0 else ""
+            self._append_event(
+                f"ACTIVITY_DONE {activity_name} | mood {mood_sign}{mood_delta} | energy {energy_sign}{energy_delta}"
+            )
+        elif event == "activity_interrupted":
+            activity_name = data.get("activity", "?")
+            if "agent" in self.state:
+                self.state["agent"]["activity"] = "idle"
+            self._write_state()
+            self._append_event(f"ACTIVITY_INTERRUPTED {activity_name} (exhausted)")
+        elif event == "activity_rejected":
+            activity_name = data.get("activity", "?")
+            reason = data.get("reason", "unknown")
+            self._append_event(f"ACTIVITY_REJECTED {activity_name}: {reason}")
         elif event == "arrived":
             if "agent" in self.state:
                 self.state["agent"]["activity"] = "idle"
@@ -253,23 +458,48 @@ class TownDaemon:
             else:
                 status += (
                     "**Where you can go (apartment):**\n"
-                    "- `town_act move desk_1` / `desk_2` / `desk_3` — Office desks\n"
-                    "- `town_act move couch_1` / `couch_2` — Living room couches\n"
-                    "- `town_act move tv_chair` — TV chair\n"
-                    "- `town_act move bed_1` / `bed_2` — Bedroom\n"
-                    "- `town_act move table` — Kitchen table\n"
-                    "- `town_act move bookshelf` — Bookshelf\n\n"
+                    "- `town_act move desk` — Office desk\n"
+                    "- `town_act move couch` — Living room couch\n"
+                    "- `town_act move bed` — Bedroom\n"
+                    "- `town_act move bookshelf` — Bookshelf\n"
+                    "- `town_act move stove` — Kitchen stove\n"
+                    "- `town_act move record_player` — Record player\n"
+                    "- `town_act move aquarium` — Aquarium\n\n"
                     "**Go to town:**\n"
                     "- `town_act move plaza` — Leave apartment and go to town center\n"
                     "- `town_act move library` / `cafe` / `activity_center` — Go directly to a town location\n\n"
                 )
+
+            # Show activities available at the current location
+            available_activities = data.get("available_activities") or _LOCATION_ACTIVITIES.get(
+                _canonical_location(location), []
+            )
+            if available_activities:
+                status += "**What you can do here:**\n"
+                for act in available_activities:
+                    if isinstance(act, dict):
+                        # Sent from server as dict
+                        act_name = act.get("name", "")
+                        act_desc = act.get("description", act_name)
+                        act_duration = act.get("duration_seconds", "?")
+                        act_prompt = act.get("agent_prompt", "")
+                    else:
+                        # Fallback: act is already a string name
+                        act_name = act
+                        act_desc = act
+                        act_duration = "?"
+                        act_prompt = ""
+                    status += f"- `town_act {act_name}` — {act_desc} (~{act_duration}s)"
+                    if act_prompt:
+                        status += f"\n  *{act_prompt}*"
+                    status += "\n"
+                status += "\n"
 
             status += (
                 "**Other actions:**\n"
                 "- `town_act chat <agent_name> <message>` — Start a conversation with someone nearby\n"
                 "- `town_act say <conv_id> <message>` — Reply in an ongoing conversation\n"
                 "- `town_act end <conv_id>` — End a conversation\n"
-                "- `town_act idle [activity]` — Do something at your current location\n"
                 "- `town_disconnect <HH:MM> [timezone]` — Go to sleep\n\n"
                 "Act naturally based on who you are. Be yourself.\n"
             )
