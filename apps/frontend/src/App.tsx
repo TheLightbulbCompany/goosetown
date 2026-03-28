@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, useLocation } from 'react-router-dom';
 import { SignedIn, SignedOut, UserButton } from '@clerk/clerk-react';
 import { ToastContainer } from 'react-toastify';
 import TownNav from './components/TownNav.tsx';
 import GameLayout from './components/GameLayout.tsx';
+import GodotCanvas from './components/GodotCanvas.tsx';
 import ApartmentCard from './components/ApartmentCard.tsx';
 import LoginButton from './components/buttons/LoginButton.tsx';
 import MusicButton from './components/buttons/MusicButton.tsx';
@@ -74,6 +75,10 @@ function AgentsSidebar({ onJoinClick }: { onJoinClick: () => void }) {
 
 export default function App() {
   const [joinModalOpen, setJoinModalOpen] = useState(false);
+  const location = useLocation();
+
+  // Determine which Godot scene to show based on the current route
+  const scene: 'town' | 'apartment' = location.pathname === '/apartment' ? 'apartment' : 'town';
 
   return (
     <main className="relative flex flex-col h-screen w-screen overflow-hidden bg-clay-900 font-body">
@@ -81,6 +86,12 @@ export default function App() {
 
       <div className="relative flex-1 overflow-hidden">
         <GameLayout sidebar={<AgentsSidebar onJoinClick={() => setJoinModalOpen(true)} />}>
+          {/* Persistent Godot canvas — never unmounts, switches scenes via JS bridge */}
+          <div className="absolute inset-0">
+            <GodotCanvas scene={scene} />
+          </div>
+
+          {/* Route-specific overlays (if any) render on top */}
           <Routes>
             <Route path="/" element={<Town />} />
             <Route path="/apartment" element={<Apartment />} />

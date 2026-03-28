@@ -1,5 +1,7 @@
 ## JS Bridge singleton for React ↔ Godot communication.
 ## Registered as autoload "JsBridge" in project.godot.
+## This node is an autoload and survives get_tree().change_scene_to_packed() calls,
+## so JS callbacks registered here remain valid across scene switches.
 extends Node
 
 signal spawn_agent_requested(agent_id: String, data: Dictionary)
@@ -7,6 +9,12 @@ signal move_agent_requested(agent_id: String, x: float, y: float)
 signal remove_agent_requested(agent_id: String)
 signal update_agent_state_requested(agent_id: String, data: Dictionary)
 signal set_camera_requested(x: float, y: float, zoom: float)
+signal switch_scene_requested(scene_name: String)
+
+## Preload both map scenes so change_scene_to_packed() has zero I/O latency.
+## Autoloads execute before any scene node, so these paths are always valid.
+const TOWN_SCENE: PackedScene = preload("res://maps/isol88/Isol88Map.tscn")
+const APARTMENT_SCENE: PackedScene = preload("res://maps/apartment/ApartmentMap.tscn")
 
 var _callbacks: Dictionary = {}
 
@@ -23,6 +31,7 @@ func _register_js_callbacks() -> void:
 	_callbacks["removeAgent"] = JavaScriptBridge.create_callback(_on_remove_agent)
 	_callbacks["updateAgentState"] = JavaScriptBridge.create_callback(_on_update_agent_state)
 	_callbacks["setCamera"] = JavaScriptBridge.create_callback(_on_set_camera)
+	_callbacks["switchScene"] = JavaScriptBridge.create_callback(_on_switch_scene)
 
 	var window: JavaScriptObject = JavaScriptBridge.get_interface("window")
 	window.set("godotSpawnAgent", _callbacks["spawnAgent"])
@@ -30,6 +39,7 @@ func _register_js_callbacks() -> void:
 	window.set("godotRemoveAgent", _callbacks["removeAgent"])
 	window.set("godotUpdateAgentState", _callbacks["updateAgentState"])
 	window.set("godotSetCamera", _callbacks["setCamera"])
+	window.set("godotSwitchScene", _callbacks["switchScene"])
 
 
 func _emit_ready_event() -> void:
@@ -50,6 +60,9 @@ func _emit_ready_event() -> void:
 			},
 			setCamera: function(x, y, zoom) {
 				window.godotSetCamera(JSON.stringify({x:x, y:y, zoom:zoom||1.0}));
+			},
+			switchScene: function(sceneName) {
+				window.godotSwitchScene(JSON.stringify({scene:sceneName}));
 			}
 		};
 		window.dispatchEvent(new CustomEvent('godot_ready'));
@@ -102,3 +115,36 @@ func _on_set_camera(args: Array) -> void:
 			float(parsed.get("y", 0)),
 			float(parsed.get("zoom", 1.0)),
 		)
+
+
+## Handles scene switch requests from React.
+## Valid scene names: "town", "apartment".
+## After the switch, dispatches a "godot_scene_changed" CustomEvent to React
+## with {scene: name} so the React side can confirm the transition completed.
+func _on_switch_scene(args: Array) -> void:
+	var parsed: Dictionary = JSON.parse_string(str(args[0]))
+	if not parsed:
+		push_error("JsBridge._on_switch_scene: failed to parse args")
+		return
+
+	var scene_name: String = str(parsed.get("scene", ""))
+	switch_scene_requested.emit(scene_name)
+
+	var target_scene: PackedScene
+	match scene_name:
+		"town":
+			target_scene = TOWN_SCENE
+		"apartment":
+			target_scene = APARTMENT_SCENE
+		_:
+			push_error("JsBridge._on_switch_scene: unknown scene '%s'" % scene_name)
+			return
+
+	print("[JsBridge] Switching to scene: %s" % scene_name)
+	var err: int = get_tree().change_scene_to_packed(target_scene)
+	if err != OK:
+		push_error("JsBridge._on_switch_scene: change_scene_to_packed failed: %s" % error_string(err))
+		return
+
+	# Notify React that the scene switch completed successfully.
+	emit_to_react("scene_changed", {"scene": scene_name})

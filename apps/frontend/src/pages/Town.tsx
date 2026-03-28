@@ -1,9 +1,4 @@
-import GodotCanvas from '../components/GodotCanvas';
-
+/** Town page — the Godot canvas is rendered by the parent layout. */
 export default function Town() {
-  return (
-    <div className="absolute inset-0">
-      <GodotCanvas />
-    </div>
-  );
+  return null;
 }
