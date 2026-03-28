@@ -320,6 +320,54 @@ class TownDaemon:
             activity_name = data.get("activity", "?")
             reason = data.get("reason", "unknown")
             self._append_event(f"ACTIVITY_REJECTED {activity_name}: {reason}")
+        elif event == "context_changed":
+            new_context = data.get("context", "")
+            new_location = data.get("location", "")
+            if "agent" in self.state:
+                self.state["agent"]["location_context"] = new_context
+                self.state["agent"]["location"] = new_location
+                self.state["agent"]["activity"] = "idle"
+            # Unblock any pending move tool call that is waiting on _arrived_event.
+            self._arrived_event.set()
+            self._write_state()
+            # Write an immediate TOWN_STATUS.md reflecting the new context.
+            if new_context == "apartment":
+                transition_status = (
+                    "# GooseTown Status\n\n"
+                    "**You entered your apartment.**\n\n"
+                    f"**Location:** {new_location}\n"
+                    "**Activity:** idle\n\n"
+                    "**Where you can go (apartment):**\n"
+                    "- `town_act move desk` — Office desk\n"
+                    "- `town_act move couch` — Living room couch\n"
+                    "- `town_act move bed` — Bedroom\n"
+                    "- `town_act move bookshelf` — Bookshelf\n"
+                    "- `town_act move stove` — Kitchen stove\n"
+                    "- `town_act move record_player` — Record player\n"
+                    "- `town_act move aquarium` — Aquarium\n\n"
+                    "**Return to town:**\n"
+                    "- `town_act move exit` — Leave apartment and return to town\n\n"
+                    "Use `town_check` for full status.\n"
+                )
+                event_label = "ENTERED_APARTMENT"
+            else:
+                transition_status = (
+                    "# GooseTown Status\n\n"
+                    "**You returned to town.**\n\n"
+                    f"**Location:** {new_location}\n"
+                    "**Activity:** idle\n\n"
+                    "**Where you can go:**\n"
+                    "- `town_act move plaza` — Town center with a fountain\n"
+                    "- `town_act move library` — Books and quiet study\n"
+                    "- `town_act move cafe` — Cozy coffee shop\n"
+                    "- `town_act move activity_center` — Games and group activities\n"
+                    "- `town_act move residence` — Go back to your apartment\n\n"
+                    "Use `town_check` for full status.\n"
+                )
+                event_label = "RETURNED_TO_TOWN"
+            self._write_status(transition_status)
+            self._append_event(f"{event_label} (location={new_location})")
+            logger.info("Context changed to %s, location=%s", new_context, new_location)
         elif event == "arrived":
             if "agent" in self.state:
                 self.state["agent"]["activity"] = "idle"
@@ -465,9 +513,8 @@ class TownDaemon:
                     "- `town_act move stove` — Kitchen stove\n"
                     "- `town_act move record_player` — Record player\n"
                     "- `town_act move aquarium` — Aquarium\n\n"
-                    "**Go to town:**\n"
-                    "- `town_act move plaza` — Leave apartment and go to town center\n"
-                    "- `town_act move library` / `cafe` / `activity_center` — Go directly to a town location\n\n"
+                    "**Return to town:**\n"
+                    "- `town_act move exit` — Leave apartment and return to town\n\n"
                 )
 
             # Show activities available at the current location

@@ -214,6 +214,8 @@ class TownService:
             "wake_timezone": "wakeTimezone",
             "sprite_ready": "spriteReady",
             "sprite_url": "spriteUrl",
+            "location_context": "locationContext",
+            "current_location": "currentLocation",
         }
 
         update_parts = []
@@ -246,6 +248,81 @@ class TownService:
         except table.meta.client.exceptions.ConditionalCheckFailedException:
             return None
         return _decimal_to_native(resp.get("Attributes"))
+
+    def update_agent_activity(
+        self,
+        agent_id: str,
+        activity_name: Optional[str],
+        started_at: Optional[float],
+    ) -> None:
+        """Set or clear the agent's current activity in DynamoDB.
+
+        Args:
+            agent_id: Agent UUID.
+            activity_name: Activity key (e.g. ``"read"``), or ``None`` to clear.
+            started_at: Unix timestamp when the activity started, or ``None``.
+        """
+        table = dynamo.agents_table()
+        if activity_name is None:
+            # Clear — use REMOVE so the attributes are fully absent
+            table.update_item(
+                Key={"id": agent_id},
+                UpdateExpression="REMOVE currentActivity, activityStartedAt",
+                ConditionExpression="attribute_exists(id)",
+            )
+        else:
+            started_decimal = Decimal(str(started_at)) if started_at is not None else Decimal("0")
+            table.update_item(
+                Key={"id": agent_id},
+                UpdateExpression="SET currentActivity = :a, activityStartedAt = :t",
+                ExpressionAttributeValues={":a": activity_name, ":t": started_decimal},
+                ConditionExpression="attribute_exists(id)",
+            )
+
+    def update_agent_mood_energy(self, agent_id: str, mood: int, energy: int) -> None:
+        """Persist updated mood and energy values for an agent.
+
+        Args:
+            agent_id: Agent UUID.
+            mood: New mood value, clamped to -50..+50 by the caller.
+            energy: New energy value, clamped to 0..100 by the caller.
+        """
+        table = dynamo.agents_table()
+        table.update_item(
+            Key={"id": agent_id},
+            UpdateExpression="SET mood = :m, energy = :e",
+            ExpressionAttributeValues={":m": mood, ":e": energy},
+            ConditionExpression="attribute_exists(id)",
+        )
+
+    def update_agent_context(
+        self,
+        agent_id: str,
+        location_context: str,
+        current_location: str,
+    ) -> Optional[dict]:
+        """Persist a context transition for an agent.
+
+        Called when an agent crosses the boundary between the town map and
+        the apartment scene.  Updates both ``locationContext`` (``"town"``
+        or ``"apartment"``) and ``currentLocation`` atomically.
+
+        Args:
+            agent_id: Agent UUID.
+            location_context: New context: ``"town"`` or ``"apartment"``.
+            current_location: Spawn-point location name in the new context.
+                ``"exit"`` when entering the apartment; ``"residence"`` when
+                returning to town.
+
+        Returns:
+            Updated agent record as a plain dict, or ``None`` if the agent
+            does not exist.
+        """
+        return self.update_agent_state(
+            agent_id,
+            location_context=location_context,
+            current_location=current_location,
+        )
 
     # ------------------------------------------------------------------
     # Instance management
