@@ -17,7 +17,7 @@ const MAP_SIZE := Vector2i(768, 512)
 const TILE_SIZE := 32
 const MAP_TILES := Vector2i(24, 16)
 const DEFAULT_ZOOM := 2.0
-const MIN_ZOOM := 1.0
+const MIN_ZOOM := 0.5
 const MAX_ZOOM := 4.0
 const ZOOM_STEP := 0.2
 
@@ -84,8 +84,17 @@ func _unhandled_input(event: InputEvent) -> void:
 func _clamp_camera() -> void:
 	var viewport_size: Vector2 = get_viewport_rect().size / camera.zoom
 	var half_vp: Vector2 = viewport_size / 2.0
-	camera.position.x = clampf(camera.position.x, half_vp.x, float(MAP_SIZE.x) - half_vp.x)
-	camera.position.y = clampf(camera.position.y, half_vp.y, float(MAP_SIZE.y) - half_vp.y)
+
+	# If viewport is wider/taller than the map at this zoom, center on that axis
+	if viewport_size.x >= float(MAP_SIZE.x):
+		camera.position.x = float(MAP_SIZE.x) / 2.0
+	else:
+		camera.position.x = clampf(camera.position.x, half_vp.x, float(MAP_SIZE.x) - half_vp.x)
+
+	if viewport_size.y >= float(MAP_SIZE.y):
+		camera.position.y = float(MAP_SIZE.y) / 2.0
+	else:
+		camera.position.y = clampf(camera.position.y, half_vp.y, float(MAP_SIZE.y) - half_vp.y)
 
 
 ## Returns the world-space position of a named location spot.

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Routes, Route, useLocation } from 'react-router-dom';
-import { SignedIn, SignedOut, UserButton } from '@clerk/clerk-react';
+import { SignedIn, SignedOut, UserButton, useAuth } from '@clerk/clerk-react';
 import { ToastContainer } from 'react-toastify';
 import TownNav from './components/TownNav.tsx';
 import GameLayout from './components/GameLayout.tsx';
@@ -77,9 +77,11 @@ export default function App() {
   const [joinModalOpen, setJoinModalOpen] = useState(false);
   const location = useLocation();
 
-  // Determine which Godot scene to show based on the current route
-  // Apartment requires auth — unauthenticated users always see town
-  const scene: 'town' | 'apartment' = location.pathname === '/apartment' ? 'apartment' : 'town';
+  const { isSignedIn } = useAuth();
+
+  // Only switch to apartment if authenticated AND on apartment route
+  const scene: 'town' | 'apartment' =
+    location.pathname === '/apartment' && isSignedIn ? 'apartment' : 'town';
 
   return (
     <main className="relative flex flex-col h-screen w-screen overflow-hidden bg-clay-900 font-body">
