@@ -78,6 +78,7 @@ export default function App() {
   const location = useLocation();
 
   // Determine which Godot scene to show based on the current route
+  // Apartment requires auth — unauthenticated users always see town
   const scene: 'town' | 'apartment' = location.pathname === '/apartment' ? 'apartment' : 'town';
 
   return (
