@@ -30,11 +30,14 @@ func _ready() -> void:
 	camera.position = Vector2(ROOM_SIZE.x / 2.0, ROOM_SIZE.y / 2.0)
 	camera.zoom = Vector2(2.0, 2.0)
 
-	# Limits constrain view to the room interior, not the full canvas.
-	camera.limit_left = 0
-	camera.limit_top = 0
-	camera.limit_right = ROOM_SIZE.x
-	camera.limit_bottom = ROOM_SIZE.y
+	# Disable Godot's built-in camera limits — _clamp_camera() handles
+	# all constraint logic manually (same pattern as the town map).
+	# Setting limits to extreme values effectively disables them.
+	camera.limit_left = -10000
+	camera.limit_top = -10000
+	camera.limit_right = 10000
+	camera.limit_bottom = 10000
+	camera.limit_smoothed = false
 
 	JsBridge.set_camera_requested.connect(_on_set_camera)
 
