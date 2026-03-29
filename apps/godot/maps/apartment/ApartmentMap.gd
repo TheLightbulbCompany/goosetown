@@ -16,7 +16,7 @@ extends Node2D
 const MAP_SIZE := Vector2i(768, 512)
 const TILE_SIZE := 32
 const MAP_TILES := Vector2i(24, 16)
-const DEFAULT_ZOOM := 2.0
+const DEFAULT_ZOOM := 1.0
 const MIN_ZOOM := 0.5
 const MAX_ZOOM := 4.0
 const ZOOM_STEP := 0.2
@@ -28,12 +28,23 @@ var _dragging: bool = false
 
 
 func _ready() -> void:
-	camera.position = Vector2(MAP_SIZE.x / 2.0, MAP_SIZE.y / 2.0)
-	camera.zoom = Vector2(DEFAULT_ZOOM, DEFAULT_ZOOM)
 	camera.limit_left = 0
 	camera.limit_top = 0
 	camera.limit_right = MAP_SIZE.x
 	camera.limit_bottom = MAP_SIZE.y
+
+	# Calculate zoom so the map fills the viewport without showing the void.
+	# Use the larger ratio (so the map covers the viewport on both axes).
+	var vp_size: Vector2 = get_viewport_rect().size
+	if vp_size.x > 0 and vp_size.y > 0:
+		var zoom_x: float = vp_size.x / float(MAP_SIZE.x)
+		var zoom_y: float = vp_size.y / float(MAP_SIZE.y)
+		var fit_zoom: float = maxf(zoom_x, zoom_y)
+		camera.zoom = Vector2(fit_zoom, fit_zoom)
+	else:
+		camera.zoom = Vector2(DEFAULT_ZOOM, DEFAULT_ZOOM)
+
+	camera.position = Vector2(MAP_SIZE.x / 2.0, MAP_SIZE.y / 2.0)
 
 	# Viewer WebSocket wiring (browser WebGL only).
 	if OS.has_feature("web"):
