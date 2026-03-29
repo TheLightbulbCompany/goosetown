@@ -1,7 +1,8 @@
 ## ApartmentMap — interior scene script for the per-user apartment.
 ##
 ## 24x16 tile grid (768x512 px at 32px/tile).
-## Same camera pattern as Isol88Map: drag to pan, camera limits, clamp.
+## Camera zoom computed dynamically so the map always fills the viewport
+## with no void/black bars, regardless of window or canvas size.
 ##
 ## Location markers live under the "Locations" child node.
 ## TODO: game_server.gd currently looks for "Markers" when collecting location
@@ -13,7 +14,6 @@ extends Node2D
 const MAP_SIZE := Vector2i(768, 512)
 const TILE_SIZE := 32
 const MAP_TILES := Vector2i(24, 16)
-const DEFAULT_ZOOM := 2.0
 
 @onready var camera: Camera2D = $Camera2D
 @onready var locations: Node2D = $Locations
@@ -22,13 +22,15 @@ var _dragging: bool = false
 
 
 func _ready() -> void:
+	_apply_zoom()
 	camera.position = Vector2(MAP_SIZE.x / 2.0, MAP_SIZE.y / 2.0)
-	camera.zoom = Vector2(DEFAULT_ZOOM, DEFAULT_ZOOM)
 
 	camera.limit_left = 0
 	camera.limit_top = 0
 	camera.limit_right = MAP_SIZE.x
 	camera.limit_bottom = MAP_SIZE.y
+
+	get_viewport().size_changed.connect(_on_viewport_size_changed)
 
 	JsBridge.set_camera_requested.connect(_on_set_camera)
 
@@ -43,6 +45,22 @@ func _ready() -> void:
 				agent_mgr.setup_viewer(viewer)
 			viewer.connect_to_server(js_ws_url)
 			print("[ApartmentMap] Viewer connecting to: %s" % js_ws_url)
+
+
+func _apply_zoom() -> void:
+	## Compute zoom so the map always covers the full viewport — no void bars.
+	var vp_size: Vector2 = get_viewport_rect().size
+	if vp_size.x <= 0 or vp_size.y <= 0:
+		camera.zoom = Vector2(2.0, 2.0)
+		return
+	var min_zoom: float = maxf(vp_size.x / float(MAP_SIZE.x), vp_size.y / float(MAP_SIZE.y))
+	camera.zoom = Vector2(min_zoom, min_zoom)
+	_clamp_camera()
+
+
+func _on_viewport_size_changed() -> void:
+	_apply_zoom()
+	_clamp_camera()
 
 
 func _unhandled_input(event: InputEvent) -> void:
