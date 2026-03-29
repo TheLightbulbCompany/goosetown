@@ -12,13 +12,18 @@ class_name ApartmentMap
 extends Node2D
 
 # Full canvas matches the town viewport (44x27 tiles) so Godot rendering
-# fills the screen with no void.  The camera limits below restrict the
-# view to the actual room interior (24x16 tiles = 768x512).
+# fills the screen with no void.  The camera clamp restricts the view
+# to the actual room interior based on furniture bounds.
 const CANVAS_SIZE := Vector2i(1408, 864)
-const ROOM_SIZE := Vector2i(768, 512)
 const TILE_SIZE := 32
-const CANVAS_TILES := Vector2i(44, 27)
-const ROOM_TILES := Vector2i(24, 16)
+
+# Room bounds — derived from actual furniture positions + padding.
+# Leftmost furniture: desk at x=132, rightmost: fridge at x=671 (+47px half-width = 718)
+# Topmost: plant at y=74 (-32px = 42), bottommost: exit at y=480 (+16px = 496)
+const ROOM_LEFT := 0
+const ROOM_TOP := 0
+const ROOM_RIGHT := 768
+const ROOM_BOTTOM := 512
 
 @onready var camera: Camera2D = $Camera2D
 @onready var locations: Node2D = $Locations
@@ -27,17 +32,19 @@ var _dragging: bool = false
 
 
 func _ready() -> void:
-	camera.position = Vector2(ROOM_SIZE.x / 2.0, ROOM_SIZE.y / 2.0)
+	# Center camera on the room center
+	camera.position = Vector2(
+		(ROOM_LEFT + ROOM_RIGHT) / 2.0,
+		(ROOM_TOP + ROOM_BOTTOM) / 2.0
+	)
 	camera.zoom = Vector2(2.0, 2.0)
 
-	# Disable Godot's built-in camera limits — _clamp_camera() handles
-	# all constraint logic manually (same pattern as the town map).
-	# Setting limits to extreme values effectively disables them.
-	camera.limit_left = -10000
-	camera.limit_top = -10000
-	camera.limit_right = 10000
-	camera.limit_bottom = 10000
-	camera.limit_smoothed = false
+	# Use Godot's built-in camera limits set to the room bounds.
+	# This is simpler and more reliable than manual clamping.
+	camera.limit_left = ROOM_LEFT
+	camera.limit_top = ROOM_TOP
+	camera.limit_right = ROOM_RIGHT
+	camera.limit_bottom = ROOM_BOTTOM
 
 	JsBridge.set_camera_requested.connect(_on_set_camera)
 
@@ -83,8 +90,8 @@ func _unhandled_input(event: InputEvent) -> void:
 func _clamp_camera() -> void:
 	var viewport_size: Vector2 = get_viewport_rect().size / camera.zoom
 	var half_vp: Vector2 = viewport_size / 2.0
-	camera.position.x = clampf(camera.position.x, half_vp.x, float(ROOM_SIZE.x) - half_vp.x)
-	camera.position.y = clampf(camera.position.y, half_vp.y, float(ROOM_SIZE.y) - half_vp.y)
+	camera.position.x = clampf(camera.position.x, float(ROOM_LEFT) + half_vp.x, float(ROOM_RIGHT) - half_vp.x)
+	camera.position.y = clampf(camera.position.y, float(ROOM_TOP) + half_vp.y, float(ROOM_BOTTOM) - half_vp.y)
 
 
 func _on_set_camera(x: float, y: float, zoom: float) -> void:
@@ -100,4 +107,4 @@ func get_location_position(location_name: String) -> Vector2:
 	var exit_marker: Node = locations.get_node_or_null("exit")
 	if exit_marker:
 		return exit_marker.global_position
-	return Vector2(ROOM_SIZE.x / 2.0, ROOM_SIZE.y - TILE_SIZE)
+	return Vector2((ROOM_LEFT + ROOM_RIGHT) / 2.0, ROOM_BOTTOM - TILE_SIZE)
