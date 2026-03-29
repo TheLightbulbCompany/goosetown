@@ -49,12 +49,16 @@ func _ready() -> void:
 
 func _apply_zoom() -> void:
 	## Compute zoom so the map always covers the full viewport — no void bars.
+	## Add a small margin (1.05x) so there's always room to pan and no edge void.
 	var vp_size: Vector2 = get_viewport_rect().size
 	if vp_size.x <= 0 or vp_size.y <= 0:
 		camera.zoom = Vector2(2.0, 2.0)
 		return
 	var min_zoom: float = maxf(vp_size.x / float(MAP_SIZE.x), vp_size.y / float(MAP_SIZE.y))
-	camera.zoom = Vector2(min_zoom, min_zoom)
+	# Zoom in slightly past the fill point so the map overflows the viewport
+	# on both axes — this guarantees pan room and no gray edges.
+	var zoom_level: float = min_zoom * 1.1
+	camera.zoom = Vector2(zoom_level, zoom_level)
 	_clamp_camera()
 
 
@@ -91,8 +95,15 @@ func _unhandled_input(event: InputEvent) -> void:
 func _clamp_camera() -> void:
 	var viewport_size: Vector2 = get_viewport_rect().size / camera.zoom
 	var half_vp: Vector2 = viewport_size / 2.0
-	camera.position.x = clampf(camera.position.x, half_vp.x, float(MAP_SIZE.x) - half_vp.x)
-	camera.position.y = clampf(camera.position.y, half_vp.y, float(MAP_SIZE.y) - half_vp.y)
+	# If viewport is wider/taller than map on an axis, center on that axis
+	if half_vp.x * 2.0 >= float(MAP_SIZE.x):
+		camera.position.x = float(MAP_SIZE.x) / 2.0
+	else:
+		camera.position.x = clampf(camera.position.x, half_vp.x, float(MAP_SIZE.x) - half_vp.x)
+	if half_vp.y * 2.0 >= float(MAP_SIZE.y):
+		camera.position.y = float(MAP_SIZE.y) / 2.0
+	else:
+		camera.position.y = clampf(camera.position.y, half_vp.y, float(MAP_SIZE.y) - half_vp.y)
 
 
 func _on_set_camera(x: float, y: float, zoom: float) -> void:
