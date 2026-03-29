@@ -11,9 +11,14 @@
 class_name ApartmentMap
 extends Node2D
 
-const MAP_SIZE := Vector2i(768, 512)
+# Full canvas matches the town viewport (44x27 tiles) so Godot rendering
+# fills the screen with no void.  The camera limits below restrict the
+# view to the actual room interior (24x16 tiles = 768x512).
+const CANVAS_SIZE := Vector2i(1408, 864)
+const ROOM_SIZE := Vector2i(768, 512)
 const TILE_SIZE := 32
-const MAP_TILES := Vector2i(24, 16)
+const CANVAS_TILES := Vector2i(44, 27)
+const ROOM_TILES := Vector2i(24, 16)
 
 @onready var camera: Camera2D = $Camera2D
 @onready var locations: Node2D = $Locations
@@ -22,15 +27,14 @@ var _dragging: bool = false
 
 
 func _ready() -> void:
-	_apply_zoom()
-	camera.position = Vector2(MAP_SIZE.x / 2.0, MAP_SIZE.y / 2.0)
+	camera.position = Vector2(ROOM_SIZE.x / 2.0, ROOM_SIZE.y / 2.0)
+	camera.zoom = Vector2(2.0, 2.0)
 
+	# Limits constrain view to the room interior, not the full canvas.
 	camera.limit_left = 0
 	camera.limit_top = 0
-	camera.limit_right = MAP_SIZE.x
-	camera.limit_bottom = MAP_SIZE.y
-
-	get_viewport().size_changed.connect(_on_viewport_size_changed)
+	camera.limit_right = ROOM_SIZE.x
+	camera.limit_bottom = ROOM_SIZE.y
 
 	JsBridge.set_camera_requested.connect(_on_set_camera)
 
@@ -46,25 +50,6 @@ func _ready() -> void:
 			viewer.connect_to_server(js_ws_url)
 			print("[ApartmentMap] Viewer connecting to: %s" % js_ws_url)
 
-
-func _apply_zoom() -> void:
-	## Compute zoom so the map always covers the full viewport — no void bars.
-	## Add a small margin (1.05x) so there's always room to pan and no edge void.
-	var vp_size: Vector2 = get_viewport_rect().size
-	if vp_size.x <= 0 or vp_size.y <= 0:
-		camera.zoom = Vector2(2.0, 2.0)
-		return
-	var min_zoom: float = maxf(vp_size.x / float(MAP_SIZE.x), vp_size.y / float(MAP_SIZE.y))
-	# Zoom in slightly past the fill point so the map overflows the viewport
-	# on both axes — this guarantees pan room and no gray edges.
-	var zoom_level: float = min_zoom * 1.1
-	camera.zoom = Vector2(zoom_level, zoom_level)
-	_clamp_camera()
-
-
-func _on_viewport_size_changed() -> void:
-	_apply_zoom()
-	_clamp_camera()
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -95,15 +80,8 @@ func _unhandled_input(event: InputEvent) -> void:
 func _clamp_camera() -> void:
 	var viewport_size: Vector2 = get_viewport_rect().size / camera.zoom
 	var half_vp: Vector2 = viewport_size / 2.0
-	# If viewport is wider/taller than map on an axis, center on that axis
-	if half_vp.x * 2.0 >= float(MAP_SIZE.x):
-		camera.position.x = float(MAP_SIZE.x) / 2.0
-	else:
-		camera.position.x = clampf(camera.position.x, half_vp.x, float(MAP_SIZE.x) - half_vp.x)
-	if half_vp.y * 2.0 >= float(MAP_SIZE.y):
-		camera.position.y = float(MAP_SIZE.y) / 2.0
-	else:
-		camera.position.y = clampf(camera.position.y, half_vp.y, float(MAP_SIZE.y) - half_vp.y)
+	camera.position.x = clampf(camera.position.x, half_vp.x, float(ROOM_SIZE.x) - half_vp.x)
+	camera.position.y = clampf(camera.position.y, half_vp.y, float(ROOM_SIZE.y) - half_vp.y)
 
 
 func _on_set_camera(x: float, y: float, zoom: float) -> void:
@@ -119,4 +97,4 @@ func get_location_position(location_name: String) -> Vector2:
 	var exit_marker: Node = locations.get_node_or_null("exit")
 	if exit_marker:
 		return exit_marker.global_position
-	return Vector2(MAP_SIZE.x / 2.0, MAP_SIZE.y - TILE_SIZE)
+	return Vector2(ROOM_SIZE.x / 2.0, ROOM_SIZE.y - TILE_SIZE)
