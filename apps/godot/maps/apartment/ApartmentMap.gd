@@ -1,40 +1,41 @@
 ## ApartmentMap — interior scene script for the per-user apartment.
 ##
-## Canvas is 44x27 tiles (1408x864) matching the town viewport.
-## Camera limits restrict view to the room interior.
-## Drag to pan, same as the town map.
+## Fixed camera view — the entire apartment is visible at once.
+## No dragging, no panning, no zoom controls. The room is centered
+## in the viewport with black bars filling any extra space (letterboxing).
 class_name ApartmentMap
 extends Node2D
 
+const ROOM_SIZE := Vector2i(768, 512)
 const TILE_SIZE := 32
-
-# Room interior bounds (where the camera is allowed to show).
-# These define the edges of the actual apartment room within the larger canvas.
-# Derived from furniture positions: leftmost x=132, rightmost x=718,
-# topmost y=42, bottommost y=496. With wall padding.
-const ROOM_LEFT := 32
-const ROOM_TOP := 32
-const ROOM_RIGHT := 736
-const ROOM_BOTTOM := 496
 
 @onready var camera: Camera2D = $Camera2D
 @onready var locations: Node2D = $Locations
 
-var _dragging: bool = false
-
 
 func _ready() -> void:
-	camera.zoom = Vector2(2.0, 2.0)
-	camera.position = Vector2(
-		(ROOM_LEFT + ROOM_RIGHT) / 2.0,
-		(ROOM_TOP + ROOM_BOTTOM) / 2.0
-	)
+	# Center camera on the room
+	camera.position = Vector2(ROOM_SIZE.x / 2.0, ROOM_SIZE.y / 2.0)
 
-	# Godot Camera2D limits prevent showing anything outside the room.
-	camera.limit_left = ROOM_LEFT
-	camera.limit_top = ROOM_TOP
-	camera.limit_right = ROOM_RIGHT
-	camera.limit_bottom = ROOM_BOTTOM
+	# Calculate zoom to fit the entire room in the viewport.
+	# Use the SMALLER ratio so the full room is visible (letterboxed).
+	var vp_size: Vector2 = get_viewport_rect().size
+	if vp_size.x > 0 and vp_size.y > 0:
+		var zoom_x: float = vp_size.x / float(ROOM_SIZE.x)
+		var zoom_y: float = vp_size.y / float(ROOM_SIZE.y)
+		var fit_zoom: float = minf(zoom_x, zoom_y)
+		camera.zoom = Vector2(fit_zoom, fit_zoom)
+	else:
+		camera.zoom = Vector2(2.0, 2.0)
+
+	# Disable all camera limits — camera is fixed, no panning
+	camera.limit_left = -10000
+	camera.limit_top = -10000
+	camera.limit_right = 10000
+	camera.limit_bottom = 10000
+
+	# Recalculate on viewport resize (browser window resize)
+	get_viewport().size_changed.connect(_on_viewport_size_changed)
 
 	JsBridge.set_camera_requested.connect(_on_set_camera)
 
@@ -51,32 +52,18 @@ func _ready() -> void:
 			print("[ApartmentMap] Viewer connecting to: %s" % js_ws_url)
 
 
-func _unhandled_input(event: InputEvent) -> void:
-	# Click drag to pan — Godot's camera limits handle clamping automatically
-	if event is InputEventMouseButton:
-		var mb: InputEventMouseButton = event as InputEventMouseButton
-		if mb.button_index == MOUSE_BUTTON_LEFT or mb.button_index == MOUSE_BUTTON_MIDDLE:
-			_dragging = mb.pressed
-
-	if event is InputEventMouseMotion and _dragging:
-		var mm: InputEventMouseMotion = event as InputEventMouseMotion
-		camera.position -= mm.relative / camera.zoom
-
-	# Consume scroll/pan gestures so the page doesn't scroll
-	if event is InputEventMouseButton:
-		var mb2: InputEventMouseButton = event as InputEventMouseButton
-		if mb2.button_index == MOUSE_BUTTON_WHEEL_UP or mb2.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			get_viewport().set_input_as_handled()
-
-	if event is InputEventPanGesture:
-		var pg: InputEventPanGesture = event as InputEventPanGesture
-		camera.position += pg.delta * 10.0 / camera.zoom
-		get_viewport().set_input_as_handled()
+func _on_viewport_size_changed() -> void:
+	var vp_size: Vector2 = get_viewport_rect().size
+	if vp_size.x > 0 and vp_size.y > 0:
+		var zoom_x: float = vp_size.x / float(ROOM_SIZE.x)
+		var zoom_y: float = vp_size.y / float(ROOM_SIZE.y)
+		var fit_zoom: float = minf(zoom_x, zoom_y)
+		camera.zoom = Vector2(fit_zoom, fit_zoom)
 
 
-func _on_set_camera(x: float, y: float, _zoom: float) -> void:
-	if x != 0 or y != 0:
-		camera.position = Vector2(x, y)
+func _on_set_camera(_x: float, _y: float, _zoom: float) -> void:
+	# Camera is fixed — ignore external set_camera requests
+	pass
 
 
 func get_location_position(location_name: String) -> Vector2:
@@ -86,4 +73,4 @@ func get_location_position(location_name: String) -> Vector2:
 	var exit_marker: Node = locations.get_node_or_null("exit")
 	if exit_marker:
 		return exit_marker.global_position
-	return Vector2((ROOM_LEFT + ROOM_RIGHT) / 2.0, ROOM_BOTTOM - TILE_SIZE)
+	return Vector2(ROOM_SIZE.x / 2.0, ROOM_SIZE.y - TILE_SIZE)
