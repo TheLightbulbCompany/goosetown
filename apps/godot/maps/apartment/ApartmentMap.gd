@@ -6,12 +6,11 @@
 class_name ApartmentMap
 extends Node2D
 
-# Actual room bounds derived from furniture positions + wall padding.
-# Center the camera here so the entire room is visible.
-const ROOM_LEFT := 52
+# Room bounds: original 24x16 tile room = (0,0) to (768,512).
+const ROOM_LEFT := 0
 const ROOM_TOP := 0
-const ROOM_RIGHT := 751
-const ROOM_BOTTOM := 560
+const ROOM_RIGHT := 768
+const ROOM_BOTTOM := 512
 const TILE_SIZE := 32
 
 @onready var camera: Camera2D = $Camera2D
