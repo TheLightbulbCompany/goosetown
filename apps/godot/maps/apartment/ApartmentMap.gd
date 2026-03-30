@@ -6,7 +6,12 @@
 class_name ApartmentMap
 extends Node2D
 
-const ROOM_SIZE := Vector2i(768, 512)
+# Actual room bounds derived from furniture positions + wall padding.
+# Center the camera here so the entire room is visible.
+const ROOM_LEFT := 52
+const ROOM_TOP := 0
+const ROOM_RIGHT := 751
+const ROOM_BOTTOM := 560
 const TILE_SIZE := 32
 
 @onready var camera: Camera2D = $Camera2D
@@ -14,15 +19,20 @@ const TILE_SIZE := 32
 
 
 func _ready() -> void:
-	# Center camera on the room
-	camera.position = Vector2(ROOM_SIZE.x / 2.0, ROOM_SIZE.y / 2.0)
+	# Center camera on the actual room center
+	var room_w: float = float(ROOM_RIGHT - ROOM_LEFT)
+	var room_h: float = float(ROOM_BOTTOM - ROOM_TOP)
+	camera.position = Vector2(
+		float(ROOM_LEFT) + room_w / 2.0,
+		float(ROOM_TOP) + room_h / 2.0
+	)
 
 	# Calculate zoom to fit the entire room in the viewport.
 	# Use the SMALLER ratio so the full room is visible (letterboxed).
 	var vp_size: Vector2 = get_viewport_rect().size
 	if vp_size.x > 0 and vp_size.y > 0:
-		var zoom_x: float = vp_size.x / float(ROOM_SIZE.x)
-		var zoom_y: float = vp_size.y / float(ROOM_SIZE.y)
+		var zoom_x: float = vp_size.x / room_w
+		var zoom_y: float = vp_size.y / room_h
 		var fit_zoom: float = minf(zoom_x, zoom_y)
 		camera.zoom = Vector2(fit_zoom, fit_zoom)
 	else:
@@ -53,10 +63,12 @@ func _ready() -> void:
 
 
 func _on_viewport_size_changed() -> void:
+	var room_w: float = float(ROOM_RIGHT - ROOM_LEFT)
+	var room_h: float = float(ROOM_BOTTOM - ROOM_TOP)
 	var vp_size: Vector2 = get_viewport_rect().size
 	if vp_size.x > 0 and vp_size.y > 0:
-		var zoom_x: float = vp_size.x / float(ROOM_SIZE.x)
-		var zoom_y: float = vp_size.y / float(ROOM_SIZE.y)
+		var zoom_x: float = vp_size.x / room_w
+		var zoom_y: float = vp_size.y / room_h
 		var fit_zoom: float = minf(zoom_x, zoom_y)
 		camera.zoom = Vector2(fit_zoom, fit_zoom)
 
@@ -73,4 +85,4 @@ func get_location_position(location_name: String) -> Vector2:
 	var exit_marker: Node = locations.get_node_or_null("exit")
 	if exit_marker:
 		return exit_marker.global_position
-	return Vector2(ROOM_SIZE.x / 2.0, ROOM_SIZE.y - TILE_SIZE)
+	return Vector2(float(ROOM_LEFT + ROOM_RIGHT) / 2.0, float(ROOM_BOTTOM) - TILE_SIZE)
