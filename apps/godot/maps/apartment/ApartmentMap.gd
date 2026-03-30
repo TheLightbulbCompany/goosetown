@@ -6,11 +6,11 @@
 class_name ApartmentMap
 extends Node2D
 
-# Room bounds: 24x16 tile room starts at tile (2,1) = pixel (64,32).
-const ROOM_LEFT := 64
-const ROOM_TOP := 32
-const ROOM_RIGHT := 832
-const ROOM_BOTTOM := 544
+# Room bounds tuned to center the view evenly with black bars.
+const ROOM_LEFT := 24
+const ROOM_TOP := 12
+const ROOM_RIGHT := 792
+const ROOM_BOTTOM := 524
 const TILE_SIZE := 32
 
 @onready var camera: Camera2D = $Camera2D
