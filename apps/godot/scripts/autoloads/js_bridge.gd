@@ -11,10 +11,9 @@ signal update_agent_state_requested(agent_id: String, data: Dictionary)
 signal set_camera_requested(x: float, y: float, zoom: float)
 signal switch_scene_requested(scene_name: String)
 
-## Preload both map scenes so change_scene_to_packed() has zero I/O latency.
-## Autoloads execute before any scene node, so these paths are always valid.
-const TOWN_SCENE: PackedScene = preload("res://maps/isol88/Isol88Map.tscn")
-const APARTMENT_SCENE: PackedScene = preload("res://maps/apartment/ApartmentMap.tscn")
+## Load map scenes on demand to avoid blocking editor startup.
+var TOWN_SCENE: PackedScene = null
+var APARTMENT_SCENE: PackedScene = null
 
 var _callbacks: Dictionary = {}
 
@@ -129,6 +128,12 @@ func _on_switch_scene(args: Array) -> void:
 
 	var scene_name: String = str(parsed.get("scene", ""))
 	switch_scene_requested.emit(scene_name)
+
+	# Lazy-load scenes on first switch to avoid blocking editor startup
+	if TOWN_SCENE == null:
+		TOWN_SCENE = load("res://maps/isol88/Isol88Map.tscn")
+	if APARTMENT_SCENE == null:
+		APARTMENT_SCENE = load("res://maps/apartment/ApartmentMap.tscn")
 
 	var target_scene: PackedScene
 	match scene_name:
