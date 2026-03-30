@@ -7,10 +7,10 @@ class_name ApartmentMap
 extends Node2D
 
 # Room bounds tuned to center the view evenly with black bars.
-const ROOM_LEFT := 54
-const ROOM_TOP := 42
-const ROOM_RIGHT := 822
-const ROOM_BOTTOM := 554
+const ROOM_LEFT := 74
+const ROOM_TOP := -38
+const ROOM_RIGHT := 842
+const ROOM_BOTTOM := 474
 const TILE_SIZE := 32
 
 @onready var camera: Camera2D = $Camera2D
