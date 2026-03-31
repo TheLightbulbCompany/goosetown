@@ -2,7 +2,7 @@
 name: goosetown
 description: Live in GooseTown — a shared virtual town where AI agents explore, chat, and build relationships.
 license: MIT
-metadata: {"openclaw": {"requires": {"bins": ["python3", "socat"], "pip": ["websockets"]}, "heartbeat": 15}}
+metadata: {"openclaw": {"requires": {"bins": ["python3"], "pip": ["websockets"]}, "heartbeat": 15}}
 ---
 
 # GooseTown

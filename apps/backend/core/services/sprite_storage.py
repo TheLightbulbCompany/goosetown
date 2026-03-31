@@ -22,6 +22,44 @@ SHEET_HEIGHT = 4 * FRAME_SIZE  # 192
 DIRECTION_ROWS = {"south": 0, "west": 1, "east": 2, "north": 3}
 
 
+def _crop_and_resize(img: Image.Image, target_size: int) -> Image.Image:
+    """Crop transparent padding around the character, then resize to fill the target frame.
+
+    PixelLab returns characters at ~60% of the canvas with transparent padding.
+    Simply resizing the full canvas makes the character tiny. Instead:
+    1. Find the bounding box of non-transparent pixels
+    2. Crop to that bbox with a small margin
+    3. Resize to fill the target frame (maintaining aspect ratio, centered)
+    """
+    bbox = img.getbbox()
+    if bbox is None:
+        # Fully transparent — return empty frame
+        return Image.new("RGBA", (target_size, target_size), (0, 0, 0, 0))
+
+    # Add 1px margin around the content
+    margin = 1
+    x1 = max(0, bbox[0] - margin)
+    y1 = max(0, bbox[1] - margin)
+    x2 = min(img.width, bbox[2] + margin)
+    y2 = min(img.height, bbox[3] + margin)
+
+    cropped = img.crop((x1, y1, x2, y2))
+
+    # Resize to fill the target frame while maintaining aspect ratio
+    cw, ch = cropped.size
+    scale = min(target_size / cw, target_size / ch)
+    new_w = max(1, int(cw * scale))
+    new_h = max(1, int(ch * scale))
+    resized = cropped.resize((new_w, new_h), Image.NEAREST)
+
+    # Center on a transparent target-sized canvas
+    result = Image.new("RGBA", (target_size, target_size), (0, 0, 0, 0))
+    paste_x = (target_size - new_w) // 2
+    paste_y = target_size - new_h  # Anchor to bottom (feet on ground)
+    result.paste(resized, (paste_x, paste_y))
+    return result
+
+
 def extract_walk_spritesheet(zip_bytes: bytes) -> Optional[bytes]:
     """Extract walk animation frames from a PixelLab character ZIP and composite into a spritesheet.
 
@@ -63,8 +101,7 @@ def extract_walk_spritesheet(zip_bytes: bytes) -> Optional[bytes]:
                 try:
                     with zf.open(frame_path) as fp:
                         frame_img = Image.open(fp).convert("RGBA")
-                        if frame_img.size != (FRAME_SIZE, FRAME_SIZE):
-                            frame_img = frame_img.resize((FRAME_SIZE, FRAME_SIZE), Image.NEAREST)
+                        frame_img = _crop_and_resize(frame_img, FRAME_SIZE)
                         sheet.paste(frame_img, (frame_idx * FRAME_SIZE, row_index * FRAME_SIZE))
                 except Exception as e:
                     logger.warning("Failed to process frame %s: %s", frame_path, e)
@@ -77,8 +114,7 @@ def extract_walk_spritesheet(zip_bytes: bytes) -> Optional[bytes]:
             try:
                 with zf.open(rot_path) as fp:
                     frame_img = Image.open(fp).convert("RGBA")
-                    if frame_img.size != (FRAME_SIZE, FRAME_SIZE):
-                        frame_img = frame_img.resize((FRAME_SIZE, FRAME_SIZE), Image.NEAREST)
+                    frame_img = _crop_and_resize(frame_img, FRAME_SIZE)
                     # Repeat the single frame across all columns
                     for frame_idx in range(FRAME_COUNT):
                         sheet.paste(frame_img, (frame_idx * FRAME_SIZE, row_index * FRAME_SIZE))

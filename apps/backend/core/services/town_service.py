@@ -630,6 +630,191 @@ class TownService:
         )
         return [_decimal_to_native(item) for item in resp.get("Items", [])]
 
+    def create_active_conversation(
+        self,
+        initiator_id: str,
+        target_id: str,
+        location: str,
+        opening_message: str,
+        initiator_display_name: str,
+    ) -> dict:
+        """Create a new active conversation between two agents.
+
+        Records the opening message in the public log and marks both agents'
+        ``currentConversationId`` so the system can prevent them from starting
+        overlapping conversations.
+
+        Args:
+            initiator_id: UUID of the agent starting the conversation.
+            target_id: UUID of the agent being invited.
+            location: Current location name (e.g. ``"plaza"``).
+            opening_message: The initiating agent's first message text.
+            initiator_display_name: Display name used as the speaker label.
+
+        Returns:
+            The newly created conversation record as a plain dict.
+        """
+        now = _now_iso()
+        conv_id = str(uuid.uuid4())
+        a_id, b_id = sorted([initiator_id, target_id])
+
+        item = {
+            "id": conv_id,
+            "participantAId": a_id,
+            "participantBId": b_id,
+            "location": location,
+            "turnCount": 1,
+            "topicSummary": "_none",
+            "publicLog": [{"speaker": initiator_display_name, "text": opening_message}],
+            "status": "active",
+            "startedAt": now,
+            "endedAt": "_active",  # Sentinel — GSI key cannot be NULL or empty
+            "updatedAt": now,
+        }
+        table = dynamo.conversations_table()
+        table.put_item(Item=item)
+
+        # Mark both agents as in this conversation
+        agents_table = dynamo.agents_table()
+        for agent_id in (initiator_id, target_id):
+            try:
+                agents_table.update_item(
+                    Key={"id": agent_id},
+                    UpdateExpression="SET currentConversationId = :cid",
+                    ExpressionAttributeValues={":cid": conv_id},
+                    ConditionExpression="attribute_exists(id)",
+                )
+            except agents_table.meta.client.exceptions.ConditionalCheckFailedException:
+                logger.warning("Agent %s not found when setting currentConversationId", agent_id)
+
+        return _decimal_to_native(item)
+
+    def get_conversation_by_id(self, conv_id: str) -> Optional[dict]:
+        """Fetch a single conversation record by its UUID.
+
+        Args:
+            conv_id: Conversation UUID.
+
+        Returns:
+            The conversation record as a plain dict, or ``None`` if not found.
+        """
+        table = dynamo.conversations_table()
+        resp = table.get_item(Key={"id": conv_id})
+        item = resp.get("Item")
+        if not item:
+            return None
+        return _decimal_to_native(item)
+
+    def append_message_to_conversation(
+        self,
+        conv_id: str,
+        speaker_display_name: str,
+        text: str,
+    ) -> Optional[dict]:
+        """Append a message turn to an active conversation's public log.
+
+        Increments ``turnCount`` and updates ``updatedAt`` atomically.
+
+        Args:
+            conv_id: Conversation UUID.
+            speaker_display_name: Display name label for this turn.
+            text: The message text.
+
+        Returns:
+            Updated conversation record as a plain dict, or ``None`` if the
+            conversation does not exist or is not active.
+        """
+        table = dynamo.conversations_table()
+        now = _now_iso()
+        new_entry = {"speaker": speaker_display_name, "text": text}
+        try:
+            resp = table.update_item(
+                Key={"id": conv_id},
+                UpdateExpression=(
+                    "SET publicLog = list_append(publicLog, :entry), "
+                    "turnCount = turnCount + :one, "
+                    "updatedAt = :now"
+                ),
+                ConditionExpression="attribute_exists(id) AND #s = :active",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={
+                    ":entry": [new_entry],
+                    ":one": 1,
+                    ":now": now,
+                    ":active": "active",
+                },
+                ReturnValues="ALL_NEW",
+            )
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            return None
+        return _decimal_to_native(resp.get("Attributes", {}))
+
+    def end_conversation(self, conv_id: str) -> Optional[dict]:
+        """Mark a conversation as ended and clear both agents' active conversation pointer.
+
+        Args:
+            conv_id: Conversation UUID.
+
+        Returns:
+            The final conversation record as a plain dict, or ``None`` if the
+            conversation does not exist.
+        """
+        table = dynamo.conversations_table()
+        now = _now_iso()
+        try:
+            resp = table.update_item(
+                Key={"id": conv_id},
+                UpdateExpression="SET #s = :ended, endedAt = :now, updatedAt = :now",
+                ConditionExpression="attribute_exists(id)",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":ended": "ended", ":now": now},
+                ReturnValues="ALL_NEW",
+            )
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            return None
+
+        conv = _decimal_to_native(resp.get("Attributes", {}))
+
+        # Clear currentConversationId on both participants
+        agents_table = dynamo.agents_table()
+        for agent_id in (conv.get("participantAId"), conv.get("participantBId")):
+            if not agent_id:
+                continue
+            try:
+                agents_table.update_item(
+                    Key={"id": agent_id},
+                    UpdateExpression="REMOVE currentConversationId SET lastConversationAt = :now",
+                    ExpressionAttributeValues={":now": now},
+                    ConditionExpression="attribute_exists(id)",
+                )
+            except agents_table.meta.client.exceptions.ConditionalCheckFailedException:
+                logger.warning("Agent %s not found when clearing currentConversationId", agent_id)
+
+        return conv
+
+    def get_agent_by_agent_name_active(self, agent_name: str) -> Optional[dict]:
+        """Find any active agent by machine name across all users.
+
+        Used by the conversation initiator to resolve a target agent from the
+        ``agentName`` the initiating agent sees in TOWN_STATUS.md.
+
+        Args:
+            agent_name: Machine-readable agent name (``agentName`` field).
+
+        Returns:
+            Agent record as a plain dict, or ``None`` if not found or not active.
+        """
+        table = dynamo.agents_table()
+        # Scan is acceptable here: active agent count is small (< 50 typical)
+        resp = table.scan(
+            FilterExpression=Attr("agentName").eq(agent_name) & Attr("isActive").eq("true"),
+            Limit=5,
+        )
+        items = resp.get("Items", [])
+        if not items:
+            return None
+        return _decimal_to_native(items[0])
+
     def get_recent_speech(self, since_seconds: float = 5.0) -> list[dict]:
         """Get chat messages from the last N seconds for speech bubbles."""
         cutoff = (datetime.now(timezone.utc) - timedelta(seconds=since_seconds)).isoformat()

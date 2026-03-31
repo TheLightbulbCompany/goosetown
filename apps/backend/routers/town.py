@@ -464,6 +464,24 @@ async def register_agent(
                                 cdn_url = f"{settings.SPRITE_CDN_URL}/{s3_key}"
                                 service.update_agent_state(_agent_id, sprite_ready=True, sprite_url=cdn_url)
                                 logger.info("Sprite ready for agent %s", _agent_id)
+
+                                # Notify the agent's daemon that the sprite is ready
+                                try:
+                                    from core.services.management_api_client import ManagementApiClient
+                                    from core.services.town_agent_ws import get_town_agent_ws_manager
+
+                                    ws_mgr = get_town_agent_ws_manager()
+                                    conn = ws_mgr.get_by_agent_id(str(_agent_id))
+                                    if conn:
+                                        mgmt = ManagementApiClient()
+                                        mgmt.send_message(
+                                            conn.connection_id,
+                                            {"event": "sprite_ready", "sprite_url": cdn_url},
+                                        )
+                                        logger.info("Sent sprite_ready event to agent %s", _agent_id)
+                                except Exception as notify_err:
+                                    logger.warning("Failed to notify agent of sprite ready: %s", notify_err)
+
                                 return
                             logger.info(
                                 "ZIP downloaded but no walk frames yet for %s (attempt %d)", char_id, attempt + 1
@@ -730,7 +748,13 @@ async def handle_ws_message(request: WsMessageRequest):
                     agent_conn.agent_id,
                     {"type": "move", "destination": destination},
                 )
-        elif action not in ("chat", "say", "end_conversation", "idle"):
+        elif action == "chat":
+            await _handle_chat(request.connectionId, body, agent_conn)
+        elif action == "say":
+            await _handle_say(request.connectionId, body, agent_conn)
+        elif action == "end_conversation":
+            await _handle_end_conversation(request.connectionId, body, agent_conn)
+        elif action != "idle":
             # Treat any unrecognised action as an activity name
             await _handle_agent_activity(request.connectionId, action, agent_conn)
         return {"statusCode": 200}
@@ -744,6 +768,383 @@ async def handle_ws_message(request: WsMessageRequest):
         await gs_client.send_command(agent_conn.agent_id, body)
 
     return {"statusCode": 200}
+
+
+# ===========================================================================
+# Conversation system
+# ===========================================================================
+
+_MAX_CONVERSATION_TURNS = 20
+
+
+async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
+    """Handle a ``chat`` action — initiate a new conversation.
+
+    Looks up the target agent by ``agentName``, validates neither party is
+    already in a conversation, creates an active conversation record in
+    DynamoDB, and delivers a ``conversation_invite`` event to the target.
+
+    Args:
+        connection_id: API Gateway connection ID of the initiating agent.
+        body: Parsed WebSocket message body containing ``target`` (agentName)
+            and ``message`` (opening line).
+        agent_conn: Connection record for the initiating agent.
+    """
+    from core.services.management_api_client import ManagementApiClient
+
+    mgmt = ManagementApiClient()
+    service = TownService()
+    ws_manager = get_town_agent_ws_manager()
+    initiator_id = agent_conn.agent_id
+
+    def _reject(reason: str) -> None:
+        try:
+            mgmt.send_message(
+                connection_id,
+                {"event": "chat_rejected", "reason": reason},
+            )
+        except Exception as exc:
+            logger.warning("Failed to send chat_rejected to %s: %s", initiator_id, exc)
+
+    target_agent_name = body.get("target", "").strip()
+    opening_message = body.get("message", "").strip()
+
+    if not target_agent_name or not opening_message:
+        _reject("missing_target_or_message")
+        return
+
+    # Load initiator from DB
+    initiator = service.get_town_agent_by_id(initiator_id)
+    if not initiator:
+        _reject("initiator_not_found")
+        return
+
+    # Validate initiator is not already in a conversation
+    if initiator.get("currentConversationId"):
+        _reject("already_in_conversation")
+        return
+
+    # Resolve the target agent by machine name
+    target = service.get_agent_by_agent_name_active(target_agent_name)
+    if not target:
+        _reject("target_not_found")
+        return
+
+    target_id = target["id"]
+    if target_id == initiator_id:
+        _reject("cannot_chat_with_self")
+        return
+
+    # Validate target is not already in a conversation
+    if target.get("currentConversationId"):
+        _reject("target_busy")
+        return
+
+    # Create the conversation record
+    location = initiator.get("currentLocation") or initiator.get("lastKnownLocation", "plaza")
+    initiator_display = initiator.get("displayName", agent_conn.agent_name)
+    conv = service.create_active_conversation(
+        initiator_id=initiator_id,
+        target_id=target_id,
+        location=location,
+        opening_message=opening_message,
+        initiator_display_name=initiator_display,
+    )
+    conv_id = conv["id"]
+
+    # Deliver invite to target agent if they are connected
+    target_conn = ws_manager.get_by_agent_id(target_id)
+    if target_conn:
+        try:
+            mgmt.send_message(
+                target_conn.connection_id,
+                {
+                    "event": "conversation_invite",
+                    "conv_id": conv_id,
+                    "from": initiator_display,
+                    "from_agent_name": agent_conn.agent_name,
+                    "message": opening_message,
+                    "location": location,
+                },
+            )
+        except Exception as exc:
+            logger.warning("Failed to deliver conversation_invite to %s: %s", target_id, exc)
+    else:
+        logger.info("Target agent %s not connected — invite stored in conversation record", target_id)
+
+    # Acknowledge to initiator with the conversation ID
+    try:
+        mgmt.send_message(
+            connection_id,
+            {
+                "event": "act_ok",
+                "action": "chat",
+                "conv_id": conv_id,
+                "target": target_agent_name,
+            },
+        )
+    except Exception as exc:
+        logger.warning("Failed to send chat act_ok to %s: %s", initiator_id, exc)
+
+    logger.info(
+        "Conversation %s started between %s and %s at %s",
+        conv_id,
+        initiator_id,
+        target_id,
+        location,
+    )
+
+
+async def _handle_say(connection_id: str, body: dict, agent_conn) -> None:
+    """Handle a ``say`` action — append a message to an active conversation.
+
+    Validates that the conversation exists, is active, and the speaker is a
+    participant. Appends the message and forwards it to the other participant.
+    Auto-ends the conversation when the turn limit is reached.
+
+    Args:
+        connection_id: API Gateway connection ID of the speaking agent.
+        body: Parsed message body with ``conv_id`` and ``message``.
+        agent_conn: Connection record for the speaking agent.
+    """
+    from core.services.management_api_client import ManagementApiClient
+
+    mgmt = ManagementApiClient()
+    service = TownService()
+    ws_manager = get_town_agent_ws_manager()
+    speaker_id = agent_conn.agent_id
+
+    def _reject(reason: str) -> None:
+        try:
+            mgmt.send_message(
+                connection_id,
+                {"event": "say_rejected", "reason": reason},
+            )
+        except Exception as exc:
+            logger.warning("Failed to send say_rejected to %s: %s", speaker_id, exc)
+
+    conv_id = body.get("conv_id", "").strip()
+    message = body.get("message", "").strip()
+
+    if not conv_id or not message:
+        _reject("missing_conv_id_or_message")
+        return
+
+    # Validate the conversation
+    conv = service.get_conversation_by_id(conv_id)
+    if not conv:
+        _reject("conversation_not_found")
+        return
+
+    if conv.get("status") != "active":
+        _reject("conversation_not_active")
+        return
+
+    participant_ids = {conv.get("participantAId"), conv.get("participantBId")}
+    if speaker_id not in participant_ids:
+        _reject("not_a_participant")
+        return
+
+    # Append the message
+    speaker = service.get_town_agent_by_id(speaker_id)
+    speaker_display = speaker.get("displayName", agent_conn.agent_name) if speaker else agent_conn.agent_name
+
+    updated = service.append_message_to_conversation(conv_id, speaker_display, message)
+    if not updated:
+        _reject("conversation_not_active")
+        return
+
+    turn_count = updated.get("turnCount", 0)
+    other_id = next(pid for pid in participant_ids if pid != speaker_id)
+
+    # Forward message to the other participant
+    other_conn = ws_manager.get_by_agent_id(other_id)
+    if other_conn:
+        try:
+            mgmt.send_message(
+                other_conn.connection_id,
+                {
+                    "event": "conversation_message",
+                    "conv_id": conv_id,
+                    "from": speaker_display,
+                    "from_agent_name": agent_conn.agent_name,
+                    "text": message,
+                    "turn": turn_count,
+                },
+            )
+        except Exception as exc:
+            logger.warning("Failed to forward message to %s: %s", other_id, exc)
+
+    logger.info("Conversation %s turn %d: %s said %d chars", conv_id, turn_count, speaker_id, len(message))
+
+    # Auto-end at turn limit
+    if turn_count >= _MAX_CONVERSATION_TURNS:
+        logger.info("Conversation %s reached turn limit (%d), auto-ending", conv_id, _MAX_CONVERSATION_TURNS)
+        await _finalize_conversation(conv_id, service, mgmt, ws_manager, auto_ended=True)
+
+
+async def _handle_end_conversation(connection_id: str, body: dict, agent_conn) -> None:
+    """Handle an ``end_conversation`` action — close an active conversation.
+
+    Validates the requester is a participant, marks the conversation ended,
+    applies mood effects to both agents, updates the relationship affinity,
+    and notifies both participants.
+
+    Args:
+        connection_id: API Gateway connection ID of the ending agent.
+        body: Parsed message body with ``conv_id``.
+        agent_conn: Connection record for the ending agent.
+    """
+    from core.services.management_api_client import ManagementApiClient
+
+    mgmt = ManagementApiClient()
+    service = TownService()
+    ws_manager = get_town_agent_ws_manager()
+    ender_id = agent_conn.agent_id
+
+    def _reject(reason: str) -> None:
+        try:
+            mgmt.send_message(
+                connection_id,
+                {"event": "end_rejected", "reason": reason},
+            )
+        except Exception as exc:
+            logger.warning("Failed to send end_rejected to %s: %s", ender_id, exc)
+
+    conv_id = body.get("conv_id", "").strip()
+    if not conv_id:
+        _reject("missing_conv_id")
+        return
+
+    conv = service.get_conversation_by_id(conv_id)
+    if not conv:
+        _reject("conversation_not_found")
+        return
+
+    participant_ids = {conv.get("participantAId"), conv.get("participantBId")}
+    if ender_id not in participant_ids:
+        _reject("not_a_participant")
+        return
+
+    if conv.get("status") != "active":
+        _reject("conversation_not_active")
+        return
+
+    await _finalize_conversation(conv_id, service, mgmt, ws_manager, auto_ended=False)
+
+
+async def _finalize_conversation(
+    conv_id: str,
+    service: TownService,
+    mgmt,
+    ws_manager,
+    auto_ended: bool,
+) -> None:
+    """End a conversation, apply mood/relationship effects, and notify both agents.
+
+    Extracted from ``_handle_end_conversation`` so the auto-end path on turn
+    limit can share the same logic.
+
+    Args:
+        conv_id: Conversation UUID to finalise.
+        service: ``TownService`` instance (caller's, to avoid re-instantiation).
+        mgmt: ``ManagementApiClient`` instance.
+        ws_manager: Active WebSocket manager.
+        auto_ended: Whether the conversation ended by hitting the turn limit
+            (``True``) or by explicit agent request (``False``).
+    """
+    from core.services import town_mood_engine
+
+    conv = service.end_conversation(conv_id)
+    if not conv:
+        logger.warning("end_conversation returned None for conv_id %s", conv_id)
+        return
+
+    a_id = conv.get("participantAId")
+    b_id = conv.get("participantBId")
+    turn_count = conv.get("turnCount", 0)
+    location = conv.get("location", "unknown")
+
+    end_reason = "turn_limit_reached" if auto_ended else "ended_by_participant"
+
+    # Apply mood/energy effects and update relationship for each participant
+    for agent_id in (a_id, b_id):
+        if not agent_id:
+            continue
+        agent = service.get_town_agent_by_id(agent_id)
+        if not agent:
+            continue
+
+        current_energy = int(agent.get("energy", 100))
+        current_mood_raw = agent.get("mood", 0)
+        # mood is stored as numeric int in DB; parse_mood handles legacy strings
+        current_mood = town_mood_engine.parse_mood(current_mood_raw)
+        traits = agent.get("traits", "")
+
+        new_energy, new_mood = town_mood_engine.apply_event(
+            "conversation_completed", current_energy, current_mood, traits
+        )
+        service.update_agent_mood_energy(agent_id, new_mood, new_energy)
+
+    # Update relationship affinity (+5, creates relationship if missing)
+    if a_id and b_id:
+        try:
+            service.get_or_create_relationship(a_id, b_id)
+            service.update_relationship(a_id, b_id, affinity_delta=5)
+        except Exception as exc:
+            logger.warning("Failed to update relationship for conv %s: %s", conv_id, exc)
+
+    # Notify both connected participants
+    public_log = conv.get("publicLog") or []
+    log_summary = _build_log_summary(public_log)
+
+    for agent_id in (a_id, b_id):
+        if not agent_id:
+            continue
+        conn = ws_manager.get_by_agent_id(agent_id)
+        if not conn:
+            continue
+        try:
+            mgmt.send_message(
+                conn.connection_id,
+                {
+                    "event": "conversation_ended",
+                    "conv_id": conv_id,
+                    "turn_count": turn_count,
+                    "location": location,
+                    "reason": end_reason,
+                    "log_summary": log_summary,
+                },
+            )
+        except Exception as exc:
+            logger.warning("Failed to send conversation_ended to %s: %s", agent_id, exc)
+
+    logger.info(
+        "Conversation %s finalised (%s, %d turns, location=%s)",
+        conv_id,
+        end_reason,
+        turn_count,
+        location,
+    )
+
+
+def _build_log_summary(public_log: list, max_turns: int = 5) -> str:
+    """Build a short plaintext summary of the last N turns for the ended event.
+
+    Included in ``conversation_ended`` so agents can log to TOWN_LIFE.md
+    without re-fetching the full log.
+
+    Args:
+        public_log: List of ``{speaker, text}`` dicts from DynamoDB.
+        max_turns: How many recent turns to include (default: last 5).
+
+    Returns:
+        Multi-line string, or empty string if the log is empty.
+    """
+    if not public_log:
+        return ""
+    recent = public_log[-max_turns:]
+    return "\n".join(f"{t.get('speaker', '?')}: {t.get('text', '')}" for t in recent)
 
 
 async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
