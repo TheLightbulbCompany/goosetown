@@ -93,15 +93,7 @@ export default function GodotCanvas({ className, scene = 'town' }: GodotCanvasPr
           canvas,
         });
 
-        engineRef.current = engine;
-        await engine.startGame();
-
-        if (cancelled) {
-          engine.requestQuit();
-          return;
-        }
-
-        // Pass authenticated WS URL to Godot so it can open a WebSocket
+        // Set WS URL BEFORE starting Godot so _ready() can read it
         const wsUrl = import.meta.env.VITE_WS_URL;
         if (wsUrl && getToken) {
           try {
@@ -118,6 +110,14 @@ export default function GodotCanvas({ className, scene = 'town' }: GodotCanvasPr
           } catch (e) {
             console.warn('Could not get viewer token:', e);
           }
+        }
+
+        engineRef.current = engine;
+        await engine.startGame();
+
+        if (cancelled) {
+          engine.requestQuit();
+          return;
         }
 
         setLoading(false);
