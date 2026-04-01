@@ -34,8 +34,11 @@ func _ready() -> void:
 		if js_ws_url != "" and js_ws_url != null:
 			var viewer = ViewerProtocol.new()
 			add_child(viewer)
-			var agent_mgr = %AgentManager
-			agent_mgr.setup_viewer(viewer)
+			var agent_mgr = get_node_or_null("YSortedObjects/AgentManager")
+			if agent_mgr:
+				agent_mgr.setup_viewer(viewer)
+			else:
+				push_warning("AgentManager not found in scene tree")
 			viewer.connect_to_server(js_ws_url)
 			print("[Isol88Map] Viewer connecting to: %s" % js_ws_url)
 
