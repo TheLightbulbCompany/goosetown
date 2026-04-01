@@ -28,6 +28,33 @@ async def lifespan(app: FastAPI):
     try:
         await gs_client.connect_viewer()
         logger.info("Connected to game server")
+
+        # Relay world_state from game server to all browser viewer connections
+        async def _relay_world_state(_agent_id: str | None, data: dict) -> None:
+            from core.services.management_api_client import ManagementApiClient
+
+            try:
+                mgmt = ManagementApiClient()
+                # Get all viewer connections from DynamoDB
+                import core.dynamo as dynamo
+
+                table = dynamo.connections_table()
+                resp = table.scan(
+                    FilterExpression="connectionType = :t",
+                    ExpressionAttributeValues={":t": "viewer"},
+                )
+                for item in resp.get("Items", []):
+                    conn_id = item.get("connectionId")
+                    if conn_id:
+                        try:
+                            mgmt.send_message(conn_id, data)
+                        except Exception:
+                            pass  # Stale connection, ignore
+            except Exception as relay_err:
+                logger.debug("world_state relay error: %s", relay_err)
+
+        gs_client.on_event("world_state", _relay_world_state)
+
     except Exception as e:
         logger.warning("Could not connect to game server: %s (will retry on first agent connect)", e)
 
