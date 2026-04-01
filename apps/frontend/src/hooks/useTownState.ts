@@ -65,7 +65,6 @@ export function useTownState(getToken?: () => Promise<string | null>): {
 
   // -- WebSocket subscription -------------------------------------------------
   useEffect(() => {
-    console.log('[useTownState] WS_URL:', WS_URL, 'getToken:', !!getToken);
     if (!WS_URL || !getToken) return;
 
     let ws: WebSocket | null = null;
@@ -74,27 +73,21 @@ export function useTownState(getToken?: () => Promise<string | null>): {
 
     const connect = async () => {
       if (cancelled) return;
-      console.log('[useTownState] connect() called');
       let token: string | null = null;
       try {
         token = await getToken();
-        console.log('[useTownState] got token:', token ? `${token.substring(0, 20)}...` : 'null');
-      } catch (e) {
-        console.warn('[useTownState] getToken failed:', e);
+      } catch {
+        /* retry */
       }
       if (cancelled) return;
       if (!token) {
-        console.log('[useTownState] no token, retrying in', reconnectDelay);
         setTimeout(connect, reconnectDelay);
         return;
       }
 
-      const wsUrl = `${WS_URL}?token=${token}`;
-      console.log('[useTownState] connecting WebSocket to:', wsUrl.substring(0, 80) + '...');
-      ws = new WebSocket(wsUrl);
+      ws = new WebSocket(`${WS_URL}?token=${token}`);
 
       ws.onopen = () => {
-        console.log('[useTownState] WebSocket OPEN');
         if (cancelled) {
           ws?.close();
           return;
@@ -111,16 +104,14 @@ export function useTownState(getToken?: () => Promise<string | null>): {
           // Game server world_state event (Godot headless server)
           // Forward to Godot WebGL for rendering agents on the map
           if (msg.event === 'world_state' && Array.isArray(msg.agents)) {
-            console.log('[useTownState] world_state received:', msg.agents.length, 'agents');
+            console.log('[GooseTown] world_state:', msg.agents.length, 'agents');
             try {
               const w = window as unknown as Record<string, unknown>;
               if (w.godotUpdateWorldState) {
                 (w.godotUpdateWorldState as (data: string) => void)(JSON.stringify(msg));
-                console.log('[useTownState] Forwarded to Godot');
-              } else {
-                console.log('[useTownState] godotUpdateWorldState not available');
+                console.log('[GooseTown] Forwarded to Godot');
               }
-            } catch (e) { console.warn('[useTownState] Forward error:', e); }
+            } catch { /* Godot not loaded yet */ }
             const gsMsg = msg as GameServerWorldState;
             const now = Date.now();
             const players = gsMsg.agents.map((a, i) => ({
@@ -189,8 +180,8 @@ export function useTownState(getToken?: () => Promise<string | null>): {
         reconnectDelay = Math.min(reconnectDelay * 1.5, 10000);
       };
 
-      ws.onerror = (e) => {
-        console.error('[useTownState] WebSocket ERROR', e);
+      ws.onerror = () => {
+        /* onclose fires after onerror */
       };
     };
 
