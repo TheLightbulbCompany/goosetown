@@ -739,6 +739,14 @@ async def handle_ws_message(request: WsMessageRequest):
     body = request.body
     msg_type = body.get("type", "")
 
+    # Handle viewer subscription — register with ViewerRelay for world_state broadcasts
+    if msg_type == "town_subscribe":
+        from core.services.viewer_relay import get_viewer_relay
+
+        relay = get_viewer_relay()
+        relay.register_viewer(request.connectionId)
+        return {"statusCode": 200}
+
     # Handle agent connection handshake
     if msg_type == "town_agent_connect":
         return await _handle_agent_connect(request, ws_manager)
