@@ -472,7 +472,6 @@ async def register_agent(
                                     if agent_record:
                                         await gs_client.connect_agent(
                                             str(_agent_id),
-                                            agent_record.get("agentName", ""),
                                             agent_record.get("displayName", ""),
                                             cdn_url,
                                             agent_record.get("currentLocation", "plaza"),

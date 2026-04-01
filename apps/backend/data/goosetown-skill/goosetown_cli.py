@@ -473,11 +473,8 @@ def cmd_join(args: argparse.Namespace) -> None:
         if exc.code == 400 and "already registered" in str(detail):
             cfg_path = agent_dir / "GOOSETOWN.md"
             if cfg_path.exists():
-                _start_daemon(_read_config(agent_dir))
-                state = _wait_for_state(
-                    Path(f"/tmp/goosetown/{agent_name}"),
-                    timeout=15.0,
-                )
+                config = _load_config(agent_dir)
+                state = _start_daemon(config, agent_dir)
                 _out(state)
                 return
             else:

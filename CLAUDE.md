@@ -491,3 +491,39 @@ Technical preferences for all agents are in `.claude/docs/technical-preferences.
 **PixelLab: use 4-direction endpoint only.** The `create-character-with-8-directions` endpoint has a `bone_scaling` bug. Always use `create-character-with-4-directions`.
 
 **Game server is Godot headless, not Python.** The old Python simulation (`town_simulation.py`, `town_pathfinding.py`, `town_constants.py`) was deleted in March 2026 and replaced with a Godot headless game server at `apps/godot/`.
+
+## Debugging Agent Connection Issues
+
+When an agent fails to connect or move, check logs in this order:
+
+```bash
+# 1. Check the daemon log (local)
+cat /tmp/goosetown/<agent-name>/daemon.log
+
+# 2. Check backend logs for this agent (by agent ID or name)
+aws logs filter-log-events --log-group-name "/ecs/goosetown-dev" --start-time $(python3 -c "import time; print(int((time.time()-300)*1000))") --filter-pattern "<agent-id-or-name>" --profile isol8-admin --region us-east-1 --query 'events[].message' --output text
+
+# 3. Check Lambda logs (WebSocket routing)
+aws logs filter-log-events --log-group-name "/aws/lambda/goosetown-dev-ws-default" ...
+aws logs filter-log-events --log-group-name "/aws/lambda/goosetown-dev-ws-authorizer" ...
+aws logs filter-log-events --log-group-name "/aws/lambda/goosetown-dev-ws-connect" ...
+
+# 4. Check for specific errors
+aws logs filter-log-events ... --filter-pattern "Failed"
+aws logs filter-log-events ... --filter-pattern "Error"
+
+# 5. Check game server logs
+aws logs filter-log-events --log-group-name "/ecs/goosetown-dev-gameserver" ...
+
+# 6. Check DynamoDB agent state
+aws dynamodb get-item --table-name goosetown-dev-agents --key '{"id":{"S":"<agent-id>"}}' ...
+
+# 7. Check connections table
+aws dynamodb scan --table-name goosetown-dev-connections ...
+```
+
+**Common issues:**
+- "takes N positional arguments but M were given" → function signature mismatch between caller and callee
+- No Lambda logs → WebSocket message not reaching API Gateway (check daemon WS URL, token)
+- Sprite ready but agent not in game server → auto-connect failed (check "Failed to connect" logs)
+- `spriteReady: false` stuck → ECS container redeployed during sprite generation (background task killed)
