@@ -108,7 +108,7 @@ class TownService:
                     "mood": item.get("mood"),
                     "energy": item.get("energy"),
                     "current_conversation_id": item.get("currentConversationId"),
-                    "last_known_location": item.get("lastKnownLocation"),
+                    "current_location": item.get("currentLocation"),
                 }
             )
         return result
@@ -166,7 +166,7 @@ class TownService:
             "character": None,
             "traits": "",
             # Lightweight location for respawn after game server restart
-            "lastKnownLocation": "plaza",
+            "currentLocation": "residence",
             "currentConversationId": None,
             "lastHeartbeatAt": None,
             "mood": "neutral",
@@ -205,7 +205,6 @@ class TownService:
 
         # Map snake_case kwargs to camelCase DynamoDB attribute names
         field_map = {
-            "last_known_location": "lastKnownLocation",
             "current_conversation_id": "currentConversationId",
             "last_heartbeat_at": "lastHeartbeatAt",
             "last_conversation_at": "lastConversationAt",
@@ -443,8 +442,7 @@ class TownService:
                 "spriteUrl": None,
                 "character": None,
                 "traits": "",
-                # Lightweight location for respawn after game server restart
-                "lastKnownLocation": "plaza",
+                "currentLocation": "residence",
                 "currentConversationId": None,
                 "lastHeartbeatAt": None,
                 "mood": "neutral",

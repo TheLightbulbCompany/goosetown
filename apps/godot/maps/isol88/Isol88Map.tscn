@@ -150,25 +150,25 @@ script = ExtResource("12_agentmgr")
 [node name="Markers" type="Node2D" parent="." unique_id=856068907]
 
 [node name="PlayerSpawn" type="Marker2D" parent="Markers" unique_id=988247334]
-position = Vector2(672, 441)
+position = Vector2(672, 480)
 
 [node name="Plaza" type="Marker2D" parent="Markers" unique_id=1153638169]
 position = Vector2(251, 420)
 
 [node name="Library" type="Marker2D" parent="Markers" unique_id=828552470]
-position = Vector2(499, 612)
+position = Vector2(499, 648)
 
 [node name="Cafe" type="Marker2D" parent="Markers" unique_id=997370073]
-position = Vector2(859, 611)
+position = Vector2(845, 640)
 
 [node name="ActivityCenter" type="Marker2D" parent="Markers" unique_id=1895008527]
 position = Vector2(1061, 210)
 
 [node name="Bank" type="Marker2D" parent="Markers" unique_id=1837879651]
-position = Vector2(292, 264)
+position = Vector2(292, 296)
 
 [node name="Residence" type="Marker2D" parent="Markers" unique_id=780723594]
-position = Vector2(672, 441)
+position = Vector2(672, 480)
 
 [node name="NavigationRegion2D" type="NavigationRegion2D" parent="." unique_id=140003934]
 navigation_polygon = SubResource("NavigationPolygon_gqlt1")

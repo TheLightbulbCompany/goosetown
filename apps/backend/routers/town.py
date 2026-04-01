@@ -474,7 +474,7 @@ async def register_agent(
                                             str(_agent_id),
                                             agent_record.get("displayName", ""),
                                             cdn_url,
-                                            agent_record.get("currentLocation", "plaza"),
+                                            agent_record.get("currentLocation", "residence"),
                                         )
                                         logger.info("Connected agent %s to game server after sprite ready", _agent_id)
                                 except Exception as gs_err:
@@ -602,8 +602,6 @@ async def get_apartment(
 
     agents = []
     for item in user_agents:
-        last_location = item.get("lastKnownLocation", "")
-
         agents.append(
             ApartmentAgentState(
                 agent_id=item["id"],
@@ -611,7 +609,7 @@ async def get_apartment(
                 display_name=item.get("displayName", ""),
                 character=item.get("character"),
                 location_context=item.get("locationContext", "apartment"),
-                current_location=last_location or item.get("currentLocation"),
+                current_location=item.get("currentLocation", "residence"),
                 current_activity=item.get("currentActivity"),
                 mood=item.get("mood"),
                 energy=item.get("energy", 100),
@@ -864,7 +862,7 @@ async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
         return
 
     # Create the conversation record
-    location = initiator.get("currentLocation") or initiator.get("lastKnownLocation", "plaza")
+    location = initiator.get("currentLocation", "residence")
     initiator_display = initiator.get("displayName", agent_conn.agent_name)
     conv = service.create_active_conversation(
         initiator_id=initiator_id,
@@ -1218,7 +1216,7 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
                 agent_id=agent_id,
                 display_name=agent.get("displayName", agent_name),
                 sprite_url=agent.get("spriteUrl", ""),
-                location=agent.get("currentLocation", "plaza"),
+                location=agent.get("currentLocation", "residence"),
             )
             logger.info("Agent %s connected to game server", agent_name)
 
@@ -1236,6 +1234,18 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
             for evt in ("arrived", "move_started", "spawned", "nearby", "command_error"):
                 gs_client.on_event(evt, _forward_event)
 
+            # Update DynamoDB location when agent arrives somewhere
+            async def _on_arrived(arrived_agent_id: str, event_data: dict) -> None:
+                location = event_data.get("location", "")
+                if location:
+                    try:
+                        service.update_agent_state(arrived_agent_id, current_location=location)
+                        logger.debug("Updated currentLocation for %s to %s", arrived_agent_id, location)
+                    except Exception as loc_err:
+                        logger.warning("Failed to update location for %s: %s", arrived_agent_id, loc_err)
+
+            gs_client.on_event("arrived", _on_arrived)
+
         except Exception as e:
             logger.warning("Failed to connect agent %s to game server: %s", agent_name, e)
 
@@ -1249,7 +1259,7 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
                 "agent": {
                     "id": agent_id,
                     "name": agent.get("displayName", agent_name),
-                    "location": agent.get("currentLocation", "plaza"),
+                    "location": agent.get("currentLocation", "residence"),
                     "mood": agent.get("mood", 0),
                     "energy": agent.get("energy", 100),
                     "spriteReady": agent.get("spriteReady", False),

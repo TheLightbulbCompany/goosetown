@@ -14,7 +14,7 @@ class TestOptIn:
         assert agent["agentName"] == "agent-a"
         assert agent["displayName"] == "Agent A"
         assert agent["isActive"] == "true"
-        assert agent["lastKnownLocation"] == "plaza"
+        assert agent["currentLocation"] == "residence"
 
     def test_opt_in_idempotent(self, dynamodb_tables):
         svc = TownService()
@@ -72,7 +72,7 @@ class TestGetTownState:
         state = svc.get_town_state()
         assert len(state) == 1
         assert state[0]["agent_name"] == "a1"
-        assert state[0]["last_known_location"] == "plaza"
+        assert state[0]["current_location"] == "residence"
 
 
 class TestUpdateAgentState:
@@ -82,15 +82,52 @@ class TestUpdateAgentState:
         updated = svc.update_agent_state(
             agent["id"],
             mood="happy",
-            last_known_location="cafe",
+            current_location="cafe",
         )
         assert updated["mood"] == "happy"
-        assert updated["lastKnownLocation"] == "cafe"
+        assert updated["currentLocation"] == "cafe"
 
     def test_returns_none_for_missing_agent(self, dynamodb_tables):
         svc = TownService()
         result = svc.update_agent_state("nonexistent-id", mood="sad")
         assert result is None
+
+
+class TestUpdateAgentContext:
+    def test_town_to_apartment(self, dynamodb_tables):
+        svc = TownService()
+        agent = svc.opt_in("user-1", "a1", "A1")
+
+        updated = svc.update_agent_context(agent["id"], "apartment", "exit")
+
+        assert updated is not None
+        assert updated["locationContext"] == "apartment"
+        assert updated["currentLocation"] == "exit"
+
+    def test_apartment_to_town(self, dynamodb_tables):
+        svc = TownService()
+        agent = svc.opt_in("user-1", "a1", "A1")
+        svc.update_agent_context(agent["id"], "apartment", "exit")
+
+        updated = svc.update_agent_context(agent["id"], "town", "residence")
+
+        assert updated is not None
+        assert updated["locationContext"] == "town"
+        assert updated["currentLocation"] == "residence"
+
+    def test_returns_none_for_missing_agent(self, dynamodb_tables):
+        svc = TownService()
+        result = svc.update_agent_context("nonexistent-id", "apartment", "exit")
+        assert result is None
+
+    def test_persists_to_db(self, dynamodb_tables):
+        svc = TownService()
+        agent = svc.opt_in("user-1", "a1", "A1")
+        svc.update_agent_context(agent["id"], "apartment", "exit")
+
+        fetched = svc.get_town_agent_by_id(agent["id"])
+        assert fetched["locationContext"] == "apartment"
+        assert fetched["currentLocation"] == "exit"
 
 
 class TestInstances:
