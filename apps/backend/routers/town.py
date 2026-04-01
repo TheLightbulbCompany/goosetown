@@ -761,7 +761,7 @@ async def handle_ws_message(request: WsMessageRequest):
             else:
                 await gs_client.send_command(
                     agent_conn.agent_id,
-                    {"type": "move", "destination": destination},
+                    {"cmd": "move", "destination": destination},
                 )
         elif action == "chat":
             await _handle_chat(request.connectionId, body, agent_conn)
@@ -1377,7 +1377,7 @@ async def _activity_timer(
         try:
             await gs_client.send_command(
                 agent_id,
-                {"type": "move", "destination": activity.spot},
+                {"cmd": "move", "destination": activity.spot},
             )
             # Wait for arrival confirmation (game server arrival event for this
             # agent is forwarded via world_update; the game server client exposes
@@ -1615,7 +1615,7 @@ async def _transition_to_apartment(
     try:
         await gs_client.send_command(
             agent_id,
-            {"type": "move", "destination": "residence"},
+            {"cmd": "move", "destination": "residence"},
         )
     except Exception as exc:
         logger.warning("Failed to send move command for agent %s: %s", agent_id, exc)

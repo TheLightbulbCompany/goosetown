@@ -1267,7 +1267,7 @@ class TownDaemon:
             log.error("websockets package not installed. Install with: pip install websockets")
             sys.exit(1)
 
-        url = f"{self._ws_url}?token={self._token}"
+        url = f"{self._ws_url}?token={self._token}&type=agent"
         log.info("Connecting to %s...", self._ws_url)
 
         try:
