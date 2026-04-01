@@ -465,6 +465,22 @@ async def register_agent(
                                 service.update_agent_state(_agent_id, sprite_ready=True, sprite_url=cdn_url)
                                 logger.info("Sprite ready for agent %s", _agent_id)
 
+                                # Connect agent to game server now that sprite is ready
+                                try:
+                                    gs_client = get_game_server_client()
+                                    agent_record = service.get_town_agent_by_id(str(_agent_id))
+                                    if agent_record:
+                                        await gs_client.connect_agent(
+                                            str(_agent_id),
+                                            agent_record.get("agentName", ""),
+                                            agent_record.get("displayName", ""),
+                                            cdn_url,
+                                            agent_record.get("currentLocation", "plaza"),
+                                        )
+                                        logger.info("Connected agent %s to game server after sprite ready", _agent_id)
+                                except Exception as gs_err:
+                                    logger.warning("Failed to connect agent to game server: %s", gs_err)
+
                                 # Notify the agent's daemon that the sprite is ready
                                 try:
                                     from core.services.management_api_client import ManagementApiClient
