@@ -45,8 +45,19 @@ class GameServerClient:
         display_name: str,
         sprite_url: str,
         location: str,
+        context: str = "town",
+        user_id: str = "",
     ) -> None:
-        """Open a WebSocket connection for an agent and start listening."""
+        """Open a WebSocket connection for an agent and start listening.
+
+        Args:
+            agent_id: Unique agent identifier.
+            display_name: Human-readable agent name.
+            sprite_url: CDN URL for the agent's spritesheet.
+            location: Starting location marker name.
+            context: Location context the agent is joining ("town" or "apartment").
+            user_id: Clerk user ID owning this agent.
+        """
         if agent_id in self._agent_connections:
             logger.warning("Agent %s already connected, skipping", agent_id)
             return
@@ -59,6 +70,8 @@ class GameServerClient:
             "name": display_name,
             "sprite_url": sprite_url,
             "location": location,
+            "context": context,
+            "user_id": user_id,
         }
         await ws.send(json.dumps(connect_params))
 
@@ -67,7 +80,7 @@ class GameServerClient:
         task = asyncio.create_task(self._listen_agent(agent_id, ws))
         self._listen_tasks[agent_id] = task
 
-        logger.info("Agent %s connected to game server", agent_id)
+        logger.info("Agent %s connected to game server (context=%s)", agent_id, context)
 
     async def disconnect_agent(self, agent_id: str) -> None:
         """Close an agent's WebSocket connection and clean up."""
@@ -94,6 +107,34 @@ class GameServerClient:
 
         await ws.send(json.dumps(command))
         logger.debug("Sent command to agent %s: %s", agent_id, command.get("type", "unknown"))
+
+    async def transition_agent(
+        self, agent_id: str, to_context: str, user_id: str, agent_data: dict
+    ) -> None:
+        """Send a transition command to the game server.
+
+        Args:
+            agent_id: Agent UUID whose context is changing.
+            to_context: Target context ("town" or "apartment").
+            user_id: Clerk user ID owning this agent.
+            agent_data: Additional agent data the game server may need.
+
+        Raises:
+            RuntimeError: If no WebSocket connection exists for the agent.
+        """
+        ws = self._agent_connections.get(agent_id)
+        if not ws:
+            raise RuntimeError(f"No connection for agent {agent_id}")
+        await ws.send(json.dumps({
+            "cmd": "transition",
+            "to": to_context,
+            "user_id": user_id,
+            "agent_data": agent_data,
+        }))
+        params = self._agent_connect_params.get(agent_id)
+        if params:
+            params["context"] = to_context
+        logger.info("Sent transition command for agent %s to %s", agent_id, to_context)
 
     def expect_arrival(self, agent_id: str) -> asyncio.Event:
         """Register an arrival event BEFORE sending a move command.

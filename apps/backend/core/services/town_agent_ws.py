@@ -17,6 +17,7 @@ class AgentConnection:
     agent_name: str
     agent_id: str  # UUID as string
     instance_id: str  # UUID as string
+    location_context: str = "town"
 
 
 class TownAgentWsManager:
@@ -84,6 +85,21 @@ class TownAgentWsManager:
     def is_agent_connected(self, agent_name: str) -> bool:
         """Return True if an agent with this machine name is currently connected."""
         return agent_name in self._by_agent_name
+
+    def update_context(self, agent_id: str, context: str) -> None:
+        """Update the location_context for an agent.
+
+        Uses the two-step lookup: agent_id -> connection_id -> AgentConnection.
+
+        Args:
+            agent_id: Agent UUID from DynamoDB.
+            context: New location context (e.g. "town" or "apartment").
+        """
+        conn_id = self._by_agent_id.get(agent_id)
+        if conn_id is not None:
+            conn = self._by_connection.get(conn_id)
+            if conn:
+                conn.location_context = context
 
     def connected_agents(self) -> list[AgentConnection]:
         """Return all currently registered agent connections."""

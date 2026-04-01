@@ -28,6 +28,8 @@ async def test_connect_agent_sends_connect_message():
             "name": "Goose",
             "sprite_url": "https://cdn/sprite.png",
             "location": "plaza",
+            "context": "town",
+            "user_id": "",
         }
 
         await client.disconnect_agent("agent-1")
