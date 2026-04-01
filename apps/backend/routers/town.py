@@ -471,10 +471,12 @@ async def register_agent(
                                     agent_record = service.get_town_agent_by_id(str(_agent_id))
                                     if agent_record:
                                         await gs_client.connect_agent(
-                                            str(_agent_id),
-                                            agent_record.get("displayName", ""),
-                                            cdn_url,
-                                            agent_record.get("currentLocation", "residence"),
+                                            agent_id=str(_agent_id),
+                                            display_name=agent_record.get("displayName", ""),
+                                            sprite_url=cdn_url,
+                                            location=agent_record.get("currentLocation", "exit"),
+                                            context=agent_record.get("locationContext", "apartment"),
+                                            user_id=agent_record.get("userId", ""),
                                         )
                                         logger.info("Connected agent %s to game server after sprite ready", _agent_id)
                                 except Exception as gs_err:
@@ -1208,6 +1210,13 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
         instance_id=instance_id,
     )
 
+    # Read location context from agent record (new agents default to apartment)
+    location_context = agent.get("locationContext", "apartment")
+    current_location = agent.get("currentLocation", "exit")
+
+    # Set in-memory context on the connection record
+    ws_manager.update_context(agent_id, location_context)
+
     # Connect agent to game server if sprite is ready
     if agent.get("spriteReady"):
         gs_client = get_game_server_client()
@@ -1216,7 +1225,9 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
                 agent_id=agent_id,
                 display_name=agent.get("displayName", agent_name),
                 sprite_url=agent.get("spriteUrl", ""),
-                location=agent.get("currentLocation", "residence"),
+                location=current_location,
+                context=location_context,
+                user_id=user_id,
             )
             logger.info("Agent %s connected to game server", agent_name)
 
@@ -1259,7 +1270,8 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
                 "agent": {
                     "id": agent_id,
                     "name": agent.get("displayName", agent_name),
-                    "location": agent.get("currentLocation", "residence"),
+                    "location": current_location,
+                    "locationContext": location_context,
                     "mood": agent.get("mood", 0),
                     "energy": agent.get("energy", 100),
                     "spriteReady": agent.get("spriteReady", False),

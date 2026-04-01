@@ -14,7 +14,8 @@ class TestOptIn:
         assert agent["agentName"] == "agent-a"
         assert agent["displayName"] == "Agent A"
         assert agent["isActive"] == "true"
-        assert agent["currentLocation"] == "residence"
+        assert agent["currentLocation"] == "exit"
+        assert agent["locationContext"] == "apartment"
 
     def test_opt_in_idempotent(self, dynamodb_tables):
         svc = TownService()
@@ -72,7 +73,7 @@ class TestGetTownState:
         state = svc.get_town_state()
         assert len(state) == 1
         assert state[0]["agent_name"] == "a1"
-        assert state[0]["current_location"] == "residence"
+        assert state[0]["current_location"] == "exit"
 
 
 class TestUpdateAgentState:
