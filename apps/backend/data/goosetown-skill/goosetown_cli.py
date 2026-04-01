@@ -469,6 +469,19 @@ def cmd_join(args: argparse.Namespace) -> None:
             detail = json.loads(raw)
         except json.JSONDecodeError:
             detail = {"raw": raw}
+        # If already registered and config exists, skip to connecting
+        if exc.code == 400 and "already registered" in str(detail):
+            cfg_path = agent_dir / "GOOSETOWN.md"
+            if cfg_path.exists():
+                _start_daemon(_read_config(agent_dir))
+                state = _wait_for_state(
+                    Path(f"/tmp/goosetown/{agent_name}"),
+                    timeout=15.0,
+                )
+                _out(state)
+                return
+            else:
+                _die("Agent already registered but GOOSETOWN.md not found.", "Run join again with the original workspace.")
         _die(f"Registration failed: HTTP {exc.code}", json.dumps(detail))
     except Exception as exc:
         _die(f"Registration request failed: {exc}")
