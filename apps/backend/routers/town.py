@@ -1213,6 +1213,21 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
                 initial_location="plaza",
             )
             logger.info("Agent %s connected to game server", agent_name)
+
+            # Register handler to forward game server events to the daemon
+            async def _forward_event(fwd_agent_id: str, event_data: dict) -> None:
+                try:
+                    ws_mgr = get_town_agent_ws_manager()
+                    conn = ws_mgr.get_by_agent_id(fwd_agent_id)
+                    if conn:
+                        fwd_mgmt = ManagementApiClient()
+                        fwd_mgmt.send_message(conn.connection_id, event_data)
+                except Exception as fwd_err:
+                    logger.debug("Failed to forward event to agent %s: %s", fwd_agent_id, fwd_err)
+
+            for evt in ("arrived", "move_started", "spawned", "nearby", "command_error"):
+                gs_client.on_event(evt, _forward_event)
+
         except Exception as e:
             logger.warning("Failed to connect agent %s to game server: %s", agent_name, e)
 
