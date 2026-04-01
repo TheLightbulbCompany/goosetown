@@ -119,6 +119,11 @@ class ViewerRelay:
 
         from core.services.management_api_client import ManagementApiClient
 
+        agent_count = len(data.get("agents", []))
+        logger.info(
+            "Broadcasting world_state (%d agents) to %d viewers", agent_count, len(self._viewer_connections)
+        )
+
         mgmt = ManagementApiClient()
         stale: list[str] = []
         for conn_id in list(self._viewer_connections):
