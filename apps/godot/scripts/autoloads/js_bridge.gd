@@ -10,6 +10,7 @@ signal remove_agent_requested(agent_id: String)
 signal update_agent_state_requested(agent_id: String, data: Dictionary)
 signal set_camera_requested(x: float, y: float, zoom: float)
 signal switch_scene_requested(scene_name: String)
+signal world_state_received(data: Dictionary)
 
 ## Load map scenes on demand to avoid blocking editor startup.
 var TOWN_SCENE: PackedScene = null
@@ -31,6 +32,7 @@ func _register_js_callbacks() -> void:
 	_callbacks["updateAgentState"] = JavaScriptBridge.create_callback(_on_update_agent_state)
 	_callbacks["setCamera"] = JavaScriptBridge.create_callback(_on_set_camera)
 	_callbacks["switchScene"] = JavaScriptBridge.create_callback(_on_switch_scene)
+	_callbacks["updateWorldState"] = JavaScriptBridge.create_callback(_on_update_world_state)
 
 	var window: JavaScriptObject = JavaScriptBridge.get_interface("window")
 	window.set("godotSpawnAgent", _callbacks["spawnAgent"])
@@ -39,6 +41,7 @@ func _register_js_callbacks() -> void:
 	window.set("godotUpdateAgentState", _callbacks["updateAgentState"])
 	window.set("godotSetCamera", _callbacks["setCamera"])
 	window.set("godotSwitchScene", _callbacks["switchScene"])
+	window.set("godotUpdateWorldState", _callbacks["updateWorldState"])
 
 
 func _emit_ready_event() -> void:
@@ -114,6 +117,14 @@ func _on_set_camera(args: Array) -> void:
 			float(parsed.get("y", 0)),
 			float(parsed.get("zoom", 1.0)),
 		)
+
+
+## Handles world_state updates forwarded from React's WebSocket.
+## This bypasses Godot's WebSocketPeer URL issues in WebGL.
+func _on_update_world_state(args: Array) -> void:
+	var parsed: Dictionary = JSON.parse_string(str(args[0]))
+	if parsed:
+		world_state_received.emit(parsed)
 
 
 ## Handles scene switch requests from React.

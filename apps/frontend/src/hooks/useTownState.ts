@@ -102,7 +102,14 @@ export function useTownState(getToken?: () => Promise<string | null>): {
           const msg = JSON.parse(event.data);
 
           // Game server world_state event (Godot headless server)
+          // Forward to Godot WebGL for rendering agents on the map
           if (msg.event === 'world_state' && Array.isArray(msg.agents)) {
+            try {
+              const w = window as unknown as Record<string, unknown>;
+              if (w.godotUpdateWorldState) {
+                (w.godotUpdateWorldState as (data: string) => void)(JSON.stringify(msg));
+              }
+            } catch { /* Godot not loaded yet */ }
             const gsMsg = msg as GameServerWorldState;
             const now = Date.now();
             const players = gsMsg.agents.map((a, i) => ({

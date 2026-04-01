@@ -25,6 +25,9 @@ func _ready() -> void:
 		var window: JavaScriptObject = JavaScriptBridge.get_interface("window")
 		window.set("godotUpdateAgentSprite", _sprite_callback)
 
+	# Listen for world_state forwarded from React via JS bridge
+	JsBridge.world_state_received.connect(_on_world_state)
+
 
 ## Connect to a ViewerProtocol instance to receive world_state events.
 func setup_viewer(viewer_protocol: ViewerProtocol) -> void:

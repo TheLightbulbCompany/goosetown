@@ -93,24 +93,8 @@ export default function GodotCanvas({ className, scene = 'town' }: GodotCanvasPr
           canvas,
         });
 
-        // Set WS URL BEFORE starting Godot so _ready() can read it
-        const wsUrl = import.meta.env.VITE_WS_URL;
-        if (wsUrl && getToken) {
-          try {
-            const clerkToken = await getToken();
-            const backendUrl = import.meta.env.VITE_BACKEND_URL;
-            const resp = await fetch(`${backendUrl}/town/viewer-token`, {
-              headers: { Authorization: `Bearer ${clerkToken}` },
-            });
-            if (resp.ok) {
-              const { token } = await resp.json();
-              (window as unknown as Record<string, unknown>)._goosetown_ws_url =
-                `${wsUrl}?token=${token}&type=viewer`;
-            }
-          } catch (e) {
-            console.warn('Could not get viewer token:', e);
-          }
-        }
+        // World state is forwarded to Godot via JS bridge from useTownState's WebSocket.
+        // No need to set _goosetown_ws_url — Godot doesn't open its own WebSocket.
 
         engineRef.current = engine;
         await engine.startGame();

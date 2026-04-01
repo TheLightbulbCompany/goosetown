@@ -48,17 +48,8 @@ func _ready() -> void:
 
 	JsBridge.set_camera_requested.connect(_on_set_camera)
 
-	# Viewer WebSocket wiring (browser WebGL only).
-	if OS.has_feature("web"):
-		var js_ws_url: String = JavaScriptBridge.eval("window._goosetown_ws_url || ''")
-		if js_ws_url != "" and js_ws_url != null:
-			var viewer := ViewerProtocol.new()
-			add_child(viewer)
-			var agent_mgr: Node = get_node_or_null("%AgentManager")
-			if agent_mgr:
-				agent_mgr.setup_viewer(viewer)
-			viewer.connect_to_server(js_ws_url)
-			print("[ApartmentMap] Viewer connecting to: %s" % js_ws_url)
+	# AgentManager receives world_state via JsBridge (React forwards from its WebSocket).
+	# No ViewerProtocol needed — React manages the WebSocket connection.
 
 
 func _on_viewport_size_changed() -> void:
