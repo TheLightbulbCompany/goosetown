@@ -1210,7 +1210,7 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
                 agent_id=agent_id,
                 display_name=agent.get("displayName", agent_name),
                 sprite_url=agent.get("spriteUrl", ""),
-                location="plaza",
+                location=agent.get("currentLocation", "plaza"),
             )
             logger.info("Agent %s connected to game server", agent_name)
 
