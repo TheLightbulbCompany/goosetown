@@ -180,8 +180,8 @@ func _handle_move(peer_id: int, data: Dictionary) -> void:
 	)
 	var raw_target := marker.global_position + jitter
 	# Clamp to navmesh so jitter near buildings doesn't land outside walkable area
-	var map_rid := agent_node.nav_agent.get_navigation_map()
-	var target_pos := NavigationServer2D.map_get_closest_point(map_rid, raw_target)
+	var map_rid: RID = agent_node.nav_agent.get_navigation_map()
+	var target_pos: Vector2 = NavigationServer2D.map_get_closest_point(map_rid, raw_target)
 	agent_node.set_navigation_target(target_pos)
 
 	# Clear arrival state so we can detect arrival at new destination
