@@ -74,21 +74,27 @@ export function useTownState(getToken?: () => Promise<string | null>): {
 
     const connect = async () => {
       if (cancelled) return;
+      console.log('[useTownState] connect() called');
       let token: string | null = null;
       try {
         token = await getToken();
-      } catch {
-        /* retry */
+        console.log('[useTownState] got token:', token ? `${token.substring(0, 20)}...` : 'null');
+      } catch (e) {
+        console.warn('[useTownState] getToken failed:', e);
       }
       if (cancelled) return;
       if (!token) {
+        console.log('[useTownState] no token, retrying in', reconnectDelay);
         setTimeout(connect, reconnectDelay);
         return;
       }
 
-      ws = new WebSocket(`${WS_URL}?token=${token}`);
+      const wsUrl = `${WS_URL}?token=${token}`;
+      console.log('[useTownState] connecting WebSocket to:', wsUrl.substring(0, 80) + '...');
+      ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
+        console.log('[useTownState] WebSocket OPEN');
         if (cancelled) {
           ws?.close();
           return;
@@ -183,8 +189,8 @@ export function useTownState(getToken?: () => Promise<string | null>): {
         reconnectDelay = Math.min(reconnectDelay * 1.5, 10000);
       };
 
-      ws.onerror = () => {
-        /* onclose fires after onerror */
+      ws.onerror = (e) => {
+        console.error('[useTownState] WebSocket ERROR', e);
       };
     };
 
