@@ -34,10 +34,16 @@ var _arrived_at: Dictionary = {}
 var _prev_nearby: Dictionary = {}
 ## Accumulator for periodic state broadcast
 var _state_timer: float = 0.0
+## peer_id → user_id (for tagging agents in world_state)
+var _peer_to_user: Dictionary = {}
 
 
 func initialize(location_markers: Array[Marker2D]) -> void:
 	_locations = location_markers
+
+
+func set_user_id(peer_id: int, uid: String) -> void:
+	_peer_to_user[peer_id] = uid
 
 
 func spawn_agent(peer_id: int, data: Dictionary) -> void:
@@ -96,6 +102,7 @@ func remove_agent(peer_id: int) -> void:
 	if agent_id != "":
 		_id_to_peer.erase(agent_id)
 	_arrived_at.erase(peer_id)
+	_peer_to_user.erase(peer_id)
 
 	agent_node.queue_free()
 
@@ -139,8 +146,31 @@ func get_world_state_for_viewer() -> Dictionary:
 			"is_moving": not agent_node.nav_agent.is_navigation_finished(),
 			"location": location_id,
 			"spriteUrl": agent_node.sprite_url,
+			"context": "town",
+			"userId": _peer_to_user.get(peer_id, ""),
 		})
 	return { "agents": agents_arr }
+
+
+func get_agent_data(peer_id: int) -> Dictionary:
+	## Return agent info for transition. Empty dict if peer not found.
+	if not _agents.has(peer_id):
+		return {}
+	var agent_node: CharacterBody2D = _agents[peer_id]
+	return {
+		"agent_id": _peer_to_id.get(peer_id, ""),
+		"name": agent_node.display_name,
+		"sprite_url": agent_node.sprite_url,
+		"facing": agent_node.facing,
+	}
+
+
+func get_user_id(peer_id: int) -> String:
+	return _peer_to_user.get(peer_id, "")
+
+
+func has_peer(peer_id: int) -> bool:
+	return _agents.has(peer_id)
 
 
 func _process(delta: float) -> void:
@@ -332,6 +362,7 @@ func _broadcast_agent_states() -> void:
 			"facing": agent_node.facing,
 			"speed": speed,
 			"context": "town",
+			"userId": _peer_to_user.get(peer_id, ""),
 			"activity": "idle" if speed < 0.1 else "walking",
 			"nearby_agents": nearby,
 			"available_actions": available,

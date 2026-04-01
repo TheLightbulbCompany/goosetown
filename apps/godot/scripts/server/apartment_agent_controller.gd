@@ -124,6 +124,19 @@ func has_peer(peer_id: int) -> bool:
 	return _agents.has(peer_id)
 
 
+func get_agent_data(peer_id: int) -> Dictionary:
+	## Return agent info for transition. Empty dict if peer not found.
+	if not _agents.has(peer_id):
+		return {}
+	var agent_node: CharacterBody2D = _agents[peer_id]
+	return {
+		"agent_id": _peer_to_id.get(peer_id, ""),
+		"name": agent_node.display_name,
+		"sprite_url": agent_node.sprite_url,
+		"facing": agent_node.facing,
+	}
+
+
 func is_empty() -> bool:
 	return _agents.is_empty()
 
