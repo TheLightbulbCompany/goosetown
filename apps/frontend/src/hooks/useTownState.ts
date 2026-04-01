@@ -65,6 +65,7 @@ export function useTownState(getToken?: () => Promise<string | null>): {
 
   // -- WebSocket subscription -------------------------------------------------
   useEffect(() => {
+    console.log('[useTownState] WS_URL:', WS_URL, 'getToken:', !!getToken);
     if (!WS_URL || !getToken) return;
 
     let ws: WebSocket | null = null;
@@ -104,12 +105,16 @@ export function useTownState(getToken?: () => Promise<string | null>): {
           // Game server world_state event (Godot headless server)
           // Forward to Godot WebGL for rendering agents on the map
           if (msg.event === 'world_state' && Array.isArray(msg.agents)) {
+            console.log('[useTownState] world_state received:', msg.agents.length, 'agents');
             try {
               const w = window as unknown as Record<string, unknown>;
               if (w.godotUpdateWorldState) {
                 (w.godotUpdateWorldState as (data: string) => void)(JSON.stringify(msg));
+                console.log('[useTownState] Forwarded to Godot');
+              } else {
+                console.log('[useTownState] godotUpdateWorldState not available');
               }
-            } catch { /* Godot not loaded yet */ }
+            } catch (e) { console.warn('[useTownState] Forward error:', e); }
             const gsMsg = msg as GameServerWorldState;
             const now = Date.now();
             const players = gsMsg.agents.map((a, i) => ({
