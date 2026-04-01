@@ -1077,6 +1077,54 @@ class TownDaemon:
         self._append_event("WOKE UP")
 
     # ------------------------------------------------------------------
+    # Alarm / sleep-wake cycle
+    # ------------------------------------------------------------------
+
+    async def _check_alarm(self) -> None:
+        """Check for a persisted alarm file and sleep until the wake time.
+
+        Called at the start of run() before connecting the WebSocket.
+        If the alarm time has already passed the file is removed and the
+        daemon proceeds to connect immediately.  Uses asyncio.sleep so
+        the event loop remains responsive during the wait period.
+        """
+        import asyncio
+        import zoneinfo
+
+        alarm_path = self._state_dir / "alarm.json"
+        if not alarm_path.exists():
+            return
+
+        try:
+            alarm = json.loads(alarm_path.read_text())
+            wake_time_str = alarm.get("wake_time", "")
+            tz_str = alarm.get("timezone", "UTC")
+            if not wake_time_str:
+                print("[daemon] Alarm file had no wake_time — removing")
+                alarm_path.unlink(missing_ok=True)
+                return
+
+            zone = zoneinfo.ZoneInfo(tz_str)
+            now = datetime.now(zone)
+            hour, minute = map(int, wake_time_str.split(":"))
+            wake_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+            if now >= wake_dt:
+                print(f"[daemon] Alarm time passed ({wake_time_str} {tz_str}), waking up now")
+                alarm_path.unlink(missing_ok=True)
+                return
+
+            sleep_seconds = (wake_dt - now).total_seconds()
+            print(f"[daemon] Sleeping until {wake_time_str} {tz_str} ({sleep_seconds:.0f}s remaining)")
+            await asyncio.sleep(sleep_seconds)
+            alarm_path.unlink(missing_ok=True)
+            print("[daemon] Alarm fired, waking up and reconnecting")
+
+        except Exception as exc:
+            print(f"[daemon] Alarm check failed: {exc}")
+            alarm_path.unlink(missing_ok=True)
+
+    # ------------------------------------------------------------------
     # World update handler
     # ------------------------------------------------------------------
 
@@ -1466,6 +1514,9 @@ class TownDaemon:
 
         self._initial_state_event = asyncio.Event()
         self._arrived_event = asyncio.Event()
+
+        await self._check_alarm()
+        print(f"[daemon] Starting up as {self._agent_name}")
 
         try:
             await self.connect_ws()

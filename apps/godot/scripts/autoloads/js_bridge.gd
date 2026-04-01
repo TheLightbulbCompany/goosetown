@@ -16,6 +16,9 @@ signal world_state_received(data: Dictionary)
 var TOWN_SCENE: PackedScene = null
 var APARTMENT_SCENE: PackedScene = null
 
+## Tracks which scene is currently active for agent filtering.
+var current_scene: String = "town"
+
 var _callbacks: Dictionary = {}
 
 
@@ -131,6 +134,9 @@ func _on_update_world_state(args: Array) -> void:
 ## Valid scene names: "town", "apartment".
 ## After the switch, dispatches a "godot_scene_changed" CustomEvent to React
 ## with {scene: name} so the React side can confirm the transition completed.
+## Awaits one frame after change_scene_to_packed so the new scene tree is live
+## before emitting scene_changed — prevents race conditions where React sends
+## world_state before the new AgentManager is ready.
 func _on_switch_scene(args: Array) -> void:
 	var parsed: Dictionary = JSON.parse_string(str(args[0]))
 	if not parsed:
@@ -138,6 +144,7 @@ func _on_switch_scene(args: Array) -> void:
 		return
 
 	var scene_name: String = str(parsed.get("scene", ""))
+	print("[JsBridge] Scene switch requested: %s" % scene_name)
 	switch_scene_requested.emit(scene_name)
 
 	# Lazy-load scenes on first switch to avoid blocking editor startup
@@ -156,11 +163,17 @@ func _on_switch_scene(args: Array) -> void:
 			push_error("JsBridge._on_switch_scene: unknown scene '%s'" % scene_name)
 			return
 
-	print("[JsBridge] Switching to scene: %s" % scene_name)
+	# Update current_scene before the switch so AgentManager filters immediately
+	current_scene = scene_name
+
 	var err: int = get_tree().change_scene_to_packed(target_scene)
 	if err != OK:
 		push_error("JsBridge._on_switch_scene: change_scene_to_packed failed: %s" % error_string(err))
 		return
 
+	# Wait one frame so the new scene tree is fully initialized before notifying React.
+	await get_tree().process_frame
+
+	print("[JsBridge] Scene switch complete: %s" % scene_name)
 	# Notify React that the scene switch completed successfully.
 	emit_to_react("scene_changed", {"scene": scene_name})

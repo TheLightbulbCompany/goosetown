@@ -29,7 +29,7 @@ const WS_URL: string | null =
 
 const POLL_INTERVAL = 2000;
 
-export function useTownState(getToken?: () => Promise<string | null>): {
+export function useTownState(getToken?: () => Promise<string | null>, userId?: string | null): {
   game: TownGameState | undefined;
 } {
   const [game, setGame] = useState<TownGameState>();
@@ -108,7 +108,9 @@ export function useTownState(getToken?: () => Promise<string | null>): {
             try {
               const w = window as unknown as Record<string, unknown>;
               if (w.godotUpdateWorldState) {
-                (w.godotUpdateWorldState as (data: string) => void)(JSON.stringify(msg));
+                // Inject userId so Godot can filter apartment agents by owner
+                const payload = { ...msg, _userId: userId ?? '' };
+                (w.godotUpdateWorldState as (data: string) => void)(JSON.stringify(payload));
                 console.log('[GooseTown] Forwarded to Godot');
               }
             } catch { /* Godot not loaded yet */ }
@@ -151,6 +153,19 @@ export function useTownState(getToken?: () => Promise<string | null>): {
                 agentDescriptions: agentDescs,
               },
             );
+            return;
+          }
+
+          // Agent switched context (town <-> apartment) — tell Godot to switch scene
+          if (msg.event === 'agent_context_changed') {
+            console.log('[GooseTown] Context changed:', msg.context, 'for agent', msg.agent_id);
+            try {
+              const w = window as unknown as Record<string, unknown>;
+              const bridge = w._godotBridge as { switchScene?: (name: string) => void } | undefined;
+              if (bridge?.switchScene) {
+                bridge.switchScene(msg.context === 'apartment' ? 'apartment' : 'town');
+              }
+            } catch { /* Godot not loaded yet */ }
             return;
           }
 
@@ -197,7 +212,7 @@ export function useTownState(getToken?: () => Promise<string | null>): {
         ws.close();
       }
     };
-  }, [getToken, processState]);
+  }, [getToken, processState, userId]);
 
   // -- REST polling fallback --------------------------------------------------
   useEffect(() => {

@@ -1246,7 +1246,10 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
                 context=location_context,
                 user_id=user_id,
             )
-            logger.info("Agent %s connected to game server", agent_name)
+            logger.info(
+                "Agent %s connected to game server (context=%s, location=%s, userId=%s)",
+                agent_name, location_context, current_location, user_id[:12],
+            )
 
             # Register handler to forward game server events to the daemon
             async def _forward_event(fwd_agent_id: str, event_data: dict) -> None:

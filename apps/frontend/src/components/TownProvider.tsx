@@ -18,9 +18,9 @@ export function useTownGame() {
 }
 
 function TownStateProvider({ children }: { children: ReactNode }) {
-  const { getToken } = useAuth();
+  const { getToken, userId } = useAuth();
   const getTokenFn = useCallback(() => getToken(), [getToken]);
-  const { game } = useTownState(getTokenFn);
+  const { game } = useTownState(getTokenFn, userId);
 
   return (
     <TownContext.Provider value={{ game }}>

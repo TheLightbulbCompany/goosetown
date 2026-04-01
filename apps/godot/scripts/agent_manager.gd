@@ -37,9 +37,29 @@ func setup_viewer(viewer_protocol: ViewerProtocol) -> void:
 
 
 func _on_world_state(data: Dictionary) -> void:
+	var current_context: String = JsBridge.current_scene
+	# userId injected by React for apartment filtering
+	var my_user_id: String = str(data.get("_userId", ""))
+
+	var total_count: int = 0
 	var incoming_agents: Array = []
 	if data.has("agents") and data["agents"] is Array:
-		incoming_agents = data["agents"]
+		total_count = data["agents"].size()
+		for agent_data in data["agents"]:
+			if not agent_data is Dictionary:
+				continue
+			var ctx: String = str(agent_data.get("context", "town"))
+			# In town: show all town-context agents
+			# In apartment: show only own agents (matching userId)
+			if ctx != current_context:
+				continue
+			if current_context == "apartment" and my_user_id != "":
+				var agent_user: String = str(agent_data.get("userId", ""))
+				if agent_user != my_user_id:
+					continue
+			incoming_agents.append(agent_data)
+
+	print("[AgentManager] world_state: %d agents (filtered from %d, context=%s)" % [incoming_agents.size(), total_count, current_context])
 
 	# Track which agent IDs are present in this update
 	var seen_ids: Dictionary = {}
