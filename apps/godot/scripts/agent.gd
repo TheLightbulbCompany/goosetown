@@ -101,6 +101,8 @@ func _update_facing_from_velocity(vel: Vector2) -> void:
 
 func _on_velocity_computed(safe_velocity: Vector2) -> void:
 	# Called by NavigationServer when avoidance is enabled
+	if is_queued_for_deletion() or not is_inside_tree():
+		return
 	if not _use_navigation or nav_agent.is_navigation_finished():
 		return
 	velocity = safe_velocity

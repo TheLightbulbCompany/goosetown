@@ -109,6 +109,7 @@ class TownService:
                     "energy": item.get("energy"),
                     "current_conversation_id": item.get("currentConversationId"),
                     "current_location": item.get("currentLocation"),
+                    "location_context": item.get("locationContext", "apartment"),
                 }
             )
         return result

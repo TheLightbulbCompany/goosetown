@@ -100,6 +100,14 @@ func remove_agent(peer_id: int) -> void:
 func free_instance(owner_user_id: String) -> void:
 	if not _instances.has(owner_user_id):
 		return
+	# Clean up all peer_to_user entries for this user
+	var stale_peers: Array = []
+	for peer_id in _peer_to_user.keys():
+		if _peer_to_user[peer_id] == owner_user_id:
+			stale_peers.append(peer_id)
+	for peer_id in stale_peers:
+		_peer_to_user.erase(peer_id)
+
 	var instance: Dictionary = _instances[owner_user_id]
 	var viewport: SubViewport = instance.viewport
 	viewport.queue_free()

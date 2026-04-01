@@ -621,7 +621,7 @@ async def get_apartment(
                 speed=0.0,
                 facing_x=0.0,
                 facing_y=1.0,
-                current_spot=last_location or None,
+                current_spot=item.get("currentLocation"),
                 is_active=item.get("isActive") == "true",
                 sprite_url=item.get("spriteUrl") if item.get("spriteReady") else None,
             )
@@ -756,16 +756,33 @@ async def handle_ws_message(request: WsMessageRequest):
         agent_conn = ws_manager.get_by_connection(request.connectionId)
         if not agent_conn:
             return {"statusCode": 400, "error": "unknown_connection"}
+
+        # Reject ALL actions while a context transition is in progress.
+        if agent_conn.location_context == "transitioning":
+            from core.services.management_api_client import ManagementApiClient
+
+            mgmt = ManagementApiClient()
+            try:
+                mgmt.send_message(
+                    request.connectionId,
+                    {"event": "busy", "reason": "transitioning"},
+                )
+            except Exception as _exc:
+                logger.warning(
+                    "Failed to send busy:transitioning to %s: %s",
+                    agent_conn.agent_id,
+                    _exc,
+                )
+            return {"statusCode": 200}
+
         gs_client = get_game_server_client()
         action = body.get("action", "")
         if action == "move":
             destination = body.get("destination", "")
-            if destination in ("residence", "exit"):
+            if destination in _TRANSITION_MAP:
                 # Context-transition destinations are handled by the backend,
                 # not forwarded to the game server directly.
-                await _handle_context_transition(
-                    request.connectionId, destination, agent_conn
-                )
+                await _handle_context_transition(request.connectionId, destination, agent_conn)
             else:
                 await gs_client.send_command(
                     agent_conn.agent_id,
@@ -1540,10 +1557,16 @@ async def _handle_context_transition(
 ) -> None:
     """Handle a context-crossing move command (``residence`` or ``exit``).
 
-    Validates the agent's current context and busy state, navigates to the
-    transition waypoint when required (town → apartment only), then atomically
-    updates ``locationContext`` / ``currentLocation`` in DynamoDB and pushes a
-    ``context_changed`` event to the agent daemon.
+    Two-phase protocol:
+    1. Validate source context and busy state.
+    2. Set ``locationContext: "transitioning"`` in DynamoDB and in-memory
+       ws manager to block concurrent commands.
+    3. Send ``transition_agent`` to the game server (handles remove+spawn
+       atomically for both directions).
+    4. On success: update DynamoDB to the destination context/location,
+       update ws manager, push ``context_changed`` to the daemon.
+    5. On failure or timeout: roll back DynamoDB and ws manager to the
+       original context, push ``move_rejected`` to the daemon.
 
     Args:
         connection_id: API Gateway connection ID for the acting agent.
@@ -1555,6 +1578,8 @@ async def _handle_context_transition(
 
     mgmt = ManagementApiClient()
     service = TownService()
+    ws_manager = get_town_agent_ws_manager()
+    gs_client = get_game_server_client()
     agent_id = agent_conn.agent_id
 
     def _reject(reason: str) -> None:
@@ -1585,27 +1610,64 @@ async def _handle_context_transition(
         _reject("busy")
         return
 
-    # --- town → apartment: navigate to residence waypoint first, then fire ---
-    # apartment → town: no game server navigation needed (MVP: apartment scene
-    # not yet managed by the game server).  Transition fires immediately.
-    if destination == "residence":
-        task = asyncio.create_task(
-            _transition_to_apartment(connection_id, agent_id, agent_conn)
+    # --- Phase 1: Enter transitioning state ---
+    transitioning = service.update_agent_context(agent_id, "transitioning", current_context)
+    if not transitioning:
+        logger.error("Failed to set transitioning state for agent %s", agent_id)
+        _reject("internal_error")
+        return
+    ws_manager.update_context(agent_id, "transitioning")
+
+    # --- Phase 2: Instruct game server to move the agent across contexts ---
+    agent_data = {
+        "agent_id": agent_id,
+        "name": agent.get("displayName", agent_conn.agent_name),
+        "sprite_url": agent.get("spriteUrl", ""),
+        "location": dest_location,
+    }
+    try:
+        await asyncio.wait_for(
+            gs_client.transition_agent(
+                agent_id,
+                to_context=dest_context,
+                user_id=agent_conn.user_id,
+                agent_data=agent_data,
+            ),
+            timeout=15.0,
         )
-        _activity_tasks.add(task)
-        task.add_done_callback(_activity_tasks.discard)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Game server transition timed out for agent %s (%s → %s)",
+            agent_id,
+            current_context,
+            dest_context,
+        )
+        service.update_agent_context(agent_id, current_context, agent.get("currentLocation", ""))
+        ws_manager.update_context(agent_id, current_context)
+        _reject("navigation_timeout")
+        return
+    except Exception as exc:
+        logger.warning("Game server transition failed for agent %s: %s", agent_id, exc)
+        service.update_agent_context(agent_id, current_context, agent.get("currentLocation", ""))
+        ws_manager.update_context(agent_id, current_context)
+        _reject("navigation_error")
         return
 
-    # --- apartment → town: immediate transition ---
+    # --- Phase 3: Commit destination state ---
     updated = service.update_agent_context(agent_id, dest_context, dest_location)
     if not updated:
-        logger.error("update_agent_context returned None for agent %s", agent_id)
+        logger.error("update_agent_context returned None for agent %s after transition", agent_id)
+        service.update_agent_context(agent_id, current_context, agent.get("currentLocation", ""))
+        ws_manager.update_context(agent_id, current_context)
         _reject("internal_error")
         return
 
+    ws_manager.update_context(agent_id, dest_context)
     logger.info(
-        "Context transition: agent %s exited apartment → town (location=%s)",
+        "Context transition complete: agent %s %s → %s (location=%s)",
         agent_id,
+        current_context,
+        dest_context,
         dest_location,
     )
 
@@ -1627,78 +1689,14 @@ async def _transition_to_apartment(
     agent_id: str,
     agent_conn,
 ) -> None:
-    """Navigate the agent to the residence waypoint, then fire the transition.
+    """Deprecated shim kept for backward-compatibility with existing tests.
 
-    Runs as a background task.  On arrival the agent's ``locationContext`` is
-    updated to ``"apartment"`` and a ``context_changed`` event is pushed to
-    the daemon.  If navigation times out or errors, a ``move_rejected`` event
-    is sent and the agent remains in town.
+    The transition logic has been consolidated into ``_handle_context_transition``.
+    New code should call that function directly.
 
     Args:
         connection_id: API Gateway connection ID for the acting agent.
         agent_id: Internal agent UUID.
         agent_conn: Connection record from ``TownAgentWsManager``.
     """
-    from core.services.management_api_client import ManagementApiClient
-
-    mgmt = ManagementApiClient()
-    service = TownService()
-    gs_client = get_game_server_client()
-
-    def _reject(reason: str) -> None:
-        try:
-            mgmt.send_message(
-                connection_id,
-                {"event": "move_rejected", "destination": "residence", "reason": reason},
-            )
-        except Exception as exc:
-            logger.warning("Failed to send move_rejected to %s: %s", agent_id, exc)
-
-    # --- Send navigation command to game server ---
-    # Register arrival waiter BEFORE sending move to avoid race condition
-    arrival_event = gs_client.expect_arrival(agent_id)
-    try:
-        await gs_client.send_command(
-            agent_id,
-            {"cmd": "move", "destination": "residence"},
-        )
-    except Exception as exc:
-        logger.warning("Failed to send move command for agent %s: %s", agent_id, exc)
-        _reject("navigation_error")
-        return
-
-    # --- Wait for arrival confirmation ---
-    try:
-        await asyncio.wait_for(gs_client.wait_for_arrival(agent_id, arrival_event), timeout=60.0)
-    except asyncio.TimeoutError:
-        logger.warning("Agent %s timed out navigating to residence", agent_id)
-        _reject("navigation_timeout")
-        return
-    except Exception as exc:
-        logger.warning("Navigation error for agent %s on residence move: %s", agent_id, exc)
-        _reject("navigation_error")
-        return
-
-    # --- Fire the transition ---
-    updated = service.update_agent_context(agent_id, "apartment", "exit")
-    if not updated:
-        logger.error("update_agent_context returned None for agent %s on apt entry", agent_id)
-        _reject("internal_error")
-        return
-
-    logger.info(
-        "Context transition: agent %s entered apartment (location=exit)",
-        agent_id,
-    )
-
-    try:
-        mgmt.send_message(
-            connection_id,
-            {
-                "event": "context_changed",
-                "context": "apartment",
-                "location": "exit",
-            },
-        )
-    except Exception as exc:
-        logger.warning("Failed to send context_changed to %s: %s", agent_id, exc)
+    await _handle_context_transition(connection_id, "residence", agent_conn)

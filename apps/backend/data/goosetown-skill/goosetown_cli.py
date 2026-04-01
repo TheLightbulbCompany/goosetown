@@ -601,7 +601,12 @@ def cmd_act(args: argparse.Namespace) -> None:
     rest = args.args or []
 
     # Known locations for move validation
-    _VALID_LOCATIONS = {"plaza", "library", "cafe", "activity_center", "bank", "residence", "player_spawn"}
+    # Town locations + apartment spots + transition triggers
+    _VALID_LOCATIONS = {
+        "plaza", "library", "cafe", "activity_center", "bank", "residence", "player_spawn",
+        "exit", "desk", "chair", "plant", "couch", "coffee_table", "bookshelf", "rug",
+        "aquarium", "record_player", "bed", "coat_rack", "shoe_rack", "fridge", "stove",
+    }
 
     # Known activity names (collected from _LOCATION_ACTIVITIES)
     _VALID_ACTIVITIES = set()
