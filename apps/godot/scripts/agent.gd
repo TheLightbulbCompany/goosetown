@@ -46,8 +46,10 @@ func setup(id: String, url: String, x: float, y: float, facing_json: String, dis
 	display_name = display
 	position = Vector2(x, y)
 	target_position = position
-	name_label.text = display_name
-	speech_bubble.visible = false
+	if name_label:
+		name_label.text = display_name
+	if speech_bubble:
+		speech_bubble.visible = false
 
 	_parse_facing(facing_json)
 
@@ -55,6 +57,14 @@ func setup(id: String, url: String, x: float, y: float, facing_json: String, dis
 		_load_sprite_from_url(sprite_url)
 
 	_update_sprite_frame()
+
+
+func _ready() -> void:
+	# Set label text after node enters tree (@onready vars now valid)
+	if name_label and display_name != "":
+		name_label.text = display_name
+	if speech_bubble:
+		speech_bubble.visible = false
 
 
 func move_to(x: float, y: float, facing_json: String, speed: float) -> void:
