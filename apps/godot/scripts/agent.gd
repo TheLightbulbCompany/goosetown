@@ -65,6 +65,8 @@ func _ready() -> void:
 		name_label.text = display_name
 	if speech_bubble:
 		speech_bubble.visible = false
+	# Connect avoidance callback for RVO steering
+	nav_agent.velocity_computed.connect(_on_velocity_computed)
 
 
 func move_to(x: float, y: float, facing_json: String, speed: float) -> void:
@@ -97,15 +99,28 @@ func _update_facing_from_velocity(vel: Vector2) -> void:
 		facing = "south" if vel.y > 0 else "north"
 
 
+func _on_velocity_computed(safe_velocity: Vector2) -> void:
+	# Called by NavigationServer when avoidance is enabled
+	if not _use_navigation or nav_agent.is_navigation_finished():
+		return
+	velocity = safe_velocity
+	_update_facing_from_velocity(velocity)
+	move_and_slide()
+
+
 func _physics_process(delta: float) -> void:
 	if _use_navigation:
 		# Navigation-based movement (server and viewer use the same code)
 		if not nav_agent.is_navigation_finished():
 			var next_pos: Vector2 = nav_agent.get_next_path_position()
-			var direction: Vector2 = (next_pos - global_position).normalized()
-			velocity = direction * move_speed
-			_update_facing_from_velocity(velocity)
-			move_and_slide()
+			var desired_velocity: Vector2 = (next_pos - global_position).normalized() * move_speed
+			if nav_agent.avoidance_enabled:
+				# Let RVO compute a safe velocity via callback
+				nav_agent.velocity = desired_velocity
+			else:
+				velocity = desired_velocity
+				_update_facing_from_velocity(velocity)
+				move_and_slide()
 			_is_moving = true
 		else:
 			velocity = Vector2.ZERO

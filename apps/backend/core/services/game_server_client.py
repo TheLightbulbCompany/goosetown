@@ -35,6 +35,9 @@ class GameServerClient:
         self._event_handlers: dict[str, list[Callable[..., Coroutine[Any, Any, Any]]]] = {}
         self._listen_tasks: dict[str, asyncio.Task] = {}
         self._locations: list[dict[str, Any]] = []
+        # Per-agent arrival events set by _listen_agent when the game server
+        # sends an ``arrived`` event.  Callers await wait_for_arrival().
+        self._arrival_events: dict[str, asyncio.Event] = {}
 
     async def connect_agent(
         self,
@@ -92,6 +95,35 @@ class GameServerClient:
         await ws.send(json.dumps(command))
         logger.debug("Sent command to agent %s: %s", agent_id, command.get("type", "unknown"))
 
+    def expect_arrival(self, agent_id: str) -> asyncio.Event:
+        """Register an arrival event BEFORE sending a move command.
+
+        Must be called before ``send_command`` to avoid a race where
+        the game server sends ``arrived`` before the waiter is ready.
+
+        Returns:
+            An ``asyncio.Event`` to pass to ``wait_for_arrival``.
+        """
+        event = asyncio.Event()
+        self._arrival_events[agent_id] = event
+        return event
+
+    async def wait_for_arrival(self, agent_id: str, event: asyncio.Event | None = None) -> None:
+        """Await an arrival confirmation from the game server.
+
+        If *event* is provided (from ``expect_arrival``), awaits that
+        event directly.  Otherwise creates a new event (legacy path —
+        has a race window between send and wait).
+
+        Callers should wrap this in ``asyncio.wait_for`` to avoid
+        blocking forever if the game server never sends the event.
+        """
+        if event is None:
+            event = asyncio.Event()
+            self._arrival_events[agent_id] = event
+        await event.wait()
+        self._arrival_events.pop(agent_id, None)
+
     async def connect_viewer(self) -> None:
         """Open a viewer WebSocket connection for world state updates."""
         ws = await websockets.connect(self._base_url)
@@ -127,15 +159,19 @@ class GameServerClient:
                 if "locations" in message:
                     self._locations = message["locations"]
 
+                # Signal arrival waiters (used by activity system move-to-spot)
+                if msg_type == "arrived":
+                    arrival_event = self._arrival_events.get(agent_id)
+                    if arrival_event is not None:
+                        arrival_event.set()
+
                 # Dispatch to registered handlers
                 handlers = self._event_handlers.get(msg_type, [])
                 for handler in handlers:
                     try:
                         await handler(agent_id, message)
                     except Exception:
-                        logger.exception(
-                            "Error in handler for event %s (agent %s)", msg_type, agent_id
-                        )
+                        logger.exception("Error in handler for event %s (agent %s)", msg_type, agent_id)
 
         except websockets.ConnectionClosed:
             logger.warning("Game server connection closed for agent %s, reconnecting...", agent_id)
@@ -178,13 +214,15 @@ class GameServerClient:
                 delay = min(delay * 2, 10.0)
                 logger.warning(
                     "Reconnect failed for agent %s (attempt %d/%d): %s, retrying in %ss",
-                    agent_id, attempt, max_retries, e, delay,
+                    agent_id,
+                    attempt,
+                    max_retries,
+                    e,
+                    delay,
                 )
 
         # Exhausted all retries — clean up
-        logger.error(
-            "Failed to reconnect agent %s after %d attempts, giving up", agent_id, max_retries
-        )
+        logger.error("Failed to reconnect agent %s after %d attempts, giving up", agent_id, max_retries)
         self._agent_connections.pop(agent_id, None)
         self._agent_connect_params.pop(agent_id, None)
         self._listen_tasks.pop(agent_id, None)

@@ -128,11 +128,11 @@ class ViewerRelay:
         stale: list[str] = []
         for conn_id in list(self._viewer_connections):
             try:
-                mgmt.send_message(conn_id, data)
-            except Exception as e:
-                err_str = str(e)
-                if "GoneException" in err_str or "410" in err_str:
+                sent = mgmt.send_message(conn_id, data)
+                if not sent:
                     stale.append(conn_id)
+            except Exception:
+                stale.append(conn_id)
         for conn_id in stale:
             self._viewer_connections.discard(conn_id)
             logger.debug("Removed stale viewer connection: %s", conn_id)

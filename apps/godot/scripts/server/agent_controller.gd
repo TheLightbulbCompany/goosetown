@@ -13,6 +13,8 @@ const PROXIMITY_THRESHOLD: float = 96.0
 const STATE_INTERVAL: float = 2.0
 ## Pixels per tile for coordinate conversion
 const TILE_SIZE: float = 32.0
+## Random offset range (pixels) around location markers so agents don't stack
+const DESTINATION_JITTER: float = 24.0
 
 ## Emitted when the controller needs to send data to a specific peer.
 ## game_server.gd connects this to protocol.send_to.
@@ -170,7 +172,17 @@ func _handle_move(peer_id: int, data: Dictionary) -> void:
 		return
 
 	var agent_node: CharacterBody2D = _agents[peer_id]
-	agent_node.set_navigation_target(marker.global_position)
+
+	# Jitter destination so multiple agents don't stack on the exact same pixel
+	var jitter := Vector2(
+		randf_range(-DESTINATION_JITTER, DESTINATION_JITTER),
+		randf_range(-DESTINATION_JITTER, DESTINATION_JITTER),
+	)
+	var raw_target := marker.global_position + jitter
+	# Clamp to navmesh so jitter near buildings doesn't land outside walkable area
+	var map_rid := agent_node.nav_agent.get_navigation_map()
+	var target_pos := NavigationServer2D.map_get_closest_point(map_rid, raw_target)
+	agent_node.set_navigation_target(target_pos)
 
 	# Clear arrival state so we can detect arrival at new destination
 	_arrived_at.erase(peer_id)
@@ -178,7 +190,7 @@ func _handle_move(peer_id: int, data: Dictionary) -> void:
 	send_to_peer.emit(peer_id, {
 		"event": "move_started",
 		"location": location_id,
-		"target": { "x": marker.global_position.x / TILE_SIZE, "y": marker.global_position.y / TILE_SIZE },
+		"target": { "x": target_pos.x / TILE_SIZE, "y": target_pos.y / TILE_SIZE },
 	})
 
 

@@ -1398,16 +1398,14 @@ async def _activity_timer(
     # --- For apartment activities, move to the furniture spot first ---
     if activity.spot:
         try:
+            # Register arrival waiter BEFORE sending move to avoid race condition
+            arrival_event = gs_client.expect_arrival(agent_id)
             await gs_client.send_command(
                 agent_id,
                 {"cmd": "move", "destination": activity.spot},
             )
-            # Wait for arrival confirmation (game server arrival event for this
-            # agent is forwarded via world_update; the game server client exposes
-            # a per-agent arrived event if available, otherwise we conservatively
-            # wait for the navigation timeout ceiling of 60 s).
             await asyncio.wait_for(
-                gs_client.wait_for_arrival(agent_id),
+                gs_client.wait_for_arrival(agent_id, arrival_event),
                 timeout=60.0,
             )
             # Reset start time: timer begins from when agent arrives at spot
@@ -1635,6 +1633,8 @@ async def _transition_to_apartment(
             logger.warning("Failed to send move_rejected to %s: %s", agent_id, exc)
 
     # --- Send navigation command to game server ---
+    # Register arrival waiter BEFORE sending move to avoid race condition
+    arrival_event = gs_client.expect_arrival(agent_id)
     try:
         await gs_client.send_command(
             agent_id,
@@ -1647,7 +1647,7 @@ async def _transition_to_apartment(
 
     # --- Wait for arrival confirmation ---
     try:
-        await asyncio.wait_for(gs_client.wait_for_arrival(agent_id), timeout=60.0)
+        await asyncio.wait_for(gs_client.wait_for_arrival(agent_id, arrival_event), timeout=60.0)
     except asyncio.TimeoutError:
         logger.warning("Agent %s timed out navigating to residence", agent_id)
         _reject("navigation_timeout")

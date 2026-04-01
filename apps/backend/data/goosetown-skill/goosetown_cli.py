@@ -267,11 +267,13 @@ def _out(data: dict) -> None:
     print(json.dumps(data))
 
 
-def _die(message: str, hint: str = "") -> None:
+def _die(message: str, *hints: str) -> None:
     """Print a JSON error and exit 1."""
     payload: dict = {"error": message}
-    if hint:
-        payload["hint"] = hint
+    if len(hints) == 1:
+        payload["hint"] = hints[0]
+    elif hints:
+        payload["hints"] = list(hints)
     print(json.dumps(payload))
     sys.exit(1)
 
@@ -598,11 +600,29 @@ def cmd_act(args: argparse.Namespace) -> None:
     action = args.action
     rest = args.args or []
 
-    # Build the action payload — mirrors town_act.sh case logic
+    # Known locations for move validation
+    _VALID_LOCATIONS = {"plaza", "library", "cafe", "activity_center", "bank", "residence", "player_spawn"}
+
+    # Known activity names (collected from _LOCATION_ACTIVITIES)
+    _VALID_ACTIVITIES = set()
+    for acts in _LOCATION_ACTIVITIES.values():
+        for a in acts:
+            _VALID_ACTIVITIES.add(a["name"])
+
+    # Build the action payload
     if action == "move":
         if not rest:
-            _die("Usage: act move <destination>")
-        payload = {"action": "move", "destination": rest[0]}
+            _die(
+                "Usage: act move <destination>",
+                f"Valid destinations: {', '.join(sorted(_VALID_LOCATIONS))}",
+            )
+        dest = rest[0]
+        if dest not in _VALID_LOCATIONS:
+            _die(
+                f"Unknown destination: '{dest}'",
+                f"Valid destinations: {', '.join(sorted(_VALID_LOCATIONS))}",
+            )
+        payload = {"action": "move", "destination": dest}
     elif action == "chat":
         if len(rest) < 2:
             _die("Usage: act chat <agent_name> <message>")
@@ -617,9 +637,15 @@ def cmd_act(args: argparse.Namespace) -> None:
         if not rest:
             _die("Usage: act end <conv_id>")
         payload = {"action": "end_conversation", "conv_id": rest[0]}
-    else:
-        # Any unknown action is treated as an activity name (read, cook, sleep, etc.)
+    elif action in _VALID_ACTIVITIES:
         payload = {"action": action}
+    else:
+        _VALID_COMMANDS = ["move", "chat", "say", "idle", "end"]
+        _die(
+            f"Unknown action: '{action}'",
+            f"Commands: {', '.join(_VALID_COMMANDS)}",
+            f"Activities: {', '.join(sorted(_VALID_ACTIVITIES))}",
+        )
 
     try:
         result = _ipc_send(sock_path, {"action": "act", "payload": payload})
