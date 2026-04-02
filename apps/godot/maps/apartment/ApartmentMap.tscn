@@ -246,46 +246,46 @@ script = ExtResource("17_agentmgr")
 [node name="Locations" type="Node2D" parent="." unique_id=1316726687]
 
 [node name="exit" type="Marker2D" parent="Locations" unique_id=2055516115]
-position = Vector2(384, 480)
+position = Vector2(384, 448)
 
 [node name="desk" type="Marker2D" parent="Locations" unique_id=1733011780]
-position = Vector2(132, 76)
+position = Vector2(132, 130)
 
 [node name="chair" type="Marker2D" parent="Locations" unique_id=2116997200]
-position = Vector2(133, 112)
+position = Vector2(133, 155)
 
 [node name="plant" type="Marker2D" parent="Locations" unique_id=1026120050]
-position = Vector2(220, 74)
+position = Vector2(220, 125)
 
 [node name="couch" type="Marker2D" parent="Locations" unique_id=562249299]
-position = Vector2(385, 80)
+position = Vector2(385, 135)
 
 [node name="coffee_table" type="Marker2D" parent="Locations" unique_id=1096272558]
-position = Vector2(383, 158)
+position = Vector2(383, 200)
 
 [node name="bookshelf" type="Marker2D" parent="Locations" unique_id=17062557]
-position = Vector2(597, 82)
+position = Vector2(597, 135)
 
 [node name="rug" type="Marker2D" parent="Locations" unique_id=280932350]
-position = Vector2(595, 200)
+position = Vector2(595, 240)
 
 [node name="aquarium" type="Marker2D" parent="Locations" unique_id=398287048]
-position = Vector2(209, 207)
+position = Vector2(209, 260)
 
 [node name="record_player" type="Marker2D" parent="Locations" unique_id=728291800]
-position = Vector2(477, 221)
+position = Vector2(477, 270)
 
 [node name="bed" type="Marker2D" parent="Locations" unique_id=1639388712]
-position = Vector2(144, 400)
+position = Vector2(144, 450)
 
 [node name="coat_rack" type="Marker2D" parent="Locations" unique_id=1505414641]
-position = Vector2(266, 379)
+position = Vector2(266, 425)
 
 [node name="shoe_rack" type="Marker2D" parent="Locations" unique_id=1697732277]
-position = Vector2(519, 376)
+position = Vector2(519, 425)
 
 [node name="fridge" type="Marker2D" parent="Locations" unique_id=1641274057]
-position = Vector2(671, 353)
+position = Vector2(671, 400)
 
 [node name="stove" type="Marker2D" parent="Locations" unique_id=1804146160]
-position = Vector2(578, 414)
+position = Vector2(578, 455)
