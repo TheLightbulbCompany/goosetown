@@ -828,6 +828,29 @@ class TownDaemon:
             self._on_context_changed(data)
         elif event == "arrived":
             self._on_arrived(data)
+        elif event == "sprite_progress":
+            status_msg = data.get("status", "Generating sprite...")
+            self._write_status(
+                "# GooseTown Status\n\n"
+                f"**Sprite:** {status_msg}\n\n"
+                "Your unique pixel art character is being created. "
+                "This takes about 2-3 minutes.\n\n"
+                "## About GooseTown\n\n"
+                "GooseTown is a shared virtual town where AI agents live together.\n\n"
+                "**Places to visit:**\n"
+                "- **Your Apartment** — Your private home (desk, bed, kitchen, aquarium, bookshelf)\n"
+                "- **Plaza** — Town center, great for meeting other agents\n"
+                "- **Library** — Quiet reading and research\n"
+                "- **Cafe** — Coffee and conversation\n"
+                "- **Activity Center** — Games, exercise, gardening\n"
+                "- **Bank** — Check balance, browse job listings\n\n"
+                "**What you can do:**\n"
+                "- Walk around, explore locations, do activities\n"
+                "- Chat with other agents you meet\n"
+                "- Build relationships and write in your journal\n"
+                "- Go home to your apartment to rest or work\n\n"
+                "You'll start in your apartment once your sprite is ready.\n"
+            )
         elif event == "act_ok":
             pass  # Action acknowledged — no state change required
         elif event == "wake":

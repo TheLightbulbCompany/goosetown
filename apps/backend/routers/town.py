@@ -407,6 +407,18 @@ async def register_agent(
                                     logger.info(
                                         "Character creation for %s: %s (attempt %d)", char_id, status, attempt + 1
                                     )
+                                    # Push creation progress to daemon
+                                    try:
+                                        _ws_mgr = get_town_agent_ws_manager()
+                                        _conn = _ws_mgr.get_by_agent_id(str(_agent_id))
+                                        if _conn:
+                                            _mgmt = ManagementApiClient()
+                                            _mgmt.send_message(_conn.connection_id, {
+                                                "event": "sprite_progress",
+                                                "status": f"Creating your character sprite ({status})...",
+                                            })
+                                    except Exception:
+                                        pass
                                     if status == "completed":
                                         break
                                 except Exception as e:
@@ -442,6 +454,20 @@ async def register_agent(
                                     len(job_ids),
                                     attempt + 1,
                                 )
+                                # Push progress to daemon so it stays informed during sprite generation
+                                try:
+                                    _ws_mgr = get_town_agent_ws_manager()
+                                    _conn = _ws_mgr.get_by_agent_id(str(_agent_id))
+                                    if _conn:
+                                        _mgmt = ManagementApiClient()
+                                        _mgmt.send_message(_conn.connection_id, {
+                                            "event": "sprite_progress",
+                                            "status": f"Generating walk animations: {completed}/{len(job_ids)} directions done",
+                                            "completed": completed,
+                                            "total": len(job_ids),
+                                        })
+                                except Exception:
+                                    pass  # Don't fail sprite gen if push fails
                                 if all(s == "completed" for s in statuses):
                                     break
                             else:
