@@ -1556,7 +1556,17 @@ class TownDaemon:
                 return
 
             keepalive_task = asyncio.create_task(self._keepalive_loop())
-            await asyncio.gather(ws_task, self.run_socket_server(), keepalive_task)
+            socket_task = asyncio.create_task(self.run_socket_server())
+            # Wait for ws_task — if it dies (disconnect/timeout), cancel the others
+            try:
+                await ws_task
+            finally:
+                keepalive_task.cancel()
+                socket_task.cancel()
+                try:
+                    await asyncio.gather(keepalive_task, socket_task, return_exceptions=True)
+                except Exception:
+                    pass
         finally:
             if self.ws:
                 await self.ws.close()
