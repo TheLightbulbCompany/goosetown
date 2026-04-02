@@ -1367,16 +1367,26 @@ class TownDaemon:
         log.info("Connected as %s", self._agent_name)
 
     async def listen_ws(self) -> None:
-        """Listen for events from GooseTown WebSocket until disconnected."""
+        """Listen for events from GooseTown WebSocket until disconnected.
+
+        Includes an inactivity timeout — if no message is received within
+        30 seconds, the connection is considered stale (e.g., backend
+        restarted and lost our registration). Raising triggers the
+        run_forever reconnect loop which re-sends town_agent_connect.
+        """
+        import asyncio
         import logging
 
         log = logging.getLogger("town_daemon")
         try:
-            async for raw in self.ws:
+            while self.running:
+                try:
+                    raw = await asyncio.wait_for(self.ws.recv(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    log.warning("No messages received in 30s — reconnecting")
+                    raise ConnectionError("Inactivity timeout")
                 try:
                     data = json.loads(raw)
-                    # Messages from Management API have "event" field directly
-                    # Game server world_state has "event": "world_state"
                     if "event" in data:
                         event_name = data["event"]
                         if event_name == "world_state":
@@ -1389,7 +1399,7 @@ class TownDaemon:
                     log.warning("Invalid JSON from server: %s", str(raw)[:100])
         except Exception as exc:
             log.warning("WebSocket disconnected: %s", exc)
-            self.running = False
+            # Don't set self.running = False — let run_forever retry
 
     # ------------------------------------------------------------------
     # Tool command handling (IPC)

@@ -180,6 +180,10 @@ class GameServerClient:
         """Register an async handler for a game server event."""
         self._event_handlers.setdefault(event_name, []).append(handler)
 
+    def clear_event_handlers(self) -> None:
+        """Remove all registered event handlers. Called before re-registering."""
+        self._event_handlers.clear()
+
     def get_cached_locations(self) -> list[dict[str, Any]]:
         """Return the most recently cached locations list."""
         return list(self._locations)

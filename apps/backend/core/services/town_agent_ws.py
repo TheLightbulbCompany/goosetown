@@ -45,6 +45,12 @@ class TownAgentWsManager:
             agent_id: Agent UUID from DynamoDB.
             instance_id: Town instance UUID.
         """
+        # Clean up stale connection if agent is re-registering (e.g., after backend restart)
+        old_conn_id = self._by_agent_id.get(agent_id)
+        if old_conn_id and old_conn_id != connection_id:
+            self._by_connection.pop(old_conn_id, None)
+            logger.debug("Cleaned up stale connection %s for agent %s", old_conn_id, agent_name)
+
         conn = AgentConnection(connection_id, user_id, agent_name, agent_id, instance_id)
         self._by_connection[connection_id] = conn
         self._by_agent_name[agent_name] = connection_id

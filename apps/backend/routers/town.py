@@ -1251,6 +1251,9 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
                 agent_name, location_context, current_location, user_id[:12],
             )
 
+            # Clear any stale handlers from previous registrations (idempotent reconnect)
+            gs_client.clear_event_handlers()
+
             # Register handler to forward game server events to the daemon
             async def _forward_event(fwd_agent_id: str, event_data: dict) -> None:
                 try:
@@ -1262,7 +1265,7 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
                 except Exception as fwd_err:
                     logger.debug("Failed to forward event to agent %s: %s", fwd_agent_id, fwd_err)
 
-            for evt in ("arrived", "move_started", "spawned", "nearby", "command_error"):
+            for evt in ("arrived", "move_started", "spawned", "nearby", "command_error", "agent_state"):
                 gs_client.on_event(evt, _forward_event)
 
             # Update DynamoDB location when agent arrives somewhere
