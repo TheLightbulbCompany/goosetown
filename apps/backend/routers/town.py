@@ -411,14 +411,15 @@ async def register_agent(
                                     try:
                                         _ws_mgr = get_town_agent_ws_manager()
                                         _conn = _ws_mgr.get_by_agent_id(str(_agent_id))
+                                        print(f"[SPRITE_PROGRESS] agent={str(_agent_id)[:8]} conn={'YES' if _conn else 'NO'} status={status}", flush=True)
                                         if _conn:
                                             _mgmt = ManagementApiClient()
                                             _mgmt.send_message(_conn.connection_id, {
                                                 "event": "sprite_progress",
                                                 "status": f"Creating your character sprite ({status})...",
                                             })
-                                    except Exception:
-                                        pass
+                                    except Exception as _prog_err:
+                                        print(f"[SPRITE_PROGRESS] send failed: {_prog_err}", flush=True)
                                     if status == "completed":
                                         break
                                 except Exception as e:
@@ -466,8 +467,8 @@ async def register_agent(
                                             "completed": completed,
                                             "total": len(job_ids),
                                         })
-                                except Exception:
-                                    pass  # Don't fail sprite gen if push fails
+                                except Exception as _anim_prog_err:
+                                    logger.debug("sprite_progress send failed: %s", _anim_prog_err)
                                 if all(s == "completed" for s in statuses):
                                     break
                             else:
@@ -1704,6 +1705,7 @@ async def _handle_context_transition(
         dest_location,
     )
 
+    # Notify the daemon
     try:
         mgmt.send_message(
             connection_id,
@@ -1715,6 +1717,27 @@ async def _handle_context_transition(
         )
     except Exception as exc:
         logger.warning("Failed to send context_changed to %s: %s", agent_id, exc)
+
+    # Notify browser viewers so they switch scenes
+    try:
+        from core.services.viewer_relay import get_viewer_relay
+
+        relay = get_viewer_relay()
+        for viewer_conn_id in list(relay._viewer_connections):
+            try:
+                mgmt.send_message(
+                    viewer_conn_id,
+                    {
+                        "event": "agent_context_changed",
+                        "agent_id": agent_id,
+                        "context": dest_context,
+                        "userId": agent_conn.user_id,
+                    },
+                )
+            except Exception:
+                pass
+    except Exception as exc:
+        logger.debug("Failed to notify viewers of context change: %s", exc)
 
 
 async def _transition_to_apartment(
