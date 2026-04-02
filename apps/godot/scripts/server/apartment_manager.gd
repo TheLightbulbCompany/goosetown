@@ -28,7 +28,17 @@ func create_instance(owner_user_id: String) -> ApartmentAgentController:
 	viewport.size = Vector2i(960, 540)
 	viewport.render_target_update_mode = SubViewport.UPDATE_DISABLED  # Headless: physics only
 
-	# Instantiate apartment map inside the viewport
+	# IMPORTANT: Add the viewport to the tree BEFORE adding children to it.
+	# NavigationRegion2D registers with a navigation map during _enter_tree.
+	# If the viewport is orphaned (not in the SceneTree) when children enter,
+	# NavigationRegion2D.get_world_2d() falls through to the root viewport's
+	# default World2D instead of the SubViewport's custom World2D. This causes
+	# the navmesh to register on the wrong map, leaving the SubViewport's
+	# navigation map empty and breaking all NavigationAgent2D pathfinding.
+	add_child(viewport)
+
+	# Now instantiate the apartment map inside the (in-tree) viewport.
+	# NavigationRegion2D will correctly find viewport.world_2d.navigation_map.
 	var map_node: Node = ApartmentScene.instantiate()
 	viewport.add_child(map_node)
 
@@ -46,11 +56,9 @@ func create_instance(owner_user_id: String) -> ApartmentAgentController:
 	controller.send_to_peer.connect(_on_send_to_peer)
 	viewport.add_child(controller)
 
-	add_child(viewport)
-
 	# Force navmesh sync so the first move command gets valid pathfinding.
-	# Without this, NavigationServer2D hasn't processed the new World2D's
-	# navmesh yet and map_get_closest_point returns garbage.
+	# The NavigationRegion2D is now registered on this map, so the update
+	# will process the navmesh polygons and make them queryable immediately.
 	var nav_map: RID = viewport.world_2d.navigation_map
 	NavigationServer2D.map_force_update(nav_map)
 
