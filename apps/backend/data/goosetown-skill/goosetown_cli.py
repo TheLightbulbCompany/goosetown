@@ -1499,6 +1499,22 @@ class TownDaemon:
             os.unlink(sock_str)
 
     # ------------------------------------------------------------------
+    # Keepalive — prevent API Gateway idle timeout (10 min)
+    # ------------------------------------------------------------------
+
+    async def _keepalive_loop(self) -> None:
+        """Send periodic ping messages to keep the API Gateway connection alive."""
+        import asyncio
+
+        while self.running:
+            await asyncio.sleep(120)  # Every 2 minutes
+            if self.ws and self.running:
+                try:
+                    await self.ws.send(json.dumps({"type": "ping"}))
+                except Exception:
+                    break  # Connection lost, let reconnect handle it
+
+    # ------------------------------------------------------------------
     # Main run loop
     # ------------------------------------------------------------------
 
@@ -1529,7 +1545,8 @@ class TownDaemon:
                 ws_task.cancel()
                 return
 
-            await asyncio.gather(ws_task, self.run_socket_server())
+            keepalive_task = asyncio.create_task(self._keepalive_loop())
+            await asyncio.gather(ws_task, self.run_socket_server(), keepalive_task)
         finally:
             if self.ws:
                 await self.ws.close()
