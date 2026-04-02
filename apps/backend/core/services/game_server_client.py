@@ -206,6 +206,7 @@ class GameServerClient:
 
     async def _listen_agent(self, agent_id: str, ws: ClientConnection) -> None:
         """Listen loop for an agent's WebSocket connection."""
+        print(f"[GS_CLIENT] _listen_agent started for {agent_id}", flush=True)
         try:
             async for raw_message in ws:
                 try:
@@ -215,6 +216,7 @@ class GameServerClient:
                     continue
 
                 msg_type = message.get("event", "")
+                print(f"[GS_CLIENT] Event from game server: {msg_type} for {agent_id[:8]}", flush=True)
 
                 # Cache locations if present
                 if "locations" in message:

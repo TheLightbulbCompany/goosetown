@@ -1380,10 +1380,13 @@ class TownDaemon:
         log = logging.getLogger("town_daemon")
         try:
             while self.running:
+                # Longer timeout before first connected event (sprite generation can take minutes)
+                # Shorter timeout after connected (agent_state events should arrive every 2s)
+                recv_timeout = 30.0 if self._initial_state_event.is_set() else 300.0
                 try:
-                    raw = await asyncio.wait_for(self.ws.recv(), timeout=30.0)
+                    raw = await asyncio.wait_for(self.ws.recv(), timeout=recv_timeout)
                 except asyncio.TimeoutError:
-                    log.warning("No messages received in 30s — reconnecting")
+                    log.warning("No messages received in %.0fs — reconnecting", recv_timeout)
                     raise ConnectionError("Inactivity timeout")
                 try:
                     data = json.loads(raw)
