@@ -58,9 +58,18 @@ class GameServerClient:
             context: Location context the agent is joining ("town" or "apartment").
             user_id: Clerk user ID owning this agent.
         """
-        if agent_id in self._agent_connections:
-            logger.warning("Agent %s already connected, skipping", agent_id)
-            return
+        existing_ws = self._agent_connections.get(agent_id)
+        if existing_ws is not None:
+            if existing_ws.open:
+                logger.warning("Agent %s already connected, skipping", agent_id)
+                return
+            # Stale connection — clean up and reconnect
+            logger.info("Agent %s has stale connection, reconnecting", agent_id)
+            self._agent_connections.pop(agent_id, None)
+            self._agent_connect_params.pop(agent_id, None)
+            task = self._listen_tasks.pop(agent_id, None)
+            if task:
+                task.cancel()
 
         ws = await websockets.connect(self._base_url)
 
