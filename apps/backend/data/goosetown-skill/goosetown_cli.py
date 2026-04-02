@@ -1418,7 +1418,12 @@ class TownDaemon:
             payload = cmd.get("payload", {})
             if not self.ws:
                 return {"error": "not connected"}
-            await self.ws.send(json.dumps({"type": "town_agent_act", **payload}))
+            msg = json.dumps({"type": "town_agent_act", **payload})
+            import logging as _logging
+            _log = _logging.getLogger("town_daemon")
+            _log.info("Sending via WS: %s", msg[:100])
+            await self.ws.send(msg)
+            _log.info("WS send complete")
             # Block on move until arrived (max 120 s)
             if payload.get("action") == "move":
                 self._arrived_event.clear()

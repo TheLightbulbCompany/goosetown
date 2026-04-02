@@ -777,6 +777,7 @@ async def handle_ws_message(request: WsMessageRequest):
 
         gs_client = get_game_server_client()
         action = body.get("action", "")
+        print(f"[WS_MSG] town_agent_act: action={action}, agent={agent_conn.agent_name}, ctx={agent_conn.location_context}", flush=True)
         if action == "move":
             destination = body.get("destination", "")
             if destination in _TRANSITION_MAP:

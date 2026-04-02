@@ -60,7 +60,12 @@ class GameServerClient:
         """
         existing_ws = self._agent_connections.get(agent_id)
         if existing_ws is not None:
-            if existing_ws.open:
+            # websockets v14+ uses .state (1=OPEN, 3=CLOSED), not .open
+            try:
+                is_alive = existing_ws.state == 1  # State.OPEN
+            except Exception:
+                is_alive = False
+            if is_alive:
                 logger.warning("Agent %s already connected, skipping", agent_id)
                 return
             # Stale connection — clean up and reconnect
@@ -89,6 +94,7 @@ class GameServerClient:
         task = asyncio.create_task(self._listen_agent(agent_id, ws))
         self._listen_tasks[agent_id] = task
 
+        print(f"[GS_CLIENT] Agent {agent_id} connected to game server (context={context})", flush=True)
         logger.info("Agent %s connected to game server (context=%s)", agent_id, context)
 
     async def disconnect_agent(self, agent_id: str) -> None:
@@ -111,9 +117,10 @@ class GameServerClient:
         """Send a JSON command on an agent's WebSocket connection."""
         ws = self._agent_connections.get(agent_id)
         if ws is None:
-            logger.warning("No connection for agent %s, cannot send command", agent_id)
+            print(f"[GS_CLIENT] No connection for agent {agent_id}, cannot send command", flush=True)
             return
 
+        print(f"[GS_CLIENT] send_command({agent_id}): {command}", flush=True)
         await ws.send(json.dumps(command))
         logger.debug("Sent command to agent %s: %s", agent_id, command.get("type", "unknown"))
 
