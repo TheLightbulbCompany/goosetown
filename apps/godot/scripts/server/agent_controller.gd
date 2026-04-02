@@ -51,6 +51,14 @@ func spawn_agent(peer_id: int, data: Dictionary) -> void:
 		push_warning("AgentController: peer %d already has an agent" % peer_id)
 		return
 
+	# Deduplicate by agent_id: if this agent exists on a stale peer, remove it first
+	var agent_id_check: String = str(data.get("agent_id", ""))
+	if agent_id_check != "" and _id_to_peer.has(agent_id_check):
+		var old_peer: int = _id_to_peer[agent_id_check]
+		if old_peer != peer_id:
+			print("AgentController: removing stale peer %d for agent %s" % [old_peer, agent_id_check])
+			remove_agent(old_peer)
+
 	var agent_node: CharacterBody2D = AgentScene.instantiate()
 
 	# Determine spawn position from requested location
