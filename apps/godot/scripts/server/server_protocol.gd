@@ -24,6 +24,7 @@ var _tcp_server: TCPServer = null
 var _peers: Dictionary = {}  # peer_id -> WebSocketPeer
 var _pending_tcp: Dictionary = {}  # peer_id -> StreamPeerTCP (awaiting WS upgrade)
 var _identified: Dictionary = {}  # peer_id -> bool (has sent first "type" message)
+var _peer_type: Dictionary = {}  # peer_id -> String ("viewer" or "agent")
 var _last_message_time: Dictionary = {}  # peer_id -> float (Time.get_unix_time_from_system)
 var _next_peer_id: int = 1
 
@@ -150,8 +151,9 @@ func _process(_delta: float) -> void:
 			_last_message_time[peer_id] = Time.get_unix_time_from_system()
 			_handle_message(peer_id, text)
 
-		# Timeout: disconnect peers that haven't sent anything in PEER_TIMEOUT seconds.
-		if _identified.get(peer_id, false):
+		# Timeout: disconnect AGENT peers that haven't sent anything in PEER_TIMEOUT seconds.
+		# Viewers are receive-only (they never send messages) so they're exempt.
+		if _identified.get(peer_id, false) and _peer_type.get(peer_id, "") == "agent":
 			var elapsed: float = Time.get_unix_time_from_system() - _last_message_time.get(peer_id, 0.0)
 			if elapsed > PEER_TIMEOUT:
 				print("ServerProtocol: peer %d timed out (%.0fs silent), disconnecting" % [peer_id, elapsed])
@@ -163,6 +165,7 @@ func _process(_delta: float) -> void:
 		_peers.erase(peer_id)
 		var was_identified: bool = _identified.get(peer_id, false)
 		_identified.erase(peer_id)
+		_peer_type.erase(peer_id)
 		_last_message_time.erase(peer_id)
 		if was_identified:
 			client_disconnected.emit(peer_id)
@@ -184,6 +187,7 @@ func _handle_message(peer_id: int, text: String) -> void:
 	if not _identified.get(peer_id, false):
 		if data.has("type"):
 			_identified[peer_id] = true
+			_peer_type[peer_id] = str(data.get("type", ""))
 			client_connected.emit(peer_id, data)
 		else:
 			push_warning("ServerProtocol: first message from peer %d missing 'type' field" % peer_id)
