@@ -15,10 +15,16 @@ signal client_disconnected(peer_id: int)
 ## Emitted when a client sends a message containing a "cmd" field.
 signal command_received(peer_id: int, data: Dictionary)
 
+## Seconds of silence before a peer is considered dead and disconnected.
+## The agent's 15-second heartbeat generates commands every ~15s.
+## 60s gives 4 missed heartbeats before declaring dead.
+const PEER_TIMEOUT: float = 60.0
+
 var _tcp_server: TCPServer = null
 var _peers: Dictionary = {}  # peer_id -> WebSocketPeer
 var _pending_tcp: Dictionary = {}  # peer_id -> StreamPeerTCP (awaiting WS upgrade)
 var _identified: Dictionary = {}  # peer_id -> bool (has sent first "type" message)
+var _last_message_time: Dictionary = {}  # peer_id -> float (Time.get_unix_time_from_system)
 var _next_peer_id: int = 1
 
 
@@ -113,6 +119,7 @@ func _process(_delta: float) -> void:
 
 		_peers[peer_id] = ws
 		_identified[peer_id] = false
+		_last_message_time[peer_id] = Time.get_unix_time_from_system()
 		upgraded_ids.append(peer_id)
 
 	for peer_id in upgraded_ids:
@@ -140,13 +147,23 @@ func _process(_delta: float) -> void:
 		while ws.get_available_packet_count() > 0:
 			var packet := ws.get_packet()
 			var text := packet.get_string_from_utf8()
+			_last_message_time[peer_id] = Time.get_unix_time_from_system()
 			_handle_message(peer_id, text)
+
+		# Timeout: disconnect peers that haven't sent anything in PEER_TIMEOUT seconds.
+		if _identified.get(peer_id, false):
+			var elapsed: float = Time.get_unix_time_from_system() - _last_message_time.get(peer_id, 0.0)
+			if elapsed > PEER_TIMEOUT:
+				print("ServerProtocol: peer %d timed out (%.0fs silent), disconnecting" % [peer_id, elapsed])
+				ws.close()
+				disconnected_ids.append(peer_id)
 
 	# Emit disconnected signals and clean up.
 	for peer_id in disconnected_ids:
 		_peers.erase(peer_id)
 		var was_identified: bool = _identified.get(peer_id, false)
 		_identified.erase(peer_id)
+		_last_message_time.erase(peer_id)
 		if was_identified:
 			client_disconnected.emit(peer_id)
 
