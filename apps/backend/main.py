@@ -104,6 +104,32 @@ async def _reconnect_active_agents() -> None:
 
     logger.info("Startup: reconnected %d/%d active agents to game server", connected, len(agents))
 
+    # Resume interrupted sprite generation
+    import asyncio
+
+    sprite_resumed = 0
+    for agent in agents:
+        sprite_status = agent.get("spriteStatus")
+        if sprite_status in ("creating", "animating", "downloading"):
+            agent_id = agent["id"]
+            char_id = agent.get("pixellabCharacterId") or agent.get("pixellab_character_id")
+            appearance = agent.get("appearance", "")
+            display_name = agent.get("displayName", "")
+
+            logger.info(
+                "Resuming sprite generation for %s (status=%s, char=%s)",
+                agent_id, sprite_status, char_id,
+            )
+
+            from routers.town import resume_sprite_generation
+
+            asyncio.create_task(
+                resume_sprite_generation(agent_id, char_id, appearance, display_name, sprite_status)
+            )
+            sprite_resumed += 1
+
+    logger.info("Startup: resumed %d interrupted sprite generations", sprite_resumed)
+
 
 app = FastAPI(title="GooseTown API", lifespan=lifespan)
 

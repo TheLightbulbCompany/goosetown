@@ -617,6 +617,137 @@ async def register_agent(
     }
 
 
+async def resume_sprite_generation(
+    agent_id: str,
+    character_id: str | None,
+    appearance: str,
+    display_name: str,
+    current_status: str,
+) -> None:
+    """Resume an interrupted sprite generation from a specific phase.
+
+    Called from startup recovery when an agent has a non-complete spriteStatus.
+    """
+    from core.config import settings
+    from core.services.pixellab_service import ANIMATION_REGISTRY, PixelLabService
+    from core.services.sprite_storage import (
+        extract_all_spritesheets,
+        extract_walk_spritesheet,
+        upload_sprite_to_s3,
+        upload_sprites_to_s3,
+    )
+
+    pxl = PixelLabService()
+    service = TownService()
+
+    def _progress(status: str) -> None:
+        _send_to_daemon(agent_id, {"event": "sprite_progress", "status": status})
+
+    try:
+        async def _anim_progress(status: str) -> None:
+            _progress(status)
+
+        char_id = character_id
+
+        # Phase: creating
+        if current_status == "creating":
+            if not char_id:
+                _progress("Recreating character...")
+                char_id, creation_job_id = await pxl.create_character(description=appearance)
+                service.update_agent_state(agent_id, pixellab_character_id=char_id)
+                if creation_job_id:
+                    await pxl.wait_for_jobs(
+                        [creation_job_id], on_progress=_anim_progress, progress_label="creation"
+                    )
+            service.update_agent_state(agent_id, sprite_status="animating")
+            current_status = "animating"
+
+        # Phase: animating
+        if current_status == "animating" and char_id:
+            _progress("Resuming animations...")
+            await pxl.queue_template_animations(char_id, on_progress=_anim_progress)
+            service.update_agent_state(agent_id, sprite_status="downloading")
+            current_status = "downloading"
+
+        # Phase: downloading
+        if current_status == "downloading" and char_id:
+            _progress("Downloading sprites...")
+            import asyncio
+
+            zip_bytes = None
+            for attempt in range(6):
+                await asyncio.sleep(5)
+                zip_bytes = await pxl.download_character_zip(char_id)
+                if zip_bytes is not None:
+                    break
+
+            if zip_bytes:
+                all_sheets = extract_all_spritesheets(zip_bytes)
+                if all_sheets:
+                    uploaded = await asyncio.to_thread(
+                        upload_sprites_to_s3, all_sheets, agent_id, settings.SPRITE_S3_BUCKET
+                    )
+                    sprite_animations = {}
+                    for anim_name, info in uploaded.items():
+                        registry_entry = ANIMATION_REGISTRY.get(anim_name, {})
+                        sprite_animations[anim_name] = {
+                            "url": f"{settings.SPRITE_CDN_URL}/{info['key']}",
+                            "frameCount": info["frame_count"],
+                            "fps": registry_entry.get("fps", 8.0),
+                        }
+                    walk_url = sprite_animations.get("walk", {}).get("url", "")
+                    service.update_agent_state(
+                        agent_id,
+                        sprite_ready=True,
+                        sprite_url=walk_url,
+                        sprite_animations=sprite_animations,
+                        sprite_status="complete",
+                    )
+                else:
+                    walk_png = extract_walk_spritesheet(zip_bytes)
+                    if walk_png:
+                        s3_key = await asyncio.to_thread(
+                            upload_sprite_to_s3, walk_png, agent_id, settings.SPRITE_S3_BUCKET
+                        )
+                        service.update_agent_state(
+                            agent_id,
+                            sprite_ready=True,
+                            sprite_url=f"{settings.SPRITE_CDN_URL}/{s3_key}",
+                            sprite_status="complete",
+                        )
+            else:
+                logger.warning("No ZIP available for %s during recovery", agent_id)
+                service.update_agent_state(agent_id, sprite_status=None)
+                return
+
+            # Connect to game server
+            gs_client = get_game_server_client()
+            agent = service.get_town_agent_by_id(agent_id)
+            if agent and agent.get("spriteReady"):
+                await gs_client.connect_agent(
+                    agent_id=agent_id,
+                    display_name=display_name,
+                    sprite_url=agent.get("spriteUrl", ""),
+                    location=agent.get("currentLocation", "plaza"),
+                    context=agent.get("locationContext", "town"),
+                    user_id=agent.get("userId", ""),
+                    sprite_animations=agent.get("spriteAnimations", {}),
+                    on_event=_make_agent_event_callback(),
+                )
+
+            _send_to_daemon(agent_id, {
+                "event": "sprite_ready",
+                "agent_id": agent_id,
+                "sprite_url": agent.get("spriteUrl", "") if agent else "",
+            })
+
+        logger.info("Sprite recovery completed for agent %s", agent_id)
+
+    except Exception:
+        logger.exception("Failed to resume sprite generation for %s", agent_id)
+        service.update_agent_state(agent_id, sprite_status=None)
+
+
 @router.get("/agent/status")
 async def get_agent_status(
     agent_name: str = Query(...),
