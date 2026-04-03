@@ -130,6 +130,46 @@ async def _reconnect_active_agents() -> None:
 
     logger.info("Startup: resumed %d interrupted sprite generations", sprite_resumed)
 
+    # Resume interrupted activity timers
+    import time as _time
+    from core.services.activity_registry import get_activity
+
+    activities_resumed = 0
+    for agent in agents:
+        current_activity_name = agent.get("currentActivity")
+        if not current_activity_name:
+            continue
+
+        agent_id = agent["id"]
+        activity = get_activity(current_activity_name)
+        if not activity:
+            # Unknown activity — clear it
+            service.update_agent_activity(agent_id, None, None)
+            continue
+
+        started_at = float(agent.get("activityStartedAt", 0))
+        elapsed = _time.time() - started_at if started_at else 999
+        remaining = activity.duration_seconds - elapsed
+
+        if remaining <= 0:
+            logger.info(
+                "Completing overdue activity %s for agent %s (%.0fs overdue)",
+                current_activity_name, agent_id, -remaining,
+            )
+            from routers.town import complete_activity_from_startup
+            asyncio.create_task(complete_activity_from_startup(agent_id, activity, elapsed))
+        else:
+            logger.info(
+                "Resuming activity %s for agent %s (%.0fs remaining)",
+                current_activity_name, agent_id, remaining,
+            )
+            from routers.town import restart_activity_timer
+            asyncio.create_task(restart_activity_timer(agent_id, activity, remaining))
+
+        activities_resumed += 1
+
+    logger.info("Startup: resumed %d activity timers", activities_resumed)
+
 
 app = FastAPI(title="GooseTown API", lifespan=lifespan)
 

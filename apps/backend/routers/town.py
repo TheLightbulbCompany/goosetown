@@ -1462,18 +1462,6 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
     # Set in-memory context on the connection record
     ws_manager.update_context(agent_id, location_context)
 
-    # Clear stale activity (container may have restarted mid-activity)
-    current_activity = agent.get("currentActivity")
-    if current_activity:
-        import time as _time
-
-        activity_started = agent.get("activityStartedAt", 0)
-        elapsed = _time.time() - float(activity_started) if activity_started else 999
-        # If activity has been running longer than 5 minutes, it's stale
-        if elapsed > 300:
-            logger.warning("Clearing stale activity %s for agent %s (%.0fs old)", current_activity, agent_id, elapsed)
-            service.update_agent_activity(agent_id, None, None)
-
     # Connect agent to game server if sprite is ready
     if agent.get("spriteReady"):
         gs_client = get_game_server_client()
@@ -1935,6 +1923,93 @@ def _clear_activity_and_notify(
         )
     except Exception as exc:
         logger.warning("Failed to send activity_rejected for navigation failure %s: %s", agent_id, exc)
+
+
+async def complete_activity_from_startup(agent_id: str, activity, elapsed: float) -> None:
+    """Complete an activity that should have finished while the backend was down."""
+    from core.services.activity_registry import apply_activity_effect
+
+    service = TownService()
+    agent = service.get_town_agent_by_id(agent_id)
+    if not agent:
+        return
+
+    current_energy = int(agent.get("energy", 100))
+    current_mood = int(agent.get("mood", 0))
+    traits = agent.get("traits", "")
+
+    new_energy, new_mood, interrupted = apply_activity_effect(
+        activity, current_energy, current_mood, traits, elapsed
+    )
+
+    service.update_agent_mood_energy(agent_id, new_mood, new_energy)
+    service.update_agent_activity(agent_id, None, None)
+
+    # Clear activity in game server
+    gs_client = get_game_server_client()
+    try:
+        await gs_client.send_command(agent_id, {"cmd": "set_activity", "activity": ""})
+    except Exception:
+        pass
+
+    # Notify daemon
+    event_name = "activity_interrupted" if interrupted else "activity_complete"
+    _send_to_daemon(agent_id, {
+        "event": event_name,
+        "activity": activity.name,
+        "mood_delta": new_mood - current_mood,
+        "energy_delta": new_energy - current_energy,
+        "new_mood": new_mood,
+        "new_energy": new_energy,
+        "interrupted": interrupted,
+    })
+
+    logger.info("Startup: completed overdue activity %s for agent %s", activity.name, agent_id)
+
+
+async def restart_activity_timer(agent_id: str, activity, remaining: float) -> None:
+    """Restart an activity timer for the remaining duration after backend restart."""
+    import asyncio
+    from core.services.activity_registry import apply_activity_effect
+
+    await asyncio.sleep(remaining)
+
+    service = TownService()
+    agent = service.get_town_agent_by_id(agent_id)
+    if not agent or agent.get("currentActivity") != activity.name:
+        return  # Activity was cancelled or changed
+
+    current_energy = int(agent.get("energy", 100))
+    current_mood = int(agent.get("mood", 0))
+    traits = agent.get("traits", "")
+
+    new_energy, new_mood, interrupted = apply_activity_effect(
+        activity, current_energy, current_mood, traits, activity.duration_seconds
+    )
+
+    service.update_agent_mood_energy(agent_id, new_mood, new_energy)
+    service.update_agent_activity(agent_id, None, None)
+
+    # Clear activity in game server
+    gs_client = get_game_server_client()
+    try:
+        await gs_client.send_command(agent_id, {"cmd": "set_activity", "activity": ""})
+    except Exception:
+        pass
+
+    # Notify daemon
+    event_name = "activity_interrupted" if interrupted else "activity_complete"
+    _send_to_daemon(agent_id, {
+        "event": event_name,
+        "activity": activity.name,
+        "mood_delta": new_mood - current_mood,
+        "energy_delta": new_energy - current_energy,
+        "new_mood": new_mood,
+        "new_energy": new_energy,
+        "interrupted": interrupted,
+    })
+
+    logger.info("Startup: timer completed activity %s for agent %s", activity.name, agent_id)
 
 
 # ---------------------------------------------------------------------------
