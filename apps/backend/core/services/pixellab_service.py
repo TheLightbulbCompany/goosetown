@@ -244,12 +244,29 @@ class PixelLabService:
             logger.warning("Failed to check existing animations for %s: %s", character_id, e)
             return set()
 
+    async def has_pending_jobs(self, character_id: str) -> bool:
+        """Check if a PixelLab character has any pending animation jobs.
+
+        Uses get_character to check for pending jobs. This is the reliable
+        completion signal — ZIP 423 is unreliable.
+        """
+        try:
+            char_data = await self.get_character(character_id)
+            pending = char_data.get("pending_jobs", [])
+            return len(pending) > 0
+        except Exception as e:
+            logger.warning("Failed to check pending jobs for %s: %s", character_id, e)
+            return True  # Assume pending on error (keep polling)
+
     async def queue_template_animations(self, character_id: str) -> list[str]:
         """Queue all template animations for a character. Returns flat list of all job IDs.
 
         Checks PixelLab character for existing animations first to avoid
-        duplicate generation (survives backend restarts).
+        duplicate generation. Waits for each animation to finish before
+        queuing the next to avoid PixelLab's concurrent job limit.
         """
+        import asyncio
+
         existing = await self.get_existing_animation_names(character_id)
         all_job_ids: list[str] = []
         for name, config in TEMPLATE_ANIMATIONS.items():
@@ -265,6 +282,12 @@ class PixelLabService:
                     len(job_ids),
                 )
                 all_job_ids.extend(job_ids)
+                # Wait for this animation to finish before queuing the next
+                # to avoid PixelLab's concurrent job limit
+                for _ in range(30):
+                    await asyncio.sleep(10)
+                    if not await self.has_pending_jobs(character_id):
+                        break
             except Exception:
                 logger.exception(
                     "Failed to queue template animation %r for character %s — skipping",

@@ -477,30 +477,22 @@ async def register_agent(
                                 logger.warning("Character creation timed out for %s", char_id)
 
                         # ---- Queue all template animations ----
+                        # queue_template_animations waits for each animation to finish
+                        # before queuing the next (avoids PixelLab concurrent job limit)
                         _send_progress("Generating animations...")
                         await pxl.queue_template_animations(char_id)
-                        # Job IDs not tracked — ZIP 423/200 polling is the completion signal
 
-                        # ---- Poll ZIP download (423 while pending, bytes when done) ----
-                        # Max wait: 45 attempts x 15s = 11.25 minutes
+                        # ---- Download ZIP (all animations should be done) ----
                         zip_bytes = None
-                        for attempt in range(45):
-                            await asyncio.sleep(15)
-                            _send_progress(f"Generating animations... ({attempt + 1}/45)")
+                        for attempt in range(6):
+                            await asyncio.sleep(5)
                             try:
                                 zip_bytes = await pxl.download_character_zip(char_id)
                                 if zip_bytes is not None:
-                                    logger.info("All animations ready for %s (attempt %d)", char_id, attempt + 1)
+                                    logger.info("ZIP downloaded for %s (attempt %d)", char_id, attempt + 1)
                                     break
                             except Exception as e:
                                 logger.warning("ZIP download error for %s: %s", char_id, e)
-
-                        if zip_bytes is None:
-                            logger.warning("Animation generation timed out for %s", char_id)
-                            try:
-                                zip_bytes = await pxl.download_character_zip(char_id)
-                            except Exception:
-                                pass
 
                         if zip_bytes is None:
                             logger.error("No ZIP available for %s, sprite generation failed", char_id)
@@ -1571,12 +1563,21 @@ async def _generate_custom_animation(agent_id: str, character_id: str, animation
                 logger.warning("No job IDs returned for custom animation %s", animation_name)
                 return
 
-        logger.info("Custom animation %s queued for agent %s, polling ZIP...", animation_name, agent_id)
+        logger.info("Custom animation %s queued for agent %s, waiting for completion...", animation_name, agent_id)
 
-        # Poll ZIP download (includes all animations for the character)
-        zip_bytes = None
+        # Wait for animation jobs to complete using get_character pending check
         for attempt in range(60):
             await asyncio.sleep(15)
+            if not await pxl.has_pending_jobs(character_id):
+                logger.info("Custom animation %s complete for agent %s (attempt %d)", animation_name, agent_id, attempt + 1)
+                break
+        else:
+            logger.warning("Custom animation %s timed out for agent %s", animation_name, agent_id)
+
+        # Download ZIP with all animations
+        zip_bytes = None
+        for attempt in range(6):
+            await asyncio.sleep(5)
             try:
                 zip_bytes = await pxl.download_character_zip(character_id)
                 if zip_bytes is not None:
