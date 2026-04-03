@@ -82,6 +82,11 @@ func spawn_agent(peer_id: int, data: Dictionary) -> void:
 	_id_to_peer[agent_id] = peer_id
 	_arrived_at[peer_id] = location_id
 
+	# Store sprite animation metadata for world_state broadcast
+	var sprite_anims: Dictionary = data.get("sprite_animations", {})
+	if not sprite_anims.is_empty():
+		agent_node.sprite_animations = sprite_anims
+
 	add_child(agent_node)
 
 	send_to_peer.emit(peer_id, {
@@ -157,6 +162,7 @@ func get_world_state_for_viewer() -> Dictionary:
 			"is_moving": not agent_node.nav_agent.is_navigation_finished(),
 			"location": location_id,
 			"spriteUrl": agent_node.sprite_url,
+			"spriteAnimations": agent_node.sprite_animations,
 			"context": "town",
 			"userId": _peer_to_user.get(peer_id, ""),
 		})
@@ -172,6 +178,7 @@ func get_agent_data(peer_id: int) -> Dictionary:
 		"agent_id": _peer_to_id.get(peer_id, ""),
 		"name": agent_node.display_name,
 		"sprite_url": agent_node.sprite_url,
+		"sprite_animations": agent_node.sprite_animations,
 		"facing": agent_node.facing,
 	}
 
