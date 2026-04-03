@@ -30,6 +30,7 @@ async def test_connect_agent_sends_connect_message():
             "location": "plaza",
             "context": "town",
             "user_id": "",
+            "sprite_animations": {},
         }
 
         await client.disconnect_agent("agent-1")

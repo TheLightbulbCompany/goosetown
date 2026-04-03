@@ -47,6 +47,7 @@ class GameServerClient:
         location: str,
         context: str = "town",
         user_id: str = "",
+        sprite_animations: dict | None = None,
     ) -> None:
         """Open a WebSocket connection for an agent and start listening.
 
@@ -57,6 +58,7 @@ class GameServerClient:
             location: Starting location marker name.
             context: Location context the agent is joining ("town" or "apartment").
             user_id: Clerk user ID owning this agent.
+            sprite_animations: Animation metadata keyed by animation name.
         """
         existing_ws = self._agent_connections.get(agent_id)
         if existing_ws is not None:
@@ -86,6 +88,7 @@ class GameServerClient:
             "location": location,
             "context": context,
             "user_id": user_id,
+            "sprite_animations": sprite_animations or {},
         }
         await ws.send(json.dumps(connect_params))
 

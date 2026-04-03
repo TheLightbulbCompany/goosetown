@@ -520,6 +520,7 @@ async def register_agent(
                         if _conn:
                             try:
                                 agent_record = service.get_town_agent_by_id(str(_agent_id))
+                                _sprite_anims = sprite_animations if all_sheets else {}
                                 await gs_client.connect_agent(
                                     agent_id=str(_agent_id),
                                     display_name=_display_name,
@@ -527,6 +528,7 @@ async def register_agent(
                                     location=agent_record.get("currentLocation", "plaza") if agent_record else "plaza",
                                     context=_conn.location_context or "town",
                                     user_id=_conn.user_id,
+                                    sprite_animations=_sprite_anims,
                                 )
                                 gs_client.clear_event_handlers()
 
@@ -1311,6 +1313,7 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
                 location=current_location,
                 context=location_context,
                 user_id=user_id,
+                sprite_animations=agent.get("spriteAnimations", {}),
             )
             logger.info(
                 "Agent %s connected to game server (context=%s, location=%s, userId=%s)",
