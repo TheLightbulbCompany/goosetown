@@ -112,3 +112,25 @@ def test_translate_no_nearby_shows_nobody():
     state = _make_state(nearby_agents=[])
     result = translate_agent_state(state, _make_enrichment())
     assert "**Nearby:** nobody" in result
+
+
+def test_translate_shows_activities_for_plaza():
+    state = _make_state()
+    # Override location to plaza (has activities in the registry)
+    state["location"] = "plaza"
+    state["context"] = "town"
+    enrichment = _make_enrichment()
+    result = translate_agent_state(state, enrichment)
+
+    assert "Activities available here:" in result
+    assert "`town_act people_watch`" in result
+    assert "`town_act rest`" in result
+
+
+def test_translate_no_activities_for_unknown_location():
+    state = _make_state()
+    state["location"] = "middle_of_nowhere"
+    enrichment = _make_enrichment()
+    result = translate_agent_state(state, enrichment)
+
+    assert "Activities available here:" not in result

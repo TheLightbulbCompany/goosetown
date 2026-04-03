@@ -58,16 +58,27 @@ def translate_agent_state(agent_state: dict, enrichment: dict) -> str:
     else:
         lines.append("**Nearby:** nobody")
 
-    # Idle activities
-    idle_activities: list[str] = []
-    for action in actions:
-        if action.get("cmd") == "idle":
-            idle_activities = action.get("activities", [])
-            break
+    # Location-based activities from the registry
+    from core.services.activity_registry import get_activities_for_location
 
-    if idle_activities:
+    current_location = agent_state.get("location", "unknown")
+    location_context = agent_state.get("context", "town")
+    available_activities = get_activities_for_location(current_location)
+    available_activities = [
+        a for a in available_activities if a.location_context == location_context
+    ]
+
+    if available_activities:
         lines.append("")
-        lines.append(f"**Available here:** {', '.join(idle_activities)}")
+        lines.append("**Activities available here:**")
+        for act in available_activities:
+            mood_sign = "+" if act.mood_delta >= 0 else ""
+            energy_sign = "+" if act.energy_delta >= 0 else ""
+            lines.append(
+                f"- `town_act {act.name}` — {act.description} "
+                f"({act.duration_seconds}s, mood {mood_sign}{act.mood_delta}, "
+                f"energy {energy_sign}{act.energy_delta})"
+            )
 
     # Action menu
     lines.append("")
@@ -96,7 +107,10 @@ def translate_agent_state(agent_state: dict, enrichment: dict) -> str:
         name = agent.get("name", "unknown")
         lines.append(f"- `town_act chat {name.lower()} <message>` — Talk to {name}")
 
-    lines.append("- `town_act idle <activity>` — Do something here")
+    if available_activities:
+        lines.append("- See activities listed above")
+    else:
+        lines.append("- `town_act idle` — Rest here")
     lines.append("- `town_disconnect <HH:MM>` — Go to sleep")
 
     return "\n".join(lines) + "\n"
