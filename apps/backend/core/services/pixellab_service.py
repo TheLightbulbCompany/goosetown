@@ -284,76 +284,43 @@ class PixelLabService:
         action_description: str,
         directions: list[str] | None = None,
     ) -> list[str]:
-        """Queue a custom V3 animation for a character.
+        """Queue a custom animation for a character.
 
-        Makes two calls: first to get a cost estimate, then to confirm and queue.
-        Returns list of job IDs, or empty list on failure.
+        Uses the animate-with-text endpoint. Sends with confirm_cost=true
+        to auto-approve. Returns list of job IDs, or empty list on failure.
         """
         if directions is None:
             directions = ["south", "west", "east", "north"]
 
-        body = {
+        body: dict = {
             "character_id": character_id,
-            "animation_name": animation_name,
             "action_description": action_description,
+            "animation_name": animation_name,
             "directions": directions,
+            "confirm_cost": True,
         }
 
         async with httpx.AsyncClient() as client:
-            # First call: get cost estimate (no confirm_cost)
             try:
-                estimate_resp = await client.post(
+                resp = await client.post(
                     f"{PIXELLAB_API_URL}/characters/animations",
                     headers={"Authorization": f"Bearer {self.api_key}"},
                     json=body,
                     timeout=30.0,
                 )
-                if estimate_resp.status_code != 200:
+                if resp.status_code != 200:
                     logger.error(
-                        "PixelLab custom animation estimate %r %s: %s",
+                        "PixelLab custom animation %r %s: %s",
                         animation_name,
-                        estimate_resp.status_code,
-                        estimate_resp.text[:500],
+                        resp.status_code,
+                        resp.text[:500],
                     )
-                    estimate_resp.raise_for_status()
-                logger.info(
-                    "Cost estimate for custom animation %r on character %s: %s",
-                    animation_name,
-                    character_id,
-                    estimate_resp.json(),
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to get cost estimate for custom animation %r on character %s",
-                    animation_name,
-                    character_id,
-                )
-                return []
-
-            # Second call: confirm cost and queue
-            try:
-                confirmed_body = {**body, "confirm_cost": True}
-                queue_resp = await client.post(
-                    f"{PIXELLAB_API_URL}/characters/animations",
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                    json=confirmed_body,
-                    timeout=30.0,
-                )
-                if queue_resp.status_code != 200:
-                    logger.error(
-                        "PixelLab custom animation queue %r %s: %s",
-                        animation_name,
-                        queue_resp.status_code,
-                        queue_resp.text[:500],
-                    )
-                    queue_resp.raise_for_status()
-                data = queue_resp.json()
+                    return []
+                data = resp.json()
                 job_ids = data.get("background_job_ids", [])
                 logger.info(
-                    "Queued custom animation %r for character %s: %d job(s)",
-                    animation_name,
-                    character_id,
-                    len(job_ids),
+                    "Custom animation %r queued for %s: %d jobs, response: %s",
+                    animation_name, character_id, len(job_ids), data,
                 )
                 return job_ids
             except Exception:

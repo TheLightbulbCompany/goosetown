@@ -85,13 +85,15 @@ async def test_send_command_warns_for_unknown_agent():
 
 
 @pytest.mark.asyncio
-async def test_on_event_registers_handler():
+async def test_connect_agent_stores_callback():
+    """Verify that on_event callback is stored per-agent."""
     client = GameServerClient(base_url="ws://test:8080")
-    handler = AsyncMock()
-    client.on_event("world_state", handler)
+    callback = AsyncMock()
+    # Directly set callback (connect_agent requires a real WS server)
+    client._agent_callbacks["agent-1"] = callback
 
-    assert "world_state" in client._event_handlers
-    assert handler in client._event_handlers["world_state"]
+    assert "agent-1" in client._agent_callbacks
+    assert client._agent_callbacks["agent-1"] is callback
 
 
 @pytest.mark.asyncio

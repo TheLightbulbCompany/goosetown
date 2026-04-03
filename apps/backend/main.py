@@ -28,6 +28,9 @@ async def lifespan(app: FastAPI):
     relay = get_viewer_relay()
     await relay.start()
 
+    # Reconnect active agents to game server on startup
+    await _reconnect_active_agents()
+
     yield
 
     # Cleanup
@@ -36,6 +39,70 @@ async def lifespan(app: FastAPI):
     for agent_id in list(gs_client._agent_connections.keys()):
         await gs_client.disconnect_agent(agent_id)
     logger.info("GooseTown backend stopping")
+
+
+async def _reconnect_active_agents() -> None:
+    """Reconnect all active agents to the game server on backend startup.
+
+    Queries DynamoDB for agents with spriteReady=true and connects them
+    to the game server so the forwarding chain is ready before any daemon
+    reconnects.
+    """
+    from core.services.town_service import TownService
+    from routers.town import _make_agent_event_callback
+
+    gs_client = get_game_server_client()
+    service = TownService()
+
+    try:
+        agents = service.get_all_active_agents()
+    except Exception:
+        logger.warning("Failed to query active agents on startup", exc_info=True)
+        return
+
+    connected = 0
+    for agent in agents:
+        if not agent.get("spriteReady"):
+            continue
+        # Skip sleeping agents (have a future wakeAt)
+        wake_at = agent.get("wakeAt")
+        if wake_at:
+            import time
+            try:
+                if float(wake_at) > time.time():
+                    logger.info("Agent %s is sleeping, skipping startup reconnect", agent.get("displayName", agent["id"]))
+                    continue
+            except (ValueError, TypeError):
+                pass
+
+        agent_id = agent["id"]
+        location_context = agent.get("locationContext", "town")
+        current_location = agent.get("currentLocation", "plaza")
+
+        # Recover stuck transitioning state
+        if location_context == "transitioning":
+            if current_location in ("exit", "desk", "bed", "couch", "kitchen"):
+                location_context = "apartment"
+            else:
+                location_context = "town"
+            service.update_agent_context(agent_id, location_context, current_location)
+
+        try:
+            await gs_client.connect_agent(
+                agent_id=agent_id,
+                display_name=agent.get("displayName", ""),
+                sprite_url=agent.get("spriteUrl", ""),
+                location=current_location,
+                context=location_context,
+                user_id=agent.get("userId", ""),
+                sprite_animations=agent.get("spriteAnimations", {}),
+                on_event=_make_agent_event_callback(),
+            )
+            connected += 1
+        except Exception:
+            logger.warning("Failed to reconnect agent %s on startup", agent_id, exc_info=True)
+
+    logger.info("Startup: reconnected %d/%d active agents to game server", connected, len(agents))
 
 
 app = FastAPI(title="GooseTown API", lifespan=lifespan)

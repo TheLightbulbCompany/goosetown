@@ -42,6 +42,45 @@ _sprite_jobs_in_progress: set = set()
 
 
 # ---------------------------------------------------------------------------
+# Shared per-agent event callback for game server → daemon forwarding
+# ---------------------------------------------------------------------------
+
+
+def _make_agent_event_callback():
+    """Create a per-agent callback that forwards game server events to the daemon.
+
+    Also updates DynamoDB currentLocation on 'arrived' events.
+    This replaces the old global handler registration system.
+    """
+
+    async def _on_game_server_event(agent_id: str, event_data: dict) -> None:
+        from core.services.management_api_client import ManagementApiClient
+
+        evt_type = event_data.get("event", "")
+
+        # Update DynamoDB location on arrival
+        if evt_type == "arrived":
+            location = event_data.get("location", "")
+            if location:
+                try:
+                    TownService().update_agent_state(agent_id, current_location=location)
+                except Exception:
+                    logger.warning("Failed to update location for %s", agent_id)
+
+        # Forward event to daemon via API Gateway Management API
+        try:
+            ws_mgr = get_town_agent_ws_manager()
+            conn = ws_mgr.get_by_agent_id(agent_id)
+            if conn:
+                mgmt = ManagementApiClient()
+                mgmt.send_message(conn.connection_id, event_data)
+        except Exception:
+            pass  # Daemon may have disconnected
+
+    return _on_game_server_event
+
+
+# ---------------------------------------------------------------------------
 # Token auth dependency for external OpenClaw agents
 # ---------------------------------------------------------------------------
 
@@ -529,30 +568,8 @@ async def register_agent(
                                     context=_conn.location_context or "town",
                                     user_id=_conn.user_id,
                                     sprite_animations=_sprite_anims,
+                                    on_event=_make_agent_event_callback(),
                                 )
-                                gs_client.clear_event_handlers()
-
-                                async def _forward_event(fwd_agent_id: str, event_data: dict) -> None:
-                                    try:
-                                        ws_mgr = get_town_agent_ws_manager()
-                                        conn = ws_mgr.get_by_agent_id(fwd_agent_id)
-                                        if conn:
-                                            fwd_mgmt = ManagementApiClient()
-                                            fwd_mgmt.send_message(conn.connection_id, event_data)
-                                    except Exception:
-                                        pass
-
-                                for evt in ("arrived", "move_started", "spawned", "nearby",
-                                            "nearby_left", "command_error", "agent_state",
-                                            "locations", "transitioned"):
-                                    gs_client.on_event(evt, _forward_event)
-
-                                async def _on_arrived(fwd_agent_id: str, event_data: dict) -> None:
-                                    loc = event_data.get("location", "")
-                                    if loc:
-                                        TownService().update_agent_state(fwd_agent_id, current_location=loc)
-
-                                gs_client.on_event("arrived", _on_arrived)
                                 logger.info("Agent %s connected to game server", _agent_id)
                             except Exception as e:
                                 logger.warning("Failed to connect agent %s to game server: %s", _agent_id, e)
@@ -1326,46 +1343,12 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
                 context=location_context,
                 user_id=user_id,
                 sprite_animations=agent.get("spriteAnimations", {}),
+                on_event=_make_agent_event_callback(),
             )
             logger.info(
                 "Agent %s connected to game server (context=%s, location=%s, userId=%s)",
                 agent_name, location_context, current_location, user_id[:12],
             )
-
-            # Clear any stale handlers from previous registrations (idempotent reconnect)
-            gs_client.clear_event_handlers()
-
-            # Register handler to forward game server events to the daemon
-            async def _forward_event(fwd_agent_id: str, event_data: dict) -> None:
-                evt_type = event_data.get("event", "?")
-                try:
-                    ws_mgr = get_town_agent_ws_manager()
-                    conn = ws_mgr.get_by_agent_id(fwd_agent_id)
-                    if conn:
-                        fwd_mgmt = ManagementApiClient()
-                        success = fwd_mgmt.send_message(conn.connection_id, event_data)
-                        if evt_type == "agent_state":
-                            print(f"[FWD] {evt_type} → {fwd_agent_id[:8]} conn={conn.connection_id[:12]} ok={success}", flush=True)
-                    else:
-                        if evt_type == "agent_state":
-                            print(f"[FWD] {evt_type} → {fwd_agent_id[:8]} NO CONN in ws_manager", flush=True)
-                except Exception as fwd_err:
-                    print(f"[FWD] {evt_type} → {fwd_agent_id[:8]} ERROR: {fwd_err}", flush=True)
-
-            for evt in ("arrived", "move_started", "spawned", "nearby", "command_error", "agent_state"):
-                gs_client.on_event(evt, _forward_event)
-
-            # Update DynamoDB location when agent arrives somewhere
-            async def _on_arrived(arrived_agent_id: str, event_data: dict) -> None:
-                location = event_data.get("location", "")
-                if location:
-                    try:
-                        service.update_agent_state(arrived_agent_id, current_location=location)
-                        logger.debug("Updated currentLocation for %s to %s", arrived_agent_id, location)
-                    except Exception as loc_err:
-                        logger.warning("Failed to update location for %s: %s", arrived_agent_id, loc_err)
-
-            gs_client.on_event("arrived", _on_arrived)
 
         except Exception as e:
             logger.warning("Failed to connect agent %s to game server: %s", agent_name, e)

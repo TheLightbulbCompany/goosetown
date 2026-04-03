@@ -114,6 +114,15 @@ class TownService:
             )
         return result
 
+    def get_all_active_agents(self) -> list[dict]:
+        """Get all active agents (raw DynamoDB records). Used for startup reconnect."""
+        table = dynamo.agents_table()
+        resp = table.query(
+            IndexName="isActive-joinedAt-index",
+            KeyConditionExpression=Key("isActive").eq("true"),
+        )
+        return [_decimal_to_native(item) for item in resp.get("Items", [])]
+
     def opt_in(
         self,
         user_id: str,
