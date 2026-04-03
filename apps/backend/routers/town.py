@@ -552,7 +552,7 @@ async def register_agent(
                                 sprite_animations[anim_name] = {
                                     "url": f"{settings.SPRITE_CDN_URL}/{info['key']}",
                                     "frameCount": info["frame_count"],
-                                    "fps": registry_entry.get("fps", 8.0),
+                                    "fps": int(registry_entry.get("fps", 8)),
                                 }
 
                             cdn_url = sprite_animations.get("walk", {}).get("url", "")
@@ -700,7 +700,7 @@ async def resume_sprite_generation(
                         sprite_animations[anim_name] = {
                             "url": f"{settings.SPRITE_CDN_URL}/{info['key']}",
                             "frameCount": info["frame_count"],
-                            "fps": registry_entry.get("fps", 8.0),
+                            "fps": int(registry_entry.get("fps", 8)),
                         }
                     walk_url = sprite_animations.get("walk", {}).get("url", "")
                     service.update_agent_state(
@@ -1752,7 +1752,7 @@ async def _generate_custom_animation(agent_id: str, character_id: str, animation
             existing[anim_name] = {
                 "url": f"{settings.SPRITE_CDN_URL}/{info['key']}",
                 "frameCount": info["frame_count"],
-                "fps": registry_entry.get("fps", 8.0),
+                "fps": int(registry_entry.get("fps", 8)),
             }
 
         service.update_agent_state(agent_id, sprite_animations=existing)
