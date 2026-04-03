@@ -230,10 +230,32 @@ class PixelLabService:
             resp.raise_for_status()
             return resp.content
 
+    async def get_existing_animation_names(self, character_id: str) -> set[str]:
+        """Check which animations already exist on a PixelLab character.
+
+        Returns set of animation names (e.g. {"walk", "breathing-idle"}).
+        Falls back to empty set on API error.
+        """
+        try:
+            char_data = await self.get_character(character_id)
+            animations = char_data.get("animations", [])
+            return {a.get("name", "") for a in animations if a.get("name")}
+        except Exception as e:
+            logger.warning("Failed to check existing animations for %s: %s", character_id, e)
+            return set()
+
     async def queue_template_animations(self, character_id: str) -> list[str]:
-        """Queue all template animations for a character. Returns flat list of all job IDs."""
+        """Queue all template animations for a character. Returns flat list of all job IDs.
+
+        Checks PixelLab character for existing animations first to avoid
+        duplicate generation (survives backend restarts).
+        """
+        existing = await self.get_existing_animation_names(character_id)
         all_job_ids: list[str] = []
         for name, config in TEMPLATE_ANIMATIONS.items():
+            if config["template_id"] in existing:
+                logger.info("Template %s already exists on character %s, skipping", name, character_id)
+                continue
             try:
                 job_ids = await self.animate_character(character_id, animation=config["template_id"])
                 logger.info(

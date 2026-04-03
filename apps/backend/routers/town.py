@@ -1302,6 +1302,18 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
     # Set in-memory context on the connection record
     ws_manager.update_context(agent_id, location_context)
 
+    # Clear stale activity (container may have restarted mid-activity)
+    current_activity = agent.get("currentActivity")
+    if current_activity:
+        import time as _time
+
+        activity_started = agent.get("activityStartedAt", 0)
+        elapsed = _time.time() - float(activity_started) if activity_started else 999
+        # If activity has been running longer than 5 minutes, it's stale
+        if elapsed > 300:
+            logger.warning("Clearing stale activity %s for agent %s (%.0fs old)", current_activity, agent_id, elapsed)
+            service.update_agent_activity(agent_id, None, None)
+
     # Connect agent to game server if sprite is ready
     if agent.get("spriteReady"):
         gs_client = get_game_server_client()
@@ -1552,15 +1564,23 @@ async def _generate_custom_animation(agent_id: str, character_id: str, animation
     service = TownService()
 
     try:
-        # Queue the custom animation
-        job_ids = await pxl.queue_custom_animation(
-            character_id=character_id,
-            animation_name=animation_name,
-            action_description=config["prompt"],
-        )
-        if not job_ids:
-            logger.warning("No job IDs returned for custom animation %s", animation_name)
-            return
+        # Check if PixelLab character already has this animation (survives backend restarts)
+        existing_anims = await pxl.get_existing_animation_names(character_id)
+        if animation_name in existing_anims:
+            logger.info(
+                "Custom animation %s already exists on PixelLab character %s, downloading",
+                animation_name, character_id,
+            )
+        else:
+            # Queue the custom animation
+            job_ids = await pxl.queue_custom_animation(
+                character_id=character_id,
+                animation_name=animation_name,
+                action_description=config["prompt"],
+            )
+            if not job_ids:
+                logger.warning("No job IDs returned for custom animation %s", animation_name)
+                return
 
         logger.info("Custom animation %s queued for agent %s, polling ZIP...", animation_name, agent_id)
 
