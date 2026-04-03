@@ -258,18 +258,28 @@ class PixelLabService:
             logger.warning("Failed to check pending jobs for %s: %s", character_id, e)
             return True  # Assume pending on error (keep polling)
 
-    async def queue_template_animations(self, character_id: str) -> list[str]:
+    async def queue_template_animations(
+        self,
+        character_id: str,
+        on_progress: Callable[[str], Coroutine[Any, Any, None]] | None = None,
+    ) -> list[str]:
         """Queue all template animations for a character. Returns flat list of all job IDs.
 
         Checks PixelLab character for existing animations first to avoid
         duplicate generation. Waits for each animation to finish before
         queuing the next to avoid PixelLab's concurrent job limit.
+
+        Args:
+            character_id: PixelLab character UUID.
+            on_progress: Optional async callback called every ~10s during waits.
+                         Use to send keepalive messages to the daemon.
         """
         import asyncio
 
         existing = await self.get_existing_animation_names(character_id)
         all_job_ids: list[str] = []
-        for name, config in TEMPLATE_ANIMATIONS.items():
+        template_items = list(TEMPLATE_ANIMATIONS.items())
+        for idx, (name, config) in enumerate(template_items):
             if config["template_id"] in existing:
                 logger.info("Template %s already exists on character %s, skipping", name, character_id)
                 continue
@@ -283,9 +293,12 @@ class PixelLabService:
                 )
                 all_job_ids.extend(job_ids)
                 # Wait for this animation to finish before queuing the next
-                # to avoid PixelLab's concurrent job limit
-                for _ in range(30):
+                for attempt in range(30):
                     await asyncio.sleep(10)
+                    if on_progress:
+                        await on_progress(
+                            f"Generating {name} animation ({idx + 1}/{len(template_items)})..."
+                        )
                     if not await self.has_pending_jobs(character_id):
                         break
             except Exception:

@@ -477,10 +477,12 @@ async def register_agent(
                                 logger.warning("Character creation timed out for %s", char_id)
 
                         # ---- Queue all template animations ----
-                        # queue_template_animations waits for each animation to finish
-                        # before queuing the next (avoids PixelLab concurrent job limit)
+                        # on_progress sends keepalive messages so the daemon stays alive
+                        async def _anim_progress(status: str) -> None:
+                            _send_progress(status)
+
                         _send_progress("Generating animations...")
-                        await pxl.queue_template_animations(char_id)
+                        await pxl.queue_template_animations(char_id, on_progress=_anim_progress)
 
                         # ---- Download ZIP (all animations should be done) ----
                         zip_bytes = None
