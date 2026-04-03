@@ -215,6 +215,7 @@ class TownService:
             "wake_timezone": "wakeTimezone",
             "sprite_ready": "spriteReady",
             "sprite_url": "spriteUrl",
+            "sprite_animations": "spriteAnimations",
             "location_context": "locationContext",
             "current_location": "currentLocation",
         }
