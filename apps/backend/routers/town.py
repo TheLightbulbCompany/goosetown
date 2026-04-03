@@ -1510,10 +1510,116 @@ async def _handle_agent_activity(connection_id: str, activity_name: str, agent_c
     except Exception as exc:
         logger.warning("Failed to send act_ok to %s: %s", agent_id, exc)
 
+    # --- Trigger lazy custom animation generation if needed ---
+    from core.services.pixellab_service import CUSTOM_ANIMATIONS
+
+    activity_anim = activity.animation
+    if activity_anim in CUSTOM_ANIMATIONS:
+        agent_animations = agent.get("spriteAnimations") or {}
+        if activity_anim not in agent_animations:
+            char_id = agent.get("pixellabCharacterId") or agent.get("pixellab_character_id")
+            if char_id:
+                logger.info(
+                    "Triggering lazy animation generation: %s for agent %s (char %s)",
+                    activity_anim, agent_id, char_id,
+                )
+                gen_task = asyncio.create_task(
+                    _generate_custom_animation(agent_id, char_id, activity_anim)
+                )
+                _activity_tasks.add(gen_task)
+                gen_task.add_done_callback(_activity_tasks.discard)
+
     # --- Schedule the activity timer ---
     task = asyncio.create_task(_activity_timer(connection_id, agent_id, activity, agent))
     _activity_tasks.add(task)
     task.add_done_callback(_activity_tasks.discard)
+
+
+async def _generate_custom_animation(agent_id: str, character_id: str, animation_name: str) -> None:
+    """Background task: generate a custom animation and update the agent's spriteAnimations."""
+    from core.config import settings
+    from core.services.pixellab_service import ANIMATION_REGISTRY, CUSTOM_ANIMATIONS, PixelLabService
+    from core.services.sprite_storage import extract_all_spritesheets, upload_sprites_to_s3
+
+    config = CUSTOM_ANIMATIONS.get(animation_name)
+    if not config:
+        return
+
+    pxl = PixelLabService()
+    service = TownService()
+
+    try:
+        # Queue the custom animation
+        job_ids = await pxl.queue_custom_animation(
+            character_id=character_id,
+            animation_name=animation_name,
+            action_description=config["prompt"],
+        )
+        if not job_ids:
+            logger.warning("No job IDs returned for custom animation %s", animation_name)
+            return
+
+        logger.info("Custom animation %s queued for agent %s, polling ZIP...", animation_name, agent_id)
+
+        # Poll ZIP download (includes all animations for the character)
+        zip_bytes = None
+        for attempt in range(60):
+            await asyncio.sleep(15)
+            try:
+                zip_bytes = await pxl.download_character_zip(character_id)
+                if zip_bytes is not None:
+                    break
+            except Exception:
+                pass
+
+        if zip_bytes is None:
+            logger.warning("Custom animation %s timed out for agent %s", animation_name, agent_id)
+            return
+
+        # Extract all spritesheets (the new animation + existing ones)
+        all_sheets = extract_all_spritesheets(zip_bytes)
+        if animation_name not in all_sheets:
+            logger.warning("Animation %s not found in ZIP for agent %s", animation_name, agent_id)
+            return
+
+        # Upload all (idempotent — re-uploads existing ones too, cached on CDN)
+        uploaded = await asyncio.to_thread(
+            upload_sprites_to_s3, all_sheets, agent_id, settings.SPRITE_S3_BUCKET
+        )
+
+        # Merge into existing spriteAnimations
+        agent = service.get_town_agent_by_id(agent_id)
+        existing = (agent.get("spriteAnimations") or {}) if agent else {}
+
+        for anim_name, info in uploaded.items():
+            registry_entry = ANIMATION_REGISTRY.get(anim_name, {})
+            existing[anim_name] = {
+                "url": f"{settings.SPRITE_CDN_URL}/{info['key']}",
+                "frameCount": info["frame_count"],
+                "fps": registry_entry.get("fps", 8.0),
+            }
+
+        service.update_agent_state(agent_id, sprite_animations=existing)
+        logger.info("Custom animation %s ready for agent %s", animation_name, agent_id)
+
+        # Push sprites_updated to daemon and viewers
+        try:
+            from core.services.management_api_client import ManagementApiClient
+
+            ws_mgr = get_town_agent_ws_manager()
+            conn = ws_mgr.get_by_agent_id(agent_id)
+            if conn:
+                mgmt = ManagementApiClient()
+                mgmt.send_message(conn.connection_id, {
+                    "event": "sprites_updated",
+                    "agent_id": agent_id,
+                    "animations": existing,
+                })
+        except Exception:
+            pass
+
+    except Exception:
+        logger.exception("Custom animation generation failed: %s for agent %s", animation_name, agent_id)
 
 
 async def _activity_timer(
