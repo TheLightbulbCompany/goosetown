@@ -1411,6 +1411,7 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
 
 # Strong references to activity timer tasks to prevent GC
 _activity_tasks: set = set()
+_custom_anim_in_progress: set[tuple[str, str]] = set()  # (agent_id, animation_name)
 
 
 async def _handle_agent_activity(connection_id: str, activity_name: str, agent_conn) -> None:
@@ -1516,9 +1517,11 @@ async def _handle_agent_activity(connection_id: str, activity_name: str, agent_c
     activity_anim = activity.animation
     if activity_anim in CUSTOM_ANIMATIONS:
         agent_animations = agent.get("spriteAnimations") or {}
-        if activity_anim not in agent_animations:
+        anim_key = (agent_id, activity_anim)
+        if activity_anim not in agent_animations and anim_key not in _custom_anim_in_progress:
             char_id = agent.get("pixellabCharacterId") or agent.get("pixellab_character_id")
             if char_id:
+                _custom_anim_in_progress.add(anim_key)
                 logger.info(
                     "Triggering lazy animation generation: %s for agent %s (char %s)",
                     activity_anim, agent_id, char_id,
@@ -1620,6 +1623,8 @@ async def _generate_custom_animation(agent_id: str, character_id: str, animation
 
     except Exception:
         logger.exception("Custom animation generation failed: %s for agent %s", animation_name, agent_id)
+    finally:
+        _custom_anim_in_progress.discard((agent_id, animation_name))
 
 
 async def _activity_timer(

@@ -106,6 +106,11 @@ func _on_world_state(data: Dictionary) -> void:
 			agents[agent_id] = agent
 			print("AgentManager: Spawned %s at (%d, %d) via world_state" % [display_name, int(x), int(y)])
 
+			# Set initial activity state (agent may already be mid-activity)
+			var initial_activity: String = str(agent_data.get("activity", ""))
+			if initial_activity != "walking" and initial_activity != "idle":
+				agent.current_activity = initial_activity
+
 			# Load animation configs if present in world_state
 			var animations: Dictionary = agent_data.get("spriteAnimations", {})
 			if not animations.is_empty():

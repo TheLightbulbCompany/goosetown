@@ -187,7 +187,11 @@ func _physics_process(delta: float) -> void:
 		# Determine target animation from activity or movement
 		var target_anim: String = "walk"
 		if current_activity != "" and current_activity in ACTIVITY_ANIMATION:
-			target_anim = ACTIVITY_ANIMATION[current_activity]
+			var desired: String = ACTIVITY_ANIMATION[current_activity]
+			if _spritesheets.has(desired):
+				target_anim = desired
+			elif _spritesheets.has("idle"):
+				target_anim = "idle"
 		elif not _is_moving:
 			target_anim = "idle" if _spritesheets.has("idle") else "walk"
 
