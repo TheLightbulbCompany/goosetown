@@ -225,6 +225,9 @@ class TownService:
             "sprite_ready": "spriteReady",
             "sprite_url": "spriteUrl",
             "sprite_animations": "spriteAnimations",
+            "daemon_connection_id": "daemonConnectionId",
+            "sprite_status": "spriteStatus",
+            "sprite_current_template": "spriteCurrentTemplate",
             "location_context": "locationContext",
             "current_location": "currentLocation",
         }
