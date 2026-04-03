@@ -150,6 +150,8 @@ class GameServerClient:
         params = self._agent_connect_params.get(agent_id)
         if params:
             params["context"] = to_context
+            if agent_data.get("location"):
+                params["location"] = agent_data["location"]
         logger.info("Sent transition command for agent %s to %s", agent_id, to_context)
 
     def expect_arrival(self, agent_id: str) -> asyncio.Event:

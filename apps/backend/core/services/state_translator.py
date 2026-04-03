@@ -94,9 +94,7 @@ def translate_agent_state(agent_state: dict, enrichment: dict) -> str:
 
     for agent in nearby:
         name = agent.get("name", "unknown")
-        lines.append(
-            f"- `town_act chat {name.lower()} <message>` — Talk to {name}"
-        )
+        lines.append(f"- `town_act chat {name.lower()} <message>` — Talk to {name}")
 
     lines.append("- `town_act idle <activity>` — Do something here")
     lines.append("- `town_disconnect <HH:MM>` — Go to sleep")

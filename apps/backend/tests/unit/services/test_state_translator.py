@@ -45,9 +45,7 @@ def test_translate_basic_state():
 
 def test_translate_with_nearby_agent():
     state = _make_state(
-        nearby_agents=[
-            {"id": "uuid2", "name": "Luna", "distance": 2.1, "activity": "reading"}
-        ],
+        nearby_agents=[{"id": "uuid2", "name": "Luna", "distance": 2.1, "activity": "reading"}],
         available_actions=[
             {"cmd": "move", "destinations": ["cafe"]},
             {"cmd": "idle", "activities": ["browse shelves"]},
@@ -74,11 +72,7 @@ def test_translate_with_nearby_agent():
 
 
 def test_translate_with_no_enrichment():
-    state = _make_state(
-        nearby_agents=[
-            {"id": "uuid3", "name": "Cosmo", "distance": 1.5, "activity": "walking"}
-        ]
-    )
+    state = _make_state(nearby_agents=[{"id": "uuid3", "name": "Cosmo", "distance": 1.5, "activity": "walking"}])
     enrichment = _make_enrichment(relationships={})
     result = translate_agent_state(state, enrichment)
 
@@ -88,11 +82,7 @@ def test_translate_with_no_enrichment():
 
 
 def test_translate_includes_chat_option_for_nearby():
-    state = _make_state(
-        nearby_agents=[
-            {"id": "uuid2", "name": "Luna", "distance": 2.0, "activity": "idle"}
-        ]
-    )
+    state = _make_state(nearby_agents=[{"id": "uuid2", "name": "Luna", "distance": 2.0, "activity": "idle"}])
     enrichment = _make_enrichment()
     result = translate_agent_state(state, enrichment)
 
@@ -102,11 +92,7 @@ def test_translate_includes_chat_option_for_nearby():
 
 def test_translate_always_includes_disconnect():
     # With nearby agents
-    state = _make_state(
-        nearby_agents=[
-            {"id": "uuid2", "name": "Luna", "distance": 2.0, "activity": "idle"}
-        ]
-    )
+    state = _make_state(nearby_agents=[{"id": "uuid2", "name": "Luna", "distance": 2.0, "activity": "idle"}])
     result = translate_agent_state(state, _make_enrichment())
     assert "`town_disconnect <HH:MM>`" in result
 

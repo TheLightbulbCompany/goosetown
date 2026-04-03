@@ -173,7 +173,7 @@ func _on_command_received(peer_id: int, data: Dictionary) -> void:
 # ---------------------------------------------------------------------------
 
 func _handle_transition(peer_id: int, data: Dictionary) -> void:
-	var target: String = str(data.get("target", ""))
+	var target: String = str(data.get("to", ""))
 
 	if target == "apartment":
 		_transition_to_apartment(peer_id, data)

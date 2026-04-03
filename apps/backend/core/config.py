@@ -34,9 +34,7 @@ class Settings:
             missing.append("CLERK_ISSUER")
 
         if missing:
-            raise RuntimeError(
-                f"Missing required environment variables for {self.ENVIRONMENT}: {', '.join(missing)}"
-            )
+            raise RuntimeError(f"Missing required environment variables for {self.ENVIRONMENT}: {', '.join(missing)}")
         logger.info("Configuration validated for environment: %s", self.ENVIRONMENT)
 
 
