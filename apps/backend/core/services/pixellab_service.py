@@ -246,38 +246,76 @@ class PixelLabService:
             logger.warning("Failed to check existing animations for %s: %s", character_id, e)
             return set()
 
-    async def has_pending_jobs(self, character_id: str) -> bool:
-        """Check if a PixelLab character has any pending animation jobs.
+    async def wait_for_jobs(
+        self,
+        job_ids: list[str],
+        on_progress: Callable[[str], Coroutine[Any, Any, None]] | None = None,
+        progress_label: str = "",
+        max_attempts: int = 60,
+        poll_interval: float = 10.0,
+    ) -> bool:
+        """Poll job IDs until all are completed or failed.
 
-        Uses get_character to check for pending jobs. This is the reliable
-        completion signal — ZIP 423 is unreliable.
+        Args:
+            job_ids: List of background job IDs to poll.
+            on_progress: Optional async callback for keepalive messages.
+            progress_label: Label for progress messages.
+            max_attempts: Max polling attempts before giving up.
+            poll_interval: Seconds between polls.
+
+        Returns:
+            True if all jobs completed, False if timed out or all failed.
         """
-        try:
-            char_data = await self.get_character(character_id)
-            pending = char_data.get("pending_jobs", [])
-            return len(pending) > 0
-        except Exception as e:
-            logger.warning("Failed to check pending jobs for %s: %s", character_id, e)
-            return True  # Assume pending on error (keep polling)
+        import asyncio
+
+        if not job_ids:
+            return True
+
+        for attempt in range(max_attempts):
+            await asyncio.sleep(poll_interval)
+
+            completed = 0
+            failed = 0
+            for jid in job_ids:
+                try:
+                    job = await self.get_job_status(jid)
+                    status = job.get("status", "unknown")
+                    if status == "completed":
+                        completed += 1
+                    elif status == "failed":
+                        failed += 1
+                except Exception:
+                    pass
+
+            if on_progress:
+                await on_progress(
+                    f"{progress_label} {completed}/{len(job_ids)} done"
+                )
+
+            if completed + failed == len(job_ids):
+                logger.info(
+                    "All jobs done for %s: %d completed, %d failed",
+                    progress_label, completed, failed,
+                )
+                return completed > 0
+
+        logger.warning("Jobs timed out for %s: %d/%d completed", progress_label, completed, len(job_ids))
+        return completed > 0
 
     async def queue_template_animations(
         self,
         character_id: str,
         on_progress: Callable[[str], Coroutine[Any, Any, None]] | None = None,
     ) -> list[str]:
-        """Queue all template animations for a character. Returns flat list of all job IDs.
+        """Queue all template animations sequentially, waiting for each to complete.
 
-        Checks PixelLab character for existing animations first to avoid
-        duplicate generation. Waits for each animation to finish before
-        queuing the next to avoid PixelLab's concurrent job limit.
+        Queues one template at a time, polls its job IDs until complete,
+        then queues the next. This avoids PixelLab's concurrent job limit.
 
         Args:
             character_id: PixelLab character UUID.
             on_progress: Optional async callback called every ~10s during waits.
-                         Use to send keepalive messages to the daemon.
         """
-        import asyncio
-
         existing = await self.get_existing_animation_names(character_id)
         all_job_ids: list[str] = []
         template_items = list(TEMPLATE_ANIMATIONS.items())
@@ -288,30 +326,25 @@ class PixelLabService:
             try:
                 job_ids = await self.animate_character(character_id, animation=config["template_id"])
                 logger.info(
-                    "Queued template animation %r for character %s: %d job(s)",
-                    name,
-                    character_id,
-                    len(job_ids),
+                    "Queued template %r for %s: %d jobs",
+                    name, character_id, len(job_ids),
                 )
                 all_job_ids.extend(job_ids)
-                # Wait for this animation to finish before queuing the next
-                for attempt in range(30):
-                    await asyncio.sleep(10)
-                    if on_progress:
-                        await on_progress(
-                            f"Generating {name} animation ({idx + 1}/{len(template_items)})..."
-                        )
-                    if not await self.has_pending_jobs(character_id):
-                        break
+
+                # Wait for THIS template's jobs to complete before queuing next
+                await self.wait_for_jobs(
+                    job_ids,
+                    on_progress=on_progress,
+                    progress_label=f"{name} ({idx + 1}/{len(template_items)})",
+                )
             except Exception:
                 logger.exception(
-                    "Failed to queue template animation %r for character %s — skipping",
-                    name,
-                    character_id,
+                    "Failed to queue template %r for %s — skipping",
+                    name, character_id,
                 )
         logger.info(
-            "Queued %d template animation jobs for character %s (%d animations)",
-            len(all_job_ids), character_id, len(TEMPLATE_ANIMATIONS),
+            "Template animations done for %s: %d total jobs",
+            character_id, len(all_job_ids),
         )
         return all_job_ids
 

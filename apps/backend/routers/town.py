@@ -1567,14 +1567,11 @@ async def _generate_custom_animation(agent_id: str, character_id: str, animation
 
         logger.info("Custom animation %s queued for agent %s, waiting for completion...", animation_name, agent_id)
 
-        # Wait for animation jobs to complete using get_character pending check
-        for attempt in range(60):
-            await asyncio.sleep(15)
-            if not await pxl.has_pending_jobs(character_id):
-                logger.info("Custom animation %s complete for agent %s (attempt %d)", animation_name, agent_id, attempt + 1)
-                break
-        else:
-            logger.warning("Custom animation %s timed out for agent %s", animation_name, agent_id)
+        # Wait for animation jobs to complete by polling each job ID
+        await pxl.wait_for_jobs(
+            job_ids,
+            progress_label=f"custom:{animation_name}",
+        )
 
         # Download ZIP with all animations
         zip_bytes = None
