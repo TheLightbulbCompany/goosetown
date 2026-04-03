@@ -10,6 +10,11 @@ logger = logging.getLogger(__name__)
 
 PIXELLAB_API_URL = "https://api.pixellab.ai/v2"
 
+# ---------------------------------------------------------------------------
+# Animation registry — single source of truth for all animation assets.
+# Template animations are generated at registration (~5 min).
+# Custom animations are generated lazily on first activity use (~8 min each).
+# ---------------------------------------------------------------------------
 ANIMATION_REGISTRY: dict[str, dict] = {
     # Templates (1 gen/direction, auto all directions)
     "walk":       {"type": "template", "template_id": "walk", "fps": 8.0},
@@ -130,7 +135,7 @@ class PixelLabService:
         all_job_ids: list[str] = []
         for name, config in TEMPLATE_ANIMATIONS.items():
             try:
-                job_ids = await self.animate_character(character_id, config["template_id"])
+                job_ids = await self.animate_character(character_id, animation=config["template_id"])
                 logger.info(
                     "Queued template animation %r for character %s: %d job(s)",
                     name,
@@ -144,6 +149,10 @@ class PixelLabService:
                     name,
                     character_id,
                 )
+        logger.info(
+            "Queued %d template animation jobs for character %s (%d animations)",
+            len(all_job_ids), character_id, len(TEMPLATE_ANIMATIONS),
+        )
         return all_job_ids
 
     async def queue_custom_animation(
