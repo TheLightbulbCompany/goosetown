@@ -85,6 +85,13 @@ func _on_world_state(data: Dictionary) -> void:
 			# Update speech/state if present
 			if agent_data.has("speechText") or agent_data.has("speech"):
 				_known_agents[agent_id].update_state(agent_data)
+
+			# Update activity state
+			var activity: String = str(agent_data.get("activity", ""))
+			if activity != "walking" and activity != "idle":
+				_known_agents[agent_id].current_activity = activity
+			else:
+				_known_agents[agent_id].current_activity = ""
 		else:
 			# New agent — instantiate
 			var agent: CharacterBody2D = AgentScene.instantiate()

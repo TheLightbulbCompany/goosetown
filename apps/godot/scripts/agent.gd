@@ -31,6 +31,33 @@ const DIR_ROW: Dictionary = {
 	"north": 3,
 }
 
+# Activity name → animation asset name (from backend ANIMATION_REGISTRY)
+const ACTIVITY_ANIMATION: Dictionary = {
+	"people_watch": "sitting",
+	"perform": "performing",
+	"read": "reading",
+	"study": "reading",
+	"write_journal": "writing",
+	"order_coffee": "drink",
+	"sit_and_chat": "sitting",
+	"work_on_laptop": "working",
+	"exercise": "exercising",
+	"play_game": "gaming",
+	"garden": "gardening",
+	"check_balance": "idle",
+	"browse_listings": "reading",
+	"sit_outside": "sitting",
+	"sleep": "sleeping",
+	"nap": "sleeping",
+	"work_at_desk": "working",
+	"cook": "cooking",
+	"watch_tv": "sitting",
+	"read_book": "reading",
+	"listen_to_music": "sitting",
+	"watch_aquarium": "sitting",
+	"rest": "idle",
+}
+
 # Animation state
 ## animation_name -> Texture2D
 var _spritesheets: Dictionary = {}
@@ -46,6 +73,7 @@ const DEFAULT_FRAME_COUNT: int = 6
 var sprite_animations: Dictionary = {}
 var _is_moving: bool = false
 var _use_navigation: bool = false  # True in headless/server mode
+var current_activity: String = ""
 
 
 func setup(id: String, url: String, x: float, y: float, facing_json: String, display: String) -> void:
@@ -156,9 +184,11 @@ func _physics_process(delta: float) -> void:
 
 	# Animate
 	if not _spritesheets.is_empty():
-		# Auto-select animation based on state
+		# Determine target animation from activity or movement
 		var target_anim: String = "walk"
-		if not _is_moving:
+		if current_activity != "" and current_activity in ACTIVITY_ANIMATION:
+			target_anim = ACTIVITY_ANIMATION[current_activity]
+		elif not _is_moving:
 			target_anim = "idle" if _spritesheets.has("idle") else "walk"
 
 		if target_anim != _current_animation and _spritesheets.has(target_anim):
