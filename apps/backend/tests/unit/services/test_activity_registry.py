@@ -104,10 +104,10 @@ class TestGetActivitiesForLocation:
         activities = get_activities_for_location("moon_base")
         assert activities == []
 
-    def test_residence_has_enter_apartment(self):
+    def test_residence_has_sit_outside(self):
         activities = get_activities_for_location("residence")
         names = {a.name for a in activities}
-        assert "enter_apartment" in names
+        assert "sit_outside" in names
 
     def test_no_activity_appears_at_wrong_location(self):
         """Library activities must not appear at the café."""

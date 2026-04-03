@@ -127,16 +127,29 @@ _ACTIVITIES: list[Activity] = [
     Activity(
         name="perform",
         location="plaza",
-        duration_seconds=20,
-        mood_delta=5,
-        energy_delta=-5,
-        currency_delta=2,
-        animation="waving",
+        duration_seconds=30,
+        mood_delta=6,
+        energy_delta=-6,
+        currency_delta=3,
+        animation="performing",
         description="Performing",
         agent_prompt=(
             "You are busking at the plaza — performing for passersby. "
             "Decide what you are performing (music, poetry, a short speech, juggling). "
             "Write what you performed in TOWN_LIFE.md as a journal entry."
+        ),
+    ),
+    Activity(
+        name="rest",
+        location="plaza",
+        duration_seconds=8,
+        mood_delta=1,
+        energy_delta=3,
+        animation="idle",
+        description="Resting",
+        agent_prompt=(
+            "You are resting by the fountain. Take a moment to catch your breath "
+            "and observe the town. No need to write anything — just be present."
         ),
     ),
     # --- Library ---
@@ -189,10 +202,10 @@ _ACTIVITIES: list[Activity] = [
         name="order_coffee",
         location="cafe",
         duration_seconds=5,
-        mood_delta=2,
-        energy_delta=5,
+        mood_delta=3,
+        energy_delta=6,
         currency_delta=-1,
-        animation="sitting",
+        animation="drink",
         description="Getting coffee",
         agent_prompt=(
             "You are ordering a coffee at the café. "
@@ -235,8 +248,8 @@ _ACTIVITIES: list[Activity] = [
         name="exercise",
         location="activity_center",
         duration_seconds=15,
-        mood_delta=3,
-        energy_delta=8,
+        mood_delta=4,
+        energy_delta=10,
         animation="exercising",
         description="Exercising",
         agent_prompt=(
@@ -251,7 +264,7 @@ _ACTIVITIES: list[Activity] = [
         duration_seconds=20,
         mood_delta=5,
         energy_delta=-3,
-        animation="playing",
+        animation="gaming",
         description="Playing a game",
         agent_prompt=(
             "You are playing a game at the activity center. "
@@ -263,8 +276,8 @@ _ACTIVITIES: list[Activity] = [
         name="garden",
         location="activity_center",
         duration_seconds=15,
-        mood_delta=4,
-        energy_delta=-3,
+        mood_delta=5,
+        energy_delta=-2,
         introvert_bonus=2,
         animation="gardening",
         description="Gardening",
@@ -281,7 +294,7 @@ _ACTIVITIES: list[Activity] = [
         duration_seconds=5,
         mood_delta=0,
         energy_delta=-1,
-        animation="standing",
+        animation="idle",
         description="Checking balance",
         agent_prompt=(
             "You are at the bank checking your account. "
@@ -305,16 +318,17 @@ _ACTIVITIES: list[Activity] = [
     ),
     # --- Residence ---
     Activity(
-        name="enter_apartment",
+        name="sit_outside",
         location="residence",
-        duration_seconds=3,
-        mood_delta=0,
-        energy_delta=0,
-        animation="walking",
-        description="Entering apartment",
+        duration_seconds=10,
+        mood_delta=3,
+        energy_delta=2,
+        animation="sitting",
+        description="Sitting outside",
         agent_prompt=(
-            "You are walking into your apartment building. "
-            "Take a moment to feel the transition from the busy town to your home."
+            "You are sitting on the steps of the apartment building. "
+            "Watch the town from here and decompress before heading home. "
+            "If someone passes by, you might say hello."
         ),
     ),
     # --- Apartment ---
@@ -328,7 +342,7 @@ _ACTIVITIES: list[Activity] = [
         location="apartment",
         location_context="apartment",
         duration_seconds=30,
-        mood_delta=5,
+        mood_delta=8,
         energy_delta=100,  # clamped to 100 via min(100, current + 100)
         animation="sleeping",
         description="Sleeping",
@@ -361,8 +375,8 @@ _ACTIVITIES: list[Activity] = [
         location="apartment",
         location_context="apartment",
         duration_seconds=15,
-        mood_delta=3,
-        energy_delta=3,
+        mood_delta=4,
+        energy_delta=5,
         currency_delta=-1,
         animation="cooking",
         description="Cooking",
@@ -378,7 +392,7 @@ _ACTIVITIES: list[Activity] = [
         location="apartment",
         location_context="apartment",
         duration_seconds=15,
-        mood_delta=4,
+        mood_delta=3,
         energy_delta=-1,
         animation="sitting",
         description="Watching TV",
@@ -412,8 +426,8 @@ _ACTIVITIES: list[Activity] = [
         location="apartment",
         location_context="apartment",
         duration_seconds=15,
-        mood_delta=4,
-        energy_delta=1,
+        mood_delta=5,
+        energy_delta=2,
         introvert_bonus=1,
         animation="sitting",
         description="Listening to music",
@@ -430,8 +444,8 @@ _ACTIVITIES: list[Activity] = [
         location="apartment",
         location_context="apartment",
         duration_seconds=10,
-        mood_delta=3,
-        energy_delta=2,
+        mood_delta=4,
+        energy_delta=3,
         introvert_bonus=1,
         animation="sitting",
         description="Watching the aquarium",
@@ -440,6 +454,21 @@ _ACTIVITIES: list[Activity] = [
             "You are watching the fish in the aquarium. "
             "Let your mind wander. Reflect on how you are feeling about life in GooseTown, "
             "your goals, and your relationships. Write a reflective entry in TOWN_LIFE.md."
+        ),
+    ),
+    Activity(
+        name="nap",
+        location="apartment",
+        location_context="apartment",
+        duration_seconds=12,
+        mood_delta=3,
+        energy_delta=40,
+        animation="sleeping",
+        description="Napping",
+        spot="bed",
+        agent_prompt=(
+            "You are taking a short nap. Rest briefly and recover some energy. "
+            "When you wake, note how you feel in TOWN_LIFE.md if anything comes to mind."
         ),
     ),
 ]

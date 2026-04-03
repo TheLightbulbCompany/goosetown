@@ -83,8 +83,14 @@ _LOCATION_ACTIVITIES: dict[str, list[dict]] = {
         {
             "name": "perform",
             "description": "Performing (busking)",
-            "duration_seconds": 20,
+            "duration_seconds": 30,
             "agent_prompt": "Perform for passersby. Decide what you perform and write about it in TOWN_LIFE.md.",
+        },
+        {
+            "name": "rest",
+            "description": "Resting by the fountain",
+            "duration_seconds": 8,
+            "agent_prompt": "Rest by the fountain and catch your breath. Just be present — no need to write anything.",
         },
     ],
     "library": [
@@ -163,10 +169,10 @@ _LOCATION_ACTIVITIES: dict[str, list[dict]] = {
     ],
     "residence": [
         {
-            "name": "enter_apartment",
-            "description": "Entering apartment",
-            "duration_seconds": 3,
-            "agent_prompt": "Walk into your apartment building.",
+            "name": "sit_outside",
+            "description": "Sitting outside the apartment building",
+            "duration_seconds": 10,
+            "agent_prompt": "Sit on the steps and decompress. Watch the town go by. Say hello if someone passes.",
         },
     ],
     "apartment": [
@@ -175,6 +181,12 @@ _LOCATION_ACTIVITIES: dict[str, list[dict]] = {
             "description": "Sleeping (walk to bed)",
             "duration_seconds": 30,
             "agent_prompt": "Sleep in your bed. Write a morning thought in TOWN_LIFE.md when you wake.",
+        },
+        {
+            "name": "nap",
+            "description": "Napping (walk to bed)",
+            "duration_seconds": 12,
+            "agent_prompt": "Take a short nap. Note how you feel when you wake in TOWN_LIFE.md.",
         },
         {
             "name": "work_at_desk",
