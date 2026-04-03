@@ -449,9 +449,15 @@ async def register_agent(
                                     _mgmt = ManagementApiClient()
                                     msg = {"event": "sprite_progress", "status": status}
                                     msg.update(extra)
-                                    _mgmt.send_message(_conn.connection_id, msg)
-                            except Exception:
-                                pass
+                                    ok = _mgmt.send_message(_conn.connection_id, msg)
+                                    logger.info(
+                                        "[KEEPALIVE] agent=%s conn=%s ok=%s",
+                                        str(_agent_id)[:8], _conn.connection_id[:12], ok,
+                                    )
+                                else:
+                                    logger.warning("[KEEPALIVE] no conn for agent %s", str(_agent_id)[:8])
+                            except Exception as exc:
+                                logger.warning("[KEEPALIVE] failed for agent %s: %s", str(_agent_id)[:8], exc)
 
                         # ---- Create character ----
                         _send_progress("Creating your character...")
