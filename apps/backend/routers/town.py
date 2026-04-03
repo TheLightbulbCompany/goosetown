@@ -439,8 +439,8 @@ async def register_agent(
 
                         # ---- Queue all template animations ----
                         _send_progress("Generating animations...")
-                        all_job_ids = await pxl.queue_template_animations(char_id)
-                        logger.info("Queued %d template animation jobs for %s", len(all_job_ids), char_id)
+                        await pxl.queue_template_animations(char_id)
+                        # Job IDs not tracked — ZIP 423/200 polling is the completion signal
 
                         # ---- Poll ZIP download (423 while pending, bytes when done) ----
                         # Max wait: 45 attempts x 15s = 11.25 minutes
@@ -486,6 +486,7 @@ async def register_agent(
                             else:
                                 logger.error("No animations extracted from ZIP for %s", char_id)
                                 return
+                            # Fall through to game server connection block using cdn_url set above
                         else:
                             # Upload all spritesheets to S3
                             uploaded = await asyncio.to_thread(
@@ -556,6 +557,8 @@ async def register_agent(
 
                         # ---- Notify daemon ----
                         try:
+                            _ws_mgr = get_town_agent_ws_manager()
+                            _conn = _ws_mgr.get_by_agent_id(str(_agent_id))
                             if _conn:
                                 _mgmt = ManagementApiClient()
                                 _mgmt.send_message(_conn.connection_id, {
