@@ -99,6 +99,16 @@ func _on_world_state(data: Dictionary) -> void:
 			agents[agent_id] = agent
 			print("AgentManager: Spawned %s at (%d, %d) via world_state" % [display_name, int(x), int(y)])
 
+			# Load animation configs if present in world_state
+			var animations: Dictionary = agent_data.get("spriteAnimations", {})
+			if not animations.is_empty():
+				agent.set_animation_configs(animations)
+				agent.sprite_animations = animations
+				for anim_name in animations:
+					var anim_url: String = str(animations[anim_name].get("url", ""))
+					if anim_url != "" and anim_name != "walk":
+						_load_sprite_for_agent(agent_id, anim_url, anim_name)
+
 	# Remove agents no longer present in world_state
 	var ids_to_remove: Array = []
 	for agent_id in _known_agents:
@@ -160,13 +170,40 @@ func _on_sprite_loaded(args: Array) -> void:
 		return
 	var agent_id: String = str(parsed.get("id", ""))
 	var base64: String = str(parsed.get("base64", ""))
+	var animation_name: String = str(parsed.get("animation", "walk"))
 	if agent_id == "" or base64 == "" or agent_id not in agents:
 		return
 
-	# Decode base64 to spritesheet image
 	var raw: PackedByteArray = Marshalls.base64_to_raw(base64)
 	var image: Image = Image.new()
 	if image.load_png_from_buffer(raw) == OK:
 		var tex: ImageTexture = ImageTexture.create_from_image(image)
-		agents[agent_id].set_spritesheet(tex)
-		print("AgentManager: Loaded spritesheet for %s (%dx%d)" % [agent_id, image.get_width(), image.get_height()])
+		agents[agent_id].set_spritesheet(tex, animation_name)
+		print("AgentManager: Loaded %s spritesheet for %s (%dx%d)" % [animation_name, agent_id, image.get_width(), image.get_height()])
+
+
+func _load_sprite_for_agent(agent_id: String, url: String, animation_name: String) -> void:
+	if not OS.has_feature("web"):
+		return
+	var js_code := """
+		(function() {
+			fetch('%s')
+				.then(function(r) { return r.blob(); })
+				.then(function(b) {
+					var reader = new FileReader();
+					reader.onloadend = function() {
+						var base64 = reader.result.split(',')[1];
+						if (window.godotUpdateAgentSprite) {
+							window.godotUpdateAgentSprite(JSON.stringify({
+								id: '%s',
+								base64: base64,
+								animation: '%s'
+							}));
+						}
+					};
+					reader.readAsDataURL(b);
+				})
+				.catch(function(e) { console.error('Sprite load failed:', e); });
+		})();
+	""" % [url, agent_id, animation_name]
+	JavaScriptBridge.eval(js_code)
