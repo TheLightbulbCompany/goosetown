@@ -1487,6 +1487,16 @@ async def _handle_agent_activity(connection_id: str, activity_name: str, agent_c
 
     service.update_agent_activity(agent_id, activity_name, _time.time())
 
+    # Notify game server of activity state change
+    try:
+        gs_client = get_game_server_client()
+        await gs_client.send_command(agent_id, {
+            "cmd": "set_activity",
+            "activity": activity_name,
+        })
+    except Exception as exc:
+        logger.warning("Failed to send set_activity to game server for %s: %s", agent_id, exc)
+
     # --- Acknowledge to the agent ---
     try:
         mgmt.send_message(
@@ -1560,10 +1570,18 @@ async def _activity_timer(
                 activity.name,
             )
             _clear_activity_and_notify(service, mgmt, connection_id, agent_id, activity.name, "navigation_timeout")
+            try:
+                await gs_client.send_command(agent_id, {"cmd": "set_activity", "activity": ""})
+            except Exception:
+                pass
             return
         except Exception as exc:
             logger.warning("Navigation error for agent %s activity %s: %s", agent_id, activity.name, exc)
             _clear_activity_and_notify(service, mgmt, connection_id, agent_id, activity.name, "navigation_error")
+            try:
+                await gs_client.send_command(agent_id, {"cmd": "set_activity", "activity": ""})
+            except Exception:
+                pass
             return
 
     # --- Run the activity timer ---
@@ -1586,6 +1604,15 @@ async def _activity_timer(
     # --- Persist updated mood/energy and clear activity ---
     service.update_agent_mood_energy(agent_id, new_mood, new_energy)
     service.update_agent_activity(agent_id, None, None)
+
+    # Clear activity state in game server
+    try:
+        await gs_client.send_command(agent_id, {
+            "cmd": "set_activity",
+            "activity": "",
+        })
+    except Exception as exc:
+        logger.warning("Failed to clear activity in game server for %s: %s", agent_id, exc)
 
     # --- Send outcome event to agent ---
     event_name = "activity_interrupted" if interrupted else "activity_complete"
