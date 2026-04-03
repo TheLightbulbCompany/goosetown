@@ -49,13 +49,11 @@ _sprite_jobs_in_progress: set = set()
 def _make_agent_event_callback():
     """Create a per-agent callback that forwards game server events to the daemon.
 
+    Uses DynamoDB daemonConnectionId for connection lookup (survives restarts).
     Also updates DynamoDB currentLocation on 'arrived' events.
-    This replaces the old global handler registration system.
     """
 
     async def _on_game_server_event(agent_id: str, event_data: dict) -> None:
-        from core.services.management_api_client import ManagementApiClient
-
         evt_type = event_data.get("event", "")
 
         # Update DynamoDB location on arrival
@@ -67,17 +65,35 @@ def _make_agent_event_callback():
                 except Exception:
                     logger.warning("Failed to update location for %s", agent_id)
 
-        # Forward event to daemon via API Gateway Management API
-        try:
-            ws_mgr = get_town_agent_ws_manager()
-            conn = ws_mgr.get_by_agent_id(agent_id)
-            if conn:
-                mgmt = ManagementApiClient()
-                mgmt.send_message(conn.connection_id, event_data)
-        except Exception:
-            pass  # Daemon may have disconnected
+        # Forward event to daemon via DynamoDB connection lookup
+        _send_to_daemon(agent_id, event_data)
 
     return _on_game_server_event
+
+
+def _send_to_daemon(agent_id: str, payload: dict) -> bool:
+    """Send a message to an agent's daemon using the connection ID from DynamoDB.
+
+    Returns True if sent, False if no connection or connection is gone.
+    """
+    from core.services.management_api_client import ManagementApiClient
+
+    service = TownService()
+    agent = service.get_town_agent_by_id(agent_id)
+    if not agent:
+        return False
+
+    conn_id = agent.get("daemonConnectionId")
+    if not conn_id:
+        logger.debug("No daemonConnectionId for agent %s", agent_id)
+        return False
+
+    try:
+        mgmt = ManagementApiClient()
+        return mgmt.send_message(conn_id, payload)
+    except Exception as exc:
+        logger.debug("Failed to send to daemon for agent %s: %s", agent_id, exc)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -442,22 +458,10 @@ async def register_agent(
                         service = TownService()
 
                         def _send_progress(status: str, **extra) -> None:
-                            try:
-                                _ws_mgr = get_town_agent_ws_manager()
-                                _conn = _ws_mgr.get_by_agent_id(str(_agent_id))
-                                if _conn:
-                                    _mgmt = ManagementApiClient()
-                                    msg = {"event": "sprite_progress", "status": status}
-                                    msg.update(extra)
-                                    ok = _mgmt.send_message(_conn.connection_id, msg)
-                                    logger.info(
-                                        "[KEEPALIVE] agent=%s conn=%s ok=%s",
-                                        str(_agent_id)[:8], _conn.connection_id[:12], ok,
-                                    )
-                                else:
-                                    logger.warning("[KEEPALIVE] no conn for agent %s", str(_agent_id)[:8])
-                            except Exception as exc:
-                                logger.warning("[KEEPALIVE] failed for agent %s: %s", str(_agent_id)[:8], exc)
+                            msg = {"event": "sprite_progress", "status": status}
+                            msg.update(extra)
+                            ok = _send_to_daemon(str(_agent_id), msg)
+                            logger.info("[KEEPALIVE] agent=%s ok=%s status=%s", str(_agent_id)[:8], ok, status[:50])
 
                         # ---- Create character ----
                         _send_progress("Creating your character...")
@@ -1311,6 +1315,9 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
         agent_id=agent_id,
         instance_id=instance_id,
     )
+
+    # Persist the daemon's connection ID to DynamoDB so it survives restarts
+    service.update_agent_state(agent_id, daemon_connection_id=request.connectionId)
 
     # Read location context from agent record (new agents default to apartment)
     location_context = agent.get("locationContext", "apartment")
