@@ -508,6 +508,42 @@ async def register_agent(
                                             user_id=agent_record.get("userId", ""),
                                         )
                                         logger.info("Connected agent %s to game server after sprite ready", _agent_id)
+
+                                        # Register event handlers (same as _handle_agent_connect)
+                                        async def _fwd_event(fwd_aid: str, evt_data: dict) -> None:
+                                            try:
+                                                _wm = get_town_agent_ws_manager()
+                                                _cn = _wm.get_by_agent_id(fwd_aid)
+                                                if _cn:
+                                                    ManagementApiClient().send_message(_cn.connection_id, evt_data)
+                                            except Exception:
+                                                pass
+
+                                        for _evt in ("arrived", "move_started", "spawned", "nearby", "command_error", "agent_state"):
+                                            gs_client.on_event(_evt, _fwd_event)
+
+                                        async def _on_arr(arr_aid: str, arr_data: dict) -> None:
+                                            _loc = arr_data.get("location", "")
+                                            if _loc:
+                                                try:
+                                                    service.update_agent_state(arr_aid, current_location=_loc)
+                                                except Exception:
+                                                    pass
+
+                                        gs_client.on_event("arrived", _on_arr)
+
+                                        # Notify daemon that sprite is ready
+                                        try:
+                                            _wm = get_town_agent_ws_manager()
+                                            _cn = _wm.get_by_agent_id(str(_agent_id))
+                                            if _cn:
+                                                ManagementApiClient().send_message(_cn.connection_id, {
+                                                    "event": "sprite_ready",
+                                                    "agent_id": str(_agent_id),
+                                                    "sprite_url": cdn_url,
+                                                })
+                                        except Exception:
+                                            pass
                                 except Exception as gs_err:
                                     logger.warning("Failed to connect agent to game server: %s", gs_err)
 
