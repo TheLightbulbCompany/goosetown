@@ -76,6 +76,10 @@ func send_to(peer_id: int, data: Dictionary) -> void:
 	var ws: WebSocketPeer = _peers[peer_id]
 	var json_str := JSON.stringify(data)
 	ws.send_text(json_str)
+	# Reset timeout: outgoing messages prove the connection is alive.
+	# The game server sends agent_state every 2s — this keeps the peer alive
+	# even when the backend isn't sending commands.
+	_last_message_time[peer_id] = Time.get_unix_time_from_system()
 
 
 func broadcast(data: Dictionary, exclude: int = -1) -> void:
