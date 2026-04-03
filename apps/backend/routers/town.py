@@ -498,9 +498,11 @@ async def register_agent(
 
                         # ---- Download ZIP (all animations should be done) ----
                         service.update_agent_state(_agent_id, sprite_status="downloading")
+                        _send_progress("Downloading sprites...")
                         zip_bytes = None
                         for attempt in range(6):
                             await asyncio.sleep(5)
+                            _send_progress(f"Downloading sprites ({attempt + 1}/6)...")
                             try:
                                 zip_bytes = await pxl.download_character_zip(char_id)
                                 if zip_bytes is not None:
