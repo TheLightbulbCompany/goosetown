@@ -24,17 +24,117 @@ ANIMATION_REGISTRY: dict[str, dict] = {
     "crouch":     {"type": "template", "template_id": "crouching", "fps": 6.0},
     "pick_up":    {"type": "template", "template_id": "picking-up", "fps": 6.0},
     # Custom V3 (generated lazily on first use)
-    "sitting":    {"type": "custom", "prompt": "sitting relaxed, gently swaying", "frames": 8, "fps": 4.0},
-    "reading":    {"type": "custom", "prompt": "sitting reading a book, turning pages", "frames": 8, "fps": 4.0},
-    "writing":    {"type": "custom", "prompt": "sitting at a table writing in a notebook", "frames": 8, "fps": 6.0},
-    "working":    {"type": "custom", "prompt": "sitting hunched over a laptop typing", "frames": 8, "fps": 6.0},
-    "performing": {"type": "custom", "prompt": "standing arms raised performing expressively", "frames": 8, "fps": 6.0},
-    "exercising": {"type": "custom", "prompt": "doing jumping jacks energetically", "frames": 8, "fps": 8.0},
-    "gaming":     {"type": "custom", "prompt": "leaning forward excited over game board", "frames": 8, "fps": 6.0},
-    "gardening":  {"type": "custom", "prompt": "crouching tending plants with hands", "frames": 8, "fps": 4.0},
-    "cooking":    {"type": "custom", "prompt": "standing at counter stirring a pot", "frames": 8, "fps": 6.0},
-    "sleeping":   {"type": "custom", "prompt": "lying down, chest rising and falling slowly", "frames": 8, "fps": 3.0},
-    "talking":    {"type": "custom", "prompt": "standing gesturing while speaking to someone", "frames": 8, "fps": 6.0},
+    # Prompts describe the full movement sequence for PixelLab frame generation.
+    "sitting": {
+        "type": "custom",
+        "frames": 8,
+        "fps": 4.0,
+        "prompt": (
+            "Sitting down relaxed on a low surface, hands resting on knees, "
+            "gently shifting weight side to side, head tilting slightly, "
+            "occasionally looking around before settling back into a calm posture"
+        ),
+    },
+    "reading": {
+        "type": "custom",
+        "frames": 8,
+        "fps": 4.0,
+        "prompt": (
+            "Sitting cross-legged holding an open book, eyes scanning the pages, "
+            "one hand reaching to turn a page then returning, head nodding "
+            "slightly while reading, ears or hair shifting with small movements"
+        ),
+    },
+    "writing": {
+        "type": "custom",
+        "frames": 8,
+        "fps": 6.0,
+        "prompt": (
+            "Sitting at a surface writing in a notebook, hand moving steadily "
+            "across the page in short strokes, pausing briefly to think with "
+            "pen raised, then resuming writing with focused posture"
+        ),
+    },
+    "working": {
+        "type": "custom",
+        "frames": 8,
+        "fps": 6.0,
+        "prompt": (
+            "Sitting hunched forward over a laptop, fingers tapping rapidly on "
+            "the keyboard, occasionally leaning back to think then leaning "
+            "forward again, shoulders shifting with typing rhythm"
+        ),
+    },
+    "performing": {
+        "type": "custom",
+        "frames": 8,
+        "fps": 6.0,
+        "prompt": (
+            "Standing with arms raised expressively, swaying body side to side, "
+            "one arm sweeping outward then the other, weight shifting between "
+            "feet, head tilting back with energy then forward to engage"
+        ),
+    },
+    "exercising": {
+        "type": "custom",
+        "frames": 8,
+        "fps": 8.0,
+        "prompt": (
+            "Doing jumping jacks with full body motion, arms swinging up "
+            "overhead then back down to sides, legs spreading apart and "
+            "together, body bouncing with each rep, energetic and rhythmic"
+        ),
+    },
+    "gaming": {
+        "type": "custom",
+        "frames": 8,
+        "fps": 6.0,
+        "prompt": (
+            "Sitting leaning forward excitedly, hands moving pieces on a board, "
+            "reacting with a small fist pump, then studying the board intently "
+            "with hand on chin before reaching to make the next move"
+        ),
+    },
+    "gardening": {
+        "type": "custom",
+        "frames": 8,
+        "fps": 4.0,
+        "prompt": (
+            "Crouching down close to the ground, gently patting soil around a "
+            "small plant with both hands, reaching to pull a weed, then "
+            "carefully watering with a small motion, brushing dirt off hands"
+        ),
+    },
+    "cooking": {
+        "type": "custom",
+        "frames": 8,
+        "fps": 6.0,
+        "prompt": (
+            "Standing at a counter stirring a pot with one hand in circular "
+            "motions, other hand reaching to add an ingredient, leaning in "
+            "to smell the food, then returning to stir with steady rhythm"
+        ),
+    },
+    "sleeping": {
+        "type": "custom",
+        "frames": 8,
+        "fps": 3.0,
+        "prompt": (
+            "Lying down on side in a curled sleeping position, chest slowly "
+            "rising and falling with deep breaths, small subtle shifts in "
+            "posture, completely relaxed with eyes closed, peaceful and still"
+        ),
+    },
+    "talking": {
+        "type": "custom",
+        "frames": 8,
+        "fps": 6.0,
+        "prompt": (
+            "Standing upright gesturing while speaking, one hand raised making "
+            "a point then lowering, head nodding along, weight shifting between "
+            "feet, other hand occasionally joining in an open palm gesture"
+        ),
+    },
 }
 
 TEMPLATE_ANIMATIONS = {k: v for k, v in ANIMATION_REGISTRY.items() if v["type"] == "template"}
