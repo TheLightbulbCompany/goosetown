@@ -273,6 +273,9 @@ func _transition_to_town(peer_id: int, data: Dictionary) -> void:
 
 	# Spawn in town at the residence location
 	agent_data["location"] = "residence"
+	print("GameServer: transition to town — spawning with location=%s, controller has %d locations" % [
+		agent_data.get("location", "?"), _controller._locations.size()
+	])
 	_controller.spawn_agent(peer_id, agent_data)
 	_controller.set_user_id(peer_id, user_id)
 	_controller.handle_command(peer_id, {"cmd": "get_locations"})

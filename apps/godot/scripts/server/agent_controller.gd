@@ -65,6 +65,9 @@ func spawn_agent(peer_id: int, data: Dictionary) -> void:
 	var location_id: String = str(data.get("location", "plaza"))
 	var marker: Marker2D = _find_location(location_id)
 	var spawn_pos: Vector2 = marker.global_position if marker else Vector2(576.0, 384.0)
+	print("AgentController.spawn_agent: location=%s marker=%s pos=(%.0f,%.0f) locations_count=%d" % [
+		location_id, "FOUND" if marker else "NOT_FOUND", spawn_pos.x, spawn_pos.y, _locations.size()
+	])
 
 	var agent_id: String = str(data.get("agent_id", "agent_%d" % peer_id))
 	var display: String = str(data.get("name", agent_id))
