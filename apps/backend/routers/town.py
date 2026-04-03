@@ -432,7 +432,10 @@ async def register_agent(
 
             _existing = service.get_town_agent_by_id(_agent_id)
             if _existing and _existing.get("spriteStatus") in ("creating", "animating", "downloading"):
-                logger.info("Sprite generation already in progress for agent %s (%s)", _agent_id, _existing.get("spriteStatus"))
+                logger.info(
+                    "Sprite generation in progress for %s (%s)",
+                    _agent_id, _existing.get("spriteStatus"),
+                )
             else:
                 _appearance = request.appearance
                 _display_name = request.display_name
@@ -525,7 +528,9 @@ async def register_agent(
                                     upload_sprite_to_s3, walk_png, str(_agent_id), settings.SPRITE_S3_BUCKET
                                 )
                                 cdn_url = f"{settings.SPRITE_CDN_URL}/{s3_key}"
-                                service.update_agent_state(_agent_id, sprite_ready=True, sprite_url=cdn_url, sprite_status="complete")
+                                service.update_agent_state(
+                                    _agent_id, sprite_ready=True, sprite_url=cdn_url, sprite_status="complete"
+                                )
                                 logger.info("Fallback: walk-only sprite ready for %s", _agent_id)
                             else:
                                 logger.error("No animations extracted from ZIP for %s", char_id)
@@ -1970,6 +1975,7 @@ async def complete_activity_from_startup(agent_id: str, activity, elapsed: float
 async def restart_activity_timer(agent_id: str, activity, remaining: float) -> None:
     """Restart an activity timer for the remaining duration after backend restart."""
     import asyncio
+
     from core.services.activity_registry import apply_activity_effect
 
     await asyncio.sleep(remaining)

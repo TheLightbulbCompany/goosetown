@@ -70,7 +70,7 @@ async def _reconnect_active_agents() -> None:
             import time
             try:
                 if float(wake_at) > time.time():
-                    logger.info("Agent %s is sleeping, skipping startup reconnect", agent.get("displayName", agent["id"]))
+                    logger.info("Agent %s is sleeping, skipping reconnect", agent.get("displayName", "?"))
                     continue
             except (ValueError, TypeError):
                 pass
@@ -132,6 +132,7 @@ async def _reconnect_active_agents() -> None:
 
     # Resume interrupted activity timers
     import time as _time
+
     from core.services.activity_registry import get_activity
 
     activities_resumed = 0
