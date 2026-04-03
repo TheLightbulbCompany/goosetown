@@ -37,9 +37,6 @@ _TOWN_API_URL = os.environ.get("TOWN_API_URL", "https://api-dev.goosetown.isol8.
 # Strong references to background sprite tasks to prevent GC
 _background_sprite_tasks: set = set()
 
-# Track in-progress sprite generation jobs by agent_id to prevent duplicates
-_sprite_jobs_in_progress: set = set()
-
 
 # ---------------------------------------------------------------------------
 # Shared per-agent event callback for game server → daemon forwarding
@@ -433,10 +430,10 @@ async def register_agent(
         if settings.PIXELLAB_API_KEY and settings.SPRITE_S3_BUCKET and settings.SPRITE_CDN_URL:
             _agent_id = agent["id"]
 
-            if _agent_id in _sprite_jobs_in_progress:
-                logger.info("Sprite generation already in progress for agent %s, skipping", _agent_id)
+            _existing = service.get_town_agent_by_id(_agent_id)
+            if _existing and _existing.get("spriteStatus") in ("creating", "animating", "downloading"):
+                logger.info("Sprite generation already in progress for agent %s (%s)", _agent_id, _existing.get("spriteStatus"))
             else:
-                _sprite_jobs_in_progress.add(_agent_id)
                 _appearance = request.appearance
                 _display_name = request.display_name
 
@@ -464,6 +461,7 @@ async def register_agent(
                             logger.info("[KEEPALIVE] agent=%s ok=%s status=%s", str(_agent_id)[:8], ok, status[:50])
 
                         # ---- Create character ----
+                        service.update_agent_state(_agent_id, sprite_status="creating")
                         _send_progress("Creating your character...")
                         char_id, creation_job_id = await pxl.create_character(
                             description=_appearance
@@ -491,10 +489,12 @@ async def register_agent(
                         async def _anim_progress(status: str) -> None:
                             _send_progress(status)
 
+                        service.update_agent_state(_agent_id, sprite_status="animating")
                         _send_progress("Generating animations...")
                         await pxl.queue_template_animations(char_id, on_progress=_anim_progress)
 
                         # ---- Download ZIP (all animations should be done) ----
+                        service.update_agent_state(_agent_id, sprite_status="downloading")
                         zip_bytes = None
                         for attempt in range(6):
                             await asyncio.sleep(5)
@@ -508,6 +508,7 @@ async def register_agent(
 
                         if zip_bytes is None:
                             logger.error("No ZIP available for %s, sprite generation failed", char_id)
+                            service.update_agent_state(_agent_id, sprite_status=None)
                             return
 
                         # ---- Extract all animation spritesheets ----
@@ -524,10 +525,11 @@ async def register_agent(
                                     upload_sprite_to_s3, walk_png, str(_agent_id), settings.SPRITE_S3_BUCKET
                                 )
                                 cdn_url = f"{settings.SPRITE_CDN_URL}/{s3_key}"
-                                service.update_agent_state(_agent_id, sprite_ready=True, sprite_url=cdn_url)
+                                service.update_agent_state(_agent_id, sprite_ready=True, sprite_url=cdn_url, sprite_status="complete")
                                 logger.info("Fallback: walk-only sprite ready for %s", _agent_id)
                             else:
                                 logger.error("No animations extracted from ZIP for %s", char_id)
+                                service.update_agent_state(_agent_id, sprite_status=None)
                                 return
                             # Fall through to game server connection block using cdn_url set above
                         else:
@@ -552,6 +554,7 @@ async def register_agent(
                                 sprite_ready=True,
                                 sprite_url=cdn_url,
                                 sprite_animations=sprite_animations,
+                                sprite_status="complete",
                             )
                             logger.info("Sprite ready for %s: %d animations", _agent_id, len(sprite_animations))
 
@@ -594,8 +597,10 @@ async def register_agent(
 
                     except Exception:
                         logger.exception("Sprite generation failed for agent %s", _agent_id)
-                    finally:
-                        _sprite_jobs_in_progress.discard(str(_agent_id))
+                        try:
+                            TownService().update_agent_state(_agent_id, sprite_status=None)
+                        except Exception:
+                            pass
 
                 task = asyncio.create_task(_generate_sprite())
                 _background_sprite_tasks.add(task)
