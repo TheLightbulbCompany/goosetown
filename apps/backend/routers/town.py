@@ -1337,14 +1337,20 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
 
             # Register handler to forward game server events to the daemon
             async def _forward_event(fwd_agent_id: str, event_data: dict) -> None:
+                evt_type = event_data.get("event", "?")
                 try:
                     ws_mgr = get_town_agent_ws_manager()
                     conn = ws_mgr.get_by_agent_id(fwd_agent_id)
                     if conn:
                         fwd_mgmt = ManagementApiClient()
-                        fwd_mgmt.send_message(conn.connection_id, event_data)
+                        success = fwd_mgmt.send_message(conn.connection_id, event_data)
+                        if evt_type == "agent_state":
+                            print(f"[FWD] {evt_type} → {fwd_agent_id[:8]} conn={conn.connection_id[:12]} ok={success}", flush=True)
+                    else:
+                        if evt_type == "agent_state":
+                            print(f"[FWD] {evt_type} → {fwd_agent_id[:8]} NO CONN in ws_manager", flush=True)
                 except Exception as fwd_err:
-                    logger.debug("Failed to forward event to agent %s: %s", fwd_agent_id, fwd_err)
+                    print(f"[FWD] {evt_type} → {fwd_agent_id[:8]} ERROR: {fwd_err}", flush=True)
 
             for evt in ("arrived", "move_started", "spawned", "nearby", "command_error", "agent_state"):
                 gs_client.on_event(evt, _forward_event)

@@ -200,9 +200,12 @@ class GameServerClient:
     def on_event(self, event_name: str, handler: Callable[..., Coroutine[Any, Any, Any]]) -> None:
         """Register an async handler for a game server event."""
         self._event_handlers.setdefault(event_name, []).append(handler)
+        print(f"[GS_CLIENT] on_event registered: {event_name} (now {len(self._event_handlers.get(event_name, []))} handlers)", flush=True)
 
     def clear_event_handlers(self) -> None:
         """Remove all registered event handlers. Called before re-registering."""
+        count = sum(len(v) for v in self._event_handlers.values())
+        print(f"[GS_CLIENT] clear_event_handlers: clearing {count} handlers across {len(self._event_handlers)} events", flush=True)
         self._event_handlers.clear()
 
     def get_cached_locations(self) -> list[dict[str, Any]]:
@@ -235,6 +238,8 @@ class GameServerClient:
 
                 # Dispatch to registered handlers
                 handlers = self._event_handlers.get(msg_type, [])
+                if not handlers and msg_type == "agent_state":
+                    print(f"[GS_CLIENT] WARNING: No handlers for agent_state! registered events: {list(self._event_handlers.keys())}", flush=True)
                 for handler in handlers:
                     try:
                         await handler(agent_id, message)
