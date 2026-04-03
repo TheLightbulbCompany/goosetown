@@ -1,7 +1,7 @@
 ## Agent node: represents a character on the map.
 ## Spawned by AgentManager when the JS bridge requests it.
-## Loads a walk spritesheet from a URL (288x192: 6 frames x 4 directions, 48px each).
-## Moves toward a target position with animation.
+## Loads named animation spritesheets (288x192 default: 6 frames x 4 directions, 48px each).
+## Supports multiple animations (walk, idle, run, drink, etc.) with per-animation frame counts and FPS.
 extends CharacterBody2D
 
 @onready var sprite: Sprite2D = $Sprite
@@ -32,10 +32,18 @@ const DIR_ROW: Dictionary = {
 }
 
 # Animation state
-var _spritesheet: Texture2D = null
+## animation_name -> Texture2D
+var _spritesheets: Dictionary = {}
+## animation_name -> { "frame_count": int, "fps": float }
+var _anim_configs: Dictionary = {}
+## Currently playing animation name
+var _current_animation: String = "walk"
 var _anim_frame: int = 0
 var _anim_timer: float = 0.0
-const ANIM_FPS: float = 8.0
+const DEFAULT_FPS: float = 8.0
+const DEFAULT_FRAME_COUNT: int = 6
+## Sprite animation metadata from backend (raw dict for world_state broadcast)
+var sprite_animations: Dictionary = {}
 var _is_moving: bool = false
 var _use_navigation: bool = false  # True in headless/server mode
 
@@ -147,12 +155,25 @@ func _physics_process(delta: float) -> void:
 			_is_moving = false
 
 	# Animate
-	if _spritesheet != null:
-		if _is_moving:
+	if not _spritesheets.is_empty():
+		# Auto-select animation based on state
+		var target_anim: String = "walk"
+		if not _is_moving:
+			target_anim = "idle" if _spritesheets.has("idle") else "walk"
+
+		if target_anim != _current_animation and _spritesheets.has(target_anim):
+			play_animation(target_anim)
+
+		# Frame cycling
+		var cfg: Dictionary = _anim_configs.get(_current_animation, {})
+		var fps: float = cfg.get("fps", DEFAULT_FPS)
+		var fc: int = cfg.get("frame_count", DEFAULT_FRAME_COUNT)
+
+		if _is_moving or _current_animation != "walk":
 			_anim_timer += delta
-			if _anim_timer >= 1.0 / ANIM_FPS:
-				_anim_timer -= 1.0 / ANIM_FPS
-				_anim_frame = (_anim_frame + 1) % FRAME_COUNT
+			if _anim_timer >= 1.0 / fps:
+				_anim_timer -= 1.0 / fps
+				_anim_frame = (_anim_frame + 1) % fc
 				_update_sprite_frame()
 		else:
 			if _anim_frame != 0:
@@ -161,20 +182,25 @@ func _physics_process(delta: float) -> void:
 
 
 func _update_sprite_frame() -> void:
-	if _spritesheet == null:
-		return
+	var tex: Texture2D = _spritesheets.get(_current_animation)
+	if tex == null:
+		if _spritesheets.is_empty():
+			return
+		tex = _spritesheets.values()[0]
+
+	var cfg: Dictionary = _anim_configs.get(_current_animation, {})
+	var fc: int = cfg.get("frame_count", DEFAULT_FRAME_COUNT)
+	var safe_frame: int = _anim_frame % fc
 
 	var row: int = DIR_ROW.get(facing, 0)
 	var region := Rect2(
-		_anim_frame * FRAME_SIZE,
+		safe_frame * FRAME_SIZE,
 		row * FRAME_SIZE,
 		FRAME_SIZE,
 		FRAME_SIZE,
 	)
-
-	# Use AtlasTexture to show just one frame from the spritesheet
 	var atlas := AtlasTexture.new()
-	atlas.atlas = _spritesheet
+	atlas.atlas = tex
 	atlas.region = region
 	sprite.texture = atlas
 
@@ -219,7 +245,30 @@ func _load_sprite_from_url(url: String) -> void:
 	JavaScriptBridge.eval(js_code)
 
 
-func set_spritesheet(tex: Texture2D) -> void:
-	_spritesheet = tex
+func set_spritesheet(tex: Texture2D, animation_name: String = "walk") -> void:
+	_spritesheets[animation_name] = tex
+	if animation_name == _current_animation or _spritesheets.size() == 1:
+		_current_animation = animation_name
+		_anim_frame = 0
+		_update_sprite_frame()
+
+
+func set_animation_configs(configs: Dictionary) -> void:
+	## configs: { "walk": { "frameCount": 6, "fps": 8.0 }, ... }
+	for anim_name in configs:
+		var cfg: Dictionary = configs[anim_name]
+		_anim_configs[anim_name] = {
+			"frame_count": int(cfg.get("frameCount", DEFAULT_FRAME_COUNT)),
+			"fps": float(cfg.get("fps", DEFAULT_FPS)),
+		}
+
+
+func play_animation(animation_name: String) -> void:
+	if animation_name == _current_animation:
+		return
+	if not _spritesheets.has(animation_name):
+		return
+	_current_animation = animation_name
 	_anim_frame = 0
+	_anim_timer = 0.0
 	_update_sprite_frame()
