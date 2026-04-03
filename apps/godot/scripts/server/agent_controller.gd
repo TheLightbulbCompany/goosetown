@@ -36,6 +36,8 @@ var _prev_nearby: Dictionary = {}
 var _state_timer: float = 0.0
 ## peer_id → user_id (for tagging agents in world_state)
 var _peer_to_user: Dictionary = {}
+## peer_id -> activity name (empty string = no activity)
+var _agent_activity: Dictionary = {}
 
 
 func initialize(location_markers: Array[Marker2D]) -> void:
@@ -119,6 +121,7 @@ func remove_agent(peer_id: int) -> void:
 		_id_to_peer.erase(agent_id)
 	_arrived_at.erase(peer_id)
 	_peer_to_user.erase(peer_id)
+	_agent_activity.erase(peer_id)
 
 	agent_node.queue_free()
 
@@ -139,6 +142,8 @@ func handle_command(peer_id: int, data: Dictionary) -> void:
 			_handle_idle(peer_id)
 		"get_locations":
 			_handle_get_locations(peer_id)
+		"set_activity":
+			_handle_set_activity(peer_id, data)
 		_:
 			send_to_peer.emit(peer_id, {
 				"event": "command_error",
@@ -251,6 +256,16 @@ func _handle_idle(peer_id: int) -> void:
 	send_to_peer.emit(peer_id, {
 		"event": "idle",
 		"location": _get_agent_location(agent_node.global_position),
+	})
+
+
+func _handle_set_activity(peer_id: int, data: Dictionary) -> void:
+	var activity_name: String = str(data.get("activity", ""))
+	_agent_activity[peer_id] = activity_name
+
+	send_to_peer.emit(peer_id, {
+		"event": "activity_set",
+		"activity": activity_name,
 	})
 
 
@@ -389,7 +404,7 @@ func _broadcast_agent_states() -> void:
 			"speed": speed,
 			"context": "town",
 			"userId": _peer_to_user.get(peer_id, ""),
-			"activity": "idle" if speed < 0.1 else "walking",
+			"activity": _agent_activity.get(peer_id, "idle" if speed < 0.1 else "walking"),
 			"nearby_agents": nearby,
 			"available_actions": available,
 			"environment": {
