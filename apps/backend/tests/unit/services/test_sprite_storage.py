@@ -8,8 +8,8 @@ from PIL import Image
 from core.services.sprite_storage import (
     DIRECTION_ROWS,
     FRAME_SIZE,
-    extract_animation_spritesheet,
     extract_all_spritesheets,
+    extract_animation_spritesheet,
     extract_walk_spritesheet,
 )
 

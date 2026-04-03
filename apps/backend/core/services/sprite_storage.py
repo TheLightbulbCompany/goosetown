@@ -190,7 +190,7 @@ def extract_all_spritesheets(zip_bytes: bytes) -> dict[str, tuple[bytes, int]]:
     animation_names: set[str] = set()
     for path in all_files:
         parts = path.split("/")
-        if len(parts) >= 2 and parts[0] == "animations" and parts[1]:
+        if len(parts) >= 3 and parts[0] == "animations" and parts[1]:
             animation_names.add(parts[1])
 
     results: dict[str, tuple[bytes, int]] = {}
