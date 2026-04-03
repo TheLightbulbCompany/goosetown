@@ -1,6 +1,8 @@
 """PixelLab sprite generation service for GooseTown agents."""
 
 import logging
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 import httpx
 
