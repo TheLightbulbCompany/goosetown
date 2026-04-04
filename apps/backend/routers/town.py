@@ -76,21 +76,27 @@ def _send_to_daemon(agent_id: str, payload: dict) -> bool:
     """
     from core.services.management_api_client import ManagementApiClient
 
+    evt = payload.get("event", payload.get("type", "?"))
+
     service = TownService()
     agent = service.get_town_agent_by_id(agent_id)
     if not agent:
+        logger.warning("[agent:%s] _send_to_daemon: agent not found in DB (event=%s)", agent_id[:8], evt)
         return False
 
     conn_id = agent.get("daemonConnectionId")
     if not conn_id:
-        logger.debug("No daemonConnectionId for agent %s", agent_id)
+        logger.warning("[agent:%s] _send_to_daemon: no daemonConnectionId (event=%s)", agent_id[:8], evt)
         return False
 
     try:
         mgmt = ManagementApiClient()
-        return mgmt.send_message(conn_id, payload)
+        sent = mgmt.send_message(conn_id, payload)
+        if not sent:
+            logger.warning("[agent:%s] _send_to_daemon: connection gone %s (event=%s)", agent_id[:8], conn_id[:12], evt)
+        return sent
     except Exception as exc:
-        logger.debug("Failed to send to daemon for agent %s: %s", agent_id, exc)
+        logger.warning("[agent:%s] _send_to_daemon: failed (event=%s): %s", agent_id[:8], evt, exc)
         return False
 
 
@@ -1461,6 +1467,7 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
     )
 
     # Persist the daemon's connection ID to DynamoDB so it survives restarts
+    logger.info("[agent:%s] daemonConnectionId updated: %s", agent_id[:8], request.connectionId[:12])
     service.update_agent_state(agent_id, daemon_connection_id=request.connectionId)
 
     # Read location context from agent record (new agents default to apartment)
@@ -1626,6 +1633,7 @@ async def _handle_agent_activity(connection_id: str, activity_name: str, agent_c
     # --- Mark agent as busy in DB ---
     import time as _time
 
+    logger.info("[agent:%s] Activity START: %s (conn=%s)", agent_id[:8], activity_name, connection_id[:12])
     service.update_agent_activity(agent_id, activity_name, _time.time())
 
     # Notify game server of activity state change
@@ -1687,7 +1695,25 @@ async def _handle_agent_activity(connection_id: str, activity_name: str, agent_c
     # --- Schedule the activity timer ---
     task = asyncio.create_task(_activity_timer(connection_id, agent_id, activity, agent))
     _activity_tasks.add(task)
-    task.add_done_callback(_activity_tasks.discard)
+
+    def _on_timer_done(t: asyncio.Task) -> None:
+        _activity_tasks.discard(t)
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc:
+            logger.error(
+                "[agent:%s] Activity timer CRASHED for %s: %s",
+                agent_id[:8], activity.name, exc, exc_info=exc,
+            )
+            # Best-effort cleanup: clear the stuck activity in DB
+            try:
+                TownService().update_agent_activity(agent_id, None, None)
+                logger.info("[agent:%s] Cleared stuck activity %s after timer crash", agent_id[:8], activity.name)
+            except Exception:
+                logger.warning("[agent:%s] Failed to clear stuck activity %s", agent_id[:8], activity.name)
+
+    task.add_done_callback(_on_timer_done)
 
 
 async def _generate_custom_animation(agent_id: str, character_id: str, animation_name: str) -> None:
@@ -1881,6 +1907,10 @@ async def _activity_timer(
     # --- Persist updated mood/energy and clear activity ---
     service.update_agent_mood_energy(agent_id, new_mood, new_energy)
     service.update_agent_activity(agent_id, None, None)
+    logger.info(
+        "[agent:%s] Activity COMPLETE: %s (mood %d→%d, energy %d→%d, conn=%s)",
+        agent_id[:8], activity.name, current_mood, new_mood, current_energy, new_energy, connection_id[:12],
+    )
 
     # Clear activity state in game server
     try:
@@ -2077,7 +2107,10 @@ async def _handle_context_transition(
     gs_client = get_game_server_client()
     agent_id = agent_conn.agent_id
 
+    logger.info("[agent:%s] Transition START: %s (conn=%s)", agent_id[:8], destination, connection_id[:12])
+
     def _reject(reason: str) -> None:
+        logger.warning("[agent:%s] Transition REJECTED: %s → %s", agent_id[:8], destination, reason)
         try:
             mgmt.send_message(
                 connection_id,
