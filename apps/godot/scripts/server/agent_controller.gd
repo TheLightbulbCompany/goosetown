@@ -166,6 +166,7 @@ func get_world_state_for_viewer() -> Dictionary:
 			"facing": agent_node.facing,
 			"is_moving": not agent_node.nav_agent.is_navigation_finished(),
 			"location": location_id,
+			"activity": _agent_activity.get(peer_id, ""),
 			"spriteUrl": agent_node.sprite_url,
 			"spriteAnimations": agent_node.sprite_animations,
 			"context": "town",

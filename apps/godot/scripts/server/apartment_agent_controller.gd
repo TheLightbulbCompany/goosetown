@@ -19,6 +19,7 @@ var _peer_to_id: Dictionary = {}    # peer_id -> agent_id
 var _id_to_peer: Dictionary = {}    # agent_id -> peer_id
 var _locations: Array[Marker2D] = []
 var _arrived_at: Dictionary = {}
+var _agent_activity: Dictionary = {}  # peer_id -> activity name
 ## Accumulator for periodic state broadcast
 var _state_timer: float = 0.0
 
@@ -94,6 +95,10 @@ func handle_command(peer_id: int, data: Dictionary) -> void:
 			_handle_idle(peer_id)
 		"get_locations":
 			_handle_get_locations(peer_id)
+		"set_activity":
+			var activity_name: String = str(data.get("activity", ""))
+			_agent_activity[peer_id] = activity_name
+			send_to_peer.emit(peer_id, {"event": "activity_set", "activity": activity_name})
 		_:
 			send_to_peer.emit(peer_id, {
 				"event": "command_error",
@@ -117,7 +122,9 @@ func get_world_state_for_viewer() -> Dictionary:
 			"facing": agent_node.facing,
 			"is_moving": not agent_node.nav_agent.is_navigation_finished(),
 			"location": loc,
+			"activity": _agent_activity.get(peer_id, ""),
 			"spriteUrl": agent_node.sprite_url,
+			"spriteAnimations": agent_node.sprite_animations,
 			"context": "apartment",
 			"userId": user_id,
 		})

@@ -30,7 +30,8 @@ ANIMATION_REGISTRY: dict[str, dict] = {
     "sitting": {
         "type": "custom",
         "frames": 8,
-        "fps": 4.0,
+        "fps": 1.0,
+
         "prompt": (
             "Sitting down relaxed on a low surface, hands resting on knees, "
             "gently shifting weight side to side, head tilting slightly, "
@@ -40,7 +41,8 @@ ANIMATION_REGISTRY: dict[str, dict] = {
     "reading": {
         "type": "custom",
         "frames": 8,
-        "fps": 4.0,
+        "fps": 1.0,
+
         "prompt": (
             "Sitting cross-legged holding an open book, eyes scanning the pages, "
             "one hand reaching to turn a page then returning, head nodding "
@@ -50,7 +52,8 @@ ANIMATION_REGISTRY: dict[str, dict] = {
     "writing": {
         "type": "custom",
         "frames": 8,
-        "fps": 6.0,
+        "fps": 2.0,
+
         "prompt": (
             "Sitting at a surface writing in a notebook, hand moving steadily "
             "across the page in short strokes, pausing briefly to think with "
@@ -60,7 +63,8 @@ ANIMATION_REGISTRY: dict[str, dict] = {
     "working": {
         "type": "custom",
         "frames": 8,
-        "fps": 6.0,
+        "fps": 2.0,
+
         "prompt": (
             "Sitting hunched forward over a laptop, fingers tapping rapidly on "
             "the keyboard, occasionally leaning back to think then leaning "
@@ -120,7 +124,8 @@ ANIMATION_REGISTRY: dict[str, dict] = {
     "sleeping": {
         "type": "custom",
         "frames": 8,
-        "fps": 3.0,
+        "fps": 0.5,
+
         "prompt": (
             "Lying down on side in a curled sleeping position, chest slowly "
             "rising and falling with deep breaths, small subtle shifts in "
