@@ -101,7 +101,7 @@ class ApartmentAgentState(BaseModel):
     location_context: Optional[str] = "apartment"
     current_location: Optional[str] = None
     current_activity: Optional[str] = None
-    mood: Optional[str] = None
+    mood: int = 0
     energy: int = 100
     status_message: Optional[str] = None
     position_x: float = 0.0

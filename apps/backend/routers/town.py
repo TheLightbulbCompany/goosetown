@@ -851,7 +851,7 @@ async def get_apartment(
                 location_context=item.get("locationContext", "apartment"),
                 current_location=item.get("currentLocation", "residence"),
                 current_activity=item.get("currentActivity"),
-                mood=item.get("mood"),
+                mood=parse_mood(item.get("mood")),
                 energy=item.get("energy", 100),
                 status_message=item.get("statusMessage"),
                 position_x=0.0,
