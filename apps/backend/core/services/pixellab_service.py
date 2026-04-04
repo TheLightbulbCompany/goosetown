@@ -209,7 +209,11 @@ class PixelLabService:
             return data.get("background_job_ids", [])
 
     async def get_job_status(self, job_id: str) -> dict:
-        """Get background job status."""
+        """Get background job status.
+
+        Returns dict with 'status', 'id', 'last_response' (when completed).
+        For animate-with-text-v2 jobs, last_response contains frame images.
+        """
         async with httpx.AsyncClient() as client:
             resp = await client.get(
                 f"{PIXELLAB_API_URL}/background-jobs/{job_id}",
@@ -218,6 +222,45 @@ class PixelLabService:
             )
             resp.raise_for_status()
             return resp.json()
+
+    async def get_v2_animation_frames(self, job_id: str) -> list[bytes]:
+        """Get completed V2 animation frames as raw PNG bytes.
+
+        Polls the job, extracts frame images from last_response.
+        Returns list of PNG byte arrays, or empty list on failure.
+        """
+        import base64
+
+        try:
+            job = await self.get_job_status(job_id)
+            if job.get("status") != "completed":
+                logger.warning("Job %s not completed (status=%s)", job_id, job.get("status"))
+                return []
+
+            last_response = job.get("last_response", {})
+            if not last_response:
+                logger.warning("Job %s completed but no last_response", job_id)
+                return []
+
+            images = last_response.get("images", [])
+            frames: list[bytes] = []
+            for img_data in images:
+                if isinstance(img_data, dict):
+                    b64 = img_data.get("base64", "")
+                elif isinstance(img_data, str):
+                    b64 = img_data
+                else:
+                    continue
+                # Strip data URI prefix if present
+                if "," in b64:
+                    b64 = b64.split(",", 1)[1]
+                frames.append(base64.b64decode(b64))
+
+            logger.info("Got %d frames from V2 job %s", len(frames), job_id)
+            return frames
+        except Exception:
+            logger.exception("Failed to get V2 frames from job %s", job_id)
+            return []
 
     async def download_character_zip(self, character_id: str) -> bytes | None:
         """Download character ZIP (rotations + animations). Returns None if not ready (423)."""
@@ -348,6 +391,35 @@ class PixelLabService:
         )
         return all_job_ids
 
+    async def _get_rotation_base64(self, character_id: str, direction: str) -> tuple[str, int, int] | None:
+        """Fetch a character's rotation image and return (base64_str, width, height).
+
+        Returns None if the rotation image can't be fetched.
+        """
+        try:
+            char_data = await self.get_character(character_id)
+            rotations = char_data.get("rotations", {})
+            rotation = rotations.get(direction)
+            if not rotation:
+                logger.warning("No %s rotation for character %s", direction, character_id)
+                return None
+
+            url = rotation.get("url", "")
+            if not url:
+                return None
+
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(url, timeout=30.0)
+                resp.raise_for_status()
+                import base64
+                b64 = base64.b64encode(resp.content).decode()
+                w = rotation.get("width", char_data.get("image_size", {}).get("width", 96))
+                h = rotation.get("height", char_data.get("image_size", {}).get("height", 96))
+                return f"data:image/png;base64,{b64}", w, h
+        except Exception:
+            logger.exception("Failed to fetch %s rotation for character %s", direction, character_id)
+            return None
+
     async def queue_custom_animation(
         self,
         character_id: str,
@@ -355,49 +427,72 @@ class PixelLabService:
         action_description: str,
         directions: list[str] | None = None,
     ) -> list[str]:
-        """Queue a custom animation for a character.
+        """Queue a custom animation using animate-with-text-v2 (pro).
 
-        Uses the animate-with-text endpoint. Sends with confirm_cost=true
-        to auto-approve. Returns list of job IDs, or empty list on failure.
+        For each direction, fetches the character's rotation image and
+        sends it to /animate-with-text-v2 with the action description.
+        Returns list of background job IDs.
         """
         if directions is None:
             directions = ["south", "west", "east", "north"]
 
-        body: dict = {
-            "character_id": character_id,
-            "action_description": action_description,
-            "animation_name": animation_name,
-            "directions": directions,
-            "confirm_cost": True,
-        }
+        # Get character info for image size
+        try:
+            char_data = await self.get_character(character_id)
+            image_size = char_data.get("image_size", {"width": 96, "height": 96})
+            view = char_data.get("view", "low top-down")
+        except Exception:
+            logger.exception("Failed to get character %s for custom animation", character_id)
+            return []
 
-        async with httpx.AsyncClient() as client:
-            try:
-                resp = await client.post(
-                    f"{PIXELLAB_API_URL}/characters/animations",
-                    headers={"Authorization": f"Bearer {self.api_key}"},
-                    json=body,
-                    timeout=30.0,
-                )
-                if resp.status_code != 200:
-                    logger.error(
-                        "PixelLab custom animation %r %s: %s",
-                        animation_name,
-                        resp.status_code,
-                        resp.text[:500],
+        job_ids: list[str] = []
+        for direction in directions:
+            rotation = await self._get_rotation_base64(character_id, direction)
+            if not rotation:
+                logger.warning("Skipping %s direction for custom animation %s", direction, animation_name)
+                continue
+
+            ref_image, ref_w, ref_h = rotation
+            body = {
+                "reference_image": {"base64": ref_image},
+                "reference_image_size": {"width": ref_w, "height": ref_h},
+                "action": action_description,
+                "image_size": {"width": image_size["width"], "height": image_size["height"]},
+                "direction": direction,
+                "view": view,
+                "no_background": True,
+            }
+
+            async with httpx.AsyncClient() as client:
+                try:
+                    resp = await client.post(
+                        f"{PIXELLAB_API_URL}/animate-with-text-v2",
+                        headers={"Authorization": f"Bearer {self.api_key}"},
+                        json=body,
+                        timeout=60.0,
                     )
-                    return []
-                data = resp.json()
-                job_ids = data.get("background_job_ids", [])
-                logger.info(
-                    "Custom animation %r queued for %s: %d jobs, response: %s",
-                    animation_name, character_id, len(job_ids), data,
-                )
-                return job_ids
-            except Exception:
-                logger.exception(
-                    "Failed to queue custom animation %r for character %s",
-                    animation_name,
-                    character_id,
-                )
-                return []
+                    if resp.status_code not in (200, 202):
+                        logger.error(
+                            "PixelLab animate-with-text-v2 %s/%s %s: %s",
+                            animation_name, direction, resp.status_code, resp.text[:500],
+                        )
+                        continue
+                    data = resp.json()
+                    job_id = data.get("background_job_id") or data.get("job_id")
+                    if job_id:
+                        job_ids.append(job_id)
+                        logger.info(
+                            "Custom animation %s/%s queued for %s: job %s",
+                            animation_name, direction, character_id, job_id,
+                        )
+                except Exception:
+                    logger.exception(
+                        "Failed to queue custom animation %s/%s for %s",
+                        animation_name, direction, character_id,
+                    )
+
+        logger.info(
+            "Custom animation %s: %d/%d directions queued for character %s",
+            animation_name, len(job_ids), len(directions), character_id,
+        )
+        return job_ids

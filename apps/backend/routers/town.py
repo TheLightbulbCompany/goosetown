@@ -1717,10 +1717,15 @@ async def _handle_agent_activity(connection_id: str, activity_name: str, agent_c
 
 
 async def _generate_custom_animation(agent_id: str, character_id: str, animation_name: str) -> None:
-    """Background task: generate a custom animation and update the agent's spriteAnimations."""
+    """Background task: generate a custom animation via animate-with-text-v2.
+
+    Uses the PixelLab V2 pro endpoint which takes the character's rotation
+    images and an action description. Generates one direction at a time,
+    collects frames, composites into a spritesheet, uploads to S3.
+    """
     from core.config import settings
     from core.services.pixellab_service import ANIMATION_REGISTRY, CUSTOM_ANIMATIONS, PixelLabService
-    from core.services.sprite_storage import extract_all_spritesheets, upload_sprites_to_s3
+    from core.services.sprite_storage import composite_v2_animation, upload_sprites_to_s3
 
     config = CUSTOM_ANIMATIONS.get(animation_name)
     if not config:
@@ -1730,54 +1735,54 @@ async def _generate_custom_animation(agent_id: str, character_id: str, animation
     service = TownService()
 
     try:
-        # Check if PixelLab character already has this animation (survives backend restarts)
-        existing_anims = await pxl.get_existing_animation_names(character_id)
-        if animation_name in existing_anims:
-            logger.info(
-                "Custom animation %s already exists on PixelLab character %s, downloading",
-                animation_name, character_id,
-            )
-        else:
-            # Queue the custom animation
-            job_ids = await pxl.queue_custom_animation(
-                character_id=character_id,
-                animation_name=animation_name,
-                action_description=config["prompt"],
-            )
-            if not job_ids:
-                logger.warning("No job IDs returned for custom animation %s", animation_name)
-                return
+        # Queue custom animation (one V2 job per direction)
+        job_ids = await pxl.queue_custom_animation(
+            character_id=character_id,
+            animation_name=animation_name,
+            action_description=config["prompt"],
+        )
+        if not job_ids:
+            logger.warning("No job IDs returned for custom animation %s", animation_name)
+            return
 
-        logger.info("Custom animation %s queued for agent %s, waiting for completion...", animation_name, agent_id)
+        logger.info(
+            "Custom animation %s queued for agent %s (%d jobs), waiting...",
+            animation_name, agent_id, len(job_ids),
+        )
 
-        # Wait for animation jobs to complete by polling each job ID
+        # Wait for all V2 jobs to complete
         await pxl.wait_for_jobs(
             job_ids,
             progress_label=f"custom:{animation_name}",
         )
 
-        # Download ZIP with all animations
-        zip_bytes = None
-        for attempt in range(6):
-            await asyncio.sleep(5)
-            try:
-                zip_bytes = await pxl.download_character_zip(character_id)
-                if zip_bytes is not None:
-                    break
-            except Exception:
-                pass
+        # Collect frames from each completed job
+        # Jobs are ordered: south, west, east, north (matching queue order)
+        directions = ["south", "west", "east", "north"]
+        direction_frames: dict[str, list[bytes]] = {}
+        for i, job_id in enumerate(job_ids):
+            direction = directions[i] if i < len(directions) else f"dir{i}"
+            frames = await pxl.get_v2_animation_frames(job_id)
+            if frames:
+                direction_frames[direction] = frames
+                logger.info("Got %d frames for %s/%s", len(frames), animation_name, direction)
+            else:
+                logger.warning("No frames for %s/%s (job %s)", animation_name, direction, job_id)
 
-        if zip_bytes is None:
-            logger.warning("Custom animation %s timed out for agent %s", animation_name, agent_id)
+        if not direction_frames:
+            logger.warning("No frames from any direction for %s", animation_name)
             return
 
-        # Extract all spritesheets (the new animation + existing ones)
-        all_sheets = extract_all_spritesheets(zip_bytes)
-        if animation_name not in all_sheets:
-            logger.warning("Animation %s not found in ZIP for agent %s", animation_name, agent_id)
+        # Composite into spritesheet
+        result = composite_v2_animation(direction_frames)
+        if result is None:
+            logger.warning("Failed to composite %s for agent %s", animation_name, agent_id)
             return
 
-        # Upload all (idempotent — re-uploads existing ones too, cached on CDN)
+        png_bytes, frame_count = result
+        all_sheets = {animation_name: (png_bytes, frame_count)}
+
+        # Upload spritesheet to S3
         uploaded = await asyncio.to_thread(
             upload_sprites_to_s3, all_sheets, agent_id, settings.SPRITE_S3_BUCKET
         )

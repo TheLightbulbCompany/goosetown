@@ -202,6 +202,51 @@ def extract_all_spritesheets(zip_bytes: bytes) -> dict[str, tuple[bytes, int]]:
     return results
 
 
+def composite_v2_animation(
+    direction_frames: dict[str, list[bytes]],
+) -> Optional[tuple[bytes, int]]:
+    """Composite animate-with-text-v2 results into a spritesheet.
+
+    Takes a dict of direction -> list of frame PNG bytes.
+    Returns (spritesheet_png_bytes, frame_count) or None.
+    """
+    if not direction_frames:
+        return None
+
+    # Determine frame count from the direction with most frames
+    frame_count = max(len(frames) for frames in direction_frames.values())
+    if frame_count == 0:
+        return None
+
+    sheet_width = frame_count * FRAME_SIZE
+    sheet = Image.new("RGBA", (sheet_width, SHEET_HEIGHT), (0, 0, 0, 0))
+    directions_found = 0
+
+    for direction_name, row_index in DIRECTION_ROWS.items():
+        frames = direction_frames.get(direction_name)
+        if not frames:
+            continue
+        directions_found += 1
+        for frame_idx, frame_bytes in enumerate(frames[:frame_count]):
+            try:
+                frame_img = Image.open(io.BytesIO(frame_bytes)).convert("RGBA")
+                frame_img = _crop_and_resize(frame_img, FRAME_SIZE)
+                sheet.paste(frame_img, (frame_idx * FRAME_SIZE, row_index * FRAME_SIZE))
+            except Exception as e:
+                logger.warning("Failed to process V2 frame %s/%d: %s", direction_name, frame_idx, e)
+
+    if directions_found == 0:
+        return None
+
+    logger.info(
+        "Composited V2 animation spritesheet: %d directions, %d frames",
+        directions_found, frame_count,
+    )
+    buf = io.BytesIO()
+    sheet.save(buf, format="PNG")
+    return buf.getvalue(), frame_count
+
+
 def extract_walk_spritesheet(zip_bytes: bytes) -> Optional[bytes]:
     """Extract walk animation spritesheet from a PixelLab character ZIP.
 
