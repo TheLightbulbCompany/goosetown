@@ -1657,8 +1657,15 @@ async def _handle_agent_activity(connection_id: str, activity_name: str, agent_c
     if activity_anim in CUSTOM_ANIMATIONS:
         agent_animations = agent.get("spriteAnimations") or {}
         anim_key = (agent_id, activity_anim)
+        char_id = agent.get("pixellabCharacterId") or agent.get("pixellab_character_id")
+        logger.info(
+            "Custom animation check: anim=%s, already_have=%s, in_progress=%s, char_id=%s",
+            activity_anim,
+            activity_anim in agent_animations,
+            anim_key in _custom_anim_in_progress,
+            char_id or "MISSING",
+        )
         if activity_anim not in agent_animations and anim_key not in _custom_anim_in_progress:
-            char_id = agent.get("pixellabCharacterId") or agent.get("pixellab_character_id")
             if char_id:
                 _custom_anim_in_progress.add(anim_key)
                 logger.info(
@@ -1670,6 +1677,11 @@ async def _handle_agent_activity(connection_id: str, activity_name: str, agent_c
                 )
                 _activity_tasks.add(gen_task)
                 gen_task.add_done_callback(_activity_tasks.discard)
+            else:
+                logger.warning(
+                    "Cannot trigger custom animation %s for agent %s: no pixellabCharacterId in DB",
+                    activity_anim, agent_id,
+                )
 
     # --- Schedule the activity timer ---
     task = asyncio.create_task(_activity_timer(connection_id, agent_id, activity, agent))

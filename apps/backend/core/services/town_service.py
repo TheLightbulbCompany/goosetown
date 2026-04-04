@@ -228,6 +228,7 @@ class TownService:
             "daemon_connection_id": "daemonConnectionId",
             "sprite_status": "spriteStatus",
             "sprite_current_template": "spriteCurrentTemplate",
+            "pixellab_character_id": "pixellabCharacterId",
             "location_context": "locationContext",
             "current_location": "currentLocation",
         }

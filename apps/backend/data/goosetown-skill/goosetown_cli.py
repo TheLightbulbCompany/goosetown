@@ -775,6 +775,7 @@ class TownDaemon:
         self._prev_mood: str | None = None
         self._prev_energy: int | None = None
         self._prev_nearby: frozenset = frozenset()
+        self._last_think_time: float = 0.0
 
     # ------------------------------------------------------------------
     # File I/O helpers
@@ -838,6 +839,8 @@ class TownDaemon:
             self._on_activity_rejected(data)
         elif event == "context_changed":
             self._on_context_changed(data)
+        elif event in ("move_rejected", "busy"):
+            self._on_move_rejected(data)
         elif event == "arrived":
             self._on_arrived(data)
         elif event == "sprite_progress":
@@ -1084,6 +1087,14 @@ class TownDaemon:
         self._append_event(f"{event_label} (location={new_location})")
         log.info("Context changed to %s, location=%s", new_context, new_location)
 
+    def _on_move_rejected(self, data: dict) -> None:
+        """Handle move_rejected or busy events — unblock pending move waits."""
+        reason = data.get("reason", data.get("event", "unknown"))
+        destination = data.get("destination", "?")
+        self._append_event(f"MOVE_REJECTED {destination}: {reason}")
+        if self._arrived_event is not None:
+            self._arrived_event.set()
+
     def _on_arrived(self, data: dict) -> None:
         """Handle arrived event — unblocks pending move IPC calls."""
         if "agent" in self.state:
@@ -1158,6 +1169,50 @@ class TownDaemon:
         except Exception as exc:
             print(f"[daemon] Alarm check failed: {exc}")
             alarm_path.unlink(missing_ok=True)
+
+    # ------------------------------------------------------------------
+    # Agent state → world update adapter
+    # ------------------------------------------------------------------
+
+    def _handle_agent_state(self, data: dict) -> None:
+        """Transform a flat agent_state event into _handle_world_update format.
+
+        The game server sends agent_state every 2s with location, activity,
+        nearby_agents, etc at the top level.  _handle_world_update expects
+        the agent data under ``you`` and a ``think`` flag.
+
+        Think logic: set think=true when the agent is idle (not walking,
+        no active activity) and at least 12s since the last think prompt.
+        This aligns with the agent's ~15s heartbeat cadence.
+        """
+        import time
+
+        activity = data.get("activity", "idle")
+        speed = data.get("speed", 0)
+        is_idle = activity in ("idle", "") and speed < 0.1
+
+        now = time.time()
+        think = is_idle and (now - self._last_think_time) >= 12.0
+
+        if think:
+            self._last_think_time = now
+
+        # Build world_update-compatible dict
+        agent_info = {
+            "location": data.get("location", "unknown"),
+            "activity": activity,
+            "mood": self.state.get("agent", {}).get("mood", "neutral"),
+            "energy": self.state.get("agent", {}).get("energy", 100),
+            "location_context": data.get("context", "town"),
+        }
+
+        world_data = {
+            "you": agent_info,
+            "nearby_agents": data.get("nearby_agents", []),
+            "think": think,
+        }
+
+        self._handle_world_update(world_data)
 
     # ------------------------------------------------------------------
     # World update handler
@@ -1429,6 +1484,8 @@ class TownDaemon:
                         event_name = data["event"]
                         if event_name == "world_state":
                             self._handle_world_update(data)
+                        elif event_name == "agent_state":
+                            self._handle_agent_state(data)
                         else:
                             self._handle_event(data)
                     elif data.get("type") == "world_update":

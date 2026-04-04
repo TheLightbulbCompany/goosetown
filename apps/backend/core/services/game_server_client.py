@@ -43,6 +43,7 @@ class GameServerClient:
         self._listen_tasks: dict[str, asyncio.Task] = {}
         self._locations: list[dict[str, Any]] = []
         self._arrival_events: dict[str, asyncio.Event] = {}
+        self._transition_events: dict[str, asyncio.Event] = {}
         self._agent_state_cache: dict[str, dict[str, Any]] = {}
 
     async def connect_agent(
@@ -142,22 +143,38 @@ class GameServerClient:
     async def transition_agent(
         self, agent_id: str, to_context: str, user_id: str, agent_data: dict
     ) -> None:
-        """Send a transition command to the game server."""
+        """Send a transition command and wait for game server confirmation."""
         ws = self._agent_connections.get(agent_id)
         if not ws:
             raise RuntimeError(f"No connection for agent {agent_id}")
+
+        # Register transition event BEFORE sending command
+        event = asyncio.Event()
+        self._transition_events[agent_id] = event
+
         await ws.send(json.dumps({
             "cmd": "transition",
             "to": to_context,
             "user_id": user_id,
             "agent_data": agent_data,
         }))
+        logger.info("Sent transition command for agent %s to %s, waiting for confirmation", agent_id, to_context)
+
+        # Wait for game server to confirm transition
+        try:
+            await asyncio.wait_for(event.wait(), timeout=10.0)
+        except asyncio.TimeoutError:
+            logger.warning("Transition confirmation timed out for agent %s", agent_id)
+            raise
+        finally:
+            self._transition_events.pop(agent_id, None)
+
         params = self._agent_connect_params.get(agent_id)
         if params:
             params["context"] = to_context
             if agent_data.get("location"):
                 params["location"] = agent_data["location"]
-        logger.info("Sent transition command for agent %s to %s", agent_id, to_context)
+        logger.info("Transition confirmed for agent %s to %s", agent_id, to_context)
 
     def expect_arrival(self, agent_id: str) -> asyncio.Event:
         """Register an arrival event BEFORE sending a move command."""
@@ -231,6 +248,14 @@ class GameServerClient:
                     arrival_event = self._arrival_events.get(agent_id)
                     if arrival_event is not None:
                         arrival_event.set()
+
+                # Signal transition waiters
+                if msg_type in ("transitioned", "command_error"):
+                    transition_event = self._transition_events.get(agent_id)
+                    if transition_event is not None:
+                        if msg_type == "command_error":
+                            logger.warning("Transition error for agent %s: %s", agent_id, message.get("error", ""))
+                        transition_event.set()
 
                 # Invoke per-agent callback
                 callback = self._agent_callbacks.get(agent_id)
