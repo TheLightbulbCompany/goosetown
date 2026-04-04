@@ -106,3 +106,34 @@ async def test_get_cached_locations_returns_copy():
     # Verify it's a copy
     locations.append({"name": "fake"})
     assert len(client._locations) == 1
+
+
+@pytest.mark.asyncio
+async def test_listen_agent_clears_connection_on_disconnect():
+    """When the game server connection closes, _listen_agent must remove
+    the connection from _agent_connections immediately so no other code
+    can use the dead socket."""
+    import websockets
+
+    client = GameServerClient(base_url="ws://test:8080")
+
+    mock_ws = AsyncMock()
+    mock_ws.__aiter__ = MagicMock(
+        return_value=AsyncMock(
+            __anext__=AsyncMock(side_effect=websockets.ConnectionClosed(None, None))
+        )
+    )
+
+    client._agent_connections["agent-1"] = mock_ws
+    client._agent_connect_params["agent-1"] = {
+        "type": "agent", "agent_id": "agent-1", "name": "Test",
+        "sprite_url": "", "location": "plaza", "context": "town",
+        "user_id": "", "sprite_animations": {},
+    }
+
+    client._reconnect_agent = AsyncMock()
+
+    await client._listen_agent("agent-1", mock_ws)
+
+    assert "agent-1" not in client._agent_connections
+    client._reconnect_agent.assert_called_once_with("agent-1")

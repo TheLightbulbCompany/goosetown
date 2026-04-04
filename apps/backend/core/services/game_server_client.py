@@ -267,6 +267,9 @@ class GameServerClient:
 
         except websockets.ConnectionClosed:
             logger.warning("Game server connection closed for agent %s, reconnecting...", agent_id)
+            # Immediately invalidate so no other code uses the dead socket
+            self._agent_connections.pop(agent_id, None)
+            self._listen_tasks.pop(agent_id, None)
             await self._reconnect_agent(agent_id)
             return
         except asyncio.CancelledError:
