@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from core.auth import AuthContext, get_current_user
 from core.services.game_server_client import get_game_server_client
 from core.services.town_agent_ws import get_town_agent_ws_manager
-from core.services.town_mood_engine import parse_mood
+from core.services.town_mood_engine import mood_label, parse_mood
 from core.services.town_service import TownService
 from schemas.town import (
     ApartmentAgentState,
@@ -851,7 +851,7 @@ async def get_apartment(
                 location_context=item.get("locationContext", "apartment"),
                 current_location=item.get("currentLocation", "residence"),
                 current_activity=item.get("currentActivity"),
-                mood=parse_mood(item.get("mood")),
+                mood=mood_label(parse_mood(item.get("mood"))),
                 energy=item.get("energy", 100),
                 status_message=item.get("statusMessage"),
                 position_x=0.0,
