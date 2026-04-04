@@ -398,14 +398,10 @@ class PixelLabService:
         """
         try:
             char_data = await self.get_character(character_id)
-            rotations = char_data.get("rotations", {})
-            rotation = rotations.get(direction)
-            if not rotation:
-                logger.warning("No %s rotation for character %s", direction, character_id)
-                return None
-
-            url = rotation.get("url", "")
+            rotation_urls = char_data.get("rotation_urls", {})
+            url = rotation_urls.get(direction, "")
             if not url:
+                logger.warning("No %s rotation URL for character %s", direction, character_id)
                 return None
 
             async with httpx.AsyncClient() as client:
@@ -413,8 +409,9 @@ class PixelLabService:
                 resp.raise_for_status()
                 import base64
                 b64 = base64.b64encode(resp.content).decode()
-                w = rotation.get("width", char_data.get("image_size", {}).get("width", 96))
-                h = rotation.get("height", char_data.get("image_size", {}).get("height", 96))
+                size = char_data.get("size", {})
+                w = size.get("width", 96)
+                h = size.get("height", 96)
                 return f"data:image/png;base64,{b64}", w, h
         except Exception:
             logger.exception("Failed to fetch %s rotation for character %s", direction, character_id)
@@ -439,7 +436,7 @@ class PixelLabService:
         # Get character info for image size
         try:
             char_data = await self.get_character(character_id)
-            image_size = char_data.get("image_size", {"width": 96, "height": 96})
+            image_size = char_data.get("size", {"width": 96, "height": 96})
             view = char_data.get("view", "low top-down")
         except Exception:
             logger.exception("Failed to get character %s for custom animation", character_id)
