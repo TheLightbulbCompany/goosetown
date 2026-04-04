@@ -1067,10 +1067,13 @@ async def handle_ws_message(request: WsMessageRequest):
                 # not forwarded to the game server directly.
                 await _handle_context_transition(request.connectionId, destination, agent_conn)
             else:
-                await gs_client.send_command(
-                    agent_conn.agent_id,
-                    {"cmd": "move", "destination": destination},
-                )
+                try:
+                    await gs_client.send_command(
+                        agent_conn.agent_id,
+                        {"cmd": "move", "destination": destination},
+                    )
+                except Exception as exc:
+                    logger.warning("[agent:%s] Move command failed: %s", agent_conn.agent_id[:8], exc)
         elif action == "chat":
             await _handle_chat(request.connectionId, body, agent_conn)
         elif action == "say":
@@ -1088,7 +1091,10 @@ async def handle_ws_message(request: WsMessageRequest):
         return {"statusCode": 400, "error": "unknown_connection"}
     if "cmd" in body:
         gs_client = get_game_server_client()
-        await gs_client.send_command(agent_conn.agent_id, body)
+        try:
+            await gs_client.send_command(agent_conn.agent_id, body)
+        except Exception as exc:
+            logger.warning("[agent:%s] Raw command forward failed: %s", agent_conn.agent_id[:8], exc)
 
     return {"statusCode": 200}
 

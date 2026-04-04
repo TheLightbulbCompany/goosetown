@@ -129,14 +129,28 @@ class GameServerClient:
             logger.info("Agent %s disconnected from game server", agent_id)
 
     async def send_command(self, agent_id: str, command: dict[str, Any]) -> None:
-        """Send a JSON command on an agent's WebSocket connection."""
+        """Send a JSON command on an agent's WebSocket connection.
+
+        Raises RuntimeError if no connection exists.
+        On send failure, invalidates the connection and re-raises.
+        """
         ws = self._agent_connections.get(agent_id)
         if ws is None:
-            logger.warning("No game server connection for agent %s, cannot send command", agent_id)
-            return
+            raise RuntimeError(f"No game server connection for agent {agent_id}")
 
-        await ws.send(json.dumps(command))
-        logger.debug("Sent command to agent %s: %s", agent_id, command.get("cmd", "unknown"))
+        try:
+            await ws.send(json.dumps(command))
+            logger.debug("Sent command to agent %s: %s", agent_id, command.get("cmd", "unknown"))
+        except Exception as exc:
+            logger.warning(
+                "[agent:%s] Game server send failed (%s), invalidating connection",
+                agent_id[:8], exc,
+            )
+            self._agent_connections.pop(agent_id, None)
+            task = self._listen_tasks.pop(agent_id, None)
+            if task:
+                task.cancel()
+            raise
 
     async def transition_agent(
         self, agent_id: str, to_context: str, user_id: str, agent_data: dict
@@ -150,12 +164,24 @@ class GameServerClient:
         event = asyncio.Event()
         self._transition_events[agent_id] = event
 
-        await ws.send(json.dumps({
-            "cmd": "transition",
-            "to": to_context,
-            "user_id": user_id,
-            "agent_data": agent_data,
-        }))
+        try:
+            await ws.send(json.dumps({
+                "cmd": "transition",
+                "to": to_context,
+                "user_id": user_id,
+                "agent_data": agent_data,
+            }))
+        except Exception as exc:
+            logger.warning(
+                "[agent:%s] Game server transition send failed (%s), invalidating connection",
+                agent_id[:8], exc,
+            )
+            self._agent_connections.pop(agent_id, None)
+            task = self._listen_tasks.pop(agent_id, None)
+            if task:
+                task.cancel()
+            self._transition_events.pop(agent_id, None)
+            raise
         logger.info("Sent transition command for agent %s to %s, waiting for confirmation", agent_id, to_context)
 
         # Wait for game server to confirm transition

@@ -78,10 +78,36 @@ async def test_send_command_forwards_to_agent_ws():
 
 
 @pytest.mark.asyncio
-async def test_send_command_warns_for_unknown_agent():
+async def test_send_command_raises_for_unknown_agent():
     client = GameServerClient(base_url="ws://test:8080")
-    # Should not raise, just log a warning
-    await client.send_command("unknown-agent", {"type": "move"})
+    with pytest.raises(RuntimeError, match="No game server connection"):
+        await client.send_command("unknown-agent", {"type": "move"})
+
+
+@pytest.mark.asyncio
+async def test_send_command_raises_on_no_connection():
+    """send_command must raise RuntimeError when no connection exists."""
+    client = GameServerClient(base_url="ws://test:8080")
+    with pytest.raises(RuntimeError, match="No game server connection"):
+        await client.send_command("unknown-agent", {"cmd": "move"})
+
+
+@pytest.mark.asyncio
+async def test_send_command_invalidates_on_send_failure():
+    """When ws.send() fails, send_command must remove the dead connection
+    and re-raise the exception."""
+    client = GameServerClient(base_url="ws://test:8080")
+
+    mock_ws = AsyncMock()
+    mock_ws.send = AsyncMock(side_effect=ConnectionError("broken pipe"))
+    client._agent_connections["agent-1"] = mock_ws
+    client._listen_tasks["agent-1"] = AsyncMock()
+
+    with pytest.raises(ConnectionError, match="broken pipe"):
+        await client.send_command("agent-1", {"cmd": "move"})
+
+    assert "agent-1" not in client._agent_connections
+    assert "agent-1" not in client._listen_tasks
 
 
 @pytest.mark.asyncio
