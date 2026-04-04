@@ -224,12 +224,16 @@ class PixelLabService:
             return resp.json()
 
     async def get_v2_animation_frames(self, job_id: str) -> list[bytes]:
-        """Get completed V2 animation frames as raw PNG bytes.
+        """Get completed V2 animation frames as PNG bytes.
 
-        Polls the job, extracts frame images from last_response.
+        V2 jobs return frames as raw RGBA byte buffers (type=rgba_bytes).
+        This method decodes them into PNG bytes for spritesheet compositing.
         Returns list of PNG byte arrays, or empty list on failure.
         """
         import base64
+        import io
+
+        from PIL import Image
 
         try:
             job = await self.get_job_status(job_id)
@@ -245,18 +249,31 @@ class PixelLabService:
             images = last_response.get("images", [])
             frames: list[bytes] = []
             for img_data in images:
-                if isinstance(img_data, dict):
-                    b64 = img_data.get("base64", "")
-                elif isinstance(img_data, str):
-                    b64 = img_data
-                else:
+                if not isinstance(img_data, dict):
                     continue
-                # Strip data URI prefix if present
-                if "," in b64:
-                    b64 = b64.split(",", 1)[1]
-                frames.append(base64.b64decode(b64))
+                b64 = img_data.get("base64", "")
+                img_type = img_data.get("type", "")
+                width = img_data.get("width", 0)
+                height = img_data.get("height", 0)
 
-            logger.info("Got %d frames from V2 job %s", len(frames), job_id)
+                if not b64:
+                    continue
+
+                raw_bytes = base64.b64decode(b64)
+
+                if img_type == "rgba_bytes" and width > 0 and height > 0:
+                    # Raw RGBA pixel data — convert to PNG
+                    img = Image.frombytes("RGBA", (width, height), raw_bytes)
+                    buf = io.BytesIO()
+                    img.save(buf, format="PNG")
+                    frames.append(buf.getvalue())
+                else:
+                    # Assume PNG/JPEG encoded
+                    frames.append(raw_bytes)
+
+            logger.info("Got %d frames from V2 job %s (%dx%d)", len(frames), job_id,
+                        images[0].get("width", 0) if images else 0,
+                        images[0].get("height", 0) if images else 0)
             return frames
         except Exception:
             logger.exception("Failed to get V2 frames from job %s", job_id)
