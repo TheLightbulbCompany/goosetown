@@ -137,3 +137,40 @@ async def test_listen_agent_clears_connection_on_disconnect():
 
     assert "agent-1" not in client._agent_connections
     client._reconnect_agent.assert_called_once_with("agent-1")
+
+
+@pytest.mark.asyncio
+async def test_connect_agent_replaces_existing_connection():
+    """connect_agent must always create a fresh connection, even if
+    an existing one appears alive. This handles game server restarts
+    where TCP stays open but the server has no record of the agent."""
+    mock_ws_old = AsyncMock()
+    mock_ws_old.state = 1  # Appears OPEN
+    mock_ws_old.close = AsyncMock()
+    mock_ws_old.__aiter__ = MagicMock(
+        return_value=AsyncMock(__anext__=AsyncMock(side_effect=StopAsyncIteration))
+    )
+
+    mock_ws_new = AsyncMock()
+    mock_ws_new.send = AsyncMock()
+    mock_ws_new.__aiter__ = MagicMock(
+        return_value=AsyncMock(__anext__=AsyncMock(side_effect=StopAsyncIteration))
+    )
+
+    client = GameServerClient(base_url="ws://test:8080")
+    client._agent_connections["agent-1"] = mock_ws_old
+    client._listen_tasks["agent-1"] = AsyncMock()  # fake task
+
+    with patch("core.services.game_server_client.websockets.connect", new_callable=AsyncMock) as mock_connect:
+        mock_connect.return_value = mock_ws_new
+
+        await client.connect_agent("agent-1", "Goose", "https://cdn/sprite.png", "plaza")
+
+        # Old connection must be closed
+        mock_ws_old.close.assert_called_once()
+        # New connection must be created
+        mock_connect.assert_called_once_with("ws://test:8080")
+        # _agent_connections must point to the new WebSocket
+        assert client._agent_connections["agent-1"] is mock_ws_new
+
+    await client.disconnect_agent("agent-1")

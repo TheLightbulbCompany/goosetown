@@ -59,6 +59,10 @@ class GameServerClient:
     ) -> None:
         """Open a WebSocket connection for an agent and start listening.
 
+        Always creates a fresh connection — closes any existing one first.
+        The game server deduplicates by agent_id on spawn, so re-registering
+        is safe and handles game server restarts transparently.
+
         Args:
             agent_id: Unique agent identifier.
             display_name: Human-readable agent name.
@@ -70,26 +74,20 @@ class GameServerClient:
             on_event: Async callback fired on every game server event for this agent.
                       Signature: (agent_id: str, event_data: dict) -> None
         """
-        # Update callback even if already connected (daemon reconnect updates the callback)
         if on_event is not None:
             self._agent_callbacks[agent_id] = on_event
 
-        existing_ws = self._agent_connections.get(agent_id)
+        # Close existing connection if any — don't trust ws.state
+        existing_ws = self._agent_connections.pop(agent_id, None)
         if existing_ws is not None:
-            try:
-                is_alive = existing_ws.state == 1  # State.OPEN
-            except Exception:
-                is_alive = False
-            if is_alive:
-                logger.info("Agent %s already connected to game server, updated callback", agent_id)
-                return
-            # Stale connection — clean up and reconnect
-            logger.info("Agent %s has stale connection, reconnecting", agent_id)
-            self._agent_connections.pop(agent_id, None)
-            self._agent_connect_params.pop(agent_id, None)
             task = self._listen_tasks.pop(agent_id, None)
             if task:
                 task.cancel()
+            try:
+                await existing_ws.close()
+            except Exception:
+                pass
+            logger.info("Closed existing game server connection for agent %s", agent_id)
 
         ws = await websockets.connect(self._base_url)
 
@@ -208,14 +206,8 @@ class GameServerClient:
         return self._agent_state_cache.get(agent_id)
 
     def has_agent_connection(self, agent_id: str) -> bool:
-        """Check if an agent has a live game server connection."""
-        ws = self._agent_connections.get(agent_id)
-        if ws is None:
-            return False
-        try:
-            return ws.state == 1
-        except Exception:
-            return False
+        """Check if an agent has a game server connection."""
+        return agent_id in self._agent_connections
 
     async def _listen_agent(self, agent_id: str, ws: ClientConnection) -> None:
         """Listen loop for an agent's WebSocket connection.
