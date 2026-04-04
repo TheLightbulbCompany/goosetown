@@ -7,11 +7,13 @@ from PIL import Image
 
 from core.services.sprite_storage import (
     DIRECTION_ROWS,
-    FRAME_SIZE,
     extract_all_spritesheets,
     extract_animation_spritesheet,
     extract_walk_spritesheet,
 )
+
+# Test images are 96x96 (same as PixelLab default canvas)
+TEST_FRAME_SIZE = 96
 
 
 def _make_test_zip(animations: dict[str, dict[str, int]]) -> bytes:
@@ -23,7 +25,7 @@ def _make_test_zip(animations: dict[str, dict[str, int]]) -> bytes:
         for anim_name, directions in animations.items():
             for direction, frame_count in directions.items():
                 for i in range(frame_count):
-                    img = Image.new("RGBA", (96, 96), (255, 0, 0, 255))
+                    img = Image.new("RGBA", (TEST_FRAME_SIZE, TEST_FRAME_SIZE), (255, 0, 0, 255))
                     frame_buf = io.BytesIO()
                     img.save(frame_buf, format="PNG")
                     zf.writestr(
@@ -37,7 +39,7 @@ def _make_rotation_zip() -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         for direction in DIRECTION_ROWS:
-            img = Image.new("RGBA", (96, 96), (0, 255, 0, 255))
+            img = Image.new("RGBA", (TEST_FRAME_SIZE, TEST_FRAME_SIZE), (0, 255, 0, 255))
             frame_buf = io.BytesIO()
             img.save(frame_buf, format="PNG")
             zf.writestr(f"rotations/{direction}.png", frame_buf.getvalue())
@@ -52,8 +54,8 @@ class TestExtractAnimationSpritesheet:
         png_bytes, frame_count = result
         assert frame_count == 6
         img = Image.open(io.BytesIO(png_bytes))
-        assert img.width == 6 * FRAME_SIZE
-        assert img.height == 4 * FRAME_SIZE
+        assert img.width == 6 * TEST_FRAME_SIZE
+        assert img.height == 4 * TEST_FRAME_SIZE
 
     def test_partial_directions(self):
         zip_bytes = _make_test_zip({"walk": {"south": 6, "east": 6}})
@@ -73,7 +75,7 @@ class TestExtractAnimationSpritesheet:
         png_bytes, frame_count = result
         assert frame_count == 4
         img = Image.open(io.BytesIO(png_bytes))
-        assert img.width == 4 * FRAME_SIZE
+        assert img.width == 4 * TEST_FRAME_SIZE
 
     def test_bad_zip(self):
         assert extract_animation_spritesheet(b"not a zip", "walk") is None
@@ -107,11 +109,12 @@ class TestExtractWalkSpritesheetBackwardCompat:
         result = extract_walk_spritesheet(zip_bytes)
         assert result is not None
         img = Image.open(io.BytesIO(result))
-        assert img.width == 6 * FRAME_SIZE
+        assert img.width == 6 * TEST_FRAME_SIZE
 
     def test_falls_back_to_rotations(self):
         zip_bytes = _make_rotation_zip()
         result = extract_walk_spritesheet(zip_bytes)
         assert result is not None
         img = Image.open(io.BytesIO(result))
-        assert img.width == 6 * FRAME_SIZE
+        # Rotation fallback uses FRAME_COUNT (6) repetitions at full resolution
+        assert img.width == 6 * TEST_FRAME_SIZE

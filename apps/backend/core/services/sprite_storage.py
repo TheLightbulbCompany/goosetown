@@ -12,7 +12,8 @@ from core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Sprite sheet layout: 6 frames x 48px wide, 4 directions x 48px tall
+# Default frame size for legacy spritesheets.
+# New spritesheets use full-resolution frames from PixelLab and Godot scales them.
 FRAME_COUNT = 6
 FRAME_SIZE = 48
 SHEET_WIDTH = FRAME_COUNT * FRAME_SIZE  # 288
@@ -21,22 +22,25 @@ SHEET_HEIGHT = 4 * FRAME_SIZE  # 192
 # Row index for each direction in the output spritesheet
 DIRECTION_ROWS = {"south": 0, "west": 1, "east": 2, "north": 3}
 
+# Display size in Godot (pixels). Godot scales the full-res sprite to this.
+DISPLAY_SIZE = 48
 
-def _crop_and_resize(img: Image.Image, target_size: int) -> Image.Image:
-    """Crop transparent padding around the character, then resize to fill the target frame.
 
-    PixelLab returns characters at ~60% of the canvas with transparent padding.
-    Simply resizing the full canvas makes the character tiny. Instead:
-    1. Find the bounding box of non-transparent pixels
-    2. Crop to that bbox with a small margin
-    3. Resize to fill the target frame (maintaining aspect ratio, centered)
+def _prepare_frame(img: Image.Image, target_size: int | None = None) -> Image.Image:
+    """Prepare a frame for the spritesheet.
+
+    If target_size is given (legacy mode), crops transparent padding and resizes
+    to fit. Otherwise keeps the original resolution — Godot handles scaling.
     """
+    if target_size is None:
+        # Full-res mode: return as-is (Godot will scale)
+        return img
+
+    # Legacy mode: crop + resize to target
     bbox = img.getbbox()
     if bbox is None:
-        # Fully transparent — return empty frame
         return Image.new("RGBA", (target_size, target_size), (0, 0, 0, 0))
 
-    # Add 1px margin around the content
     margin = 1
     x1 = max(0, bbox[0] - margin)
     y1 = max(0, bbox[1] - margin)
@@ -45,14 +49,12 @@ def _crop_and_resize(img: Image.Image, target_size: int) -> Image.Image:
 
     cropped = img.crop((x1, y1, x2, y2))
 
-    # Resize to fill the target frame while maintaining aspect ratio
     cw, ch = cropped.size
     scale = min(target_size / cw, target_size / ch)
     new_w = max(1, int(cw * scale))
     new_h = max(1, int(ch * scale))
     resized = cropped.resize((new_w, new_h), Image.NEAREST)
 
-    # Center on a transparent target-sized canvas
     result = Image.new("RGBA", (target_size, target_size), (0, 0, 0, 0))
     paste_x = (target_size - new_w) // 2
     paste_y = target_size - new_h  # Anchor to bottom (feet on ground)
@@ -65,6 +67,7 @@ def _extract_rotation_fallback(zip_bytes: bytes) -> Optional[bytes]:
 
     Looks for rotations/<direction>.png in the ZIP and repeats the single frame
     across all FRAME_COUNT columns to produce a standard-sized spritesheet.
+    Uses the actual image dimensions from PixelLab (no downscale).
 
     Returns PNG bytes or None if no rotation files are found.
     """
@@ -78,7 +81,13 @@ def _extract_rotation_fallback(zip_bytes: bytes) -> Optional[bytes]:
     if not rotation_files:
         return None
 
-    sheet = Image.new("RGBA", (SHEET_WIDTH, SHEET_HEIGHT), (0, 0, 0, 0))
+    # Detect frame size from the first rotation image
+    first_rot = rotation_files[0]
+    with zf.open(first_rot) as fp:
+        sample = Image.open(fp)
+        frame_w, frame_h = sample.size
+
+    sheet = Image.new("RGBA", (FRAME_COUNT * frame_w, 4 * frame_h), (0, 0, 0, 0))
     directions_found = 0
 
     for direction_name, row_index in DIRECTION_ROWS.items():
@@ -89,9 +98,8 @@ def _extract_rotation_fallback(zip_bytes: bytes) -> Optional[bytes]:
         try:
             with zf.open(rot_path) as fp:
                 frame_img = Image.open(fp).convert("RGBA")
-                frame_img = _crop_and_resize(frame_img, FRAME_SIZE)
                 for frame_idx in range(FRAME_COUNT):
-                    sheet.paste(frame_img, (frame_idx * FRAME_SIZE, row_index * FRAME_SIZE))
+                    sheet.paste(frame_img, (frame_idx * frame_w, row_index * frame_h))
         except Exception as e:
             logger.warning("Failed to process rotation %s: %s", rot_path, e)
 
@@ -137,9 +145,16 @@ def extract_animation_spritesheet(
     if not frames_per_direction:
         return None
 
+    # Detect frame size from the first frame image
+    first_frame_path = next(iter(next(iter(frames_per_direction.values()))))
+    with zf.open(first_frame_path) as fp:
+        sample = Image.open(fp)
+        frame_w, frame_h = sample.size
+
     frame_count = max(len(frames) for frames in frames_per_direction.values())
-    sheet_width = frame_count * FRAME_SIZE
-    sheet = Image.new("RGBA", (sheet_width, SHEET_HEIGHT), (0, 0, 0, 0))
+    sheet_width = frame_count * frame_w
+    sheet_height = 4 * frame_h
+    sheet = Image.new("RGBA", (sheet_width, sheet_height), (0, 0, 0, 0))
     directions_found = 0
 
     for direction_name, row_index in DIRECTION_ROWS.items():
@@ -151,8 +166,7 @@ def extract_animation_spritesheet(
             try:
                 with zf.open(frame_path) as fp:
                     frame_img = Image.open(fp).convert("RGBA")
-                    frame_img = _crop_and_resize(frame_img, FRAME_SIZE)
-                    sheet.paste(frame_img, (frame_idx * FRAME_SIZE, row_index * FRAME_SIZE))
+                    sheet.paste(frame_img, (frame_idx * frame_w, row_index * frame_h))
             except Exception as e:
                 logger.warning("Failed to process frame %s: %s", frame_path, e)
 
@@ -218,8 +232,14 @@ def composite_v2_animation(
     if frame_count == 0:
         return None
 
-    sheet_width = frame_count * FRAME_SIZE
-    sheet = Image.new("RGBA", (sheet_width, SHEET_HEIGHT), (0, 0, 0, 0))
+    # Detect frame size from the first available frame
+    first_frames = next(iter(direction_frames.values()))
+    sample = Image.open(io.BytesIO(first_frames[0]))
+    frame_w, frame_h = sample.size
+
+    sheet_width = frame_count * frame_w
+    sheet_height = 4 * frame_h
+    sheet = Image.new("RGBA", (sheet_width, sheet_height), (0, 0, 0, 0))
     directions_found = 0
 
     for direction_name, row_index in DIRECTION_ROWS.items():
@@ -230,8 +250,7 @@ def composite_v2_animation(
         for frame_idx, frame_bytes in enumerate(frames[:frame_count]):
             try:
                 frame_img = Image.open(io.BytesIO(frame_bytes)).convert("RGBA")
-                frame_img = _crop_and_resize(frame_img, FRAME_SIZE)
-                sheet.paste(frame_img, (frame_idx * FRAME_SIZE, row_index * FRAME_SIZE))
+                sheet.paste(frame_img, (frame_idx * frame_w, row_index * frame_h))
             except Exception as e:
                 logger.warning("Failed to process V2 frame %s/%d: %s", direction_name, frame_idx, e)
 

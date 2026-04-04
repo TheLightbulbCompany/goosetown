@@ -17,11 +17,12 @@ var move_speed: float = 100.0
 var facing: String = "south"
 var speech_text: String = ""
 
-# Spritesheet constants (matches backend sprite_storage.py)
-const FRAME_SIZE: int = 48
-const FRAME_COUNT: int = 6
-const SHEET_WIDTH: int = 288  # 6 * 48
-const SHEET_HEIGHT: int = 192  # 4 * 48
+# Display size: how large the sprite appears in-game (pixels).
+# Full-res spritesheets are scaled down to this size for rendering.
+const DISPLAY_SIZE: int = 48
+# Fallback for legacy spritesheets that are exactly 48px per frame
+const LEGACY_FRAME_SIZE: int = 48
+const DEFAULT_FRAME_COUNT: int = 6
 
 # Direction → row index in spritesheet
 const DIR_ROW: Dictionary = {
@@ -68,7 +69,6 @@ var _current_animation: String = "walk"
 var _anim_frame: int = 0
 var _anim_timer: float = 0.0
 const DEFAULT_FPS: float = 8.0
-const DEFAULT_FRAME_COUNT: int = 6
 ## Sprite animation metadata from backend (raw dict for world_state broadcast)
 var sprite_animations: Dictionary = {}
 var _is_moving: bool = false
@@ -226,17 +226,30 @@ func _update_sprite_frame() -> void:
 	var fc: int = cfg.get("frame_count", DEFAULT_FRAME_COUNT)
 	var safe_frame: int = _anim_frame % fc
 
+	# Derive frame size from texture dimensions (full-res spritesheets)
+	var tex_w: int = tex.get_width()
+	var tex_h: int = tex.get_height()
+	var frame_w: int = tex_w / fc if fc > 0 else tex_w
+	var frame_h: int = tex_h / 4  # 4 directions
+
 	var row: int = DIR_ROW.get(facing, 0)
 	var region := Rect2(
-		safe_frame * FRAME_SIZE,
-		row * FRAME_SIZE,
-		FRAME_SIZE,
-		FRAME_SIZE,
+		safe_frame * frame_w,
+		row * frame_h,
+		frame_w,
+		frame_h,
 	)
 	var atlas := AtlasTexture.new()
 	atlas.atlas = tex
 	atlas.region = region
 	sprite.texture = atlas
+
+	# Scale sprite so it displays at DISPLAY_SIZE regardless of source resolution
+	if frame_h > 0 and frame_h != DISPLAY_SIZE:
+		var s: float = float(DISPLAY_SIZE) / float(frame_h)
+		sprite.scale = Vector2(s, s)
+	else:
+		sprite.scale = Vector2.ONE
 
 
 func _parse_facing(facing_str: String) -> void:
