@@ -1181,6 +1181,10 @@ class TownDaemon:
         nearby_agents, etc at the top level.  _handle_world_update expects
         the agent data under ``you`` and a ``think`` flag.
 
+        Passive updates (think=false) only refresh internal state without
+        writing TOWN_STATUS.md — otherwise the 2s cadence clobbers the
+        think prompt that contains activities and navigation options.
+
         Think logic: set think=true when the agent is idle (not walking,
         no active activity) and at least 12s since the last think prompt.
         This aligns with the agent's ~15s heartbeat cadence.
@@ -1206,13 +1210,20 @@ class TownDaemon:
             "location_context": data.get("context", "town"),
         }
 
-        world_data = {
-            "you": agent_info,
-            "nearby_agents": data.get("nearby_agents", []),
-            "think": think,
-        }
+        # Always update internal state
+        self.state["agent"] = {**self.state.get("agent", {}), **agent_info}
+        self.state["nearby"] = data.get("nearby_agents", [])
+        self._write_state()
 
-        self._handle_world_update(world_data)
+        # Only write TOWN_STATUS.md on think events — passive updates
+        # would overwrite the activity list every 2 seconds
+        if think:
+            world_data = {
+                "you": agent_info,
+                "nearby_agents": data.get("nearby_agents", []),
+                "think": True,
+            }
+            self._handle_world_update(world_data)
 
     # ------------------------------------------------------------------
     # World update handler

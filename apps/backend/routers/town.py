@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from core.auth import AuthContext, get_current_user
 from core.services.game_server_client import get_game_server_client
 from core.services.town_agent_ws import get_town_agent_ws_manager
+from core.services.town_mood_engine import parse_mood
 from core.services.town_service import TownService
 from schemas.town import (
     ApartmentAgentState,
@@ -1872,7 +1873,7 @@ async def _activity_timer(
         return
 
     current_energy = int(agent.get("energy", 100))
-    current_mood = int(agent.get("mood", 0))
+    current_mood = parse_mood(agent.get("mood"))
     traits = agent.get("traits", "")
 
     new_energy, new_mood, interrupted = apply_activity_effect(activity, current_energy, current_mood, traits, elapsed)
@@ -1954,7 +1955,7 @@ async def complete_activity_from_startup(agent_id: str, activity, elapsed: float
         return
 
     current_energy = int(agent.get("energy", 100))
-    current_mood = int(agent.get("mood", 0))
+    current_mood = parse_mood(agent.get("mood"))
     traits = agent.get("traits", "")
 
     new_energy, new_mood, interrupted = apply_activity_effect(
@@ -2000,7 +2001,7 @@ async def restart_activity_timer(agent_id: str, activity, remaining: float) -> N
         return  # Activity was cancelled or changed
 
     current_energy = int(agent.get("energy", 100))
-    current_mood = int(agent.get("mood", 0))
+    current_mood = parse_mood(agent.get("mood"))
     traits = agent.get("traits", "")
 
     new_energy, new_mood, interrupted = apply_activity_effect(
