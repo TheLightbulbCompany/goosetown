@@ -960,6 +960,50 @@ async def get_conversations(
 
 
 # ===========================================================================
+# WebSocket disconnect handling (from API Gateway $disconnect Lambda)
+# ===========================================================================
+
+
+class WsDisconnectRequest(BaseModel):
+    connectionId: str
+
+
+@router.post("/ws-disconnect")
+async def handle_ws_disconnect(request: WsDisconnectRequest):
+    """Handle WebSocket disconnect — clean up agent from game server and DynamoDB."""
+    ws_manager = get_town_agent_ws_manager()
+    agent_conn = ws_manager.get_by_connection(request.connectionId)
+
+    if agent_conn:
+        agent_id = agent_conn.agent_id
+        logger.info("[agent:%s] Daemon disconnected (conn=%s)", agent_id[:8], request.connectionId[:12])
+
+        # Remove from game server
+        gs_client = get_game_server_client()
+        try:
+            await gs_client.disconnect_agent(agent_id)
+        except Exception as exc:
+            logger.warning("[agent:%s] Failed to disconnect from game server: %s", agent_id[:8], exc)
+
+        # Update DynamoDB: clear daemon connection, set context back to apartment
+        service = TownService()
+        service.update_agent_state(agent_id, daemon_connection_id="")
+        service.update_agent_context(agent_id, "apartment", "exit")
+        service.update_agent_activity(agent_id, None, None)
+
+        # Unregister from ws_manager
+        ws_manager.unregister(request.connectionId)
+    else:
+        # Might be a viewer disconnect
+        from core.services.viewer_relay import get_viewer_relay
+
+        relay = get_viewer_relay()
+        relay.unregister_viewer(request.connectionId)
+
+    return {"statusCode": 200}
+
+
+# ===========================================================================
 # WebSocket message forwarding (from API Gateway $default Lambda)
 # ===========================================================================
 
@@ -1470,9 +1514,10 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
     logger.info("[agent:%s] daemonConnectionId updated: %s", agent_id[:8], request.connectionId[:12])
     service.update_agent_state(agent_id, daemon_connection_id=request.connectionId)
 
-    # Read location context from agent record (new agents default to apartment)
-    location_context = agent.get("locationContext", "apartment")
-    current_location = agent.get("currentLocation", "exit")
+    # Always spawn in apartment on connect — agents "wake up" at home
+    location_context = "apartment"
+    current_location = "exit"
+    service.update_agent_context(agent_id, location_context, current_location)
 
     # Set in-memory context on the connection record
     ws_manager.update_context(agent_id, location_context)
