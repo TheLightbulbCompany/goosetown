@@ -1215,6 +1215,13 @@ async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
     except Exception as exc:
         logger.warning("Failed to send chat act_ok to %s: %s", initiator_id, exc)
 
+    # Send speech bubble to game server for viewer display
+    try:
+        gs_client = get_game_server_client()
+        await gs_client.send_command(initiator_id, {"cmd": "set_speech", "text": opening_message})
+    except Exception:
+        pass  # Speech bubble is cosmetic, don't fail the conversation
+
     logger.info(
         "Conversation %s started between %s and %s at %s",
         conv_id,
@@ -1303,6 +1310,13 @@ async def _handle_say(connection_id: str, body: dict, agent_conn) -> None:
             )
         except Exception as exc:
             logger.warning("Failed to forward message to %s: %s", other_id, exc)
+
+    # Send speech bubble to game server for viewer display
+    try:
+        gs_client = get_game_server_client()
+        await gs_client.send_command(speaker_id, {"cmd": "set_speech", "text": message})
+    except Exception:
+        pass  # Speech bubble is cosmetic, don't fail the conversation
 
     logger.info("Conversation %s turn %d: %s said %d chars", conv_id, turn_count, speaker_id, len(message))
 
