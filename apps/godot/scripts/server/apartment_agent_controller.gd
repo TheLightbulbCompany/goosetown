@@ -20,6 +20,9 @@ var _id_to_peer: Dictionary = {}    # agent_id -> peer_id
 var _locations: Array[Marker2D] = []
 var _arrived_at: Dictionary = {}
 var _agent_activity: Dictionary = {}  # peer_id -> activity name
+var _agent_speech: Dictionary = {}
+var _speech_timers: Dictionary = {}
+const SPEECH_DURATION: float = 5.0
 ## Accumulator for periodic state broadcast
 var _state_timer: float = 0.0
 
@@ -80,6 +83,8 @@ func remove_agent(peer_id: int) -> void:
 	_peer_to_id.erase(peer_id)
 	_id_to_peer.erase(agent_id)
 	_arrived_at.erase(peer_id)
+	_agent_speech.erase(peer_id)
+	_speech_timers.erase(peer_id)
 	agent_node.queue_free()
 
 
@@ -99,6 +104,13 @@ func handle_command(peer_id: int, data: Dictionary) -> void:
 			var activity_name: String = str(data.get("activity", ""))
 			_agent_activity[peer_id] = activity_name
 			send_to_peer.emit(peer_id, {"event": "activity_set", "activity": activity_name})
+		"set_speech":
+			var text: String = str(data.get("text", ""))
+			_agent_speech[peer_id] = text
+			if text != "":
+				_speech_timers[peer_id] = SPEECH_DURATION
+			else:
+				_speech_timers.erase(peer_id)
 		_:
 			send_to_peer.emit(peer_id, {
 				"event": "command_error",
@@ -123,6 +135,7 @@ func get_world_state_for_viewer() -> Dictionary:
 			"is_moving": not agent_node.nav_agent.is_navigation_finished(),
 			"location": loc,
 			"activity": _agent_activity.get(peer_id, ""),
+			"speechText": _agent_speech.get(peer_id, ""),
 			"spriteUrl": agent_node.sprite_url,
 			"spriteAnimations": agent_node.sprite_animations,
 			"context": "apartment",
@@ -161,6 +174,16 @@ func _process(delta: float) -> void:
 		return
 
 	_check_arrivals()
+
+	# Tick speech timers
+	var expired_peers: Array = []
+	for peer_id in _speech_timers.keys():
+		_speech_timers[peer_id] -= delta
+		if _speech_timers[peer_id] <= 0.0:
+			expired_peers.append(peer_id)
+	for peer_id in expired_peers:
+		_speech_timers.erase(peer_id)
+		_agent_speech.erase(peer_id)
 
 	_state_timer += delta
 	if _state_timer >= STATE_INTERVAL:
