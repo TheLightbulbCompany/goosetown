@@ -38,6 +38,12 @@ var _state_timer: float = 0.0
 var _peer_to_user: Dictionary = {}
 ## peer_id -> activity name (empty string = no activity)
 var _agent_activity: Dictionary = {}
+## peer_id -> speech text (empty string = no speech)
+var _agent_speech: Dictionary = {}
+## peer_id -> seconds remaining before speech clears
+var _speech_timers: Dictionary = {}
+## How long speech bubbles stay visible
+const SPEECH_DURATION: float = 5.0
 
 
 func initialize(location_markers: Array[Marker2D]) -> void:
@@ -122,6 +128,8 @@ func remove_agent(peer_id: int) -> void:
 	_arrived_at.erase(peer_id)
 	_peer_to_user.erase(peer_id)
 	_agent_activity.erase(peer_id)
+	_agent_speech.erase(peer_id)
+	_speech_timers.erase(peer_id)
 
 	agent_node.queue_free()
 
@@ -144,6 +152,13 @@ func handle_command(peer_id: int, data: Dictionary) -> void:
 			_handle_get_locations(peer_id)
 		"set_activity":
 			_handle_set_activity(peer_id, data)
+		"set_speech":
+			var text: String = str(data.get("text", ""))
+			_agent_speech[peer_id] = text
+			if text != "":
+				_speech_timers[peer_id] = SPEECH_DURATION
+			else:
+				_speech_timers.erase(peer_id)
 		_:
 			send_to_peer.emit(peer_id, {
 				"event": "command_error",
@@ -167,6 +182,7 @@ func get_world_state_for_viewer() -> Dictionary:
 			"is_moving": not agent_node.nav_agent.is_navigation_finished(),
 			"location": location_id,
 			"activity": _agent_activity.get(peer_id, ""),
+			"speechText": _agent_speech.get(peer_id, ""),
 			"spriteUrl": agent_node.sprite_url,
 			"spriteAnimations": agent_node.sprite_animations,
 			"context": "town",
@@ -203,6 +219,16 @@ func _process(delta: float) -> void:
 
 	_check_arrivals()
 	_check_proximity()
+
+	# Tick speech timers and clear expired speech
+	var expired_peers: Array = []
+	for peer_id in _speech_timers.keys():
+		_speech_timers[peer_id] -= delta
+		if _speech_timers[peer_id] <= 0.0:
+			expired_peers.append(peer_id)
+	for peer_id in expired_peers:
+		_speech_timers.erase(peer_id)
+		_agent_speech.erase(peer_id)
 
 	_state_timer += delta
 	if _state_timer >= STATE_INTERVAL:
