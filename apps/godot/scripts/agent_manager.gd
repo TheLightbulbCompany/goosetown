@@ -59,7 +59,10 @@ func _on_world_state(data: Dictionary) -> void:
 					continue
 			incoming_agents.append(agent_data)
 
-	print("[AgentManager] world_state: %d agents (filtered from %d, context=%s)" % [incoming_agents.size(), total_count, current_context])
+	# Avoid console spam — only log when agent count changes
+	var _prev_count: int = _known_agents.size()
+	if incoming_agents.size() != _prev_count:
+		print("[AgentManager] world_state: %d agents (filtered from %d, context=%s)" % [incoming_agents.size(), total_count, current_context])
 
 	# Track which agent IDs are present in this update
 	var seen_ids: Dictionary = {}
@@ -78,9 +81,11 @@ func _on_world_state(data: Dictionary) -> void:
 		var y: float = float(agent_data.get("y", 0))
 
 		if agent_id in _known_agents:
-			# Existing agent — use navmesh pathfinding so agents walk around buildings
+			# Existing agent — only update nav target if position actually changed
 			var agent_node: CharacterBody2D = _known_agents[agent_id]
-			agent_node.set_navigation_target(Vector2(x, y))
+			var new_target := Vector2(x, y)
+			if agent_node.global_position.distance_to(new_target) > 2.0:
+				agent_node.set_navigation_target(new_target)
 
 			# Update speech/state if present
 			if agent_data.has("speechText") or agent_data.has("speech"):

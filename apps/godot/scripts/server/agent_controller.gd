@@ -326,14 +326,6 @@ func _check_arrivals() -> void:
 
 		var nav_finished: bool = agent_node.nav_agent.is_navigation_finished()
 		var stopped: bool = agent_node.velocity.length() < 1.0
-		var dist_to_target: float = agent_node.global_position.distance_to(agent_node.nav_agent.target_position)
-
-		if Engine.get_process_frames() % 60 == 0:
-			print("[TOWN_ARRIVAL] peer=%d nav_finished=%s speed=%.1f dist=%.1f pos=(%.0f,%.0f) target=(%.0f,%.0f)" % [
-				peer_id, nav_finished, agent_node.velocity.length(), dist_to_target,
-				agent_node.global_position.x, agent_node.global_position.y,
-				agent_node.nav_agent.target_position.x, agent_node.nav_agent.target_position.y,
-			])
 
 		if nav_finished and stopped:
 			var current_loc: String = _get_agent_location(agent_node.global_position)
