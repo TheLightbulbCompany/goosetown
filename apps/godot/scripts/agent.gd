@@ -106,17 +106,16 @@ func _ready() -> void:
 		speech_container.visible = false
 	# Connect avoidance callback for RVO steering
 	nav_agent.velocity_computed.connect(_on_velocity_computed)
-	hover_area.mouse_entered.connect(_on_hover_enter)
-	hover_area.mouse_exited.connect(_on_hover_exit)
 
 
-func _on_hover_enter() -> void:
-	if speech_text == "":
-		name_label.visible = true
-
-
-func _on_hover_exit() -> void:
-	name_label.visible = false
+func _update_hover() -> void:
+	# Poll mouse position — Godot WebGL Area2D input_pickable is unreliable
+	if speech_text != "":
+		return  # Speech takes priority over name
+	var mouse_pos: Vector2 = get_global_mouse_position()
+	# Sprite rect: ~48px wide, ~48px tall, positioned 16px above body center
+	var rect := Rect2(global_position.x - 24, global_position.y - 40, 48, 48)
+	name_label.visible = rect.has_point(mouse_pos)
 
 
 func move_to(x: float, y: float, facing_json: String, speed: float) -> void:
@@ -162,6 +161,10 @@ func _on_velocity_computed(safe_velocity: Vector2) -> void:
 
 
 func _physics_process(delta: float) -> void:
+	# Hover check — poll mouse position in viewer mode only
+	if not _use_navigation or OS.has_feature("web"):
+		_update_hover()
+
 	if _use_navigation:
 		# Navigation-based movement (server and viewer use the same code)
 		if not nav_agent.is_navigation_finished():

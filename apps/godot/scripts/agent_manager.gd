@@ -81,11 +81,9 @@ func _on_world_state(data: Dictionary) -> void:
 		var y: float = float(agent_data.get("y", 0))
 
 		if agent_id in _known_agents:
-			# Existing agent — only update nav target if position actually changed
+			# Existing agent — use navmesh pathfinding so agents walk around buildings
 			var agent_node: CharacterBody2D = _known_agents[agent_id]
-			var new_target := Vector2(x, y)
-			if agent_node.global_position.distance_to(new_target) > 2.0:
-				agent_node.set_navigation_target(new_target)
+			agent_node.set_navigation_target(Vector2(x, y))
 
 			# Update speech/state if present
 			if agent_data.has("speechText") or agent_data.has("speech"):
