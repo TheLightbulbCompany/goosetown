@@ -6,9 +6,10 @@ extends Node
 
 const AgentScene: PackedScene = preload("res://scenes/agent.tscn")
 
-var agents: Dictionary = {}  # agent_id -> Agent node
+## Single source of truth: agent_id -> Agent node.
+## (Previously split across `agents` and `_known_agents`; consolidated for clarity.)
+var agents: Dictionary = {}
 var _viewer: ViewerProtocol = null
-var _known_agents: Dictionary = {}  # agent_id -> agent_node (viewer protocol mode)
 var _sprite_callback = null
 
 
@@ -60,7 +61,7 @@ func _on_world_state(data: Dictionary) -> void:
 			incoming_agents.append(agent_data)
 
 	# Avoid console spam — only log when agent count changes
-	var _prev_count: int = _known_agents.size()
+	var _prev_count: int = agents.size()
 	if incoming_agents.size() != _prev_count:
 		print("[AgentManager] world_state: %d agents (filtered from %d, context=%s)" % [incoming_agents.size(), total_count, current_context])
 
@@ -80,21 +81,25 @@ func _on_world_state(data: Dictionary) -> void:
 		var x: float = float(agent_data.get("x", 0))
 		var y: float = float(agent_data.get("y", 0))
 
-		if agent_id in _known_agents:
-			# Existing agent — use navmesh pathfinding so agents walk around buildings
-			var agent_node: CharacterBody2D = _known_agents[agent_id]
-			agent_node.set_navigation_target(Vector2(x, y))
+		if agent_id in agents:
+			# Existing agent — use navmesh pathfinding so agents walk around buildings.
+			# Skip if the new target is within 2px (distance_squared < 4) to avoid
+			# unnecessary navmesh recalculations every world_state broadcast.
+			var agent_node: CharacterBody2D = agents[agent_id]
+			var new_target: Vector2 = Vector2(x, y)
+			if agent_node.target_position.distance_squared_to(new_target) > 4.0:
+				agent_node.set_navigation_target(new_target)
 
 			# Update speech/state if present
 			if agent_data.has("speechText") or agent_data.has("speech"):
-				_known_agents[agent_id].update_state(agent_data)
+				agents[agent_id].update_state(agent_data)
 
 			# Update activity state
 			var activity: String = str(agent_data.get("activity", ""))
 			if activity != "walking" and activity != "idle":
-				_known_agents[agent_id].current_activity = activity
+				agents[agent_id].current_activity = activity
 			else:
-				_known_agents[agent_id].current_activity = ""
+				agents[agent_id].current_activity = ""
 		else:
 			# New agent — instantiate
 			var agent: CharacterBody2D = AgentScene.instantiate()
@@ -105,7 +110,6 @@ func _on_world_state(data: Dictionary) -> void:
 			var display_name: String = str(agent_data.get("name", agent_id))
 
 			agent.setup(agent_id, url, x, y, facing_str, display_name)
-			_known_agents[agent_id] = agent
 			agents[agent_id] = agent
 			print("AgentManager: Spawned %s at (%d, %d) via world_state" % [display_name, int(x), int(y)])
 
@@ -126,14 +130,13 @@ func _on_world_state(data: Dictionary) -> void:
 
 	# Remove agents no longer present in world_state
 	var ids_to_remove: Array = []
-	for agent_id in _known_agents:
+	for agent_id in agents:
 		if agent_id not in seen_ids:
 			ids_to_remove.append(agent_id)
 
 	for agent_id in ids_to_remove:
 		print("AgentManager: Removing %s (no longer in world_state)" % agent_id)
-		_known_agents[agent_id].queue_free()
-		_known_agents.erase(agent_id)
+		agents[agent_id].queue_free()
 		agents.erase(agent_id)
 
 
@@ -169,7 +172,6 @@ func _on_remove_agent(agent_id: String) -> void:
 		return
 	agents[agent_id].queue_free()
 	agents.erase(agent_id)
-	_known_agents.erase(agent_id)
 	print("AgentManager: Removed %s" % agent_id)
 
 
@@ -180,8 +182,8 @@ func _on_update_agent_state(agent_id: String, data: Dictionary) -> void:
 
 
 func _on_sprite_loaded(args: Array) -> void:
-	var parsed: Dictionary = JSON.parse_string(str(args[0]))
-	if parsed == null:
+	var parsed: Variant = JSON.parse_string(str(args[0]))
+	if not parsed is Dictionary:
 		return
 	var agent_id: String = str(parsed.get("id", ""))
 	var base64: String = str(parsed.get("base64", ""))

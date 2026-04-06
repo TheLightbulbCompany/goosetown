@@ -4,26 +4,18 @@
 ## Supports multiple animations (walk, idle, run, drink, etc.) with per-animation frame counts and FPS.
 extends CharacterBody2D
 
-@onready var sprite: Sprite2D = $Sprite
-@onready var name_label: Label = $NameLabel
-@onready var speech_container: NinePatchRect = $SpeechBubbleContainer
-@onready var speech_text_label: Label = $SpeechBubbleContainer/SpeechText
-@onready var nav_agent: NavigationAgent2D = $NavigationAgent2D
-@onready var hover_area: Area2D = $HoverArea
-
-var agent_id: String = ""
-var display_name: String = ""
-var sprite_url: String = ""
-var target_position: Vector2 = Vector2.ZERO
-var move_speed: float = 100.0
-var facing: String = "south"
-var speech_text: String = ""
+# ---------------------------------------------------------------------------
+# Constants and enums
+# ---------------------------------------------------------------------------
 
 # Spritesheet constants (matches backend sprite_storage.py)
 const FRAME_SIZE: int = 48
 const FRAME_COUNT: int = 6
 const SHEET_WIDTH: int = 288  # 6 * 48
 const SHEET_HEIGHT: int = 192  # 4 * 48
+
+const DEFAULT_FPS: float = 8.0
+const DEFAULT_FRAME_COUNT: int = 6
 
 # Direction → row index in spritesheet
 const DIR_ROW: Dictionary = {
@@ -61,7 +53,26 @@ const ACTIVITY_ANIMATION: Dictionary = {
 	"talking": "talking",
 }
 
-# Animation state
+# ---------------------------------------------------------------------------
+# Public variables
+# ---------------------------------------------------------------------------
+
+var agent_id: String = ""
+var display_name: String = ""
+var sprite_url: String = ""
+var target_position: Vector2 = Vector2.ZERO
+var move_speed: float = 100.0
+var facing: String = "south"
+var speech_text: String = ""
+
+## Sprite animation metadata from backend (raw dict for world_state broadcast)
+var sprite_animations: Dictionary = {}
+var current_activity: String = ""
+
+# ---------------------------------------------------------------------------
+# Private variables
+# ---------------------------------------------------------------------------
+
 ## animation_name -> Texture2D
 var _spritesheets: Dictionary = {}
 ## animation_name -> { "frame_count": int, "fps": float }
@@ -70,99 +81,36 @@ var _anim_configs: Dictionary = {}
 var _current_animation: String = "walk"
 var _anim_frame: int = 0
 var _anim_timer: float = 0.0
-const DEFAULT_FPS: float = 8.0
-const DEFAULT_FRAME_COUNT: int = 6
-## Sprite animation metadata from backend (raw dict for world_state broadcast)
-var sprite_animations: Dictionary = {}
 var _is_moving: bool = false
-var _use_navigation: bool = false  # True in headless/server mode
-var current_activity: String = ""
+## True when NavigationAgent2D pathfinding is active (set on first set_navigation_target call)
+var _use_navigation: bool = false
+## Cached AtlasTexture instances keyed by "animation/facing" to avoid per-frame allocations
+var _atlas_cache: Dictionary = {}
 
+# ---------------------------------------------------------------------------
+# @onready variables
+# ---------------------------------------------------------------------------
 
-func setup(id: String, url: String, x: float, y: float, facing_json: String, display: String) -> void:
-	agent_id = id
-	sprite_url = url
-	display_name = display
-	position = Vector2(x, y)
-	target_position = position
-	if name_label:
-		name_label.text = display_name
-	if speech_container:
-		speech_container.visible = false
+@onready var sprite: Sprite2D = $Sprite
+@onready var name_label: Label = $NameLabel
+@onready var speech_container: NinePatchRect = $SpeechBubbleContainer
+@onready var speech_text_label: Label = $SpeechBubbleContainer/SpeechText
+@onready var nav_agent: NavigationAgent2D = $NavigationAgent2D
 
-	_parse_facing(facing_json)
-
-	if sprite_url != "" and not OS.has_feature("headless"):
-		_load_sprite_from_url(sprite_url)
-
-	_update_sprite_frame()
-
+# ---------------------------------------------------------------------------
+# Built-in virtual methods
+# ---------------------------------------------------------------------------
 
 func _ready() -> void:
-	# Set label text after node enters tree (@onready vars now valid)
-	if name_label and display_name != "":
-		name_label.text = display_name
 	if speech_container:
 		speech_container.visible = false
 	# Connect avoidance callback for RVO steering
 	nav_agent.velocity_computed.connect(_on_velocity_computed)
 
 
-func _update_hover() -> void:
-	# Poll mouse position — Godot WebGL Area2D input_pickable is unreliable
-	if speech_text != "":
-		return  # Speech takes priority over name
-	var mouse_pos: Vector2 = get_global_mouse_position()
-	# Sprite rect: ~48px wide, ~48px tall, positioned 16px above body center
-	var rect := Rect2(global_position.x - 24, global_position.y - 40, 48, 48)
-	name_label.visible = rect.has_point(mouse_pos)
-
-
-func move_to(x: float, y: float, facing_json: String, speed: float) -> void:
-	target_position = Vector2(x, y)
-	if speed > 0:
-		move_speed = speed
-	_parse_facing(facing_json)
-
-
-func update_state(data: Dictionary) -> void:
-	var text: String = str(data.get("speechText", ""))
-	if text != "" and text != speech_text:
-		speech_text = text
-		speech_text_label.text = speech_text
-		speech_container.visible = true
-		name_label.visible = false
-	elif text == "":
-		speech_text = ""
-		speech_container.visible = false
-
-
-func set_navigation_target(target: Vector2) -> void:
-	_use_navigation = true
-	nav_agent.target_position = target
-
-
-func _update_facing_from_velocity(vel: Vector2) -> void:
-	if abs(vel.x) > abs(vel.y):
-		facing = "east" if vel.x > 0 else "west"
-	else:
-		facing = "south" if vel.y > 0 else "north"
-
-
-func _on_velocity_computed(safe_velocity: Vector2) -> void:
-	# Called by NavigationServer when avoidance is enabled
-	if is_queued_for_deletion() or not is_inside_tree():
-		return
-	if not _use_navigation or nav_agent.is_navigation_finished():
-		return
-	velocity = safe_velocity
-	_update_facing_from_velocity(velocity)
-	move_and_slide()
-
-
 func _physics_process(delta: float) -> void:
-	# Hover check — poll mouse position in viewer mode only
-	if not _use_navigation or OS.has_feature("web"):
+	# Hover check — poll mouse position in WebGL viewer only
+	if OS.has_feature("web"):
 		_update_hover()
 
 	if _use_navigation:
@@ -182,7 +130,7 @@ func _physics_process(delta: float) -> void:
 			velocity = Vector2.ZERO
 			_is_moving = false
 	else:
-		# Direct movement (viewer/client mode)
+		# Direct movement (viewer/client mode — no navmesh)
 		var direction: Vector2 = target_position - position
 		var distance: float = direction.length()
 
@@ -232,6 +180,106 @@ func _physics_process(delta: float) -> void:
 				_anim_frame = 0
 				_update_sprite_frame()
 
+# ---------------------------------------------------------------------------
+# Public methods
+# ---------------------------------------------------------------------------
+
+func setup(id: String, url: String, x: float, y: float, facing_json: String, display: String) -> void:
+	agent_id = id
+	sprite_url = url
+	display_name = display
+	position = Vector2(x, y)
+	target_position = position
+	if name_label:
+		name_label.text = display_name
+	if speech_container:
+		speech_container.visible = false
+
+	_parse_facing(facing_json)
+
+	if sprite_url != "" and not OS.has_feature("headless"):
+		_load_sprite_from_url(sprite_url)
+
+	_update_sprite_frame()
+
+
+func move_to(x: float, y: float, facing_json: String, speed: float) -> void:
+	target_position = Vector2(x, y)
+	if speed > 0:
+		move_speed = speed
+	_parse_facing(facing_json)
+
+
+func update_state(data: Dictionary) -> void:
+	var text: String = str(data.get("speechText", ""))
+	if text != "" and text != speech_text:
+		speech_text = text
+		speech_text_label.text = speech_text
+		speech_container.visible = true
+		name_label.visible = false
+	elif text == "":
+		speech_text = ""
+		speech_container.visible = false
+
+
+func set_navigation_target(target: Vector2) -> void:
+	_use_navigation = true
+	nav_agent.target_position = target
+
+
+func set_spritesheet(tex: Texture2D, animation_name: String = "walk") -> void:
+	_spritesheets[animation_name] = tex
+	# Invalidate cached AtlasTextures for this animation so they are rebuilt
+	# with the new texture on next _update_sprite_frame call.
+	for key in _atlas_cache.keys():
+		if (key as String).begins_with(animation_name + "/"):
+			_atlas_cache.erase(key)
+	if animation_name == _current_animation or _spritesheets.size() == 1:
+		_current_animation = animation_name
+		_anim_frame = 0
+		_update_sprite_frame()
+
+
+func set_animation_configs(configs: Dictionary) -> void:
+	## configs: { "walk": { "frameCount": 6, "fps": 8.0 }, ... }
+	for anim_name in configs:
+		var cfg: Dictionary = configs[anim_name]
+		_anim_configs[anim_name] = {
+			"frame_count": int(cfg.get("frameCount", DEFAULT_FRAME_COUNT)),
+			"fps": float(cfg.get("fps", DEFAULT_FPS)),
+		}
+
+
+func play_animation(animation_name: String) -> void:
+	if animation_name == _current_animation:
+		return
+	if not _spritesheets.has(animation_name):
+		return
+	_current_animation = animation_name
+	_anim_frame = 0
+	_anim_timer = 0.0
+	_update_sprite_frame()
+
+# ---------------------------------------------------------------------------
+# Private methods
+# ---------------------------------------------------------------------------
+
+func _update_hover() -> void:
+	# Poll mouse position — Godot WebGL Area2D input_pickable is unreliable
+	if speech_text != "":
+		return  # Speech takes priority over name
+	var mouse_pos: Vector2 = get_global_mouse_position()
+	# Sprite rect: ~48px wide, ~48px tall, positioned 16px above body center
+	var rect := Rect2(global_position.x - 24, global_position.y - 40, 48, 48)
+	name_label.visible = rect.has_point(mouse_pos)
+
+
+func _update_facing_from_velocity(vel: Vector2) -> void:
+	if abs(vel.x) > abs(vel.y):
+		facing = "east" if vel.x > 0 else "west"
+	else:
+		facing = "south" if vel.y > 0 else "north"
+
 
 func _update_sprite_frame() -> void:
 	var tex: Texture2D = _spritesheets.get(_current_animation)
@@ -245,15 +293,22 @@ func _update_sprite_frame() -> void:
 	var safe_frame: int = _anim_frame % fc
 
 	var row: int = DIR_ROW.get(facing, 0)
-	var region := Rect2(
-		safe_frame * FRAME_SIZE,
-		row * FRAME_SIZE,
-		FRAME_SIZE,
-		FRAME_SIZE,
-	)
-	var atlas := AtlasTexture.new()
-	atlas.atlas = tex
-	atlas.region = region
+
+	# Build a cache key from animation, facing, and frame index so each unique
+	# region gets exactly one AtlasTexture allocation for the lifetime of the node.
+	var cache_key: String = "%s/%s/%d" % [_current_animation, facing, safe_frame]
+	var atlas: AtlasTexture = _atlas_cache.get(cache_key)
+	if atlas == null:
+		atlas = AtlasTexture.new()
+		atlas.atlas = tex
+		atlas.region = Rect2(
+			safe_frame * FRAME_SIZE,
+			row * FRAME_SIZE,
+			FRAME_SIZE,
+			FRAME_SIZE,
+		)
+		_atlas_cache[cache_key] = atlas
+
 	sprite.texture = atlas
 
 
@@ -265,7 +320,7 @@ func _parse_facing(facing_str: String) -> void:
 		facing = facing_str
 		return
 	# Also accept JSON object format (e.g. {"direction": "south"}) for legacy callers
-	var parsed = JSON.parse_string(facing_str)
+	var parsed: Variant = JSON.parse_string(facing_str)
 	if parsed is Dictionary:
 		var dir: String = str(parsed.get("direction", ""))
 		if dir in DIR_ROW:
@@ -296,31 +351,16 @@ func _load_sprite_from_url(url: String) -> void:
 	""" % [url, agent_id]
 	JavaScriptBridge.eval(js_code)
 
+# ---------------------------------------------------------------------------
+# Signal callbacks
+# ---------------------------------------------------------------------------
 
-func set_spritesheet(tex: Texture2D, animation_name: String = "walk") -> void:
-	_spritesheets[animation_name] = tex
-	if animation_name == _current_animation or _spritesheets.size() == 1:
-		_current_animation = animation_name
-		_anim_frame = 0
-		_update_sprite_frame()
-
-
-func set_animation_configs(configs: Dictionary) -> void:
-	## configs: { "walk": { "frameCount": 6, "fps": 8.0 }, ... }
-	for anim_name in configs:
-		var cfg: Dictionary = configs[anim_name]
-		_anim_configs[anim_name] = {
-			"frame_count": int(cfg.get("frameCount", DEFAULT_FRAME_COUNT)),
-			"fps": float(cfg.get("fps", DEFAULT_FPS)),
-		}
-
-
-func play_animation(animation_name: String) -> void:
-	if animation_name == _current_animation:
+func _on_velocity_computed(safe_velocity: Vector2) -> void:
+	# Called by NavigationServer when avoidance is enabled
+	if is_queued_for_deletion() or not is_inside_tree():
 		return
-	if not _spritesheets.has(animation_name):
+	if not _use_navigation or nav_agent.is_navigation_finished():
 		return
-	_current_animation = animation_name
-	_anim_frame = 0
-	_anim_timer = 0.0
-	_update_sprite_frame()
+	velocity = safe_velocity
+	_update_facing_from_velocity(velocity)
+	move_and_slide()
