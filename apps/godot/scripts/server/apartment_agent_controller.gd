@@ -111,6 +111,11 @@ func handle_command(peer_id: int, data: Dictionary) -> void:
 				_speech_timers[peer_id] = SPEECH_DURATION
 			else:
 				_speech_timers.erase(peer_id)
+		"set_facing":
+			var direction: String = str(data.get("direction", ""))
+			if direction in ["south", "west", "east", "north"]:
+				var agent_node: CharacterBody2D = _agents[peer_id]
+				agent_node.facing = direction
 		_:
 			send_to_peer.emit(peer_id, {
 				"event": "command_error",
