@@ -39,6 +39,18 @@ _TOWN_API_URL = os.environ.get("TOWN_API_URL", "https://api-dev.goosetown.isol8.
 _background_sprite_tasks: set = set()
 
 
+def _facing_toward(from_state: dict, to_state: dict) -> str:
+    """Calculate which direction 'from' should face to look at 'to'."""
+    from_pos = from_state.get("position", {})
+    to_pos = to_state.get("position", {})
+    dx = to_pos.get("x", 0) - from_pos.get("x", 0)
+    dy = to_pos.get("y", 0) - from_pos.get("y", 0)
+    if abs(dx) > abs(dy):
+        return "east" if dx > 0 else "west"
+    else:
+        return "south" if dy > 0 else "north"
+
+
 # ---------------------------------------------------------------------------
 # Shared per-agent event callback for game server → daemon forwarding
 # ---------------------------------------------------------------------------
@@ -1222,6 +1234,20 @@ async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
     except Exception:
         pass  # Speech bubble is cosmetic, don't fail the conversation
 
+    # Face agents toward each other and start talking animation
+    try:
+        gs_client = get_game_server_client()
+        initiator_state = gs_client.get_cached_agent_state(initiator_id)
+        target_state = gs_client.get_cached_agent_state(target_id)
+        if initiator_state and target_state:
+            init_facing = _facing_toward(initiator_state, target_state)
+            target_facing = _facing_toward(target_state, initiator_state)
+            await gs_client.send_command(initiator_id, {"cmd": "set_facing", "direction": init_facing})
+            await gs_client.send_command(target_id, {"cmd": "set_facing", "direction": target_facing})
+        await gs_client.send_command(initiator_id, {"cmd": "set_activity", "activity": "talking"})
+    except Exception:
+        pass  # Cosmetic, don't fail conversation
+
     logger.info(
         "Conversation %s started between %s and %s at %s",
         conv_id,
@@ -1317,6 +1343,13 @@ async def _handle_say(connection_id: str, body: dict, agent_conn) -> None:
         await gs_client.send_command(speaker_id, {"cmd": "set_speech", "text": message})
     except Exception:
         pass  # Speech bubble is cosmetic, don't fail the conversation
+
+    # Set talking activity on the speaker
+    try:
+        gs_client = get_game_server_client()
+        await gs_client.send_command(speaker_id, {"cmd": "set_activity", "activity": "talking"})
+    except Exception:
+        pass
 
     logger.info("Conversation %s turn %d: %s said %d chars", conv_id, turn_count, speaker_id, len(message))
 
@@ -1436,6 +1469,17 @@ async def _finalize_conversation(
             service.update_relationship(a_id, b_id, affinity_delta=5)
         except Exception as exc:
             logger.warning("Failed to update relationship for conv %s: %s", conv_id, exc)
+
+    # Clear talking activity and speech bubbles for both participants
+    gs_client = get_game_server_client()
+    for agent_id in (a_id, b_id):
+        if not agent_id:
+            continue
+        try:
+            await gs_client.send_command(agent_id, {"cmd": "set_activity", "activity": ""})
+            await gs_client.send_command(agent_id, {"cmd": "set_speech", "text": ""})
+        except Exception:
+            pass
 
     # Notify both connected participants
     public_log = conv.get("publicLog") or []
