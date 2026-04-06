@@ -127,7 +127,11 @@ func _on_set_camera(args: Array) -> void:
 func _on_update_world_state(args: Array) -> void:
 	var parsed: Dictionary = JSON.parse_string(str(args[0]))
 	if parsed:
-		world_state_received.emit(parsed)
+		_emit_world_state_deferred.call_deferred(parsed)
+
+
+func _emit_world_state_deferred(data: Dictionary) -> void:
+	world_state_received.emit(data)
 
 
 ## Handles scene switch requests from React.
