@@ -6,8 +6,10 @@ extends CharacterBody2D
 
 @onready var sprite: Sprite2D = $Sprite
 @onready var name_label: Label = $NameLabel
-@onready var speech_bubble: Label = $SpeechBubble
+@onready var speech_container: NinePatchRect = $SpeechBubbleContainer
+@onready var speech_text_label: Label = $SpeechBubbleContainer/SpeechText
 @onready var nav_agent: NavigationAgent2D = $NavigationAgent2D
+@onready var hover_area: Area2D = $HoverArea
 
 var agent_id: String = ""
 var display_name: String = ""
@@ -56,6 +58,7 @@ const ACTIVITY_ANIMATION: Dictionary = {
 	"listen_to_music": "sitting",
 	"watch_aquarium": "sitting",
 	"rest": "idle",
+	"talking": "talking",
 }
 
 # Animation state
@@ -84,8 +87,8 @@ func setup(id: String, url: String, x: float, y: float, facing_json: String, dis
 	target_position = position
 	if name_label:
 		name_label.text = display_name
-	if speech_bubble:
-		speech_bubble.visible = false
+	if speech_container:
+		speech_container.visible = false
 
 	_parse_facing(facing_json)
 
@@ -99,10 +102,21 @@ func _ready() -> void:
 	# Set label text after node enters tree (@onready vars now valid)
 	if name_label and display_name != "":
 		name_label.text = display_name
-	if speech_bubble:
-		speech_bubble.visible = false
+	if speech_container:
+		speech_container.visible = false
 	# Connect avoidance callback for RVO steering
 	nav_agent.velocity_computed.connect(_on_velocity_computed)
+	hover_area.mouse_entered.connect(_on_hover_enter)
+	hover_area.mouse_exited.connect(_on_hover_exit)
+
+
+func _on_hover_enter() -> void:
+	if speech_text == "":
+		name_label.visible = true
+
+
+func _on_hover_exit() -> void:
+	name_label.visible = false
 
 
 func move_to(x: float, y: float, facing_json: String, speed: float) -> void:
@@ -116,11 +130,12 @@ func update_state(data: Dictionary) -> void:
 	var text: String = str(data.get("speechText", ""))
 	if text != "" and text != speech_text:
 		speech_text = text
-		speech_bubble.text = speech_text
-		speech_bubble.visible = true
+		speech_text_label.text = speech_text
+		speech_container.visible = true
+		name_label.visible = false
 	elif text == "":
 		speech_text = ""
-		speech_bubble.visible = false
+		speech_container.visible = false
 
 
 func set_navigation_target(target: Vector2) -> void:
