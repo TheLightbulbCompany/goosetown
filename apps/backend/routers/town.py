@@ -1204,6 +1204,23 @@ async def handle_ws_message(request: WsMessageRequest):
                 # not forwarded to the game server directly.
                 await _handle_context_transition(request.connectionId, destination, agent_conn)
             else:
+                # If the destination lives in a different context than the
+                # agent is currently in, transparently transition first and
+                # then forward the real move command to the new context's
+                # game server. This keeps cross-context routing deterministic
+                # in the backend so the skill/CLI only need a single
+                # ``move <place>`` verb.
+                dest_context = _context_for_location(destination)
+                current_context = agent_conn.location_context
+                if dest_context is not None and dest_context != current_context:
+                    transition_dest = "exit" if current_context == "apartment" else "residence"
+                    transitioned = await _handle_context_transition(
+                        request.connectionId, transition_dest, agent_conn
+                    )
+                    if not transitioned:
+                        return {"statusCode": 200}
+                    # _handle_context_transition updates the ws_manager in-place,
+                    # so agent_conn.location_context now reflects the new context.
                 try:
                     await gs_client.send_command(
                         agent_conn.agent_id,
@@ -2313,12 +2330,38 @@ _TRANSITION_MAP: dict[str, tuple[str, str, str]] = {
     "exit": ("apartment", "town", "residence"),
 }
 
+# Which context each known destination belongs to. Used by the move handler
+# to decide whether a cross-context transition needs to happen before the
+# agent can navigate to a given location.
+_TOWN_LOCATIONS: set[str] = {
+    "plaza",
+    "library",
+    "cafe",
+    "activity_center",
+    "bank",
+    "residence",
+    "player_spawn",
+}
+
+
+def _context_for_location(location: str) -> str | None:
+    """Return ``"town"`` or ``"apartment"`` for a known destination, else ``None``."""
+    if location in _TOWN_LOCATIONS:
+        return "town"
+    try:
+        from core.apartment_constants import APARTMENT_ROOMS
+    except Exception:
+        return None
+    if location in APARTMENT_ROOMS or location == "exit":
+        return "apartment"
+    return None
+
 
 async def _handle_context_transition(
     connection_id: str,
     destination: str,
     agent_conn,
-) -> None:
+) -> bool:
     """Handle a context-crossing move command (``residence`` or ``exit``).
 
     Two-phase protocol:
@@ -2362,7 +2405,7 @@ async def _handle_context_transition(
     agent = service.get_town_agent_by_id(agent_id)
     if not agent:
         _reject("agent_not_found")
-        return
+        return False
 
     # --- Validate context: reject if already in the destination context ---
     required_source, dest_context, dest_location = _TRANSITION_MAP[destination]
@@ -2370,19 +2413,19 @@ async def _handle_context_transition(
     if current_context != required_source:
         reason = "already_in_apartment" if destination == "residence" else "not_in_apartment"
         _reject(reason)
-        return
+        return False
 
     # --- Validate not busy ---
     if agent.get("currentActivity"):
         _reject("busy")
-        return
+        return False
 
     # --- Phase 1: Enter transitioning state ---
     transitioning = service.update_agent_context(agent_id, "transitioning", current_context)
     if not transitioning:
         logger.error("Failed to set transitioning state for agent %s", agent_id)
         _reject("internal_error")
-        return
+        return False
     ws_manager.update_context(agent_id, "transitioning")
 
     # --- Phase 2: Instruct game server to move the agent across contexts ---
@@ -2412,13 +2455,13 @@ async def _handle_context_transition(
         service.update_agent_context(agent_id, current_context, agent.get("currentLocation", ""))
         ws_manager.update_context(agent_id, current_context)
         _reject("navigation_timeout")
-        return
+        return False
     except Exception as exc:
         logger.warning("Game server transition failed for agent %s: %s", agent_id, exc)
         service.update_agent_context(agent_id, current_context, agent.get("currentLocation", ""))
         ws_manager.update_context(agent_id, current_context)
         _reject("navigation_error")
-        return
+        return False
 
     # --- Phase 3: Commit destination state ---
     updated = service.update_agent_context(agent_id, dest_context, dest_location)
@@ -2427,7 +2470,7 @@ async def _handle_context_transition(
         service.update_agent_context(agent_id, current_context, agent.get("currentLocation", ""))
         ws_manager.update_context(agent_id, current_context)
         _reject("internal_error")
-        return
+        return False
 
     ws_manager.update_context(agent_id, dest_context)
     logger.info(
@@ -2471,6 +2514,8 @@ async def _handle_context_transition(
                 pass
     except Exception as exc:
         logger.debug("Failed to notify viewers of context change: %s", exc)
+
+    return True
 
 
 async def _transition_to_apartment(
