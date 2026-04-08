@@ -286,6 +286,36 @@ def extract_walk_spritesheet(zip_bytes: bytes) -> Optional[bytes]:
     return None
 
 
+def build_static_spritesheet_from_rotations(
+    rotation_bytes: dict[str, bytes],
+) -> bytes:
+    """Build a 288x192 spritesheet from 4 direction rotation PNGs.
+
+    Each rotation PNG is cropped+resized to FRAME_SIZE (48x48) and
+    duplicated across all 6 columns of its direction's row. Missing
+    directions remain transparent.
+    """
+    sheet = Image.new("RGBA", (SHEET_WIDTH, SHEET_HEIGHT), (0, 0, 0, 0))
+
+    for direction, row in DIRECTION_ROWS.items():
+        png = rotation_bytes.get(direction)
+        if not png:
+            continue
+        try:
+            img = Image.open(io.BytesIO(png)).convert("RGBA")
+        except Exception as exc:
+            logger.warning("Bad rotation PNG for %s: %s", direction, exc)
+            continue
+
+        frame = _crop_and_resize(img, FRAME_SIZE)
+        for col in range(FRAME_COUNT):
+            sheet.paste(frame, (col * FRAME_SIZE, row * FRAME_SIZE), frame)
+
+    out = io.BytesIO()
+    sheet.save(out, format="PNG")
+    return out.getvalue()
+
+
 def upload_sprite_to_s3(png_bytes: bytes, agent_id: str, bucket: str | None = None) -> str:
     """Upload a sprite PNG to S3 and return the S3 key.
 

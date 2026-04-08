@@ -8,6 +8,9 @@ from PIL import Image
 from core.services.sprite_storage import (
     DIRECTION_ROWS,
     FRAME_SIZE,
+    SHEET_HEIGHT,
+    SHEET_WIDTH,
+    build_static_spritesheet_from_rotations,
     extract_all_spritesheets,
     extract_animation_spritesheet,
     extract_walk_spritesheet,
@@ -159,3 +162,57 @@ def test_extract_all_spritesheets_unmapped_folder_kept_as_is():
 
     assert "walk" in result
     assert "weird-folder-name" in result
+
+
+def _make_solid_rotation_png(color: tuple[int, int, int]) -> bytes:
+    img = Image.new("RGBA", (96, 96), color + (255,))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_build_static_spritesheet_is_288_by_192():
+    rotations = {
+        "south": _make_solid_rotation_png((255, 0, 0)),
+        "west":  _make_solid_rotation_png((0, 255, 0)),
+        "east":  _make_solid_rotation_png((0, 0, 255)),
+        "north": _make_solid_rotation_png((255, 255, 0)),
+    }
+
+    png = build_static_spritesheet_from_rotations(rotations)
+
+    sheet = Image.open(io.BytesIO(png))
+    assert sheet.size == (SHEET_WIDTH, SHEET_HEIGHT)
+    assert sheet.size == (288, 192)
+
+
+def test_build_static_spritesheet_row_columns_are_identical():
+    rotations = {
+        "south": _make_solid_rotation_png((255, 0, 0)),
+        "west":  _make_solid_rotation_png((0, 255, 0)),
+        "east":  _make_solid_rotation_png((0, 0, 255)),
+        "north": _make_solid_rotation_png((255, 255, 0)),
+    }
+
+    png = build_static_spritesheet_from_rotations(rotations)
+    sheet = Image.open(io.BytesIO(png)).convert("RGBA")
+
+    for col in range(6):
+        pixel = sheet.getpixel((col * FRAME_SIZE + FRAME_SIZE // 2, FRAME_SIZE // 2))
+        assert pixel[0] > 200 and pixel[1] < 50 and pixel[2] < 50, f"row 0 col {col} not red: {pixel}"
+
+    for col in range(6):
+        pixel = sheet.getpixel((col * FRAME_SIZE + FRAME_SIZE // 2, FRAME_SIZE + FRAME_SIZE // 2))
+        assert pixel[1] > 200 and pixel[0] < 50 and pixel[2] < 50, f"row 1 col {col} not green: {pixel}"
+
+
+def test_build_static_spritesheet_missing_direction_is_transparent():
+    rotations = {
+        "south": _make_solid_rotation_png((255, 0, 0)),
+    }
+
+    png = build_static_spritesheet_from_rotations(rotations)
+    sheet = Image.open(io.BytesIO(png)).convert("RGBA")
+
+    pixel = sheet.getpixel((FRAME_SIZE // 2, FRAME_SIZE + FRAME_SIZE // 2))
+    assert pixel[3] == 0, f"row 1 should be transparent: {pixel}"
