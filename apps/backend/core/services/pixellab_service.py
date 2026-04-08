@@ -379,51 +379,84 @@ class PixelLabService:
         logger.warning("Jobs timed out for %s: %d/%d completed", progress_label, completed, len(job_ids))
         return completed > 0
 
-    async def queue_template_animations(
+    async def queue_signup_animations(
         self,
         character_id: str,
         on_progress: Callable[[str], Coroutine[Any, Any, None]] | None = None,
-    ) -> list[str]:
-        """Queue all template animations sequentially, waiting for each to complete.
+    ) -> dict[str, list[str]]:
+        """Queue all signup animations sequentially and wait for each to complete.
 
-        Queues one template at a time, polls its job IDs until complete,
-        then queues the next. This avoids PixelLab's concurrent job limit.
+        Iterates SIGNUP_ANIMATIONS (the subset of ANIMATION_REGISTRY with
+        auto_generate=True). For templates, calls animate_character with the
+        template_id. For custom animations, calls queue_custom_animation with
+        the prompt. Waits for each animation's jobs before queuing the next to
+        avoid PixelLab concurrent-job limits.
 
         Args:
             character_id: PixelLab character UUID.
             on_progress: Optional async callback called every ~10s during waits.
+
+        Returns:
+            Dict mapping friendly animation name -> list of job IDs that were queued.
         """
         existing = await self.get_existing_animation_names(character_id)
-        all_job_ids: list[str] = []
-        template_items = list(TEMPLATE_ANIMATIONS.items())
-        for idx, (name, config) in enumerate(template_items):
-            if config["template_id"] in existing:
-                logger.info("Template %s already exists on character %s, skipping", name, character_id)
-                continue
+        results: dict[str, list[str]] = {}
+        items = list(SIGNUP_ANIMATIONS.items())
+
+        for idx, (name, config) in enumerate(items):
+            progress_label = f"{name} ({idx + 1}/{len(items)})"
+
             try:
-                job_ids = await self.animate_character(character_id, animation=config["template_id"])
+                if config["type"] == "template":
+                    template_id: str = config["template_id"]
+                    if template_id in existing:
+                        logger.info(
+                            "Template %s already exists on character %s, skipping",
+                            name, character_id,
+                        )
+                        results[name] = []
+                        continue
+                    job_ids = await self.animate_character(
+                        character_id, animation=template_id,
+                    )
+                elif config["type"] == "custom":
+                    prompt: str = config["prompt"]
+                    job_ids = await self.queue_custom_animation(
+                        character_id=character_id,
+                        animation_name=name,
+                        action_description=prompt,
+                    )
+                else:
+                    logger.warning(
+                        "Unknown animation type for %s: %r",
+                        name, config.get("type"),
+                    )
+                    continue
+
                 logger.info(
-                    "Queued template %r for %s: %d jobs",
+                    "Queued signup animation %r for %s: %d jobs",
                     name, character_id, len(job_ids),
                 )
-                all_job_ids.extend(job_ids)
+                results[name] = job_ids
 
-                # Wait for THIS template's jobs to complete before queuing next
-                await self.wait_for_jobs(
-                    job_ids,
-                    on_progress=on_progress,
-                    progress_label=f"{name} ({idx + 1}/{len(template_items)})",
-                )
+                if job_ids:
+                    await self.wait_for_jobs(
+                        job_ids,
+                        on_progress=on_progress,
+                        progress_label=progress_label,
+                    )
             except Exception:
                 logger.exception(
-                    "Failed to queue template %r for %s — skipping",
+                    "Failed to queue signup animation %r for %s — continuing",
                     name, character_id,
                 )
+                results.setdefault(name, [])
+
         logger.info(
-            "Template animations done for %s: %d total jobs",
-            character_id, len(all_job_ids),
+            "Signup animations done for %s: %s",
+            character_id, {k: len(v) for k, v in results.items()},
         )
-        return all_job_ids
+        return results
 
     async def _get_rotation_base64(self, character_id: str, direction: str) -> tuple[str, int, int] | None:
         """Fetch a character's rotation image and return (base64_str, width, height).

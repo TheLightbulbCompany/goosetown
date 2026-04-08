@@ -513,7 +513,7 @@ async def register_agent(
 
                         service.update_agent_state(_agent_id, sprite_status="animating")
                         _send_progress("Generating animations...")
-                        await pxl.queue_template_animations(char_id, on_progress=_anim_progress)
+                        await pxl.queue_signup_animations(char_id, on_progress=_anim_progress)
 
                         # ---- Download ZIP (all animations should be done) ----
                         service.update_agent_state(_agent_id, sprite_status="downloading")
@@ -691,7 +691,7 @@ async def resume_sprite_generation(
         # Phase: animating
         if current_status == "animating" and char_id:
             _progress("Resuming animations...")
-            await pxl.queue_template_animations(char_id, on_progress=_anim_progress)
+            await pxl.queue_signup_animations(char_id, on_progress=_anim_progress)
             service.update_agent_state(agent_id, sprite_status="downloading")
             current_status = "downloading"
 
