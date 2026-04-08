@@ -231,6 +231,7 @@ class TownService:
             "pixellab_character_id": "pixellabCharacterId",
             "location_context": "locationContext",
             "current_location": "currentLocation",
+            "onboarding_phase": "onboardingPhase",
         }
 
         update_parts = []

@@ -77,6 +77,13 @@ class TestGetTownState:
 
 
 class TestUpdateAgentState:
+    def test_update_agent_state_maps_onboarding_phase_to_camel_case(self, dynamodb_tables):
+        svc = TownService()
+        agent = svc.opt_in("user-1", "test-onboarding", "Test Onboarding")
+        svc.update_agent_state(agent["id"], onboarding_phase="static")
+        fetched = svc.get_town_agent_by_id(agent["id"])
+        assert fetched.get("onboardingPhase") == "static"
+
     def test_updates_fields(self, dynamodb_tables):
         svc = TownService()
         agent = svc.opt_in("user-1", "a1", "A1")
