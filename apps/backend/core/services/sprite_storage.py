@@ -170,13 +170,24 @@ def extract_animation_spritesheet(
     return buf.getvalue(), frame_count
 
 
-def extract_all_spritesheets(zip_bytes: bytes) -> dict[str, tuple[bytes, int]]:
+def extract_all_spritesheets(
+    zip_bytes: bytes,
+    name_map: dict[str, str] | None = None,
+) -> dict[str, tuple[bytes, int]]:
     """Discover all animations in a PixelLab ZIP and extract each as a spritesheet.
 
     Scans for animations/<name>/ directories and calls extract_animation_spritesheet
     for each animation found.
 
-    Returns dict mapping animation_name -> (png_bytes, frame_count).
+    Args:
+        zip_bytes: Raw PixelLab ZIP bytes.
+        name_map: Optional mapping of folder-name -> friendly-name. When a
+            discovered folder name appears in the map, the friendly name is
+            used as the result dict key. Folders not in the map keep their
+            raw folder name.
+
+    Returns:
+        Dict mapping animation key -> (png_bytes, frame_count).
     """
     try:
         zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
@@ -193,11 +204,13 @@ def extract_all_spritesheets(zip_bytes: bytes) -> dict[str, tuple[bytes, int]]:
         if len(parts) >= 3 and parts[0] == "animations" and parts[1]:
             animation_names.add(parts[1])
 
+    name_map = name_map or {}
     results: dict[str, tuple[bytes, int]] = {}
     for anim_name in animation_names:
         result = extract_animation_spritesheet(zip_bytes, anim_name)
         if result is not None:
-            results[anim_name] = result
+            key = name_map.get(anim_name, anim_name)
+            results[key] = result
 
     return results
 

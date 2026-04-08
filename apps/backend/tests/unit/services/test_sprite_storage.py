@@ -115,3 +115,47 @@ class TestExtractWalkSpritesheetBackwardCompat:
         assert result is not None
         img = Image.open(io.BytesIO(result))
         assert img.width == 6 * FRAME_SIZE
+
+
+def _make_stub_zip(anim_folder_names: list[str]) -> bytes:
+    """Build a minimal PixelLab-style ZIP with frame PNGs per animation folder."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name in anim_folder_names:
+            for direction in ("south", "west", "east", "north"):
+                for frame in range(6):
+                    img = Image.new("RGBA", (96, 96), (255, 0, 0, 255))
+                    frame_buf = io.BytesIO()
+                    img.save(frame_buf, format="PNG")
+                    zf.writestr(
+                        f"animations/{name}/{direction}/{frame}.png",
+                        frame_buf.getvalue(),
+                    )
+    return buf.getvalue()
+
+
+def test_extract_all_spritesheets_uses_name_map_to_rekey_results():
+    zip_bytes = _make_stub_zip(["walk", "breathing-idle"])
+    name_map = {"breathing-idle": "idle"}
+
+    result = extract_all_spritesheets(zip_bytes, name_map=name_map)
+
+    assert set(result.keys()) == {"walk", "idle"}
+
+
+def test_extract_all_spritesheets_without_name_map_keeps_folder_names():
+    zip_bytes = _make_stub_zip(["walk", "breathing-idle"])
+
+    result = extract_all_spritesheets(zip_bytes)
+
+    assert set(result.keys()) == {"walk", "breathing-idle"}
+
+
+def test_extract_all_spritesheets_unmapped_folder_kept_as_is():
+    zip_bytes = _make_stub_zip(["walk", "weird-folder-name"])
+    name_map = {"breathing-idle": "idle"}
+
+    result = extract_all_spritesheets(zip_bytes, name_map=name_map)
+
+    assert "walk" in result
+    assert "weird-folder-name" in result
