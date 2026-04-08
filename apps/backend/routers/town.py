@@ -101,6 +101,11 @@ def _send_to_daemon(agent_id: str, payload: dict) -> bool:
         logger.warning("[agent:%s] _send_to_daemon: no daemonConnectionId (event=%s)", agent_id[:8], evt)
         return False
 
+    # Enrich agent_state events with fields the daemon needs from DynamoDB.
+    # The agent record is already in scope here — no extra DB reads required.
+    if evt == "agent_state":
+        payload = {**payload, "onboardingPhase": agent.get("onboardingPhase", "alive")}
+
     try:
         mgmt = ManagementApiClient()
         sent = mgmt.send_message(conn_id, payload)
