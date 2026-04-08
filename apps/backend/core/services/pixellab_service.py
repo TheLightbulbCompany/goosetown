@@ -19,16 +19,17 @@ PIXELLAB_API_URL = "https://api.pixellab.ai/v2"
 # ---------------------------------------------------------------------------
 ANIMATION_REGISTRY: dict[str, dict] = {
     # Templates (1 gen/direction, auto all directions)
-    "walk":       {"type": "template", "template_id": "walk", "fps": 8.0},
-    "idle":       {"type": "template", "template_id": "breathing-idle", "fps": 4.0},
-    "run":        {"type": "template", "template_id": "running-6-frames", "fps": 12.0},
-    "drink":      {"type": "template", "template_id": "drinking", "fps": 6.0},
-    "crouch":     {"type": "template", "template_id": "crouching", "fps": 6.0},
-    "pick_up":    {"type": "template", "template_id": "picking-up", "fps": 6.0},
+    "walk":       {"type": "template", "template_id": "walk", "fps": 8.0, "auto_generate": True},
+    "idle":       {"type": "template", "template_id": "breathing-idle", "fps": 4.0, "auto_generate": True},
+    "run":        {"type": "template", "template_id": "running-6-frames", "fps": 12.0, "auto_generate": False},
+    "drink":      {"type": "template", "template_id": "drinking", "fps": 6.0, "auto_generate": False},
+    "crouch":     {"type": "template", "template_id": "crouching", "fps": 6.0, "auto_generate": False},
+    "pick_up":    {"type": "template", "template_id": "picking-up", "fps": 6.0, "auto_generate": False},
     # Custom V3 (generated lazily on first use)
     # Prompts describe the full movement sequence for PixelLab frame generation.
     "sitting": {
         "type": "custom",
+        "auto_generate": False,
         "frames": 8,
         "fps": 1.0,
 
@@ -40,6 +41,7 @@ ANIMATION_REGISTRY: dict[str, dict] = {
     },
     "reading": {
         "type": "custom",
+        "auto_generate": False,
         "frames": 8,
         "fps": 1.0,
 
@@ -51,6 +53,7 @@ ANIMATION_REGISTRY: dict[str, dict] = {
     },
     "writing": {
         "type": "custom",
+        "auto_generate": False,
         "frames": 8,
         "fps": 2.0,
 
@@ -62,6 +65,7 @@ ANIMATION_REGISTRY: dict[str, dict] = {
     },
     "working": {
         "type": "custom",
+        "auto_generate": False,
         "frames": 8,
         "fps": 2.0,
 
@@ -73,6 +77,7 @@ ANIMATION_REGISTRY: dict[str, dict] = {
     },
     "performing": {
         "type": "custom",
+        "auto_generate": False,
         "frames": 8,
         "fps": 6.0,
         "prompt": (
@@ -83,6 +88,7 @@ ANIMATION_REGISTRY: dict[str, dict] = {
     },
     "exercising": {
         "type": "custom",
+        "auto_generate": False,
         "frames": 8,
         "fps": 8.0,
         "prompt": (
@@ -93,6 +99,7 @@ ANIMATION_REGISTRY: dict[str, dict] = {
     },
     "gaming": {
         "type": "custom",
+        "auto_generate": False,
         "frames": 8,
         "fps": 6.0,
         "prompt": (
@@ -103,6 +110,7 @@ ANIMATION_REGISTRY: dict[str, dict] = {
     },
     "gardening": {
         "type": "custom",
+        "auto_generate": False,
         "frames": 8,
         "fps": 4.0,
         "prompt": (
@@ -113,6 +121,7 @@ ANIMATION_REGISTRY: dict[str, dict] = {
     },
     "cooking": {
         "type": "custom",
+        "auto_generate": False,
         "frames": 8,
         "fps": 6.0,
         "prompt": (
@@ -123,6 +132,7 @@ ANIMATION_REGISTRY: dict[str, dict] = {
     },
     "sleeping": {
         "type": "custom",
+        "auto_generate": False,
         "frames": 8,
         "fps": 0.5,
 
@@ -134,6 +144,7 @@ ANIMATION_REGISTRY: dict[str, dict] = {
     },
     "talking": {
         "type": "custom",
+        "auto_generate": True,
         "frames": 8,
         "fps": 6.0,
         "prompt": (
@@ -146,6 +157,7 @@ ANIMATION_REGISTRY: dict[str, dict] = {
 
 TEMPLATE_ANIMATIONS = {k: v for k, v in ANIMATION_REGISTRY.items() if v["type"] == "template"}
 CUSTOM_ANIMATIONS = {k: v for k, v in ANIMATION_REGISTRY.items() if v["type"] == "custom"}
+SIGNUP_ANIMATIONS = {k: v for k, v in ANIMATION_REGISTRY.items() if v["auto_generate"]}
 
 
 class PixelLabService:
