@@ -1064,11 +1064,12 @@ async def get_viewer_token(
 
 
 @router.get("/conversations", response_model=TownConversationsListResponse)
-async def get_conversations(
-    limit: int = 20,
-    auth: AuthContext = Depends(get_current_user),
-):
-    """Get recent public conversations."""
+async def get_conversations(limit: int = 20):
+    """Get recent public conversations.
+
+    Public endpoint — conversations in GooseTown are visible to any viewer,
+    like the rest of the town state.
+    """
     service = TownService()
     convos = service.get_recent_conversations(limit=limit)
 
@@ -1557,6 +1558,7 @@ async def _finalize_conversation(
     mgmt,
     ws_manager,
     auto_ended: bool,
+    end_reason_override: str | None = None,
 ) -> None:
     """End a conversation, apply mood/relationship effects, and notify both agents.
 
@@ -1583,7 +1585,10 @@ async def _finalize_conversation(
     turn_count = conv.get("turnCount", 0)
     location = conv.get("location", "unknown")
 
-    end_reason = "turn_limit_reached" if auto_ended else "ended_by_participant"
+    if end_reason_override:
+        end_reason = end_reason_override
+    else:
+        end_reason = "turn_limit_reached" if auto_ended else "ended_by_participant"
 
     # Apply mood/energy effects and update relationship for each participant
     for agent_id in (a_id, b_id):

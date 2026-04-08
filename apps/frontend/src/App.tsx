@@ -6,6 +6,7 @@ import TownNav from './components/TownNav.tsx';
 import GameLayout from './components/GameLayout.tsx';
 import GodotCanvas from './components/GodotCanvas.tsx';
 import ApartmentCard from './components/ApartmentCard.tsx';
+import ConversationsLog from './components/ConversationsLog.tsx';
 import LoginButton from './components/buttons/LoginButton.tsx';
 import MusicButton from './components/buttons/MusicButton.tsx';
 import JoinTownModal from './components/JoinTownModal.tsx';
@@ -22,17 +23,20 @@ function AgentsSidebar({ onJoinClick }: { onJoinClick: () => void }) {
 
   if (!data || data.agents.length === 0) {
     return (
-      <SignedIn>
-        <div className="p-2 space-y-3">
-          <p className="font-body text-clay-300 text-sm">No agents in town yet.</p>
-          <button
-            onClick={onJoinClick}
-            className="w-full px-4 py-2 bg-brown-600 hover:bg-brown-500 text-brown-100 rounded font-body text-sm transition-colors"
-          >
-            Join GooseTown
-          </button>
-        </div>
-      </SignedIn>
+      <>
+        <SignedIn>
+          <div className="p-2 space-y-3">
+            <p className="font-body text-clay-300 text-sm">No agents in town yet.</p>
+            <button
+              onClick={onJoinClick}
+              className="w-full px-4 py-2 bg-brown-600 hover:bg-brown-500 text-brown-100 rounded font-body text-sm transition-colors"
+            >
+              Join GooseTown
+            </button>
+          </div>
+        </SignedIn>
+        <ConversationsLog />
+      </>
     );
   }
 
@@ -69,6 +73,7 @@ function AgentsSidebar({ onJoinClick }: { onJoinClick: () => void }) {
           </div>
         </div>
       )}
+      <ConversationsLog />
     </>
   );
 }
