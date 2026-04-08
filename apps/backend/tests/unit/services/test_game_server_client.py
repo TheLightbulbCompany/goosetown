@@ -200,3 +200,26 @@ async def test_connect_agent_replaces_existing_connection():
         assert client._agent_connections["agent-1"] is mock_ws_new
 
     await client.disconnect_agent("agent-1")
+
+
+@pytest.mark.asyncio
+async def test_update_agent_sprites_sends_command_on_open_connection():
+    client = GameServerClient(base_url="ws://stub")
+    fake_ws = AsyncMock()
+    client._agent_connections["agent-1"] = fake_ws
+
+    await client.update_agent_sprites("agent-1", {
+        "walk": {"url": "https://cdn.example.com/walk.png", "frameCount": 6, "fps": 8},
+    })
+
+    fake_ws.send.assert_awaited_once()
+    sent = json.loads(fake_ws.send.call_args[0][0])
+    assert sent["cmd"] == "update_agent_sprites"
+    assert sent["agent_id"] == "agent-1"
+    assert sent["sprite_animations"]["walk"]["url"] == "https://cdn.example.com/walk.png"
+
+
+@pytest.mark.asyncio
+async def test_update_agent_sprites_silently_skips_when_no_connection():
+    client = GameServerClient(base_url="ws://stub")
+    await client.update_agent_sprites("agent-2", {"walk": {"url": "x"}})

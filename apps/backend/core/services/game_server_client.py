@@ -152,6 +152,47 @@ class GameServerClient:
                 task.cancel()
             raise
 
+    async def update_agent_sprites(
+        self,
+        agent_id: str,
+        sprite_animations: dict,
+    ) -> None:
+        """Push an updated sprite_animations dict to the game server.
+
+        Used during progressive sprite readiness: the backend first connects the
+        agent with a static spritesheet, then as walk/idle/talking animations
+        finish generating it calls this method so the game server can include
+        them in the next world_state broadcast.
+
+        Silently returns if the agent is not connected — DynamoDB is the source
+        of truth, and the next full reconnect will load the latest animations
+        fresh via connect_agent.
+        """
+        ws = self._agent_connections.get(agent_id)
+        if ws is None:
+            logger.info(
+                "update_agent_sprites: no connection for %s, skipping push",
+                agent_id,
+            )
+            return
+
+        command = {
+            "cmd": "update_agent_sprites",
+            "agent_id": agent_id,
+            "sprite_animations": sprite_animations,
+        }
+        try:
+            await ws.send(json.dumps(command))
+            logger.info(
+                "update_agent_sprites pushed to game server for %s: %d animations",
+                agent_id, len(sprite_animations),
+            )
+        except Exception:
+            logger.exception(
+                "Failed to push sprite update for %s — swallowing",
+                agent_id,
+            )
+
     async def transition_agent(
         self, agent_id: str, to_context: str, user_id: str, agent_data: dict
     ) -> None:
