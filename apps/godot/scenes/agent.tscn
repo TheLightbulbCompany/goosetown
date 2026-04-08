@@ -1,10 +1,25 @@
-[gd_scene load_steps=4 format=3]
+[gd_scene load_steps=5 format=3]
 
 [ext_resource type="Script" path="res://scripts/agent.gd" id="1_agent"]
 [ext_resource type="Texture2D" path="res://assets/speech_bubble.png" id="2_bubble"]
+[ext_resource type="FontFile" path="res://assets/fonts/upheaval_pro.ttf" id="3_font"]
 
 [sub_resource type="CircleShape2D" id="CircleShape2D_1"]
 radius = 10.0
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_pill"]
+content_margin_left = 6.0
+content_margin_top = 2.0
+content_margin_right = 6.0
+content_margin_bottom = 2.0
+bg_color = Color(1, 1, 1, 0.95)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
+shadow_color = Color(0, 0, 0, 0.2)
+shadow_size = 1
+shadow_offset = Vector2(0, 1)
 
 [node name="Agent" type="CharacterBody2D"]
 collision_layer = 1
@@ -14,14 +29,46 @@ script = ExtResource("1_agent")
 [node name="Sprite" type="Sprite2D" parent="."]
 position = Vector2(0, -16)
 
-[node name="NameLabel" type="Label" parent="."]
+[node name="NameplateContainer" type="Control" parent="."]
 visible = false
+layout_mode = 3
+anchors_preset = 0
 offset_left = -40.0
 offset_top = -50.0
 offset_right = 40.0
-offset_bottom = -35.0
-horizontal_alignment = 1
+offset_bottom = -34.0
+mouse_filter = 2
+
+[node name="Pill" type="Panel" parent="NameplateContainer"]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -30.0
+offset_top = -8.0
+offset_right = 30.0
+offset_bottom = 8.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+theme_override_styles/panel = SubResource("StyleBoxFlat_pill")
+
+[node name="NameLabel" type="Label" parent="NameplateContainer/Pill"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+theme_override_colors/font_color = Color(0, 0, 0, 1)
+theme_override_fonts/font = ExtResource("3_font")
+theme_override_font_sizes/font_size = 10
 text = "Agent"
+horizontal_alignment = 1
+vertical_alignment = 1
 
 [node name="SpeechBubbleContainer" type="NinePatchRect" parent="."]
 visible = false
