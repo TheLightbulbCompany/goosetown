@@ -92,7 +92,8 @@ var _atlas_cache: Dictionary = {}
 # ---------------------------------------------------------------------------
 
 @onready var sprite: Sprite2D = $Sprite
-@onready var name_label: Label = $NameLabel
+@onready var nameplate: Control = $NameplateContainer
+@onready var name_label: Label = $NameplateContainer/Pill/NameLabel
 @onready var speech_container: NinePatchRect = $SpeechBubbleContainer
 @onready var speech_text_label: Label = $SpeechBubbleContainer/SpeechText
 @onready var nav_agent: NavigationAgent2D = $NavigationAgent2D
@@ -104,6 +105,8 @@ var _atlas_cache: Dictionary = {}
 func _ready() -> void:
 	if speech_container:
 		speech_container.visible = false
+	if nameplate:
+		nameplate.visible = false
 	# Connect avoidance callback for RVO steering
 	nav_agent.velocity_computed.connect(_on_velocity_computed)
 
@@ -216,7 +219,8 @@ func update_state(data: Dictionary) -> void:
 		speech_text = text
 		speech_text_label.text = speech_text
 		speech_container.visible = true
-		name_label.visible = false
+		if nameplate:
+			nameplate.visible = false
 	elif text == "":
 		speech_text = ""
 		speech_container.visible = false
@@ -271,7 +275,7 @@ func _update_hover() -> void:
 	var mouse_pos: Vector2 = get_global_mouse_position()
 	# Sprite rect: ~48px wide, ~48px tall, positioned 16px above body center
 	var rect := Rect2(global_position.x - 24, global_position.y - 40, 48, 48)
-	name_label.visible = rect.has_point(mouse_pos)
+	nameplate.visible = rect.has_point(mouse_pos)
 
 
 func _update_facing_from_velocity(vel: Vector2) -> void:
