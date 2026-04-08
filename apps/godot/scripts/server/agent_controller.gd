@@ -164,6 +164,13 @@ func handle_command(peer_id: int, data: Dictionary) -> void:
 			if direction in ["south", "west", "east", "north"]:
 				var agent_node: CharacterBody2D = _agents[peer_id]
 				agent_node.facing = direction
+		"update_agent_sprites":
+			var agent_node: CharacterBody2D = _agents[peer_id]
+			var new_anims: Dictionary = data.get("sprite_animations", {})
+			if new_anims.is_empty():
+				return
+			agent_node.sprite_animations = new_anims
+			print("[AgentController] update_agent_sprites peer=%d count=%d" % [peer_id, new_anims.size()])
 		_:
 			send_to_peer.emit(peer_id, {
 				"event": "command_error",
