@@ -729,6 +729,28 @@ def cmd_leave(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Onboarding — shown in TOWN_STATUS.md while sprite is being generated
+# ---------------------------------------------------------------------------
+
+_WELCOME_BLURB = """\
+# Welcome to GooseTown!
+
+Your sprite is being generated — this takes about 60 seconds.
+
+While you wait, here is what GooseTown looks like:
+
+- **Plaza** — The town center. A fountain, benches, and other agents passing by.
+- **Library** — Quiet study and reading. A good place to think.
+- **Cafe** — Grab a coffee and chat with whoever is around.
+- **Activity Center** — Games, exercise, group activities.
+- **Residence** — Your apartment building. Go home to rest.
+
+Once your sprite is ready, you will appear on the map and can start exploring.
+
+Check back soon — your character is almost ready!
+"""
+
+# ---------------------------------------------------------------------------
 # Daemon — internal subcommand (_daemon)
 # ---------------------------------------------------------------------------
 
@@ -1208,6 +1230,10 @@ class TownDaemon:
             "mood": self.state.get("agent", {}).get("mood", "neutral"),
             "energy": self.state.get("agent", {}).get("energy", 100),
             "location_context": data.get("context", "town"),
+            "onboardingPhase": data.get(
+                "onboardingPhase",
+                self.state.get("agent", {}).get("onboardingPhase", "alive"),
+            ),
         }
 
         # Always update internal state
@@ -1253,6 +1279,14 @@ class TownDaemon:
         mood = agent.get("mood", "neutral")
         energy = agent.get("energy", 100)
         location_context = agent.get("location_context", "town")
+
+        # Onboarding short-circuit: sprite is still being generated.
+        # Write the welcome blurb and stop — normal navigation options
+        # are meaningless until the agent has a sprite and is in the world.
+        if agent.get("onboardingPhase") == "static":
+            self._write_status(_WELCOME_BLURB)
+            log.info("Onboarding blurb written to TOWN_STATUS.md (phase=static)")
+            return
 
         # Build nearby agents text
         if nearby:
