@@ -100,6 +100,23 @@ func _on_world_state(data: Dictionary) -> void:
 				agents[agent_id].current_activity = activity
 			else:
 				agents[agent_id].current_activity = ""
+
+			# Diff sprite animations — reload any that are new or whose URL changed.
+			var incoming_anims: Dictionary = agent_data.get("spriteAnimations", {})
+			if not incoming_anims.is_empty():
+				var current_anims: Dictionary = agent_node.sprite_animations
+				var changed: bool = false
+				for anim_name in incoming_anims:
+					var new_url: String = str(incoming_anims[anim_name].get("url", ""))
+					var old_url: String = ""
+					if current_anims.has(anim_name):
+						old_url = str(current_anims[anim_name].get("url", ""))
+					if new_url != "" and new_url != old_url:
+						_load_sprite_for_agent(agent_id, new_url, anim_name)
+						changed = true
+				if changed:
+					agent_node.sprite_animations = incoming_anims
+					agent_node.set_animation_configs(incoming_anims)
 		else:
 			# New agent — instantiate
 			var agent: CharacterBody2D = AgentScene.instantiate()
