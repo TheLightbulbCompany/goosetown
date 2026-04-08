@@ -458,6 +458,46 @@ class PixelLabService:
         )
         return results
 
+    async def fetch_all_rotations(self, character_id: str) -> dict[str, bytes]:
+        """Download all 4 rotation PNGs for a character.
+
+        Returns a dict of direction -> raw PNG bytes. Directions that fail to
+        download or are missing from the character's rotation_urls are omitted
+        from the result — the caller decides how to handle partial coverage.
+        """
+        try:
+            char_data = await self.get_character(character_id)
+        except Exception:
+            logger.exception(
+                "Failed to get character %s for rotation fetch", character_id,
+            )
+            return {}
+
+        rotation_urls: dict[str, str] = char_data.get("rotation_urls", {}) or {}
+        directions = ("south", "west", "east", "north")
+        result: dict[str, bytes] = {}
+
+        async with httpx.AsyncClient() as client:
+            for direction in directions:
+                url = rotation_urls.get(direction, "")
+                if not url:
+                    logger.warning(
+                        "No %s rotation URL for character %s",
+                        direction, character_id,
+                    )
+                    continue
+                try:
+                    resp = await client.get(url, timeout=30.0)
+                    resp.raise_for_status()
+                    result[direction] = resp.content
+                except Exception:
+                    logger.exception(
+                        "Failed to fetch %s rotation for character %s",
+                        direction, character_id,
+                    )
+
+        return result
+
     async def _get_rotation_base64(self, character_id: str, direction: str) -> tuple[str, int, int] | None:
         """Fetch a character's rotation image and return (base64_str, width, height).
 
