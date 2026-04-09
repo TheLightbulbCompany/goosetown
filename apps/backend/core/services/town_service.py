@@ -184,8 +184,6 @@ class TownService:
             "energy": Decimal("100"),
             "statusMessage": None,
             "lastConversationAt": None,
-            "wakeAt": None,
-            "wakeTimezone": None,
         }
 
         table = dynamo.agents_table()
@@ -220,8 +218,6 @@ class TownService:
             "last_heartbeat_at": "lastHeartbeatAt",
             "last_conversation_at": "lastConversationAt",
             "status_message": "statusMessage",
-            "wake_at": "wakeAt",
-            "wake_timezone": "wakeTimezone",
             "sprite_ready": "spriteReady",
             "sprite_url": "spriteUrl",
             "sprite_animations": "spriteAnimations",
@@ -467,8 +463,6 @@ class TownService:
                 "energy": Decimal("100"),
                 "statusMessage": None,
                 "lastConversationAt": None,
-                "wakeAt": None,
-                "wakeTimezone": None,
             }
             table.put_item(Item=item)
             created_agents.append(_decimal_to_native(item))

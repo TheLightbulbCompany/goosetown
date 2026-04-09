@@ -74,16 +74,13 @@ async def _reconnect_active_agents() -> None:
     for agent in agents:
         if not agent.get("spriteReady"):
             continue
-        # Skip sleeping agents (have a future wakeAt)
-        wake_at = agent.get("wakeAt")
-        if wake_at:
-            import time
-            try:
-                if float(wake_at) > time.time():
-                    logger.info("Agent %s is sleeping, skipping reconnect", agent.get("displayName", "?"))
-                    continue
-            except (ValueError, TypeError):
-                pass
+        # Skip agents whose daemon is NOT currently connected. Empty
+        # daemonConnectionId means their daemon disconnected earlier and
+        # they are "sleeping at home" — we must not force-reconnect them
+        # to the game server on CI/CD restarts. Their next daemon handshake
+        # will wake them up.
+        if not agent.get("daemonConnectionId"):
+            continue
 
         agent_id = agent["id"]
         location_context = agent.get("locationContext", "town")

@@ -1116,17 +1116,21 @@ async def handle_ws_disconnect(request: WsDisconnectRequest):
         agent_id = agent_conn.agent_id
         logger.info("[agent:%s] Daemon disconnected (conn=%s)", agent_id[:8], request.connectionId[:12])
 
-        # Remove from game server
+        # Remove from game server — the agent is now "sleeping at home" and
+        # should not appear in any viewer's world_state broadcast.
         gs_client = get_game_server_client()
         try:
             await gs_client.disconnect_agent(agent_id)
         except Exception as exc:
             logger.warning("[agent:%s] Failed to disconnect from game server: %s", agent_id[:8], exc)
 
-        # Update DynamoDB: clear daemon connection, set context back to apartment
+        # Update DynamoDB: clear daemon connection, move to bed (sleeping),
+        # drop any in-flight activity. An empty daemonConnectionId is the
+        # signal to `_reconnect_active_agents` that this agent is offline
+        # and should NOT be auto-reconnected on backend CI/CD restarts.
         service = TownService()
         service.update_agent_state(agent_id, daemon_connection_id="")
-        service.update_agent_context(agent_id, "apartment", "exit")
+        service.update_agent_context(agent_id, "apartment", "bed")
         service.update_agent_activity(agent_id, None, None)
 
         # Unregister from ws_manager
@@ -1725,9 +1729,10 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
     logger.info("[agent:%s] daemonConnectionId updated: %s", agent_id[:8], request.connectionId[:12])
     service.update_agent_state(agent_id, daemon_connection_id=request.connectionId)
 
-    # Always spawn in apartment on connect — agents "wake up" at home
+    # Wake up in bed. On every daemon reconnect the agent "wakes up at home"
+    # — they can walk themselves out of the apartment from there.
     location_context = "apartment"
-    current_location = "exit"
+    current_location = "bed"
     service.update_agent_context(agent_id, location_context, current_location)
 
     # Set in-memory context on the connection record
