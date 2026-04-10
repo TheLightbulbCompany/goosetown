@@ -56,12 +56,16 @@ async def _reconnect_active_agents() -> None:
 
     Queries DynamoDB for agents with spriteReady=true and connects them
     to the game server so the forwarding chain is ready before any daemon
-    reconnects.
+    reconnects. Also repopulates the in-memory ws_manager from persisted
+    daemonConnectionId fields so incoming WebSocket messages from surviving
+    API Gateway connections are recognized.
     """
+    from core.services.town_agent_ws import get_town_agent_ws_manager
     from core.services.town_service import TownService
     from routers.town import _make_agent_event_callback
 
     gs_client = get_game_server_client()
+    ws_manager = get_town_agent_ws_manager()
     service = TownService()
 
     try:
@@ -93,6 +97,21 @@ async def _reconnect_active_agents() -> None:
             else:
                 location_context = "town"
             service.update_agent_context(agent_id, location_context, current_location)
+
+        # Repopulate in-memory ws_manager so incoming WebSocket messages
+        # from the daemon (which survived the backend restart via API Gateway)
+        # are recognized. Without this, every town_agent_act silently fails
+        # with "unknown_connection" after a CI/CD deploy.
+        daemon_conn_id = agent.get("daemonConnectionId", "")
+        if daemon_conn_id:
+            ws_manager.register(
+                connection_id=daemon_conn_id,
+                user_id=agent.get("userId", ""),
+                agent_name=agent.get("agentName", ""),
+                agent_id=agent_id,
+                instance_id=agent.get("instanceId", ""),
+            )
+            ws_manager.update_context(agent_id, location_context)
 
         try:
             await gs_client.connect_agent(
