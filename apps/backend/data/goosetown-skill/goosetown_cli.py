@@ -1281,9 +1281,9 @@ class TownDaemon:
         location_context = agent.get("location_context", "town")
 
         # Onboarding short-circuit: sprite is still being generated.
-        # Write the welcome blurb and stop — normal navigation options
-        # are meaningless until the agent has a sprite and is in the world.
-        if agent.get("onboardingPhase") == "static":
+        # Write the welcome blurb and stop — UNLESS the agent is in an
+        # active conversation, which always takes priority.
+        if agent.get("onboardingPhase") == "static" and not self.state.get("active_conversation"):
             self._write_status(_WELCOME_BLURB)
             log.info("Onboarding blurb written to TOWN_STATUS.md (phase=static)")
             return
