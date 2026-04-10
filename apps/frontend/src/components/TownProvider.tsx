@@ -49,11 +49,7 @@ export default function TownProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <ClerkProvider
-      publishableKey={CLERK_PUBLISHABLE_KEY}
-      signInUrl="/sign-in"
-      signUpUrl="/sign-up"
-    >
+    <ClerkProvider publishableKey={CLERK_PUBLISHABLE_KEY}>
       <TownStateProvider>
         {children}
       </TownStateProvider>
