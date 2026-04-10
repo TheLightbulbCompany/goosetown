@@ -13,6 +13,8 @@ import JoinTownModal from './components/JoinTownModal.tsx';
 import { useApartment } from './hooks/useApartment.ts';
 import Town from './pages/Town.tsx';
 import Apartment from './pages/Apartment.tsx';
+import SignInPage from './pages/SignIn.tsx';
+import SignUpPage from './pages/SignUp.tsx';
 
 function AgentsSidebar({ onJoinClick }: { onJoinClick: () => void }) {
   const { data, loading } = useApartment();
@@ -103,6 +105,8 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Town />} />
             <Route path="/apartment" element={<Apartment />} />
+            <Route path="/sign-in/*" element={<SignInPage />} />
+            <Route path="/sign-up/*" element={<SignUpPage />} />
           </Routes>
         </GameLayout>
 
