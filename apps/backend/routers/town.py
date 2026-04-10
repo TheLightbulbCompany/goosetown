@@ -791,6 +791,17 @@ async def resume_sprite_generation(
     pxl = PixelLabService()
     service = TownService()
 
+    # Recover the existing spriteUrl from DynamoDB so we don't overwrite it
+    # with "" if Phase C can't find a "walk" key in the animation dict.
+    existing_agent = service.get_town_agent_by_id(agent_id)
+    existing_sprite_url = (existing_agent or {}).get("spriteUrl", "")
+
+    # Build template_id → friendly-name map for extract_all_spritesheets
+    template_name_map: dict[str, str] = {}
+    for friendly_name, cfg in ANIMATION_REGISTRY.items():
+        if cfg["type"] == "template":
+            template_name_map[cfg["template_id"]] = friendly_name
+
     def _progress(status: str) -> None:
         _send_to_daemon(agent_id, {"event": "sprite_progress", "status": status})
 
@@ -833,7 +844,7 @@ async def resume_sprite_generation(
                     break
 
             if zip_bytes:
-                all_sheets = extract_all_spritesheets(zip_bytes)
+                all_sheets = extract_all_spritesheets(zip_bytes, name_map=template_name_map)
                 if all_sheets:
                     uploaded = await asyncio.to_thread(
                         upload_sprites_to_s3, all_sheets, agent_id, settings.SPRITE_S3_BUCKET
@@ -846,13 +857,14 @@ async def resume_sprite_generation(
                             "frameCount": info["frame_count"],
                             "fps": int(registry_entry.get("fps", 8)),
                         }
-                    walk_url = sprite_animations.get("walk", {}).get("url", "")
+                    walk_url = sprite_animations.get("walk", {}).get("url", existing_sprite_url)
                     service.update_agent_state(
                         agent_id,
                         sprite_ready=True,
                         sprite_url=walk_url,
                         sprite_animations=sprite_animations,
                         sprite_status="complete",
+                        onboarding_phase="alive",
                     )
                 else:
                     walk_png = extract_walk_spritesheet(zip_bytes)
