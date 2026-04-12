@@ -692,6 +692,8 @@ class TownService:
             "id": conv_id,
             "participantAId": a_id,
             "participantBId": b_id,
+            "participants": [a_id, b_id],
+            "lastSpeakerId": initiator_id,
             "location": location,
             "turnCount": 1,
             "topicSummary": "_none",
@@ -738,15 +740,18 @@ class TownService:
     def append_message_to_conversation(
         self,
         conv_id: str,
+        speaker_id: str,
         speaker_display_name: str,
         text: str,
     ) -> Optional[dict]:
         """Append a message turn to an active conversation's public log.
 
-        Increments ``turnCount`` and updates ``updatedAt`` atomically.
+        Increments ``turnCount``, sets ``lastSpeakerId``, and updates
+        ``updatedAt`` atomically.
 
         Args:
             conv_id: Conversation UUID.
+            speaker_id: UUID of the speaking agent.
             speaker_display_name: Display name label for this turn.
             text: The message text.
 
@@ -763,6 +768,7 @@ class TownService:
                 UpdateExpression=(
                     "SET publicLog = list_append(publicLog, :entry), "
                     "turnCount = turnCount + :one, "
+                    "lastSpeakerId = :sid, "
                     "updatedAt = :now"
                 ),
                 ConditionExpression="attribute_exists(id) AND #s = :active",
@@ -770,6 +776,7 @@ class TownService:
                 ExpressionAttributeValues={
                     ":entry": [new_entry],
                     ":one": 1,
+                    ":sid": speaker_id,
                     ":now": now,
                     ":active": "active",
                 },
@@ -779,8 +786,93 @@ class TownService:
             return None
         return _decimal_to_native(resp.get("Attributes", {}))
 
+    def join_conversation(self, conv_id: str, agent_id: str) -> Optional[dict]:
+        """Add an agent to an active conversation's participants list.
+
+        Returns the updated conversation, or None if conversation doesn't exist,
+        is not active, or agent is already a participant.
+        """
+        table = dynamo.conversations_table()
+        now = _now_iso()
+        try:
+            resp = table.update_item(
+                Key={"id": conv_id},
+                UpdateExpression=(
+                    "SET participants = list_append(participants, :new), updatedAt = :now"
+                ),
+                ConditionExpression=(
+                    "attribute_exists(id) AND #s = :active "
+                    "AND NOT contains(participants, :aid)"
+                ),
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={
+                    ":new": [agent_id],
+                    ":aid": agent_id,
+                    ":now": now,
+                    ":active": "active",
+                },
+                ReturnValues="ALL_NEW",
+            )
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            return None
+
+        # Mark the joiner's currentConversationId
+        agents_table = dynamo.agents_table()
+        try:
+            agents_table.update_item(
+                Key={"id": agent_id},
+                UpdateExpression="SET currentConversationId = :cid",
+                ExpressionAttributeValues={":cid": conv_id},
+                ConditionExpression="attribute_exists(id)",
+            )
+        except agents_table.meta.client.exceptions.ConditionalCheckFailedException:
+            logger.warning("Agent %s not found when joining conversation", agent_id)
+
+        return _decimal_to_native(resp.get("Attributes", {}))
+
+    def leave_conversation(self, conv_id: str, agent_id: str) -> int:
+        """Remove an agent from an active conversation's participants list.
+
+        Returns the number of remaining participants.
+        """
+        conv = self.get_conversation_by_id(conv_id)
+        if not conv or conv.get("status") != "active":
+            return 0
+
+        participants: list[str] = conv.get("participants") or [
+            conv.get("participantAId"),
+            conv.get("participantBId"),
+        ]
+        participants = [p for p in participants if p and p != agent_id]
+
+        table = dynamo.conversations_table()
+        now = _now_iso()
+        try:
+            table.update_item(
+                Key={"id": conv_id},
+                UpdateExpression="SET participants = :p, updatedAt = :now",
+                ExpressionAttributeValues={":p": participants, ":now": now},
+                ConditionExpression="attribute_exists(id)",
+            )
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            return 0
+
+        # Clear the leaver's currentConversationId
+        agents_table = dynamo.agents_table()
+        try:
+            agents_table.update_item(
+                Key={"id": agent_id},
+                UpdateExpression="REMOVE currentConversationId SET lastConversationAt = :now",
+                ExpressionAttributeValues={":now": now},
+                ConditionExpression="attribute_exists(id)",
+            )
+        except agents_table.meta.client.exceptions.ConditionalCheckFailedException:
+            pass
+
+        return len(participants)
+
     def end_conversation(self, conv_id: str) -> Optional[dict]:
-        """Mark a conversation as ended and clear both agents' active conversation pointer.
+        """Mark a conversation as ended and clear all participants' active conversation pointer.
 
         Args:
             conv_id: Conversation UUID.
@@ -805,9 +897,12 @@ class TownService:
 
         conv = _decimal_to_native(resp.get("Attributes", {}))
 
-        # Clear currentConversationId on both participants
+        # Clear currentConversationId on all participants
         agents_table = dynamo.agents_table()
-        for agent_id in (conv.get("participantAId"), conv.get("participantBId")):
+        participants_list: list[str] = conv.get("participants") or [
+            conv.get("participantAId"), conv.get("participantBId"),
+        ]
+        for agent_id in participants_list:
             if not agent_id:
                 continue
             try:

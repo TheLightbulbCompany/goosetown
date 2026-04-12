@@ -113,7 +113,7 @@ class TestAppendMessageToConversation:
         b = _make_agent(svc, "u2", "agent-b", "Agent B")
 
         conv = svc.create_active_conversation(a["id"], b["id"], "cafe", "Hello", "Agent A")
-        updated = svc.append_message_to_conversation(conv["id"], "Agent B", "Hey there!")
+        updated = svc.append_message_to_conversation(conv["id"], b["id"], "Agent B", "Hey there!")
 
         assert updated is not None
         assert updated["turnCount"] == 2
@@ -129,12 +129,12 @@ class TestAppendMessageToConversation:
         conv = svc.create_active_conversation(a["id"], b["id"], "plaza", "Hi", "Agent A")
         svc.end_conversation(conv["id"])
 
-        result = svc.append_message_to_conversation(conv["id"], "Agent B", "Too late!")
+        result = svc.append_message_to_conversation(conv["id"], b["id"], "Agent B", "Too late!")
         assert result is None
 
     def test_returns_none_for_missing_conversation(self, dynamodb_tables):
         svc = TownService()
-        result = svc.append_message_to_conversation("no-such-id", "Agent X", "Hello?")
+        result = svc.append_message_to_conversation("no-such-id", "x", "Agent X", "Hello?")
         assert result is None
 
     def test_multiple_turns_accumulate(self, dynamodb_tables):
@@ -143,9 +143,9 @@ class TestAppendMessageToConversation:
         b = _make_agent(svc, "u2", "agent-b", "Agent B")
 
         conv = svc.create_active_conversation(a["id"], b["id"], "library", "Start", "Agent A")
-        svc.append_message_to_conversation(conv["id"], "Agent B", "Reply 1")
-        svc.append_message_to_conversation(conv["id"], "Agent A", "Reply 2")
-        updated = svc.append_message_to_conversation(conv["id"], "Agent B", "Reply 3")
+        svc.append_message_to_conversation(conv["id"], b["id"], "Agent B", "Reply 1")
+        svc.append_message_to_conversation(conv["id"], a["id"], "Agent A", "Reply 2")
+        updated = svc.append_message_to_conversation(conv["id"], b["id"], "Agent B", "Reply 3")
 
         assert updated["turnCount"] == 4
         assert len(updated["publicLog"]) == 4
@@ -205,7 +205,7 @@ class TestEndConversation:
 
         conv = svc.create_active_conversation(a["id"], b["id"], "plaza", "Hi", "Agent A")
         svc.end_conversation(conv["id"])
-        result = svc.append_message_to_conversation(conv["id"], "Agent B", "No reply")
+        result = svc.append_message_to_conversation(conv["id"], b["id"], "Agent B", "No reply")
         assert result is None
 
 
