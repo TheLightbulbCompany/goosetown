@@ -245,3 +245,53 @@ def test_upload_sprite_to_s3_default_filename():
         from core.services.sprite_storage import upload_sprite_to_s3
         key = upload_sprite_to_s3(b"png-data", "agent-456", "test-bucket")
         assert key == "sprites/agent-456/walk.png"
+
+
+def _make_test_frame(width: int = 136, height: int = 136, color: tuple = (255, 0, 0, 255)) -> bytes:
+    """Create a test PNG frame with a colored rectangle in the center."""
+    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    for x in range(38, 98):
+        for y in range(28, 108):
+            img.putpixel((x, y), color)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_composite_animation_spritesheet_4_dirs_6_frames():
+    from core.services.sprite_storage import composite_animation_spritesheet, FRAME_SIZE
+    frames = _make_test_frame()
+    direction_frames = {
+        "south": [frames] * 6,
+        "west": [frames] * 6,
+        "east": [frames] * 6,
+        "north": [frames] * 6,
+    }
+    result = composite_animation_spritesheet(direction_frames)
+    assert result is not None
+    png_bytes, frame_count = result
+    assert frame_count == 6
+    sheet = Image.open(io.BytesIO(png_bytes))
+    assert sheet.width == 6 * FRAME_SIZE
+    assert sheet.height == 4 * FRAME_SIZE
+
+
+def test_composite_animation_spritesheet_partial_directions():
+    from core.services.sprite_storage import composite_animation_spritesheet, FRAME_SIZE
+    frames = _make_test_frame()
+    direction_frames = {
+        "south": [frames] * 4,
+        "east": [frames] * 4,
+    }
+    result = composite_animation_spritesheet(direction_frames)
+    assert result is not None
+    png_bytes, frame_count = result
+    assert frame_count == 4
+    sheet = Image.open(io.BytesIO(png_bytes))
+    assert sheet.width == 4 * FRAME_SIZE
+    assert sheet.height == 4 * FRAME_SIZE
+
+
+def test_composite_animation_spritesheet_empty_returns_none():
+    from core.services.sprite_storage import composite_animation_spritesheet
+    assert composite_animation_spritesheet({}) is None

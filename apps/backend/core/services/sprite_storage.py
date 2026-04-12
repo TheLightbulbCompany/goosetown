@@ -316,6 +316,52 @@ def build_static_spritesheet_from_rotations(
     return out.getvalue()
 
 
+def composite_animation_spritesheet(
+    direction_frames: dict[str, list[bytes]],
+    frame_size: int = FRAME_SIZE,
+) -> tuple[bytes, int] | None:
+    """Composite per-direction frame PNGs into a multi-direction spritesheet.
+
+    Takes pre-grouped {direction: [frame_png_bytes]} and composites into a
+    single spritesheet with frame_count columns and 4 direction rows.
+    Each frame is cropped and resized to frame_size via _crop_and_resize.
+
+    Returns (spritesheet_png_bytes, frame_count) or None if no valid frames.
+    """
+    if not direction_frames:
+        return None
+
+    frame_count = max(len(frames) for frames in direction_frames.values())
+    if frame_count == 0:
+        return None
+
+    sheet_width = frame_count * frame_size
+    sheet_height = 4 * frame_size
+    sheet = Image.new("RGBA", (sheet_width, sheet_height), (0, 0, 0, 0))
+    directions_found = 0
+
+    for direction_name, row_index in DIRECTION_ROWS.items():
+        frames = direction_frames.get(direction_name)
+        if not frames:
+            continue
+        directions_found += 1
+        for frame_idx, frame_bytes in enumerate(frames[:frame_count]):
+            try:
+                frame_img = Image.open(io.BytesIO(frame_bytes)).convert("RGBA")
+                frame_img = _crop_and_resize(frame_img, frame_size)
+                sheet.paste(frame_img, (frame_idx * frame_size, row_index * frame_size))
+            except Exception as e:
+                logger.warning("Failed to process animation frame %s/%d: %s", direction_name, frame_idx, e)
+
+    if directions_found == 0:
+        return None
+
+    logger.info("Composited animation spritesheet: %d directions, %d frames, %dpx", directions_found, frame_count, frame_size)
+    buf = io.BytesIO()
+    sheet.save(buf, format="PNG")
+    return buf.getvalue(), frame_count
+
+
 def upload_sprite_to_s3(
     png_bytes: bytes, agent_id: str, bucket: str | None = None, filename: str = "walk.png"
 ) -> str:
