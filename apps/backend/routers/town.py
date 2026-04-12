@@ -1283,6 +1283,13 @@ async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
         _reject("target_busy")
         return
 
+    # Validate both agents are at the same location
+    initiator_location = initiator.get("currentLocation", "")
+    target_location = target.get("currentLocation", "")
+    if initiator_location != target_location:
+        _reject("not_nearby")
+        return
+
     # Create the conversation record
     location = initiator.get("currentLocation", "residence")
     initiator_display = initiator.get("displayName", agent_conn.agent_name)
