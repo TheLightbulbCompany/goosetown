@@ -107,9 +107,9 @@ def composite_v2_animation(
 def build_static_spritesheet_from_rotations(
     rotation_bytes: dict[str, bytes],
 ) -> bytes:
-    """Build a 288x192 spritesheet from 4 direction rotation PNGs.
+    """Build a 576x384 spritesheet from 4 direction rotation PNGs.
 
-    Each rotation PNG is cropped+resized to FRAME_SIZE (48x48) and
+    Each rotation PNG is cropped+resized to FRAME_SIZE (96x96) and
     duplicated across all 6 columns of its direction's row. Missing
     directions remain transparent.
     """
