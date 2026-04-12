@@ -90,6 +90,10 @@ func spawn_agent(peer_id: int, data: Dictionary) -> void:
 	_id_to_peer[agent_id] = peer_id
 	_arrived_at[peer_id] = location_id
 
+	# Set nav target to spawn position so NavigationAgent2D considers the
+	# agent "arrived" at the correct location rather than targeting (0,0).
+	agent_node.nav_agent.target_position = spawn_pos
+
 	# Store sprite animation metadata for world_state broadcast
 	var sprite_anims: Dictionary = data.get("sprite_animations", {})
 	if not sprite_anims.is_empty():

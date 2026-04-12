@@ -1572,8 +1572,8 @@ class TownDaemon:
         log = logging.getLogger("town_daemon")
         try:
             while self.running:
-                # Longer timeout before first connected event (sprite generation can take minutes)
-                # Shorter timeout after connected (agent_state events should arrive every 2s)
+                # agent_state events arrive every 2s when connected to game server.
+                # 30s = ~2 think turns with zero traffic = something is wrong.
                 recv_timeout = 30.0
                 try:
                     raw = await asyncio.wait_for(self.ws.recv(), timeout=recv_timeout)
