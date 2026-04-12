@@ -1751,9 +1751,9 @@ class TownDaemon:
             ws_task = asyncio.create_task(self.listen_ws())
 
             try:
-                await asyncio.wait_for(self._initial_state_event.wait(), timeout=15.0)
+                await asyncio.wait_for(self._initial_state_event.wait(), timeout=60.0)
             except asyncio.TimeoutError:
-                log.error("Timeout waiting for initial connected event")
+                log.warning("Timeout waiting for initial connected event (60s) — will retry")
                 ws_task.cancel()
                 return
 
@@ -1820,7 +1820,13 @@ def _daemon_main() -> None:
         while daemon.running:
             try:
                 await daemon.run()
-                break  # clean exit (agent slept or daemon stopped)
+                if not daemon.running:
+                    break  # intentional exit (agent slept or SIGTERM)
+                # run() returned without exception but daemon still running —
+                # treat as a reconnectable situation (e.g. initial state timeout)
+                log.warning("Daemon run() exited, reconnecting in %ds", backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 60)
             except Exception as exc:
                 log.error("Daemon crashed: %s, restarting in %ds", exc, backoff)
                 await asyncio.sleep(backoff)
