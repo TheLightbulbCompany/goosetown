@@ -89,7 +89,7 @@ class GameServerClient:
                 pass
             logger.info("Closed existing game server connection for agent %s", agent_id)
 
-        ws = await websockets.connect(self._base_url)
+        ws = await websockets.connect(self._base_url, open_timeout=10)
 
         connect_params = {
             "type": "agent",
@@ -257,7 +257,7 @@ class GameServerClient:
 
     async def connect_viewer(self) -> None:
         """Open a viewer WebSocket connection for world state updates."""
-        ws = await websockets.connect(self._base_url)
+        ws = await websockets.connect(self._base_url, open_timeout=10)
         await ws.send(json.dumps({"type": "viewer"}))
         self._viewer_connection = ws
         task = asyncio.create_task(self._listen_viewer())
@@ -353,7 +353,7 @@ class GameServerClient:
                 break
             try:
                 await asyncio.sleep(delay)
-                ws = await websockets.connect(self._base_url)
+                ws = await websockets.connect(self._base_url, open_timeout=10)
                 await ws.send(json.dumps(params))
                 self._agent_connections[agent_id] = ws
                 logger.info("Reconnected agent %s to game server (attempt %d)", agent_id, attempt)

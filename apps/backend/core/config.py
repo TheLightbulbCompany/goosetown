@@ -19,22 +19,26 @@ class Settings:
     SPRITE_CDN_URL: str = os.getenv("SPRITE_CDN_URL", "")
     WS_MANAGEMENT_API_URL: str = os.getenv("WS_MANAGEMENT_API_URL", "")
     GAME_SERVER_URL: str = os.getenv("GAME_SERVER_URL", "ws://localhost:8080")
+    WS_LAMBDA_SECRET: str = os.getenv("WS_LAMBDA_SECRET", "")
 
     def validate(self) -> None:
         """Validate required env vars. Raises RuntimeError in non-dev environments if critical vars are missing."""
         if self.ENVIRONMENT == "dev":
             return
 
-        missing = []
-        if not self.TOWN_TOKEN_SECRET:
-            missing.append("TOWN_TOKEN_SECRET")
-        if not self.WS_MANAGEMENT_API_URL:
-            missing.append("WS_MANAGEMENT_API_URL")
-        if not self.CLERK_ISSUER:
-            missing.append("CLERK_ISSUER")
-
+        required = {
+            "TOWN_TOKEN_SECRET": self.TOWN_TOKEN_SECRET,
+            "WS_MANAGEMENT_API_URL": self.WS_MANAGEMENT_API_URL,
+            "WS_LAMBDA_SECRET": self.WS_LAMBDA_SECRET,
+            "SPRITE_S3_BUCKET": self.SPRITE_S3_BUCKET,
+            "SPRITE_CDN_URL": self.SPRITE_CDN_URL,
+            "CLERK_ISSUER": self.CLERK_ISSUER,
+        }
+        missing = [name for name, val in required.items() if not val]
         if missing:
-            raise RuntimeError(f"Missing required environment variables for {self.ENVIRONMENT}: {', '.join(missing)}")
+            raise RuntimeError(
+                f"Missing required environment variables for {self.ENVIRONMENT}: {', '.join(missing)}"
+            )
         logger.info("Configuration validated for environment: %s", self.ENVIRONMENT)
 
 

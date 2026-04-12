@@ -20,7 +20,7 @@ async def test_connect_agent_sends_connect_message():
         client = GameServerClient(base_url="ws://test:8080")
         await client.connect_agent("agent-1", "Goose", "https://cdn/sprite.png", "plaza")
 
-        mock_connect.assert_called_once_with("ws://test:8080")
+        mock_connect.assert_called_once_with("ws://test:8080", open_timeout=10)
         sent_data = json.loads(mock_ws.send.call_args_list[0][0][0])
         assert sent_data == {
             "type": "agent",
@@ -195,7 +195,7 @@ async def test_connect_agent_replaces_existing_connection():
         # Old connection must be closed
         mock_ws_old.close.assert_called_once()
         # New connection must be created
-        mock_connect.assert_called_once_with("ws://test:8080")
+        mock_connect.assert_called_once_with("ws://test:8080", open_timeout=10)
         # _agent_connections must point to the new WebSocket
         assert client._agent_connections["agent-1"] is mock_ws_new
 
@@ -223,3 +223,28 @@ async def test_update_agent_sprites_sends_command_on_open_connection():
 async def test_update_agent_sprites_silently_skips_when_no_connection():
     client = GameServerClient(base_url="ws://stub")
     await client.update_agent_sprites("agent-2", {"walk": {"url": "x"}})
+
+
+@pytest.mark.asyncio
+async def test_reconnect_stops_after_max_retries():
+    """Reconnect should give up after max_retries and clean up connect params."""
+    client = GameServerClient(base_url="ws://test:8080")
+    client._agent_connect_params["a1"] = {"type": "agent", "agent_id": "a1"}
+
+    attempt_count = 0
+
+    async def always_fail(*args, **kwargs):
+        nonlocal attempt_count
+        attempt_count += 1
+        raise ConnectionRefusedError("server down")
+
+    with patch(
+        "core.services.game_server_client.websockets.connect",
+        new_callable=AsyncMock,
+        side_effect=always_fail,
+    ):
+        await client._reconnect_agent("a1", max_retries=3)
+
+    assert attempt_count == 3
+    assert "a1" not in client._agent_connect_params
+    assert "a1" not in client._agent_connections

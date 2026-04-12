@@ -82,6 +82,7 @@ var _current_animation: String = "walk"
 var _anim_frame: int = 0
 var _anim_timer: float = 0.0
 var _is_moving: bool = false
+var _idle_bob_timer: float = 0.0
 ## True when NavigationAgent2D pathfinding is active (set on first set_navigation_target call)
 var _use_navigation: bool = false
 ## Cached AtlasTexture instances keyed by "animation/facing" to avoid per-frame allocations
@@ -183,6 +184,14 @@ func _physics_process(delta: float) -> void:
 				_anim_frame = 0
 				_update_sprite_frame()
 
+	# Idle bob — subtle vertical sway when stationary
+	if not _is_moving and (_current_animation == "idle" or (_current_animation == "walk" and not _is_moving)):
+		_idle_bob_timer += delta
+		sprite.position.y = -16 + sin(_idle_bob_timer * 2.0) * 1.0
+	else:
+		_idle_bob_timer = 0.0
+		sprite.position.y = -16
+
 # ---------------------------------------------------------------------------
 # Public methods
 # ---------------------------------------------------------------------------
@@ -218,12 +227,29 @@ func update_state(data: Dictionary) -> void:
 	if text != "" and text != speech_text:
 		speech_text = text
 		speech_text_label.text = speech_text
-		speech_container.visible = true
+		_show_speech_bubble()
 		if nameplate:
 			nameplate.visible = false
 	elif text == "":
 		speech_text = ""
-		speech_container.visible = false
+		_hide_speech_bubble()
+
+
+func _show_speech_bubble() -> void:
+	if speech_container == null:
+		return
+	speech_container.modulate.a = 0.0
+	speech_container.visible = true
+	var tween: Tween = create_tween()
+	tween.tween_property(speech_container, "modulate:a", 1.0, 0.3)
+
+
+func _hide_speech_bubble() -> void:
+	if speech_container == null or not speech_container.visible:
+		return
+	var tween: Tween = create_tween()
+	tween.tween_property(speech_container, "modulate:a", 0.0, 0.3)
+	tween.tween_callback(func(): speech_container.visible = false)
 
 
 func set_navigation_target(target: Vector2) -> void:
@@ -259,9 +285,14 @@ func play_animation(animation_name: String) -> void:
 		return
 	if not _spritesheets.has(animation_name):
 		return
+	var was_walk: bool = _current_animation == "walk"
+	var going_to_activity: bool = animation_name != "walk" and animation_name != "idle"
 	_current_animation = animation_name
 	_anim_frame = 0
-	_anim_timer = 0.0
+	if was_walk and going_to_activity and _spritesheets.has("idle"):
+		_anim_timer = -0.2
+	else:
+		_anim_timer = 0.0
 	_update_sprite_frame()
 
 # ---------------------------------------------------------------------------

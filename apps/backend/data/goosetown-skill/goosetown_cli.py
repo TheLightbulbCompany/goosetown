@@ -654,10 +654,14 @@ def cmd_act(args: argparse.Namespace) -> None:
         if not rest:
             _die("Usage: act end <conv_id>")
         payload = {"action": "end_conversation", "conv_id": rest[0]}
+    elif action == "join_conversation":
+        if not rest:
+            _die("Usage: act join_conversation <conv_id>")
+        payload = {"action": "join_conversation", "conv_id": rest[0]}
     elif action in _VALID_ACTIVITIES:
         payload = {"action": action}
     else:
-        _VALID_COMMANDS = ["move", "chat", "say", "idle", "end"]
+        _VALID_COMMANDS = ["move", "chat", "say", "idle", "end", "join_conversation"]
         _die(
             f"Unknown action: '{action}'",
             f"Commands: {', '.join(_VALID_COMMANDS)}",
@@ -853,6 +857,10 @@ class TownDaemon:
             self._on_conversation_message(event, data)
         elif event == "conversation_ended":
             self._on_conversation_ended(data)
+        elif event == "participant_joined":
+            self._on_participant_joined(data)
+        elif event == "participant_left":
+            self._on_participant_left(data)
         elif event == "activity_complete":
             self._on_activity_complete(data)
         elif event == "activity_interrupted":
@@ -980,8 +988,7 @@ class TownDaemon:
         if event == "conversation_invite":
             self.state["active_conversation"] = {
                 "conv_id": conv_id,
-                "with_agent": data.get("from_agent_name", ""),
-                "with_display": data.get("from", "?"),
+                "participants": [data.get("from", "?")],
                 "turns": [{"speaker": data.get("from", "?"), "text": data.get("message", "")}],
             }
             self._append_event(
@@ -993,11 +1000,15 @@ class TownDaemon:
                 active.setdefault("turns", []).append(
                     {"speaker": data.get("from", "?"), "text": data.get("text", "")}
                 )
+                # Track participants seen
+                participants = active.setdefault("participants", [])
+                speaker = data.get("from")
+                if speaker and speaker not in participants:
+                    participants.append(speaker)
             else:
                 self.state["active_conversation"] = {
                     "conv_id": conv_id,
-                    "with_agent": data.get("from_agent_name", ""),
-                    "with_display": data.get("from", "?"),
+                    "participants": [data.get("from", "?")],
                     "turns": [{"speaker": data.get("from", "?"), "text": data.get("text", "")}],
                 }
             self._append_event(
@@ -1020,6 +1031,29 @@ class TownDaemon:
         )
         if log_summary:
             self._append_event(f"CHAT_SUMMARY:\n{log_summary}")
+
+    def _on_participant_joined(self, data: dict) -> None:
+        """Handle participant_joined — someone new joined the conversation."""
+        active = self.state.get("active_conversation", {})
+        if active.get("conv_id") != data.get("conv_id"):
+            return
+        display = data.get("display_name", "?")
+        participants = active.setdefault("participants", [])
+        if display not in participants:
+            participants.append(display)
+        self._append_event(f"PARTICIPANT_JOINED {display} joined the conversation")
+
+    def _on_participant_left(self, data: dict) -> None:
+        """Handle participant_left — someone left (conversation may continue)."""
+        active = self.state.get("active_conversation", {})
+        if active.get("conv_id") != data.get("conv_id"):
+            return
+        display = data.get("display_name", "?")
+        participants = active.setdefault("participants", [])
+        if display in participants:
+            participants.remove(display)
+        remaining = data.get("remaining", len(participants))
+        self._append_event(f"PARTICIPANT_LEFT {display} left ({remaining} remaining)")
 
     def _on_activity_complete(self, data: dict) -> None:
         """Handle activity_complete event, updating local mood/energy."""
@@ -1330,10 +1364,11 @@ class TownDaemon:
             active_conv = self.state.get("active_conversation")
             if active_conv:
                 conv_id = active_conv.get("conv_id", "")
-                with_display = active_conv.get("with_display", "?")
+                participants = active_conv.get("participants", [])
+                participants_display = ", ".join(participants) if participants else "?"
                 turns = active_conv.get("turns", [])
                 status += "---\n\n## Active Conversation\n\n"
-                status += f"**Talking with:** {with_display}\n\n"
+                status += f"**Talking with:** {participants_display}\n\n"
                 if turns:
                     status += "**Recent messages:**\n"
                     for turn in turns[-6:]:
@@ -1341,8 +1376,9 @@ class TownDaemon:
                     status += "\n"
                 status += (
                     f"**Reply:** `python3 goosetown_cli.py act say {conv_id} <your message>`\n"
-                    f"**End conversation:** `python3 goosetown_cli.py act end {conv_id}`\n\n"
-                    "Respond naturally. Be yourself. When the conversation reaches a natural end, use `act end`.\n"
+                    f"**Leave conversation:** `python3 goosetown_cli.py act end {conv_id}`\n\n"
+                    "Respond naturally. Be yourself. When the conversation reaches a natural end, "
+                    "or you want to do something else, use `act end` to leave.\n"
                 )
                 self._write_status(status)
                 log.info(
@@ -1417,12 +1453,33 @@ class TownDaemon:
                         )
                 nearby_chat_options += "\n"
 
+            # Nearby conversations (agents talking near you — you can join)
+            nearby_convs: list = self.state.get("nearby_conversations", [])
+            nearby_conv_block = ""
+            if nearby_convs and not active_conv:
+                nearby_conv_block = "**Nearby conversations (you can join):**\n"
+                for nc in nearby_convs[:3]:
+                    names = ", ".join(nc.get("participants", [])[:5])
+                    last = nc.get("last_message", {})
+                    last_text = last.get("text", "")[:60] if isinstance(last, dict) else ""
+                    nearby_conv_block += (
+                        f'- {names} are chatting'
+                    )
+                    if last_text:
+                        nearby_conv_block += f' — last: "{last_text}"'
+                    nearby_conv_block += (
+                        f' — `python3 goosetown_cli.py act join_conversation {nc.get("conv_id")}`\n'
+                    )
+                nearby_conv_block += "\n"
+
             status += (
                 f"{nearby_chat_options}"
+                f"{nearby_conv_block}"
                 "**Other actions:**\n"
                 "- `python3 goosetown_cli.py act chat <agent_name> <message>` — Start a conversation\n"
                 "- `python3 goosetown_cli.py act say <conv_id> <message>` — Reply in an ongoing conversation\n"
-                "- `python3 goosetown_cli.py act end <conv_id>` — End a conversation\n"
+                "- `python3 goosetown_cli.py act end <conv_id>` — Leave a conversation\n"
+                "- `python3 goosetown_cli.py act join_conversation <conv_id>` — Join a nearby conversation\n"
                 "- `python3 goosetown_cli.py leave --alarm HH:MM` — Go to sleep\n\n"
                 "Act naturally based on who you are. Be yourself.\n"
             )

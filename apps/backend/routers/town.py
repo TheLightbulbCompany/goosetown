@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user
@@ -1169,8 +1169,17 @@ class WsMessageRequest(BaseModel):
 
 
 @router.post("/ws-message")
-async def handle_ws_message(request: WsMessageRequest):
+async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
     """Receive forwarded WebSocket messages from API Gateway $default Lambda."""
+    from core.config import settings
+
+    # In non-dev environments, require shared secret from API Gateway Lambda.
+    # In dev, skip if WS_LAMBDA_SECRET is unset (local dev ergonomics).
+    if settings.ENVIRONMENT != "dev" or settings.WS_LAMBDA_SECRET:
+        provided = raw_request.headers.get("x-ws-lambda-secret", "")
+        if provided != settings.WS_LAMBDA_SECRET:
+            raise HTTPException(status_code=403, detail="Invalid or missing WS lambda secret")
+
     ws_manager = get_town_agent_ws_manager()
     body = request.body
     msg_type = body.get("type", "")
@@ -1213,7 +1222,10 @@ async def handle_ws_message(request: WsMessageRequest):
 
         gs_client = get_game_server_client()
         action = body.get("action", "")
-        print(f"[WS_MSG] town_agent_act: action={action}, agent={agent_conn.agent_name}, ctx={agent_conn.location_context}", flush=True)
+        logger.debug(
+            "town_agent_act: action=%s agent=%s ctx=%s",
+            action, agent_conn.agent_name, agent_conn.location_context,
+        )
         if action == "move":
             destination = body.get("destination", "")
             if destination in _TRANSITION_MAP:
@@ -1251,6 +1263,8 @@ async def handle_ws_message(request: WsMessageRequest):
             await _handle_say(request.connectionId, body, agent_conn)
         elif action == "end_conversation":
             await _handle_end_conversation(request.connectionId, body, agent_conn)
+        elif action == "join_conversation":
+            await _handle_join_conversation(request.connectionId, body, agent_conn)
         elif action != "idle":
             # Treat any unrecognised action as an activity name
             await _handle_agent_activity(request.connectionId, action, agent_conn)
@@ -1461,26 +1475,37 @@ async def _handle_say(connection_id: str, body: dict, agent_conn) -> None:
         _reject("conversation_not_active")
         return
 
-    participant_ids = {conv.get("participantAId"), conv.get("participantBId")}
-    if speaker_id not in participant_ids:
+    participants: list[str] = conv.get("participants") or [
+        conv.get("participantAId"), conv.get("participantBId"),
+    ]
+    participants = [p for p in participants if p]
+    if speaker_id not in participants:
         _reject("not_a_participant")
+        return
+
+    # Enforce "not twice in a row" for group conversations (3+ participants)
+    if len(participants) > 2 and conv.get("lastSpeakerId") == speaker_id:
+        _reject("must_let_others_speak")
         return
 
     # Append the message
     speaker = service.get_town_agent_by_id(speaker_id)
     speaker_display = speaker.get("displayName", agent_conn.agent_name) if speaker else agent_conn.agent_name
 
-    updated = service.append_message_to_conversation(conv_id, speaker_display, message)
+    updated = service.append_message_to_conversation(conv_id, speaker_id, speaker_display, message)
     if not updated:
         _reject("conversation_not_active")
         return
 
     turn_count = updated.get("turnCount", 0)
-    other_id = next(pid for pid in participant_ids if pid != speaker_id)
 
-    # Forward message to the other participant
-    other_conn = ws_manager.get_by_agent_id(other_id)
-    if other_conn:
+    # Forward message to ALL other participants
+    for pid in participants:
+        if pid == speaker_id:
+            continue
+        other_conn = ws_manager.get_by_agent_id(pid)
+        if not other_conn:
+            continue
         try:
             mgmt.send_message(
                 other_conn.connection_id,
@@ -1494,7 +1519,7 @@ async def _handle_say(connection_id: str, body: dict, agent_conn) -> None:
                 },
             )
         except Exception as exc:
-            logger.warning("Failed to forward message to %s: %s", other_id, exc)
+            logger.warning("Failed to forward message to %s: %s", pid, exc)
 
     # Send speech bubble to game server for viewer display
     try:
@@ -1518,8 +1543,80 @@ async def _handle_say(connection_id: str, body: dict, agent_conn) -> None:
         await _finalize_conversation(conv_id, service, mgmt, ws_manager, auto_ended=True)
 
 
+async def _handle_join_conversation(connection_id: str, body: dict, agent_conn) -> None:
+    """Handle a join_conversation action — agent joins an existing active conversation."""
+    from core.services.management_api_client import ManagementApiClient
+
+    mgmt = ManagementApiClient()
+    service = TownService()
+    ws_manager = get_town_agent_ws_manager()
+    joiner_id = agent_conn.agent_id
+
+    def _reject(reason: str) -> None:
+        try:
+            mgmt.send_message(
+                connection_id,
+                {"event": "join_rejected", "reason": reason},
+            )
+        except Exception as exc:
+            logger.warning("Failed to send join_rejected to %s: %s", joiner_id, exc)
+
+    conv_id = body.get("conv_id", "")
+    if not conv_id:
+        _reject("missing_conv_id")
+        return
+
+    joiner = service.get_town_agent_by_id(joiner_id)
+    if not joiner:
+        _reject("joiner_not_found")
+        return
+
+    if joiner.get("currentConversationId"):
+        _reject("already_in_conversation")
+        return
+
+    updated = service.join_conversation(conv_id, joiner_id)
+    if updated is None:
+        _reject("conversation_not_joinable")
+        return
+
+    joiner_display = joiner.get("displayName", agent_conn.agent_name)
+    participants: list[str] = updated.get("participants", [])
+
+    # Notify all other participants
+    for pid in participants:
+        if pid == joiner_id:
+            continue
+        conn = ws_manager.get_by_agent_id(pid)
+        if not conn:
+            continue
+        try:
+            mgmt.send_message(
+                conn.connection_id,
+                {
+                    "event": "participant_joined",
+                    "conv_id": conv_id,
+                    "agent_id": joiner_id,
+                    "display_name": joiner_display,
+                },
+            )
+        except Exception as exc:
+            logger.warning("Failed to send participant_joined to %s: %s", pid, exc)
+
+    # Acknowledge to the joiner
+    try:
+        mgmt.send_message(
+            connection_id,
+            {"event": "act_ok", "action": "join_conversation", "conv_id": conv_id},
+        )
+    except Exception as exc:
+        logger.warning("Failed to send join act_ok to %s: %s", joiner_id, exc)
+
+    logger.info("Agent %s joined conversation %s (%d participants)", joiner_id, conv_id, len(participants))
+
+
 async def _handle_end_conversation(connection_id: str, body: dict, agent_conn) -> None:
-    """Handle an ``end_conversation`` action — close an active conversation.
+    """Handle an ``end_conversation`` action — agent LEAVES the conversation.
 
     Validates the requester is a participant, marks the conversation ended,
     applies mood effects to both agents, updates the relationship affinity,
@@ -1556,8 +1653,11 @@ async def _handle_end_conversation(connection_id: str, body: dict, agent_conn) -
         _reject("conversation_not_found")
         return
 
-    participant_ids = {conv.get("participantAId"), conv.get("participantBId")}
-    if ender_id not in participant_ids:
+    participants: list[str] = conv.get("participants") or [
+        conv.get("participantAId"), conv.get("participantBId"),
+    ]
+    participants = [p for p in participants if p]
+    if ender_id not in participants:
         _reject("not_a_participant")
         return
 
@@ -1565,7 +1665,43 @@ async def _handle_end_conversation(connection_id: str, body: dict, agent_conn) -
         _reject("conversation_not_active")
         return
 
-    await _finalize_conversation(conv_id, service, mgmt, ws_manager, auto_ended=False)
+    # Leave semantics: remove agent from participants
+    remaining = service.leave_conversation(conv_id, ender_id)
+
+    # Notify remaining participants that someone left
+    leaver_display = agent_conn.agent_name
+    for pid in participants:
+        if pid == ender_id:
+            continue
+        conn = ws_manager.get_by_agent_id(pid)
+        if not conn:
+            continue
+        try:
+            mgmt.send_message(
+                conn.connection_id,
+                {
+                    "event": "participant_left",
+                    "conv_id": conv_id,
+                    "agent_id": ender_id,
+                    "display_name": leaver_display,
+                    "remaining": remaining,
+                },
+            )
+        except Exception as exc:
+            logger.warning("Failed to send participant_left to %s: %s", pid, exc)
+
+    # Acknowledge leaver
+    try:
+        mgmt.send_message(
+            connection_id,
+            {"event": "act_ok", "action": "end_conversation", "conv_id": conv_id},
+        )
+    except Exception:
+        pass
+
+    # If fewer than 2 remain, finalize the conversation entirely
+    if remaining < 2:
+        await _finalize_conversation(conv_id, service, mgmt, ws_manager, auto_ended=False)
 
 
 async def _finalize_conversation(
@@ -1596,8 +1732,10 @@ async def _finalize_conversation(
         logger.warning("end_conversation returned None for conv_id %s", conv_id)
         return
 
-    a_id = conv.get("participantAId")
-    b_id = conv.get("participantBId")
+    participants: list[str] = conv.get("participants") or [
+        conv.get("participantAId"), conv.get("participantBId"),
+    ]
+    participants = [p for p in participants if p]
     turn_count = conv.get("turnCount", 0)
     location = conv.get("location", "unknown")
 
@@ -1606,17 +1744,14 @@ async def _finalize_conversation(
     else:
         end_reason = "turn_limit_reached" if auto_ended else "ended_by_participant"
 
-    # Apply mood/energy effects and update relationship for each participant
-    for agent_id in (a_id, b_id):
-        if not agent_id:
-            continue
+    # Apply mood/energy effects for each participant
+    for agent_id in participants:
         agent = service.get_town_agent_by_id(agent_id)
         if not agent:
             continue
 
         current_energy = int(agent.get("energy", 100))
         current_mood_raw = agent.get("mood", 0)
-        # mood is stored as numeric int in DB; parse_mood handles legacy strings
         current_mood = town_mood_engine.parse_mood(current_mood_raw)
         traits = agent.get("traits", "")
 
@@ -1625,32 +1760,30 @@ async def _finalize_conversation(
         )
         service.update_agent_mood_energy(agent_id, new_mood, new_energy)
 
-    # Update relationship affinity (+5, creates relationship if missing)
-    if a_id and b_id:
-        try:
-            service.get_or_create_relationship(a_id, b_id)
-            service.update_relationship(a_id, b_id, affinity_delta=5)
-        except Exception as exc:
-            logger.warning("Failed to update relationship for conv %s: %s", conv_id, exc)
+    # Update relationship affinity for all participant pairs
+    if len(participants) >= 2:
+        for i in range(len(participants)):
+            for j in range(i + 1, len(participants)):
+                try:
+                    service.get_or_create_relationship(participants[i], participants[j])
+                    service.update_relationship(participants[i], participants[j], affinity_delta=5)
+                except Exception as exc:
+                    logger.warning("Failed to update relationship: %s", exc)
 
-    # Clear talking activity and speech bubbles for both participants
+    # Clear talking activity and speech bubbles for all participants
     gs_client = get_game_server_client()
-    for agent_id in (a_id, b_id):
-        if not agent_id:
-            continue
+    for agent_id in participants:
         try:
             await gs_client.send_command(agent_id, {"cmd": "set_activity", "activity": ""})
             await gs_client.send_command(agent_id, {"cmd": "set_speech", "text": ""})
         except Exception:
             pass
 
-    # Notify both connected participants
+    # Notify all connected participants
     public_log = conv.get("publicLog") or []
     log_summary = _build_log_summary(public_log)
 
-    for agent_id in (a_id, b_id):
-        if not agent_id:
-            continue
+    for agent_id in participants:
         conn = ws_manager.get_by_agent_id(agent_id)
         if not conn:
             continue
@@ -1670,11 +1803,8 @@ async def _finalize_conversation(
             logger.warning("Failed to send conversation_ended to %s: %s", agent_id, exc)
 
     logger.info(
-        "Conversation %s finalised (%s, %d turns, location=%s)",
-        conv_id,
-        end_reason,
-        turn_count,
-        location,
+        "Conversation %s finalised (%s, %d turns, location=%s, %d participants)",
+        conv_id, end_reason, turn_count, location, len(participants),
     )
 
 
