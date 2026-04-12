@@ -427,8 +427,8 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
     from core.services.pixellab_service import ANIMATION_REGISTRY, PixelLabService
     from core.services.sprite_storage import (
         build_static_spritesheet_from_rotations,
+        composite_animation_spritesheet,
         upload_sprite_to_s3,
-        upload_sprites_to_s3,
     )
 
     pxl = PixelLabService()
@@ -529,9 +529,9 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
         else:
             logger.warning("[agent:%s] No rotations returned — skipping Phase B static sprite", agent_id)
 
-        # ---- Phase C: Generate signup animations (walk, idle) ----
+        # ---- Phase C: Generate signup animations (walk, idle, talking) ----
         service.update_agent_state(agent_id, sprite_status="animating")
-        _send_progress("Bringing you to life (animating walk, idle)...")
+        _send_progress("Bringing you to life (animating walk, idle, talking)...")
 
         async def _anim_progress(status_str: str) -> None:
             _send_progress(status_str)
@@ -539,93 +539,43 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
         try:
             await pxl.queue_signup_animations(char_id, on_progress=_anim_progress)
         except Exception:
-            logger.exception("Signup animations failed for %s — continuing to download", agent_id)
+            logger.exception("Signup animations failed for %s", agent_id)
 
-        # Download ZIP (all animation jobs should now be complete)
+        # Download and resolve animation frames via API cross-reference
         service.update_agent_state(agent_id, sprite_status="downloading")
         _send_progress("Downloading sprites...")
-        zip_bytes = None
-        for attempt in range(6):
-            await asyncio.sleep(5)
-            _send_progress(f"Downloading sprites ({attempt + 1}/6)...")
-            try:
-                zip_bytes = await pxl.download_character_zip(char_id)
-                if zip_bytes is not None:
-                    logger.info("ZIP downloaded for %s (attempt %d)", char_id, attempt + 1)
-                    break
-            except Exception as e:
-                logger.warning("ZIP download error for %s: %s", char_id, e)
 
-        # Build template_id → friendly-name map for extract_all_spritesheets
-        template_name_map: dict[str, str] = {}
-        for friendly_name, cfg in ANIMATION_REGISTRY.items():
-            if cfg.get("type") == "template":
-                template_name_map[cfg["template_id"]] = friendly_name
+        raw_animations = await pxl.fetch_animation_spritesheets(char_id)
 
-        all_sheets: dict[str, tuple[bytes, int]] = {}
-        if zip_bytes:
-            all_sheets = extract_all_spritesheets(zip_bytes, name_map=template_name_map)
-        else:
-            logger.warning("[agent:%s] No ZIP — agent remains on static sprite", agent_id)
-            # No ZIP: flip to alive so agent isn't stuck in welcome state forever
+        if not raw_animations:
+            logger.warning("[agent:%s] No animations resolved — agent remains on static sprite", agent_id)
             service.update_agent_state(agent_id, onboarding_phase="alive")
             return
 
-        if not all_sheets:
-            # Fallback: try legacy walk-only extraction
-            walk_png = extract_walk_spritesheet(zip_bytes)
-            if walk_png:
-                s3_key = await asyncio.to_thread(
-                    upload_sprite_to_s3, walk_png, str(agent_id), settings.SPRITE_S3_BUCKET
-                )
-                cdn_url = f"{settings.SPRITE_CDN_URL}/{s3_key}"
-                service.update_agent_state(
-                    agent_id,
-                    sprite_ready=True,
-                    sprite_url=cdn_url,
-                    sprite_status="complete",
-                    onboarding_phase="alive",
-                )
-                logger.info("[agent:%s] Fallback: walk-only sprite ready", agent_id)
+        # Map PixelLab API names to our friendly names
+        template_id_to_friendly: dict[str, str] = {
+            cfg["template_id"]: name
+            for name, cfg in ANIMATION_REGISTRY.items()
+            if cfg.get("template_id")
+        }
 
-                # Connect to game server if not already connected
-                gs_client = get_game_server_client()
-                _ws_mgr = get_town_agent_ws_manager()
-                _conn = _ws_mgr.get_by_agent_id(str(agent_id))
-                if _conn and not static_cdn_url:
-                    try:
-                        agent_record = service.get_town_agent_by_id(str(agent_id))
-                        await gs_client.connect_agent(
-                            agent_id=str(agent_id),
-                            display_name=display_name,
-                            sprite_url=cdn_url,
-                            location=agent_record.get("currentLocation", "plaza") if agent_record else "plaza",
-                            context=_conn.location_context or "town",
-                            user_id=_conn.user_id,
-                            sprite_animations={},
-                            on_event=_make_agent_event_callback(),
-                        )
-                    except Exception:
-                        logger.exception("Failed to connect agent %s (walk-only fallback)", agent_id)
-            else:
-                logger.error("[agent:%s] No animations extracted from ZIP", agent_id)
-                service.update_agent_state(agent_id, sprite_status=None, onboarding_phase="alive")
-            return
-
-        # Upload all animation spritesheets to S3
-        uploaded = await asyncio.to_thread(
-            upload_sprites_to_s3, all_sheets, str(agent_id), settings.SPRITE_S3_BUCKET
-        )
-
-        # Build full sprite_animations dict (start from initial_sprite_animations as fallback)
         full_sprite_animations: dict = dict(initial_sprite_animations)
-        for anim_name, info in uploaded.items():
-            registry_entry = ANIMATION_REGISTRY.get(anim_name, {})
-            full_sprite_animations[anim_name] = {
-                "url": f"{settings.SPRITE_CDN_URL}/{info['key']}",
-                "frameCount": info["frame_count"],
-                "fps": int(registry_entry.get("fps", 8)),
-            }
+
+        for pixellab_name, direction_frames in raw_animations.items():
+            friendly = template_id_to_friendly.get(pixellab_name, pixellab_name)
+            sheet = composite_animation_spritesheet(direction_frames)
+            if sheet:
+                png_bytes, frame_count = sheet
+                s3_key = await asyncio.to_thread(
+                    upload_sprite_to_s3, png_bytes, str(agent_id),
+                    settings.SPRITE_S3_BUCKET, f"{friendly}.png",
+                )
+                registry_entry = ANIMATION_REGISTRY.get(friendly, {})
+                full_sprite_animations[friendly] = {
+                    "url": f"{settings.SPRITE_CDN_URL}/{s3_key}",
+                    "frameCount": frame_count,
+                    "fps": int(registry_entry.get("fps", 8)),
+                }
 
         # Real walk URL overrides the static placeholder
         real_walk_url = full_sprite_animations.get("walk", {}).get("url", static_cdn_url)
@@ -637,16 +587,16 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
             sprite_animations=full_sprite_animations,
             sprite_status="complete",
         )
-        logger.info("[agent:%s] Phase C complete: %d animations uploaded", agent_id, len(full_sprite_animations))
+        logger.info("[agent:%s] Phase C complete: %d animations", agent_id, len(full_sprite_animations))
 
-        # Push updated sprites to game server (agent may already be connected from Phase B)
+        # Push updated sprites to game server
         try:
             gs_client_c = get_game_server_client()
             await gs_client_c.update_agent_sprites(str(agent_id), full_sprite_animations)
         except Exception:
             logger.exception("Failed to push sprite update for %s", agent_id)
 
-        # If agent was not connected in Phase B (no rotation bytes), connect now
+        # If agent was not connected in Phase B, connect now
         if not static_cdn_url:
             gs_client = get_game_server_client()
             _ws_mgr = get_town_agent_ws_manager()
@@ -664,16 +614,12 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
                         sprite_animations=full_sprite_animations,
                         on_event=_make_agent_event_callback(),
                     )
-                    logger.info("[agent:%s] Connected to game server with full animations", agent_id)
                 except Exception:
-                    logger.exception("Failed to connect agent %s with full animations", agent_id)
+                    logger.exception("Failed to connect agent %s with animations", agent_id)
 
-        # Flip to alive once idle has landed
-        if "idle" in full_sprite_animations:
-            service.update_agent_state(agent_id, onboarding_phase="alive")
-            logger.info("[agent:%s] Agent is alive", agent_id)
-        else:
-            service.update_agent_state(agent_id, onboarding_phase="alive")
+        # Flip to alive
+        service.update_agent_state(agent_id, onboarding_phase="alive")
+        logger.info("[agent:%s] Agent is alive", agent_id)
 
         # Notify daemon that sprite is fully ready
         try:
