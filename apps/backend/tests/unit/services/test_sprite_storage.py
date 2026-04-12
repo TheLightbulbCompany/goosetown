@@ -2,6 +2,7 @@
 
 import io
 import zipfile
+from unittest.mock import MagicMock, patch
 
 from PIL import Image
 
@@ -223,3 +224,24 @@ def test_build_static_spritesheet_missing_direction_is_transparent():
 
     pixel = sheet.getpixel((FRAME_SIZE // 2, FRAME_SIZE + FRAME_SIZE // 2))
     assert pixel[3] == 0, f"row 1 should be transparent: {pixel}"
+
+
+def test_upload_sprite_to_s3_custom_filename():
+    with patch("core.services.sprite_storage.boto3") as mock_boto3:
+        mock_s3 = MagicMock()
+        mock_boto3.client.return_value = mock_s3
+        from core.services.sprite_storage import upload_sprite_to_s3
+        key = upload_sprite_to_s3(b"png-data", "agent-123", "test-bucket", filename="idle.png")
+        assert key == "sprites/agent-123/idle.png"
+        mock_s3.put_object.assert_called_once()
+        call_kwargs = mock_s3.put_object.call_args[1]
+        assert call_kwargs["Key"] == "sprites/agent-123/idle.png"
+
+
+def test_upload_sprite_to_s3_default_filename():
+    with patch("core.services.sprite_storage.boto3") as mock_boto3:
+        mock_s3 = MagicMock()
+        mock_boto3.client.return_value = mock_s3
+        from core.services.sprite_storage import upload_sprite_to_s3
+        key = upload_sprite_to_s3(b"png-data", "agent-456", "test-bucket")
+        assert key == "sprites/agent-456/walk.png"

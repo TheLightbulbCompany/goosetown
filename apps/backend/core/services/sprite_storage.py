@@ -316,14 +316,16 @@ def build_static_spritesheet_from_rotations(
     return out.getvalue()
 
 
-def upload_sprite_to_s3(png_bytes: bytes, agent_id: str, bucket: str | None = None) -> str:
+def upload_sprite_to_s3(
+    png_bytes: bytes, agent_id: str, bucket: str | None = None, filename: str = "walk.png"
+) -> str:
     """Upload a sprite PNG to S3 and return the S3 key.
 
-    Key pattern: sprites/{agent_id}/walk.png
+    Key pattern: sprites/{agent_id}/{filename}
     """
     bucket = bucket or settings.SPRITE_S3_BUCKET
     s3 = boto3.client("s3")
-    key = f"sprites/{agent_id}/walk.png"
+    key = f"sprites/{agent_id}/{filename}"
     s3.put_object(
         Bucket=bucket,
         Key=key,
