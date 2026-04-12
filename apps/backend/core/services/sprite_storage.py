@@ -2,7 +2,6 @@
 
 import io
 import logging
-import zipfile
 from typing import Optional
 
 import boto3
@@ -60,161 +59,6 @@ def _crop_and_resize(img: Image.Image, target_size: int) -> Image.Image:
     return result
 
 
-def _extract_rotation_fallback(zip_bytes: bytes) -> Optional[bytes]:
-    """Composite static rotation PNGs into a walk-like spritesheet (single frame repeated).
-
-    Looks for rotations/<direction>.png in the ZIP and repeats the single frame
-    across all FRAME_COUNT columns to produce a standard-sized spritesheet.
-
-    Returns PNG bytes or None if no rotation files are found.
-    """
-    try:
-        zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
-    except zipfile.BadZipFile:
-        return None
-
-    all_files = zf.namelist()
-    rotation_files = [f for f in all_files if f.startswith("rotations/") and f.endswith(".png")]
-    if not rotation_files:
-        return None
-
-    sheet = Image.new("RGBA", (SHEET_WIDTH, SHEET_HEIGHT), (0, 0, 0, 0))
-    directions_found = 0
-
-    for direction_name, row_index in DIRECTION_ROWS.items():
-        rot_path = f"rotations/{direction_name}.png"
-        if rot_path not in all_files:
-            continue
-        directions_found += 1
-        try:
-            with zf.open(rot_path) as fp:
-                frame_img = Image.open(fp).convert("RGBA")
-                frame_img = _crop_and_resize(frame_img, FRAME_SIZE)
-                for frame_idx in range(FRAME_COUNT):
-                    sheet.paste(frame_img, (frame_idx * FRAME_SIZE, row_index * FRAME_SIZE))
-        except Exception as e:
-            logger.warning("Failed to process rotation %s: %s", rot_path, e)
-
-    if directions_found == 0:
-        return None
-
-    buf = io.BytesIO()
-    sheet.save(buf, format="PNG")
-    return buf.getvalue()
-
-
-def extract_animation_spritesheet(
-    zip_bytes: bytes, animation_name: str
-) -> Optional[tuple[bytes, int]]:
-    """Extract a named animation from a PixelLab character ZIP and composite into a spritesheet.
-
-    Looks for: animations/<animation_name>/<direction>/<frame>.png
-    Detects frame count dynamically (max frames across all directions found).
-
-    Returns (png_bytes, frame_count) or None if animation is not found.
-    The spritesheet dimensions are (frame_count * FRAME_SIZE) x (4 * FRAME_SIZE).
-    """
-    try:
-        zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
-    except zipfile.BadZipFile:
-        logger.error("Invalid ZIP file from PixelLab")
-        return None
-
-    all_files = zf.namelist()
-    prefix = f"animations/{animation_name}/"
-    anim_files = [f for f in all_files if f.startswith(prefix) and f.endswith(".png")]
-
-    if not anim_files:
-        return None
-
-    # Detect frame count: max frames across all directions present
-    frames_per_direction: dict[str, list[str]] = {}
-    for direction_name in DIRECTION_ROWS:
-        dir_frames = sorted([f for f in anim_files if f"/{direction_name}/" in f])
-        if dir_frames:
-            frames_per_direction[direction_name] = dir_frames
-
-    if not frames_per_direction:
-        return None
-
-    frame_count = max(len(frames) for frames in frames_per_direction.values())
-    sheet_width = frame_count * FRAME_SIZE
-    sheet = Image.new("RGBA", (sheet_width, SHEET_HEIGHT), (0, 0, 0, 0))
-    directions_found = 0
-
-    for direction_name, row_index in DIRECTION_ROWS.items():
-        dir_frames = frames_per_direction.get(direction_name)
-        if not dir_frames:
-            continue
-        directions_found += 1
-        for frame_idx, frame_path in enumerate(dir_frames[:frame_count]):
-            try:
-                with zf.open(frame_path) as fp:
-                    frame_img = Image.open(fp).convert("RGBA")
-                    frame_img = _crop_and_resize(frame_img, FRAME_SIZE)
-                    sheet.paste(frame_img, (frame_idx * FRAME_SIZE, row_index * FRAME_SIZE))
-            except Exception as e:
-                logger.warning("Failed to process frame %s: %s", frame_path, e)
-
-    if directions_found == 0:
-        return None
-
-    logger.info(
-        "Composited %s spritesheet: %d directions, %d frames",
-        animation_name,
-        directions_found,
-        frame_count,
-    )
-    buf = io.BytesIO()
-    sheet.save(buf, format="PNG")
-    return buf.getvalue(), frame_count
-
-
-def extract_all_spritesheets(
-    zip_bytes: bytes,
-    name_map: dict[str, str] | None = None,
-) -> dict[str, tuple[bytes, int]]:
-    """Discover all animations in a PixelLab ZIP and extract each as a spritesheet.
-
-    Scans for animations/<name>/ directories and calls extract_animation_spritesheet
-    for each animation found.
-
-    Args:
-        zip_bytes: Raw PixelLab ZIP bytes.
-        name_map: Optional mapping of folder-name -> friendly-name. When a
-            discovered folder name appears in the map, the friendly name is
-            used as the result dict key. Folders not in the map keep their
-            raw folder name.
-
-    Returns:
-        Dict mapping animation key -> (png_bytes, frame_count).
-    """
-    try:
-        zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
-    except zipfile.BadZipFile:
-        logger.error("Invalid ZIP file from PixelLab")
-        return {}
-
-    all_files = zf.namelist()
-
-    # Discover unique animation names from animations/<name>/ structure
-    animation_names: set[str] = set()
-    for path in all_files:
-        parts = path.split("/")
-        if len(parts) >= 3 and parts[0] == "animations" and parts[1]:
-            animation_names.add(parts[1])
-
-    name_map = name_map or {}
-    results: dict[str, tuple[bytes, int]] = {}
-    for anim_name in animation_names:
-        result = extract_animation_spritesheet(zip_bytes, anim_name)
-        if result is not None:
-            key = name_map.get(anim_name, anim_name)
-            results[key] = result
-
-    return results
-
-
 def composite_v2_animation(
     direction_frames: dict[str, list[bytes]],
 ) -> Optional[tuple[bytes, int]]:
@@ -258,32 +102,6 @@ def composite_v2_animation(
     buf = io.BytesIO()
     sheet.save(buf, format="PNG")
     return buf.getvalue(), frame_count
-
-
-def extract_walk_spritesheet(zip_bytes: bytes) -> Optional[bytes]:
-    """Extract walk animation spritesheet from a PixelLab character ZIP.
-
-    Backward-compatible wrapper: calls extract_animation_spritesheet for "walk",
-    falling back to _extract_rotation_fallback if no walk animation is found.
-
-    Returns PNG bytes of a spritesheet or None if nothing usable is found.
-    """
-    result = extract_animation_spritesheet(zip_bytes, "walk")
-    if result is not None:
-        png_bytes, _ = result
-        return png_bytes
-
-    fallback = _extract_rotation_fallback(zip_bytes)
-    if fallback is not None:
-        return fallback
-
-    try:
-        zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
-        all_files = zf.namelist()
-    except zipfile.BadZipFile:
-        return None
-    logger.info("No walk or rotation frames found in ZIP. Files: %s", all_files[:20])
-    return None
 
 
 def build_static_spritesheet_from_rotations(

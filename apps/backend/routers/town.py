@@ -427,8 +427,6 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
     from core.services.pixellab_service import ANIMATION_REGISTRY, PixelLabService
     from core.services.sprite_storage import (
         build_static_spritesheet_from_rotations,
-        extract_all_spritesheets,
-        extract_walk_spritesheet,
         upload_sprite_to_s3,
         upload_sprites_to_s3,
     )
@@ -782,8 +780,6 @@ async def resume_sprite_generation(
     from core.config import settings
     from core.services.pixellab_service import ANIMATION_REGISTRY, PixelLabService
     from core.services.sprite_storage import (
-        extract_all_spritesheets,
-        extract_walk_spritesheet,
         upload_sprite_to_s3,
         upload_sprites_to_s3,
     )
@@ -946,7 +942,7 @@ async def get_agent_status(
     if settings.PIXELLAB_API_KEY and settings.SPRITE_S3_BUCKET:
         try:
             from core.services.pixellab_service import PixelLabService
-            from core.services.sprite_storage import extract_walk_spritesheet, upload_sprite_to_s3
+            from core.services.sprite_storage import upload_sprite_to_s3
 
             pxl = PixelLabService(api_key=settings.PIXELLAB_API_KEY)
             zip_bytes = await pxl.download_character_zip(pixellab_char_id)
