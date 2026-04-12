@@ -223,3 +223,28 @@ async def test_update_agent_sprites_sends_command_on_open_connection():
 async def test_update_agent_sprites_silently_skips_when_no_connection():
     client = GameServerClient(base_url="ws://stub")
     await client.update_agent_sprites("agent-2", {"walk": {"url": "x"}})
+
+
+@pytest.mark.asyncio
+async def test_reconnect_stops_after_max_retries():
+    """Reconnect should give up after max_retries and clean up connect params."""
+    client = GameServerClient(base_url="ws://test:8080")
+    client._agent_connect_params["a1"] = {"type": "agent", "agent_id": "a1"}
+
+    attempt_count = 0
+
+    async def always_fail(*args, **kwargs):
+        nonlocal attempt_count
+        attempt_count += 1
+        raise ConnectionRefusedError("server down")
+
+    with patch(
+        "core.services.game_server_client.websockets.connect",
+        new_callable=AsyncMock,
+        side_effect=always_fail,
+    ):
+        await client._reconnect_agent("a1", max_retries=3)
+
+    assert attempt_count == 3
+    assert "a1" not in client._agent_connect_params
+    assert "a1" not in client._agent_connections
