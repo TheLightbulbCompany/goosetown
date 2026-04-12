@@ -1283,12 +1283,25 @@ async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
         _reject("target_busy")
         return
 
-    # Validate both agents are at the same location
-    initiator_location = initiator.get("currentLocation", "")
-    target_location = target.get("currentLocation", "")
-    if initiator_location != target_location:
-        _reject("not_nearby")
-        return
+    # Validate agents are within proximity (3 tiles / 96px — same as game server)
+    gs_client = get_game_server_client()
+    init_state = gs_client.get_cached_agent_state(initiator_id)
+    target_state = gs_client.get_cached_agent_state(target_id)
+    if init_state and target_state:
+        import math
+        dx = float(init_state.get("x", 0)) - float(target_state.get("x", 0))
+        dy = float(init_state.get("y", 0)) - float(target_state.get("y", 0))
+        dist = math.sqrt(dx * dx + dy * dy)
+        if dist > 96.0:  # PROXIMITY_THRESHOLD from agent_controller.gd
+            _reject("not_nearby")
+            return
+    elif not init_state or not target_state:
+        # No cached position — fall back to location check
+        initiator_location = initiator.get("currentLocation", "")
+        target_location = target.get("currentLocation", "")
+        if initiator_location != target_location:
+            _reject("not_nearby")
+            return
 
     # Create the conversation record
     location = initiator.get("currentLocation", "residence")
