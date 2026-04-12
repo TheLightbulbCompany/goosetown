@@ -9,10 +9,10 @@ extends CharacterBody2D
 # ---------------------------------------------------------------------------
 
 # Spritesheet constants (matches backend sprite_storage.py)
-const FRAME_SIZE: int = 48
+const FRAME_SIZE: int = 96
 const FRAME_COUNT: int = 6
-const SHEET_WIDTH: int = 288  # 6 * 48
-const SHEET_HEIGHT: int = 192  # 4 * 48
+const SHEET_WIDTH: int = 576  # 6 * 96
+const SHEET_HEIGHT: int = 384  # 4 * 96
 
 const DEFAULT_FPS: float = 8.0
 const DEFAULT_FRAME_COUNT: int = 6
