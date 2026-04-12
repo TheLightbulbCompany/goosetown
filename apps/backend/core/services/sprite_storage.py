@@ -174,7 +174,10 @@ def composite_animation_spritesheet(
     if directions_found == 0:
         return None
 
-    logger.info("Composited animation spritesheet: %d directions, %d frames, %dpx", directions_found, frame_count, frame_size)
+    logger.info(
+        "Composited animation spritesheet: %d directions, %d frames, %dpx",
+        directions_found, frame_count, frame_size,
+    )
     buf = io.BytesIO()
     sheet.save(buf, format="PNG")
     return buf.getvalue(), frame_count

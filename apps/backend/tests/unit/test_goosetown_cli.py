@@ -1,5 +1,4 @@
-"""Unit tests for TownDaemon welcome blurb during onboarding=static."""
-import json
+"""Unit tests for TownDaemon — welcome blurb and group conversations."""
 import sys
 from pathlib import Path
 
@@ -9,9 +8,7 @@ import pytest
 _SKILL_DIR = Path(__file__).parents[2] / "data" / "goosetown-skill"
 sys.path.insert(0, str(_SKILL_DIR))
 
-import goosetown_cli  # noqa: E402  (import after path manipulation)
-from goosetown_cli import TownDaemon, _WELCOME_BLURB  # noqa: E402
-
+from goosetown_cli import _WELCOME_BLURB, TownDaemon  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Fixtures

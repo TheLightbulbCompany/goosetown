@@ -870,15 +870,20 @@ async def get_agent_status(
     if settings.PIXELLAB_API_KEY and settings.SPRITE_S3_BUCKET:
         try:
             from core.services.pixellab_service import PixelLabService
-            from core.services.sprite_storage import upload_sprite_to_s3
+            from core.services.sprite_storage import (
+                composite_animation_spritesheet,
+                upload_sprite_to_s3,
+            )
 
             pxl = PixelLabService(api_key=settings.PIXELLAB_API_KEY)
-            zip_bytes = await pxl.download_character_zip(pixellab_char_id)
-            if zip_bytes:
-                png_bytes = extract_walk_spritesheet(zip_bytes)
-                if png_bytes:
+            raw_animations = await pxl.fetch_animation_spritesheets(pixellab_char_id)
+            if raw_animations and "walk" in raw_animations:
+                result = composite_animation_spritesheet(raw_animations["walk"])
+                if result:
+                    png_bytes, _frame_count = result
                     s3_key = await asyncio.to_thread(
-                        upload_sprite_to_s3, png_bytes, agent["id"], settings.SPRITE_S3_BUCKET
+                        upload_sprite_to_s3, png_bytes, agent["id"],
+                        settings.SPRITE_S3_BUCKET, "walk.png",
                     )
                     cdn_url = f"{settings.SPRITE_CDN_URL}/{s3_key}"
                     service.update_agent_state(agent["id"], sprite_ready=True, sprite_url=cdn_url)

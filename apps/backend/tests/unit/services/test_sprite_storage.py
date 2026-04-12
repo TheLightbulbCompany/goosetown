@@ -6,13 +6,11 @@ from unittest.mock import MagicMock, patch
 from PIL import Image
 
 from core.services.sprite_storage import (
-    DIRECTION_ROWS,
     FRAME_SIZE,
     SHEET_HEIGHT,
     SHEET_WIDTH,
     build_static_spritesheet_from_rotations,
 )
-
 
 
 def _make_solid_rotation_png(color: tuple[int, int, int]) -> bytes:
@@ -23,7 +21,7 @@ def _make_solid_rotation_png(color: tuple[int, int, int]) -> bytes:
 
 
 def test_frame_size_is_96():
-    from core.services.sprite_storage import FRAME_SIZE, SHEET_WIDTH, SHEET_HEIGHT
+    from core.services.sprite_storage import FRAME_SIZE, SHEET_HEIGHT, SHEET_WIDTH
     assert FRAME_SIZE == 96
     assert SHEET_WIDTH == 576  # 6 * 96
     assert SHEET_HEIGHT == 384  # 4 * 96
@@ -109,7 +107,7 @@ def _make_test_frame(width: int = 136, height: int = 136, color: tuple = (255, 0
 
 
 def test_composite_animation_spritesheet_4_dirs_6_frames():
-    from core.services.sprite_storage import composite_animation_spritesheet, FRAME_SIZE
+    from core.services.sprite_storage import FRAME_SIZE, composite_animation_spritesheet
     frames = _make_test_frame()
     direction_frames = {
         "south": [frames] * 6,
@@ -127,7 +125,7 @@ def test_composite_animation_spritesheet_4_dirs_6_frames():
 
 
 def test_composite_animation_spritesheet_partial_directions():
-    from core.services.sprite_storage import composite_animation_spritesheet, FRAME_SIZE
+    from core.services.sprite_storage import FRAME_SIZE, composite_animation_spritesheet
     frames = _make_test_frame()
     direction_frames = {
         "south": [frames] * 4,
