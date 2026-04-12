@@ -50,3 +50,6 @@ cdk.out/
 
 # Dependencies (monorepo)
 node_modules/
+
+# Git worktrees
+.worktrees/
