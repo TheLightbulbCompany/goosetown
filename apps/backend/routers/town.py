@@ -726,8 +726,8 @@ async def resume_sprite_generation(
     from core.config import settings
     from core.services.pixellab_service import ANIMATION_REGISTRY, PixelLabService
     from core.services.sprite_storage import (
+        composite_animation_spritesheet,
         upload_sprite_to_s3,
-        upload_sprites_to_s3,
     )
 
     pxl = PixelLabService()
@@ -737,12 +737,6 @@ async def resume_sprite_generation(
     # with "" if Phase C can't find a "walk" key in the animation dict.
     existing_agent = service.get_town_agent_by_id(agent_id)
     existing_sprite_url = (existing_agent or {}).get("spriteUrl", "")
-
-    # Build template_id → friendly-name map for extract_all_spritesheets
-    template_name_map: dict[str, str] = {}
-    for friendly_name, cfg in ANIMATION_REGISTRY.items():
-        if cfg["type"] == "template":
-            template_name_map[cfg["template_id"]] = friendly_name
 
     def _progress(status: str) -> None:
         _send_to_daemon(agent_id, {"event": "sprite_progress", "status": status})
@@ -776,54 +770,42 @@ async def resume_sprite_generation(
         # Phase: downloading
         if current_status == "downloading" and char_id:
             _progress("Downloading sprites...")
-            import asyncio
 
-            zip_bytes = None
-            for attempt in range(6):
-                await asyncio.sleep(5)
-                zip_bytes = await pxl.download_character_zip(char_id)
-                if zip_bytes is not None:
-                    break
+            raw_animations = await pxl.fetch_animation_spritesheets(char_id)
 
-            if zip_bytes:
-                all_sheets = extract_all_spritesheets(zip_bytes, name_map=template_name_map)
-                if all_sheets:
-                    uploaded = await asyncio.to_thread(
-                        upload_sprites_to_s3, all_sheets, agent_id, settings.SPRITE_S3_BUCKET
+            template_id_to_friendly: dict[str, str] = {
+                cfg["template_id"]: name
+                for name, cfg in ANIMATION_REGISTRY.items()
+                if cfg.get("template_id")
+            }
+
+            sprite_animations: dict = {}
+            for pixellab_name, direction_frames in raw_animations.items():
+                friendly = template_id_to_friendly.get(pixellab_name, pixellab_name)
+                sheet = composite_animation_spritesheet(direction_frames)
+                if sheet:
+                    png_bytes, frame_count = sheet
+                    s3_key = await asyncio.to_thread(
+                        upload_sprite_to_s3, png_bytes, agent_id,
+                        settings.SPRITE_S3_BUCKET, f"{friendly}.png",
                     )
-                    sprite_animations = {}
-                    for anim_name, info in uploaded.items():
-                        registry_entry = ANIMATION_REGISTRY.get(anim_name, {})
-                        sprite_animations[anim_name] = {
-                            "url": f"{settings.SPRITE_CDN_URL}/{info['key']}",
-                            "frameCount": info["frame_count"],
-                            "fps": int(registry_entry.get("fps", 8)),
-                        }
-                    walk_url = sprite_animations.get("walk", {}).get("url", existing_sprite_url)
-                    service.update_agent_state(
-                        agent_id,
-                        sprite_ready=True,
-                        sprite_url=walk_url,
-                        sprite_animations=sprite_animations,
-                        sprite_status="complete",
-                        onboarding_phase="alive",
-                    )
-                else:
-                    walk_png = extract_walk_spritesheet(zip_bytes)
-                    if walk_png:
-                        s3_key = await asyncio.to_thread(
-                            upload_sprite_to_s3, walk_png, agent_id, settings.SPRITE_S3_BUCKET
-                        )
-                        service.update_agent_state(
-                            agent_id,
-                            sprite_ready=True,
-                            sprite_url=f"{settings.SPRITE_CDN_URL}/{s3_key}",
-                            sprite_status="complete",
-                        )
-            else:
-                logger.warning("No ZIP available for %s during recovery", agent_id)
-                service.update_agent_state(agent_id, sprite_status=None)
-                return
+                    registry_entry = ANIMATION_REGISTRY.get(friendly, {})
+                    sprite_animations[friendly] = {
+                        "url": f"{settings.SPRITE_CDN_URL}/{s3_key}",
+                        "frameCount": frame_count,
+                        "fps": int(registry_entry.get("fps", 8)),
+                    }
+
+            walk_url = sprite_animations.get("walk", {}).get("url", existing_sprite_url)
+            service.update_agent_state(
+                agent_id,
+                sprite_ready=True,
+                sprite_url=walk_url,
+                sprite_animations=sprite_animations,
+                sprite_status="complete",
+                onboarding_phase="alive",
+            )
+            logger.info("[resume:%s] Complete: %d animations", agent_id, len(sprite_animations))
 
             # Connect to game server
             gs_client = get_game_server_client()
