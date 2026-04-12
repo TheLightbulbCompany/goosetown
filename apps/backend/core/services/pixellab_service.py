@@ -498,6 +498,86 @@ class PixelLabService:
 
         return result
 
+    async def fetch_animation_spritesheets(
+        self, character_id: str
+    ) -> dict[str, dict[str, list[bytes]]]:
+        """Download animation frames grouped by clean API animation name and direction.
+
+        Cross-references the character API (clean names like 'walk', 'breathing-idle')
+        with the ZIP download (opaque folder names like 'walking-abc123').
+
+        Matching: for each ZIP folder, find the API animation entry whose
+        (direction, num_frames) matches. Last folder wins for duplicates.
+
+        Returns dict mapping animation_name -> direction -> list of frame PNG bytes.
+        Empty dict if ZIP unavailable or no animations found.
+        """
+        try:
+            char_data = await self.get_character(character_id)
+        except Exception:
+            logger.exception("Failed to get character %s for animation fetch", character_id)
+            return {}
+
+        zip_bytes = await self.download_character_zip(character_id)
+        if zip_bytes is None:
+            logger.warning("No ZIP available for character %s", character_id)
+            return {}
+
+        import io
+        import json
+        import zipfile
+
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
+            metadata = json.loads(zf.read("metadata.json"))
+        except Exception:
+            logger.exception("Failed to parse ZIP metadata for character %s", character_id)
+            return {}
+
+        zip_animations = metadata.get("frames", {}).get("animations", {})
+        if not zip_animations:
+            return {}
+
+        # Build API lookup: (direction, num_frames) -> animation_name
+        api_animations = char_data.get("animations", [])
+        api_lookup: dict[tuple[str, int], str] = {}
+        for entry in api_animations:
+            name = entry.get("name", "")
+            direction = entry.get("direction", "")
+            num_frames = entry.get("num_frames", 0)
+            if name and direction:
+                api_lookup[(direction, num_frames)] = name
+
+        # Match ZIP folders to API animation names
+        result: dict[str, dict[str, list[bytes]]] = {}
+        for folder_name, dir_data in zip_animations.items():
+            for direction, frame_paths in dir_data.items():
+                num_frames = len(frame_paths)
+                anim_name = api_lookup.get((direction, num_frames))
+                if anim_name is None:
+                    logger.debug(
+                        "No API match for ZIP folder %s (%s, %d frames)",
+                        folder_name, direction, num_frames,
+                    )
+                    continue
+
+                frames: list[bytes] = []
+                for frame_path in sorted(frame_paths):
+                    try:
+                        frames.append(zf.read(frame_path))
+                    except KeyError:
+                        logger.warning("Missing frame in ZIP: %s", frame_path)
+
+                if frames:
+                    result.setdefault(anim_name, {})[direction] = frames
+
+        logger.info(
+            "Resolved %d animations from ZIP for character %s: %s",
+            len(result), character_id,
+            {k: list(v.keys()) for k, v in result.items()},
+        )
+        return result
+
     async def _get_rotation_base64(self, character_id: str, direction: str) -> tuple[str, int, int] | None:
         """Fetch a character's rotation image and return (base64_str, width, height).
 
