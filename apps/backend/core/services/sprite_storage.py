@@ -12,11 +12,11 @@ from core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Sprite sheet layout: 6 frames x 48px wide, 4 directions x 48px tall
+# Sprite sheet layout: 6 frames x 96px wide, 4 directions x 96px tall
 FRAME_COUNT = 6
-FRAME_SIZE = 48
-SHEET_WIDTH = FRAME_COUNT * FRAME_SIZE  # 288
-SHEET_HEIGHT = 4 * FRAME_SIZE  # 192
+FRAME_SIZE = 96
+SHEET_WIDTH = FRAME_COUNT * FRAME_SIZE  # 576
+SHEET_HEIGHT = 4 * FRAME_SIZE  # 384
 
 # Row index for each direction in the output spritesheet
 DIRECTION_ROWS = {"south": 0, "west": 1, "east": 2, "north": 3}

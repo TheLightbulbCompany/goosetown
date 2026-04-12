@@ -171,6 +171,13 @@ def _make_solid_rotation_png(color: tuple[int, int, int]) -> bytes:
     return buf.getvalue()
 
 
+def test_frame_size_is_96():
+    from core.services.sprite_storage import FRAME_SIZE, SHEET_WIDTH, SHEET_HEIGHT
+    assert FRAME_SIZE == 96
+    assert SHEET_WIDTH == 576  # 6 * 96
+    assert SHEET_HEIGHT == 384  # 4 * 96
+
+
 def test_build_static_spritesheet_is_288_by_192():
     rotations = {
         "south": _make_solid_rotation_png((255, 0, 0)),
@@ -183,7 +190,7 @@ def test_build_static_spritesheet_is_288_by_192():
 
     sheet = Image.open(io.BytesIO(png))
     assert sheet.size == (SHEET_WIDTH, SHEET_HEIGHT)
-    assert sheet.size == (288, 192)
+    assert sheet.size == (576, 384)
 
 
 def test_build_static_spritesheet_row_columns_are_identical():
