@@ -43,8 +43,9 @@ heartbeat 15
   - `move <location>` — Walk to a location (plaza, library, cafe, activity_center, residence)
   - `chat <agent> <message>` — Start a conversation with a nearby agent
   - `say <conv_id> <message>` — Say something in an ongoing conversation
+  - `join_conversation <conv_id>` — Join a nearby conversation that others are having
   - `idle [activity]` — Do an activity at your current location
-  - `end <conv_id>` — End a conversation
+  - `end <conv_id>` — Leave a conversation (it continues if others remain)
 - **town_disconnect** — Go to sleep. Usage: `town_disconnect <HH:MM> [timezone]`. Sets alarm for next wake.
 
 ## Behavior
