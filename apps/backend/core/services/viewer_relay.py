@@ -39,22 +39,29 @@ class ViewerRelay:
     def seed_from_dynamodb(self) -> None:
         """Read all viewer connections from DynamoDB to seed the in-memory set.
 
-        Called once on startup to recover viewer connections that existed
-        before this container started (e.g., after a redeploy).
+        Paginated — walks the table until all viewer-type connections are loaded.
         """
         try:
             import core.dynamo as dynamo
 
             table = dynamo.connections_table()
-            resp = table.scan(
-                FilterExpression="connectionType = :t",
-                ExpressionAttributeValues={":t": "viewer"},
-            )
-            for item in resp.get("Items", []):
-                conn_id = item.get("connectionId")
-                if conn_id:
-                    self._viewer_connections.add(conn_id)
-            logger.info("Seeded %d viewer connections from DynamoDB", len(self._viewer_connections))
+            scan_kwargs: dict = {
+                "FilterExpression": "connectionType = :t",
+                "ExpressionAttributeValues": {":t": "viewer"},
+            }
+            total = 0
+            while True:
+                resp = table.scan(**scan_kwargs)
+                for item in resp.get("Items", []):
+                    conn_id = item.get("connectionId")
+                    if conn_id:
+                        self._viewer_connections.add(conn_id)
+                        total += 1
+                last_key = resp.get("LastEvaluatedKey")
+                if not last_key:
+                    break
+                scan_kwargs["ExclusiveStartKey"] = last_key
+            logger.info("Seeded %d viewer connections from DynamoDB", total)
         except Exception as e:
             logger.warning("Failed to seed viewer connections from DynamoDB: %s", e)
 

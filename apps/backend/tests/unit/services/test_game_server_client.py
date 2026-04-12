@@ -20,7 +20,7 @@ async def test_connect_agent_sends_connect_message():
         client = GameServerClient(base_url="ws://test:8080")
         await client.connect_agent("agent-1", "Goose", "https://cdn/sprite.png", "plaza")
 
-        mock_connect.assert_called_once_with("ws://test:8080")
+        mock_connect.assert_called_once_with("ws://test:8080", open_timeout=10)
         sent_data = json.loads(mock_ws.send.call_args_list[0][0][0])
         assert sent_data == {
             "type": "agent",
@@ -195,7 +195,7 @@ async def test_connect_agent_replaces_existing_connection():
         # Old connection must be closed
         mock_ws_old.close.assert_called_once()
         # New connection must be created
-        mock_connect.assert_called_once_with("ws://test:8080")
+        mock_connect.assert_called_once_with("ws://test:8080", open_timeout=10)
         # _agent_connections must point to the new WebSocket
         assert client._agent_connections["agent-1"] is mock_ws_new
 

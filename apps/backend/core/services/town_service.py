@@ -556,10 +556,21 @@ class TownService:
         return _decimal_to_native(resp.get("Attributes", {}))
 
     def get_all_relationships(self) -> list[dict]:
-        """Get all relationships with latest conversation topics."""
+        """Get all relationships with latest conversation topics. Paginated."""
         table = dynamo.relationships_table()
-        resp = table.scan(Limit=100)
-        rels = resp.get("Items", [])
+        rels: list[dict] = []
+        scan_kwargs: dict = {}
+        max_total = 500  # Safety cap
+        while True:
+            resp = table.scan(**scan_kwargs)
+            rels.extend(resp.get("Items", []))
+            if len(rels) >= max_total:
+                rels = rels[:max_total]
+                break
+            last_key = resp.get("LastEvaluatedKey")
+            if not last_key:
+                break
+            scan_kwargs["ExclusiveStartKey"] = last_key
 
         conv_table = dynamo.conversations_table()
         out = []

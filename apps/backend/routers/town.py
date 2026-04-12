@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user
@@ -1169,8 +1169,17 @@ class WsMessageRequest(BaseModel):
 
 
 @router.post("/ws-message")
-async def handle_ws_message(request: WsMessageRequest):
+async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
     """Receive forwarded WebSocket messages from API Gateway $default Lambda."""
+    from core.config import settings
+
+    # In non-dev environments, require shared secret from API Gateway Lambda.
+    # In dev, skip if WS_LAMBDA_SECRET is unset (local dev ergonomics).
+    if settings.ENVIRONMENT != "dev" or settings.WS_LAMBDA_SECRET:
+        provided = raw_request.headers.get("x-ws-lambda-secret", "")
+        if provided != settings.WS_LAMBDA_SECRET:
+            raise HTTPException(status_code=403, detail="Invalid or missing WS lambda secret")
+
     ws_manager = get_town_agent_ws_manager()
     body = request.body
     msg_type = body.get("type", "")
@@ -1213,7 +1222,10 @@ async def handle_ws_message(request: WsMessageRequest):
 
         gs_client = get_game_server_client()
         action = body.get("action", "")
-        print(f"[WS_MSG] town_agent_act: action={action}, agent={agent_conn.agent_name}, ctx={agent_conn.location_context}", flush=True)
+        logger.debug(
+            "town_agent_act: action=%s agent=%s ctx=%s",
+            action, agent_conn.agent_name, agent_conn.location_context,
+        )
         if action == "move":
             destination = body.get("destination", "")
             if destination in _TRANSITION_MAP:
