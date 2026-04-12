@@ -4,6 +4,8 @@ const MAP_SIZE := Vector2i(1408, 864)
 const TILE_SIZE := 32
 const MAP_TILES := Vector2i(44, 27)
 const DEFAULT_ZOOM := 2.0
+# 24 real minutes = 24 game hours (1 real second = 1 game minute)
+const CYCLE_SECONDS: float = 1440.0
 
 @onready var camera: Camera2D = $Camera2D
 @onready var player_spawn: Marker2D = $Markers/PlayerSpawn
@@ -15,6 +17,7 @@ const DEFAULT_ZOOM := 2.0
 @onready var residence: Marker2D = $Markers/Residence
 
 var _dragging: bool = false
+var _day_night_overlay: ColorRect
 
 
 func _ready() -> void:
@@ -30,6 +33,36 @@ func _ready() -> void:
 
 	# AgentManager receives world_state via JsBridge (React forwards from its WebSocket).
 	# No ViewerProtocol needed — React manages the WebSocket connection.
+
+	_setup_day_night_overlay()
+
+
+func _setup_day_night_overlay() -> void:
+	# Build the overlay in code rather than the .tscn to avoid Godot UID assignment
+	# requirements for ShaderMaterial references in text scene files.
+	var layer := CanvasLayer.new()
+	layer.name = "DayNightLayer"
+	layer.layer = 10
+	add_child(layer)
+
+	_day_night_overlay = ColorRect.new()
+	_day_night_overlay.name = "DayNightOverlay"
+	_day_night_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	# Must ignore mouse input — otherwise the full-screen rect swallows all clicks
+	# and breaks click-to-pan on the map.
+	_day_night_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	var mat := ShaderMaterial.new()
+	mat.shader = load("res://shaders/daynight.gdshader")
+	_day_night_overlay.material = mat
+
+	layer.add_child(_day_night_overlay)
+
+
+func _process(_delta: float) -> void:
+	if _day_night_overlay and _day_night_overlay.material is ShaderMaterial:
+		var t: float = fmod(Time.get_unix_time_from_system(), CYCLE_SECONDS) / CYCLE_SECONDS
+		(_day_night_overlay.material as ShaderMaterial).set_shader_parameter("time_of_day", t)
 
 
 func _unhandled_input(event: InputEvent) -> void:
