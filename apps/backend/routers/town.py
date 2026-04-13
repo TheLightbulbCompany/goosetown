@@ -544,8 +544,9 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
         async def _anim_progress(status_str: str) -> None:
             _send_progress(status_str)
 
+        signup_job_ids: dict[str, list[str]] = {}
         try:
-            await pxl.queue_signup_animations(char_id, on_progress=_anim_progress)
+            signup_job_ids = await pxl.queue_signup_animations(char_id, on_progress=_anim_progress)
         except Exception:
             logger.exception("Signup animations failed for %s", agent_id)
 
@@ -554,11 +555,6 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
         _send_progress("Downloading sprites...")
 
         raw_animations = await pxl.fetch_animation_spritesheets(char_id)
-
-        if not raw_animations:
-            logger.warning("[agent:%s] No animations resolved — agent remains on static sprite", agent_id)
-            service.update_agent_state(agent_id, onboarding_phase="alive")
-            return
 
         # Map PixelLab API names to our friendly names
         template_id_to_friendly: dict[str, str] = {
@@ -569,6 +565,7 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
 
         full_sprite_animations: dict = dict(initial_sprite_animations)
 
+        # Process template animations from ZIP (walk, idle)
         for pixellab_name, direction_frames in raw_animations.items():
             friendly = template_id_to_friendly.get(pixellab_name, pixellab_name)
             sheet = composite_animation_spritesheet(direction_frames)
@@ -584,6 +581,47 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
                     "frameCount": frame_count,
                     "fps": int(registry_entry.get("fps", 8)),
                 }
+
+        # Process custom animations from job results (talking, etc.)
+        # Custom animate-with-text-v2 results are NOT in the ZIP — they're
+        # stored in the job's last_response as frame images.
+        for anim_name, job_ids in signup_job_ids.items():
+            if anim_name in full_sprite_animations:
+                continue  # Already resolved from ZIP
+            config = ANIMATION_REGISTRY.get(anim_name, {})
+            if config.get("type") != "custom" or not job_ids:
+                continue
+            # Each job is one direction (south, west, east, north)
+            directions = ["south", "west", "east", "north"]
+            direction_frames: dict[str, list[bytes]] = {}
+            for i, jid in enumerate(job_ids):
+                if i >= len(directions):
+                    break
+                frames = await pxl.get_v2_animation_frames(jid)
+                if frames:
+                    direction_frames[directions[i]] = frames
+            if direction_frames:
+                sheet = composite_animation_spritesheet(direction_frames)
+                if sheet:
+                    png_bytes, frame_count = sheet
+                    s3_key = await asyncio.to_thread(
+                        upload_sprite_to_s3, png_bytes, str(agent_id),
+                        settings.SPRITE_S3_BUCKET, f"{anim_name}.png",
+                    )
+                    full_sprite_animations[anim_name] = {
+                        "url": f"{settings.SPRITE_CDN_URL}/{s3_key}",
+                        "frameCount": frame_count,
+                        "fps": int(config.get("fps", 6)),
+                    }
+                    logger.info(
+                        "[agent:%s] Custom animation %s: %d directions, %d frames",
+                        agent_id, anim_name, len(direction_frames), frame_count,
+                    )
+
+        if not full_sprite_animations:
+            logger.warning("[agent:%s] No animations resolved — agent remains on static sprite", agent_id)
+            service.update_agent_state(agent_id, onboarding_phase="alive")
+            return
 
         # Real walk URL overrides the static placeholder
         real_walk_url = full_sprite_animations.get("walk", {}).get("url", static_cdn_url)
