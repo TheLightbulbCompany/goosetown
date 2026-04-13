@@ -168,6 +168,9 @@ func handle_command(peer_id: int, data: Dictionary) -> void:
 			if direction in ["south", "west", "east", "north"]:
 				var agent_node: CharacterBody2D = _agents[peer_id]
 				agent_node.facing = direction
+		"set_conversation_group":
+			var ids: Array = data.get("agent_ids", [])
+			face_agents_toward_centroid(ids)
 		"update_agent_sprites":
 			var agent_node: CharacterBody2D = _agents[peer_id]
 			var new_anims: Dictionary = data.get("sprite_animations", {})
@@ -181,6 +184,34 @@ func handle_command(peer_id: int, data: Dictionary) -> void:
 				"error": "Unknown command: %s" % cmd,
 				"cmd": cmd,
 			})
+
+
+func face_agents_toward_centroid(agent_ids: Array) -> void:
+	## Face each agent in the list toward the centroid of the others.
+	if agent_ids.size() < 2:
+		return
+	var id_to_node: Dictionary = {}
+	for aid in agent_ids:
+		if _id_to_peer.has(aid):
+			var peer: int = _id_to_peer[aid]
+			if _agents.has(peer):
+				id_to_node[aid] = _agents[peer]
+	if id_to_node.size() < 2:
+		return
+	for aid in id_to_node:
+		var agent_node: CharacterBody2D = id_to_node[aid]
+		var centroid: Vector2 = Vector2.ZERO
+		var count: int = 0
+		for other_aid in id_to_node:
+			if other_aid != aid:
+				centroid += id_to_node[other_aid].global_position
+				count += 1
+		centroid /= count
+		var delta: Vector2 = centroid - agent_node.global_position
+		if abs(delta.x) > abs(delta.y):
+			agent_node.facing = "east" if delta.x > 0 else "west"
+		else:
+			agent_node.facing = "south" if delta.y > 0 else "north"
 
 
 func get_world_state_for_viewer() -> Dictionary:
