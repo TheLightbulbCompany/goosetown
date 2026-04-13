@@ -316,3 +316,62 @@ class TestActiveConversationStatusRendering:
         assert "Nearby conversations" in content
         assert "join_conversation conv-99" in content
         assert "Alice, Bob" in content
+
+
+# ===========================================================================
+# Event-driven think triggers
+# ===========================================================================
+
+
+class TestEventDrivenThink:
+    """Think triggers immediately on proximity changes, not just time throttle."""
+
+    def test_think_triggers_on_new_nearby_agent(self, daemon):
+        daemon.state["agent"] = {"onboardingPhase": "alive", "location": "plaza"}
+        daemon.state["nearby"] = []
+
+        # First agent_state — no nearby, idle, should think (first time)
+        daemon._handle_agent_state({
+            "event": "agent_state",
+            "location": "plaza",
+            "activity": "idle",
+            "speed": 0,
+            "nearby_agents": [],
+            "context": "town",
+        })
+        content1 = (daemon._workspace_path / "TOWN_STATUS.md").read_text()
+        assert "act move" in content1
+
+        # Reset think time to simulate 5s passing (under 12s throttle)
+        import time
+        daemon._last_think_time = time.time() - 5.0
+
+        # New agent appears nearby — should trigger think immediately
+        daemon._handle_agent_state({
+            "event": "agent_state",
+            "location": "plaza",
+            "activity": "idle",
+            "speed": 0,
+            "nearby_agents": [{"agent_id": "a1", "name": "Alice", "display_name": "Alice"}],
+            "context": "town",
+        })
+        content2 = (daemon._workspace_path / "TOWN_STATUS.md").read_text()
+        assert "Alice" in content2
+
+    def test_no_think_when_nearby_unchanged_and_under_throttle(self, daemon):
+        daemon.state["agent"] = {"onboardingPhase": "alive", "location": "plaza"}
+        daemon.state["nearby"] = [{"agent_id": "a1"}]
+
+        import time
+        daemon._last_think_time = time.time() - 5.0
+
+        daemon._handle_agent_state({
+            "event": "agent_state",
+            "location": "plaza",
+            "activity": "idle",
+            "speed": 0,
+            "nearby_agents": [{"agent_id": "a1", "name": "Alice"}],
+            "context": "town",
+        })
+        # Should NOT have written a new think prompt (under throttle, no change)
+        assert not (daemon._workspace_path / "TOWN_STATUS.md").exists()
