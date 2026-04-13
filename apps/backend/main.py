@@ -31,6 +31,12 @@ async def lifespan(app: FastAPI):
     # Reconnect active agents to game server on startup
     await _reconnect_active_agents()
 
+    # Start sprite generation queue
+    from core.services.sprite_queue import get_sprite_queue
+
+    sprite_queue = get_sprite_queue()
+    sprite_queue.start()
+
     # Start inactivity sweep for dangling conversations
     import asyncio as _asyncio
 
@@ -44,6 +50,7 @@ async def lifespan(app: FastAPI):
         await sweep_task
     except _asyncio.CancelledError:
         pass
+    await sprite_queue.stop()
     await relay.stop()
     gs_client = get_game_server_client()
     for agent_id in list(gs_client._agent_connections.keys()):

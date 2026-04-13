@@ -705,9 +705,15 @@ async def register_agent(
                 _appearance = request.appearance
                 _display_name = request.display_name
 
-                task = asyncio.create_task(_sprite_pipeline_task(_agent_id, _display_name, _appearance))
-                _background_sprite_tasks.add(task)
-                task.add_done_callback(_background_sprite_tasks.discard)
+                from core.services.sprite_queue import get_sprite_queue
+
+                queue = get_sprite_queue()
+                position = queue.enqueue(_agent_id, _display_name, _appearance)
+                if position > 0:
+                    _send_to_daemon(
+                        _agent_id,
+                        {"event": "sprite_progress", "status": f"Queued for sprite generation (position {position})"},
+                    )
 
     return {
         "agent_id": agent["id"],
