@@ -1,4 +1,3 @@
-import { Link } from 'react-router-dom';
 import clsx from 'clsx';
 import type { ApartmentAgent } from '../hooks/useApartment';
 
@@ -120,12 +119,20 @@ export default function ApartmentCard({ agent }: { agent: ApartmentAgent }) {
       {/* Action: view in town */}
       {agent.location_context === 'town' && (
         <div className="flex justify-end mt-1">
-          <Link
-            to={`/?focus=${encodeURIComponent(agent.display_name)}`}
-            className="font-body text-xs text-clay-300 hover:text-brown-200 transition-colors"
+          <button
+            onClick={() => {
+              const bridge = (window as any)._godotBridge;
+              if (bridge?.switchScene) {
+                bridge.switchScene('town');
+              }
+              window.dispatchEvent(new CustomEvent('goosetown_scene_changed', {
+                detail: { scene: 'town' },
+              }));
+            }}
+            className="font-body text-xs text-clay-300 hover:text-brown-200 transition-colors bg-transparent border-none cursor-pointer"
           >
             View in town &rarr;
-          </Link>
+          </button>
         </div>
       )}
     </div>

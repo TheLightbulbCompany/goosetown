@@ -163,7 +163,11 @@ export function useTownState(getToken?: () => Promise<string | null>, userId?: s
               const w = window as unknown as Record<string, unknown>;
               const bridge = w._godotBridge as { switchScene?: (name: string) => void } | undefined;
               if (bridge?.switchScene) {
-                bridge.switchScene(msg.context === 'apartment' ? 'apartment' : 'town');
+                const newScene = msg.context === 'apartment' ? 'apartment' : 'town';
+                bridge.switchScene(newScene);
+                window.dispatchEvent(new CustomEvent('goosetown_scene_changed', {
+                  detail: { scene: newScene },
+                }));
               }
             } catch { /* Godot not loaded yet */ }
             return;
