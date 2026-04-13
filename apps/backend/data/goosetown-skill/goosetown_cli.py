@@ -1252,7 +1252,21 @@ class TownDaemon:
         is_idle = activity in ("idle", "") and speed < 0.1
 
         now = time.time()
-        think = is_idle and (now - self._last_think_time) >= 12.0
+
+        # Event-driven think: trigger immediately on meaningful state changes
+        nearby = data.get("nearby_agents", [])
+        prev_nearby_ids = {a.get("agent_id") for a in self.state.get("nearby", []) if a.get("agent_id")}
+        curr_nearby_ids = {a.get("agent_id") for a in nearby if a.get("agent_id")}
+        nearby_changed = curr_nearby_ids != prev_nearby_ids
+
+        # Also trigger on nearby_conversations appearing
+        has_nearby_convs = bool(data.get("nearby_conversations"))
+
+        # Think if: idle + throttle elapsed, OR meaningful event happened while idle
+        time_think = is_idle and (now - self._last_think_time) >= 12.0
+        event_think = nearby_changed or has_nearby_convs
+
+        think = time_think or (event_think and is_idle)
 
         if think:
             self._last_think_time = now
@@ -1269,6 +1283,13 @@ class TownDaemon:
                 self.state.get("agent", {}).get("onboardingPhase", "alive"),
             ),
         }
+
+        # Store nearby_conversations for TOWN_STATUS.md rendering
+        nearby_convs = data.get("nearby_conversations", [])
+        if nearby_convs:
+            self.state["nearby_conversations"] = nearby_convs
+        elif "nearby_conversations" in self.state:
+            del self.state["nearby_conversations"]
 
         # Always update internal state
         self.state["agent"] = {**self.state.get("agent", {}), **agent_info}

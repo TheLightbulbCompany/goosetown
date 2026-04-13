@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Routes, Route, useLocation } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { Routes, Route, useLocation, useNavigate } from 'react-router-dom';
 import { SignedIn, SignedOut, UserButton, useAuth } from '@clerk/clerk-react';
 import { ToastContainer } from 'react-toastify';
 import TownNav from './components/TownNav.tsx';
@@ -83,8 +83,21 @@ function AgentsSidebar({ onJoinClick }: { onJoinClick: () => void }) {
 export default function App() {
   const [joinModalOpen, setJoinModalOpen] = useState(false);
   const location = useLocation();
+  const navigate = useNavigate();
 
   const { isSignedIn } = useAuth();
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      const target = detail.scene === 'apartment' ? '/apartment' : '/';
+      if (location.pathname !== target) {
+        navigate(target);
+      }
+    };
+    window.addEventListener('goosetown_scene_changed', handler);
+    return () => window.removeEventListener('goosetown_scene_changed', handler);
+  }, [location.pathname, navigate]);
 
   // Only switch to apartment if authenticated AND on apartment route
   const scene: 'town' | 'apartment' =

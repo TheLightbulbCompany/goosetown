@@ -16,6 +16,7 @@ const SHEET_HEIGHT: int = 384  # 4 * 96
 
 const DEFAULT_FPS: float = 8.0
 const DEFAULT_FRAME_COUNT: int = 6
+const SHADOW_TEXTURE: Texture2D = preload("res://assets/sprites/shadow_placeholder.png")
 
 # Direction → row index in spritesheet
 const DIR_ROW: Dictionary = {
@@ -211,6 +212,9 @@ func setup(id: String, url: String, x: float, y: float, facing_json: String, dis
 
 	if sprite_url != "" and not OS.has_feature("headless"):
 		_load_sprite_from_url(sprite_url)
+	elif not OS.has_feature("headless"):
+		# No sprite URL — use shadow placeholder
+		set_spritesheet(SHADOW_TEXTURE, "walk")
 
 	_update_sprite_frame()
 

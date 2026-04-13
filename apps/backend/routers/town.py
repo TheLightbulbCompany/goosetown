@@ -105,6 +105,14 @@ def _send_to_daemon(agent_id: str, payload: dict) -> bool:
     # The agent record is already in scope here — no extra DB reads required.
     if evt == "agent_state":
         payload = {**payload, "onboardingPhase": agent.get("onboardingPhase", "alive")}
+        # Add nearby_conversations for agents not in a conversation
+        nearby_agents = payload.get("nearby_agents", [])
+        nearby_ids = [a.get("agent_id") for a in nearby_agents if a.get("agent_id")]
+        own_conv = agent.get("currentConversationId")
+        if nearby_ids and not own_conv:
+            nearby_convs = service.get_nearby_conversations(nearby_ids)
+            if nearby_convs:
+                payload = {**payload, "nearby_conversations": nearby_convs}
 
     try:
         mgmt = ManagementApiClient()
@@ -697,9 +705,15 @@ async def register_agent(
                 _appearance = request.appearance
                 _display_name = request.display_name
 
-                task = asyncio.create_task(_sprite_pipeline_task(_agent_id, _display_name, _appearance))
-                _background_sprite_tasks.add(task)
-                task.add_done_callback(_background_sprite_tasks.discard)
+                from core.services.sprite_queue import get_sprite_queue
+
+                queue = get_sprite_queue()
+                position = queue.enqueue(_agent_id, _display_name, _appearance)
+                if position > 0:
+                    _send_to_daemon(
+                        _agent_id,
+                        {"event": "sprite_progress", "status": f"Queued for sprite generation (position {position})"},
+                    )
 
     return {
         "agent_id": agent["id"],
@@ -1829,27 +1843,26 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
     # Set in-memory context on the connection record
     ws_manager.update_context(agent_id, location_context)
 
-    # Connect agent to game server if sprite is ready
-    if agent.get("spriteReady"):
-        gs_client = get_game_server_client()
-        try:
-            await gs_client.connect_agent(
-                agent_id=agent_id,
-                display_name=agent.get("displayName", agent_name),
-                sprite_url=agent.get("spriteUrl", ""),
-                location=current_location,
-                context=location_context,
-                user_id=user_id,
-                sprite_animations=agent.get("spriteAnimations", {}),
-                on_event=_make_agent_event_callback(),
-            )
-            logger.info(
-                "Agent %s connected to game server (context=%s, location=%s, userId=%s)",
-                agent_name, location_context, current_location, user_id[:12],
-            )
+    # Connect agent to game server (shadow sprite fallback if no custom sprite)
+    gs_client = get_game_server_client()
+    try:
+        await gs_client.connect_agent(
+            agent_id=agent_id,
+            display_name=agent.get("displayName", agent_name),
+            sprite_url=agent.get("spriteUrl", ""),
+            location=current_location,
+            context=location_context,
+            user_id=user_id,
+            sprite_animations=agent.get("spriteAnimations", {}),
+            on_event=_make_agent_event_callback(),
+        )
+        logger.info(
+            "Agent %s connected to game server (context=%s, location=%s, userId=%s)",
+            agent_name, location_context, current_location, user_id[:12],
+        )
 
-        except Exception as e:
-            logger.warning("Failed to connect agent %s to game server: %s", agent_name, e)
+    except Exception as e:
+        logger.warning("Failed to connect agent %s to game server: %s", agent_name, e)
 
     # Send connected event back to the agent via Management API
     try:
@@ -1870,34 +1883,6 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
             },
         )
         logger.info("Sent connected event to agent %s", agent_name)
-
-        # If sprite isn't ready, start a keepalive loop that sends periodic events
-        # until the sprite is ready and agent_state events take over from the game server.
-        # Without this, the daemon's 30s inactivity timeout kills the connection.
-        if not agent.get("spriteReady"):
-            async def _sprite_keepalive(_aid: str, _conn_id: str) -> None:
-                import asyncio as _asyncio
-
-                _svc = TownService()
-                for _ in range(60):  # Up to 10 minutes (60 × 10s)
-                    await _asyncio.sleep(10)
-                    _agent = _svc.get_town_agent_by_id(_aid)
-                    if _agent and _agent.get("spriteReady"):
-                        break  # Sprite ready — game server events will take over
-                    _ws = get_town_agent_ws_manager()
-                    _c = _ws.get_by_agent_id(_aid)
-                    if not _c:
-                        break  # Agent disconnected
-                    try:
-                        _m = ManagementApiClient()
-                        _m.send_message(
-                            _c.connection_id,
-                            {"event": "sprite_progress", "status": "Generating your sprite..."},
-                        )
-                    except Exception:
-                        break
-
-            asyncio.create_task(_sprite_keepalive(agent_id, request.connectionId))
     except Exception as e:
         logger.error("Failed to send connected event to %s: %s", agent_name, e)
 

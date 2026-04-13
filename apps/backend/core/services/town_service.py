@@ -721,6 +721,44 @@ class TownService:
 
         return _decimal_to_native(item)
 
+    def get_nearby_conversations(
+        self, nearby_agent_ids: list[str], exclude_conv_id: str | None = None
+    ) -> list[dict]:
+        """Find active conversations that any of the nearby agents are in."""
+        conversations: list[dict] = []
+        seen_conv_ids: set[str] = set()
+        for agent_id in nearby_agent_ids:
+            agent = self.get_town_agent_by_id(agent_id)
+            if not agent:
+                continue
+            conv_id = agent.get("currentConversationId")
+            if not conv_id or conv_id == exclude_conv_id or conv_id in seen_conv_ids:
+                continue
+            seen_conv_ids.add(conv_id)
+            conv = self.get_conversation_by_id(conv_id)
+            if not conv or conv.get("status") != "active":
+                continue
+            participants: list[str] = conv.get("participants") or [
+                conv.get("participantAId"), conv.get("participantBId"),
+            ]
+            participant_names = []
+            for pid in participants:
+                if pid:
+                    p = self.get_town_agent_by_id(pid)
+                    if p:
+                        participant_names.append(
+                            p.get("displayName", p.get("agentName", pid[:8]))
+                        )
+            pub_log = conv.get("publicLog") or []
+            last_msg = pub_log[-1] if pub_log else {}
+            conversations.append({
+                "conv_id": conv_id,
+                "participants": participant_names,
+                "last_message": last_msg,
+                "location": conv.get("location", ""),
+            })
+        return conversations
+
     def get_conversation_by_id(self, conv_id: str) -> Optional[dict]:
         """Fetch a single conversation record by its UUID.
 
