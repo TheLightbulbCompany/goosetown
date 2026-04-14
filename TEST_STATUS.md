@@ -34,8 +34,7 @@ Running log of what's been built/changed and what's been verified end-to-end. Up
 | B3: Speech bubble word-wrap, fade, z-order | 🟡 | Deployed |
 | B4: Conversation visual indicators | 🟠 | Group facing built (B8), no "..." waiting indicator |
 | B5: Idle bob animation | 🟡 | Deployed |
-| B6: Day/night shader | ❌ | REJECTED — flickers, looks bad. Replacing with tileset swap approach. |
-| B6-v2: Tileset swap for time-of-day | 🔴 | Waiting on user to generate 4 tileset variants (dawn/day/dusk/night) via ChatGPT |
+| B6: Tileset swap for time-of-day | 🟡 | Replaced flickering shader with runtime TileSetAtlasSource.texture swap. 4 variants (dawn/day/dusk/night) by local wall-clock hour. Deployed, not yet tested visually. |
 
 ## Phase B+ — Group Conversations
 
