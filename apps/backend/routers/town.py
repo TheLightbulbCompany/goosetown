@@ -1859,7 +1859,28 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
 
     agent_id = agent["id"]
 
-    # Register connection in ws_manager
+    # Kick any existing daemon connection for this agent. When a daemon
+    # reconnects, the previous WebSocket may still be open on API Gateway
+    # (e.g. the old daemon is still running locally). Leaving it alive
+    # causes both to compete for messages — only the latest wins, the old
+    # one starves and hits the inactivity timeout.
+    existing_conn = ws_manager.get_by_agent_id(agent_id)
+    if existing_conn and existing_conn.connection_id != request.connectionId:
+        old_conn_id = existing_conn.connection_id
+        logger.info(
+            "[agent:%s] Kicking old connection %s (new: %s)",
+            agent_id[:8], old_conn_id[:12], request.connectionId[:12],
+        )
+        try:
+            mgmt = ManagementApiClient()
+            mgmt.close_connection(old_conn_id)
+        except Exception as exc:
+            logger.warning(
+                "[agent:%s] Failed to close old connection %s: %s",
+                agent_id[:8], old_conn_id[:12], exc,
+            )
+
+    # Register connection in ws_manager (replaces old registration in-memory)
     ws_manager.register(
         connection_id=request.connectionId,
         user_id=user_id,

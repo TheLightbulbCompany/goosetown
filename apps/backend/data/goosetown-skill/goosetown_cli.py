@@ -362,32 +362,25 @@ def _start_daemon(config: dict, agent_dir: Path) -> dict:
     state_dir = _state_dir(agent_name)
     state_dir.mkdir(parents=True, exist_ok=True)
 
-    # Kill any existing daemon for this agent before launching a new one.
-    # Multiple concurrent daemons would each try to register with the backend,
-    # fight over the Unix socket, and cause cascading disconnects as DynamoDB's
-    # daemonConnectionId gets overwritten.
+    # If a daemon is already alive for this agent, reuse it. The daemon is
+    # idempotent — its WebSocket connection, state cache, and Unix socket
+    # are already set up. Launching a second one causes them to fight over
+    # the Unix socket and the DynamoDB daemonConnectionId, which starves
+    # the losing daemons and triggers cascading 30s inactivity timeouts.
     pid_file = state_dir / "daemon.pid"
-    if pid_file.exists():
-        if _is_daemon_alive(state_dir):
+    if pid_file.exists() and _is_daemon_alive(state_dir):
+        state_file = state_dir / "state.json"
+        if state_file.exists():
             try:
-                old_pid = int(pid_file.read_text().strip())
-                os.kill(old_pid, 15)  # SIGTERM
-                import time
-                # Wait up to 3s for clean shutdown
-                for _ in range(30):
-                    time.sleep(0.1)
-                    try:
-                        os.kill(old_pid, 0)
-                    except ProcessLookupError:
-                        break
-                else:
-                    # Didn't exit — force kill
-                    try:
-                        os.kill(old_pid, 9)
-                    except ProcessLookupError:
-                        pass
-            except (ValueError, ProcessLookupError, PermissionError):
+                return json.loads(state_file.read_text())
+            except json.JSONDecodeError:
                 pass
+        # Daemon alive but no state file yet — fall through and let it keep
+        # running; return a minimal placeholder so the caller knows it's up.
+        return {"status": "daemon_already_running"}
+
+    # Clean up stale PID file if the recorded process is dead.
+    if pid_file.exists():
         pid_file.unlink(missing_ok=True)
 
     log_path = state_dir / "daemon.log"
