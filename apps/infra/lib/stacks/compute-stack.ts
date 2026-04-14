@@ -43,11 +43,15 @@ export class ComputeStack extends cdk.Stack {
       platform: Platform.LINUX_AMD64,
     });
 
-    // ECS Cluster
+    // ECS Cluster — Container Insights disabled to avoid per-task metric
+    // explosion.  Enhanced Container Insights publishes dozens of metrics
+    // per task, and we only run a single backend service here.  AWS/ECS
+    // standard metrics (CPUUtilization, MemoryUtilization per service) are
+    // always published and cover our alerting needs.
     const cluster = new ecs.Cluster(this, "Cluster", {
       clusterName: `goosetown-${env}`,
       vpc: props.vpc,
-      containerInsightsV2: ecs.ContainerInsights.ENHANCED,
+      containerInsightsV2: ecs.ContainerInsights.DISABLED,
     });
 
     // Task execution role (ECR pull, CloudWatch logs)
