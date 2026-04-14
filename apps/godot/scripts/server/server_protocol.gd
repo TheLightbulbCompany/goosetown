@@ -18,7 +18,11 @@ signal command_received(peer_id: int, data: Dictionary)
 ## Seconds of silence before a peer is considered dead and disconnected.
 ## The agent's 15-second heartbeat generates commands every ~15s.
 ## 60s gives 4 missed heartbeats before declaring dead.
-const PEER_TIMEOUT: float = 60.0
+## Agents are backend-managed connections. They only send commands when the
+## agent's LLM decides to act — which can be 60+ seconds apart during think
+## cycles, sprite generation, or quiet periods. The backend owns the connection
+## lifecycle and will disconnect explicitly when needed.
+const PEER_TIMEOUT: float = 600.0  # 10 minutes
 
 var _tcp_server: TCPServer = null
 var _peers: Dictionary = {}  # peer_id -> WebSocketPeer
