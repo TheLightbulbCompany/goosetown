@@ -362,9 +362,32 @@ def _start_daemon(config: dict, agent_dir: Path) -> dict:
     state_dir = _state_dir(agent_name)
     state_dir.mkdir(parents=True, exist_ok=True)
 
-    # Clean up stale PID file before launching
+    # Kill any existing daemon for this agent before launching a new one.
+    # Multiple concurrent daemons would each try to register with the backend,
+    # fight over the Unix socket, and cause cascading disconnects as DynamoDB's
+    # daemonConnectionId gets overwritten.
     pid_file = state_dir / "daemon.pid"
-    if pid_file.exists() and not _is_daemon_alive(state_dir):
+    if pid_file.exists():
+        if _is_daemon_alive(state_dir):
+            try:
+                old_pid = int(pid_file.read_text().strip())
+                os.kill(old_pid, 15)  # SIGTERM
+                import time
+                # Wait up to 3s for clean shutdown
+                for _ in range(30):
+                    time.sleep(0.1)
+                    try:
+                        os.kill(old_pid, 0)
+                    except ProcessLookupError:
+                        break
+                else:
+                    # Didn't exit — force kill
+                    try:
+                        os.kill(old_pid, 9)
+                    except ProcessLookupError:
+                        pass
+            except (ValueError, ProcessLookupError, PermissionError):
+                pass
         pid_file.unlink(missing_ok=True)
 
     log_path = state_dir / "daemon.log"
