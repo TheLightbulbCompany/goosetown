@@ -4,8 +4,14 @@ const MAP_SIZE := Vector2i(1408, 864)
 const TILE_SIZE := 32
 const MAP_TILES := Vector2i(44, 27)
 const DEFAULT_ZOOM := 2.0
-# Day/night uses real wall-clock time (86400s = 24 hours)
-const DAY_SECONDS: float = 86400.0
+
+# Time-of-day tileset variants (all 160x640, only colors differ)
+const TILESET_TEXTURES: Dictionary = {
+	"dawn":  preload("res://assets/isol88/tilesets/tileset_dawn.png"),
+	"day":   preload("res://assets/isol88/tilesets/tileset_day.png"),
+	"dusk":  preload("res://assets/isol88/tilesets/tileset_dusk.png"),
+	"night": preload("res://assets/isol88/tilesets/tileset_night.png"),
+}
 
 @onready var camera: Camera2D = $Camera2D
 @onready var player_spawn: Marker2D = $Markers/PlayerSpawn
@@ -15,9 +21,10 @@ const DAY_SECONDS: float = 86400.0
 @onready var activity_center: Marker2D = $Markers/ActivityCenter
 @onready var bank: Marker2D = $Markers/Bank
 @onready var residence: Marker2D = $Markers/Residence
+@onready var _terrain_layer: TileMapLayer = $TerrainLayer
 
 var _dragging: bool = false
-var _day_night_overlay: ColorRect
+var _current_tod: String = ""
 
 
 func _ready() -> void:
@@ -34,35 +41,48 @@ func _ready() -> void:
 	# AgentManager receives world_state via JsBridge (React forwards from its WebSocket).
 	# No ViewerProtocol needed — React manages the WebSocket connection.
 
-	_setup_day_night_overlay()
+	# Apply initial tileset based on wall-clock time
+	_current_tod = _get_time_of_day()
+	_apply_tileset_texture(_current_tod)
 
 
-func _setup_day_night_overlay() -> void:
-	# Build the overlay in code rather than the .tscn to avoid Godot UID assignment
-	# requirements for ShaderMaterial references in text scene files.
-	var layer := CanvasLayer.new()
-	layer.name = "DayNightLayer"
-	layer.layer = 10
-	add_child(layer)
+func _get_time_of_day() -> String:
+	## Map local wall-clock hour to a time-of-day variant.
+	## dawn: 5-8, day: 8-17, dusk: 17-20, night: 20-5
+	var hour: int = Time.get_datetime_dict_from_system().hour
+	if hour >= 5 and hour < 8:
+		return "dawn"
+	elif hour >= 8 and hour < 17:
+		return "day"
+	elif hour >= 17 and hour < 20:
+		return "dusk"
+	else:
+		return "night"
 
-	_day_night_overlay = ColorRect.new()
-	_day_night_overlay.name = "DayNightOverlay"
-	_day_night_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
-	# Must ignore mouse input — otherwise the full-screen rect swallows all clicks
-	# and breaks click-to-pan on the map.
-	_day_night_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 
-	var mat := ShaderMaterial.new()
-	mat.shader = load("res://shaders/daynight.gdshader")
-	_day_night_overlay.material = mat
-
-	layer.add_child(_day_night_overlay)
+func _apply_tileset_texture(tod: String) -> void:
+	if not TILESET_TEXTURES.has(tod):
+		return
+	if _terrain_layer == null or _terrain_layer.tile_set == null:
+		return
+	var tex: Texture2D = TILESET_TEXTURES[tod]
+	var ts: TileSet = _terrain_layer.tile_set
+	# Swap the atlas texture on every atlas source
+	for i: int in range(ts.get_source_count()):
+		var source_id: int = ts.get_source_id(i)
+		var source: TileSetSource = ts.get_source(source_id)
+		if source is TileSetAtlasSource:
+			(source as TileSetAtlasSource).texture = tex
 
 
 func _process(_delta: float) -> void:
-	if _day_night_overlay and _day_night_overlay.material is ShaderMaterial:
-		var t: float = fmod(Time.get_unix_time_from_system(), DAY_SECONDS) / DAY_SECONDS
-		(_day_night_overlay.material as ShaderMaterial).set_shader_parameter("time_of_day", t)
+	# Check time-of-day band every frame — _get_time_of_day() is pure arithmetic,
+	# no I/O. Only calls _apply_tileset_texture when the band actually changes
+	# (which happens at most 4 times per day).
+	var tod: String = _get_time_of_day()
+	if tod != _current_tod:
+		_current_tod = tod
+		_apply_tileset_texture(tod)
 
 
 func _unhandled_input(event: InputEvent) -> void:
