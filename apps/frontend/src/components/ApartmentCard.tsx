@@ -60,16 +60,24 @@ export default function ApartmentCard({ agent }: { agent: ApartmentAgent }) {
         !agent.is_active && 'opacity-50',
       )}
     >
-      {/* Header: character sprite placeholder + name */}
+      {/* Header: character sprite + name */}
       <div className="flex items-center gap-3">
-        <div className="w-12 h-12 bg-clay-700 rounded flex items-center justify-center text-brown-200 font-display text-lg shrink-0">
-          {agent.character ? agent.character.toUpperCase() : '?'}
+        <div className="w-12 h-12 bg-clay-700 rounded flex items-center justify-center text-brown-200 font-display text-lg shrink-0 overflow-hidden">
+          {agent.sprite_url ? (
+            <img
+              src={agent.sprite_url}
+              alt={agent.display_name}
+              className="w-12 h-12 object-none [image-rendering:pixelated]"
+              style={{ objectPosition: '0 0' }}
+            />
+          ) : (
+            '?'
+          )}
         </div>
         <div className="flex-1 min-w-0">
           <h3 className="font-display text-lg text-brown-100 truncate tracking-wider">
             {agent.display_name}
           </h3>
-          <p className="font-body text-xs text-clay-300 truncate">{agent.agent_name}</p>
         </div>
         {/* Status indicator */}
         <div className="flex items-center gap-1.5">
@@ -86,7 +94,7 @@ export default function ApartmentCard({ agent }: { agent: ApartmentAgent }) {
           Location: <span className="text-brown-200">
             {agent.location_context === 'town' ? 'Town - ' : ''}{agent.current_location}
           </span>
-          {agent.current_spot && (
+          {agent.current_spot && agent.current_spot !== agent.current_location && (
             <span className="text-clay-400 ml-1">({agent.current_spot})</span>
           )}
         </div>

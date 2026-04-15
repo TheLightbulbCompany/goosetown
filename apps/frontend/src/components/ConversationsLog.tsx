@@ -6,59 +6,94 @@ function formatLocation(loc: string | null): string {
   return loc.replace(/_/g, ' ');
 }
 
-function ConversationCard({ conv }: { conv: Conversation }) {
-  const [expanded, setExpanded] = useState(false);
+function ConversationModal({ conv, onClose }: { conv: Conversation; onClose: () => void }) {
+  const isActive = conv.ended_at == null;
+  const turns = conv.public_log ?? [];
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-clay-800 border border-clay-600 rounded-lg shadow-xl w-full max-w-lg max-h-[80vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3 p-4 border-b border-clay-700">
+          <div className="min-w-0 flex-1">
+            <h2 className="font-display text-brown-100 tracking-wider text-lg truncate">
+              {conv.participant_a} &amp; {conv.participant_b}
+            </h2>
+            <p className="font-body text-xs text-clay-400 mt-1">
+              at {formatLocation(conv.location)} · {conv.turn_count} turns{' '}
+              {isActive ? (
+                <span className="text-green-400 ml-1">● live</span>
+              ) : null}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-clay-400 hover:text-brown-100 font-body text-xs px-2 py-1"
+          >
+            Close
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4 space-y-2">
+          {turns.length === 0 ? (
+            <div className="text-clay-500 font-body italic">(no messages yet)</div>
+          ) : (
+            turns.map((turn, i) => (
+              <div key={i} className="font-body text-sm">
+                <div className="text-brown-300 text-xs">{turn.speaker}</div>
+                <div className="text-clay-100 whitespace-pre-wrap break-words">{turn.text}</div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConversationRow({ conv, onClick }: { conv: Conversation; onClick: () => void }) {
   const isActive = conv.ended_at == null;
   const turns = conv.public_log ?? [];
   const preview = turns[turns.length - 1];
 
   return (
-    <div className="rounded bg-clay-800 border border-clay-700 p-2 text-xs">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        className="w-full text-left"
-      >
-        <div className="flex items-center justify-between gap-2">
-          <span className="font-display text-brown-200 tracking-wider truncate">
-            {conv.participant_a} & {conv.participant_b}
+    <button
+      type="button"
+      onClick={onClick}
+      className="w-full text-left rounded bg-clay-800 border border-clay-700 hover:border-clay-500 transition-colors p-2 text-xs"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-display text-brown-200 tracking-wider truncate">
+          {conv.participant_a} &amp; {conv.participant_b}
+        </span>
+        {isActive ? (
+          <span className="text-[10px] font-body text-green-400 shrink-0">● live</span>
+        ) : (
+          <span className="text-[10px] font-body text-clay-400 shrink-0">
+            {conv.turn_count} turns
           </span>
-          {isActive ? (
-            <span className="text-[10px] font-body text-green-400 shrink-0">● live</span>
-          ) : (
-            <span className="text-[10px] font-body text-clay-400 shrink-0">
-              {conv.turn_count} turns
-            </span>
-          )}
-        </div>
-        <div className="text-clay-400 font-body">at {formatLocation(conv.location)}</div>
-        {preview && !expanded && (
-          <div className="mt-1 text-clay-200 font-body italic truncate">
-            {preview.speaker}: "{preview.text}"
-          </div>
         )}
-      </button>
-
-      {expanded && (
-        <div className="mt-2 space-y-1 max-h-56 overflow-y-auto pr-1">
-          {turns.length === 0 ? (
-            <div className="text-clay-500 font-body italic">(no messages yet)</div>
-          ) : (
-            turns.map((turn, i) => (
-              <div key={i} className="font-body">
-                <span className="text-brown-300">{turn.speaker}:</span>{' '}
-                <span className="text-clay-200">{turn.text}</span>
-              </div>
-            ))
-          )}
+      </div>
+      <div className="text-clay-400 font-body">at {formatLocation(conv.location)}</div>
+      {preview && (
+        <div className="mt-1 text-clay-200 font-body italic truncate">
+          {preview.speaker}: &ldquo;{preview.text}&rdquo;
         </div>
       )}
-    </div>
+    </button>
   );
 }
 
 export default function ConversationsLog() {
   const { conversations, loading, error } = useConversations(20);
+  const [openId, setOpenId] = useState<string | null>(null);
+
+  const openConv = openId ? conversations.find((c) => c.id === openId) ?? null : null;
 
   return (
     <div className="mt-6">
@@ -76,9 +111,10 @@ export default function ConversationsLog() {
       )}
       <div className="flex flex-col gap-2">
         {conversations.map((c) => (
-          <ConversationCard key={c.id} conv={c} />
+          <ConversationRow key={c.id} conv={c} onClick={() => setOpenId(c.id)} />
         ))}
       </div>
+      {openConv && <ConversationModal conv={openConv} onClose={() => setOpenId(null)} />}
     </div>
   );
 }
