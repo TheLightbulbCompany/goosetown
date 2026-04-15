@@ -102,19 +102,25 @@ Running log of what's been built/changed and what's been verified end-to-end. Up
 ### 2026-04-13 Friends Test #2 (in progress / aborted)
 **Result:** Day/night overlay rejected — flickering and looks bad. Agents died. Moving to tileset swap approach.
 
+### 2026-04-14/15 Bug Sweep
+**Landed as separate commits:**
+- `1411927` AgentController nav_agent Nil crash (add_child before @onready access)
+- `9f419cf` Concurrent daemons per agent — CLI + backend defense in depth
+- `5c76748` Agent sprite scale 0.5× (96→48px on screen)
+- `d45475f` Speech bubble truncation (60 chars + clip_text)
+- `b77e7fe` PEER_TIMEOUT 60s → 600s (root cause of viewer churn)
+- `11c0c4a` Viewer snapshot interpolation (GDScript only — **.pck re-export pending**)
+- `dbe77c8` Chat target = agent_id (UUID) — the only globally unique identifier
+
 ---
 
 ## Next Test Plan
 
-1. User generates 4 tileset variants via ChatGPT from `combined_tileset_atlas.png`
-2. Implement tileset swap based on real wall-clock time (remove shader overlay)
-3. Re-export .pck
-4. Deploy
-5. Spawn 3-6 agents, verify:
-   - Shadow sprites show during Phase A/B
-   - Talking animation appears in conversations
-   - Agents stay connected (no churn loop from nav fix)
-   - Sprite queue processes 3 at a time (no 500 errors)
+1. User re-exports .pck to pick up snapshot interpolation fix (11c0c4a)
+2. Deploy backend with agent_id chat fix (dbe77c8)
+3. Spawn 3-6 agents, verify:
+   - Viewers no longer walk in circles (interp lerps server snapshots)
+   - Chat works — TOWN_STATUS.md now shows `chat <agent_id>` and backend accepts only UUID
+   - Agents stay connected (PEER_TIMEOUT + concurrent-daemon fixes)
    - Time-of-day tileset swap happens cleanly
-   - Frontend header bar stays in sync
    - Group conversations work with proximity
