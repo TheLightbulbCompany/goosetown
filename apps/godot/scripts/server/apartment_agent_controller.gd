@@ -53,7 +53,8 @@ func spawn_agent(peer_id: int, data: Dictionary) -> void:
 
 	var agent_id: String = str(data.get("agent_id", "agent_%d" % peer_id))
 	var display: String = str(data.get("name", agent_id))
-	var sprite_url: String = str(data.get("sprite_url", ""))
+	var _sprite_url_raw: Variant = data.get("sprite_url")
+	var sprite_url: String = "" if _sprite_url_raw == null else str(_sprite_url_raw)
 	var facing_str: String = str(data.get("facing", ""))
 
 	agent_node.setup(agent_id, sprite_url, spawn_pos.x, spawn_pos.y, facing_str, display)

@@ -122,7 +122,8 @@ func _on_world_state(data: Dictionary) -> void:
 			var agent: CharacterBody2D = AgentScene.instantiate()
 			add_child(agent)
 
-			var url: String = str(agent_data.get("spriteUrl", ""))
+			var _url_raw: Variant = agent_data.get("spriteUrl")
+			var url: String = "" if _url_raw == null else str(_url_raw)
 			var facing_str: String = str(agent_data.get("facing", ""))
 			var display_name: String = str(agent_data.get("name", agent_id))
 

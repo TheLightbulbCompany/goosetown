@@ -866,7 +866,7 @@ async def resume_sprite_generation(
                 await gs_client.connect_agent(
                     agent_id=agent_id,
                     display_name=display_name,
-                    sprite_url=agent.get("spriteUrl", ""),
+                    sprite_url=agent.get("spriteUrl") or "",
                     location=agent.get("currentLocation", "plaza"),
                     context=agent.get("locationContext", "town"),
                     user_id=agent.get("userId", ""),
@@ -1909,7 +1909,7 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
         await gs_client.connect_agent(
             agent_id=agent_id,
             display_name=agent.get("displayName", agent_name),
-            sprite_url=agent.get("spriteUrl", ""),
+            sprite_url=agent.get("spriteUrl") or "",
             location=current_location,
             context=location_context,
             user_id=user_id,

@@ -124,7 +124,7 @@ async def _reconnect_active_agents() -> None:
             await gs_client.connect_agent(
                 agent_id=agent_id,
                 display_name=agent.get("displayName", ""),
-                sprite_url=agent.get("spriteUrl", ""),
+                sprite_url=agent.get("spriteUrl") or "",
                 location=current_location,
                 context=location_context,
                 user_id=agent.get("userId", ""),
