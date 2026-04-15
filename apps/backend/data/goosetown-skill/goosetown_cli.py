@@ -1809,7 +1809,14 @@ class TownDaemon:
         finally:
             if self.ws:
                 await self.ws.close()
-            self._pid_file.unlink(missing_ok=True)
+            # Only unlink the pid file on intentional shutdown. If run_forever
+            # is about to retry, we must stay "alive" to _ensure_daemon so it
+            # won't spawn a second daemon during our reconnect window — two
+            # daemons ping-pong kick each other via the backend's existing-
+            # connection guard, producing the churn loop we fixed in this
+            # change.
+            if not self.running:
+                self._pid_file.unlink(missing_ok=True)
             log.info("Daemon stopped")
 
 
