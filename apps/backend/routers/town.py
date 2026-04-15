@@ -1319,8 +1319,26 @@ async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
         _reject("already_in_conversation")
         return
 
-    # Resolve the target agent by machine name
+    # Resolve the target agent. Accept (in order): machine name, UUID, or display name.
+    # The game server's nearby event sends display name, so OpenClaw agents may
+    # pass either depending on what they read from TOWN_STATUS.md.
     target = service.get_agent_by_agent_name_active(target_agent_name)
+    if not target:
+        # Fallback: try as agent UUID
+        try:
+            candidate = service.get_town_agent_by_id(target_agent_name)
+            if candidate and candidate.get("isActive") == "true":
+                target = candidate
+        except Exception:
+            target = None
+    if not target:
+        # Fallback: try as display name (case-insensitive) across active agents
+        needle = target_agent_name.lower()
+        for active in service.get_all_active_agents():
+            display = active.get("displayName", "").lower()
+            if display == needle:
+                target = active
+                break
     if not target:
         _reject("target_not_found")
         return

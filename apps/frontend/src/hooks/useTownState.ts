@@ -113,6 +113,17 @@ export function useTownState(getToken?: () => Promise<string | null>, userId?: s
                 (w.godotUpdateWorldState as (data: string) => void)(JSON.stringify(payload));
                 console.log('[GooseTown] Forwarded to Godot');
               }
+              // Expose town-context agent positions for camera-focus lookups
+              const positions: Record<string, { x: number; y: number; display: string }> = {};
+              for (const a of msg.agents) {
+                if (a.context === 'town' || !a.context) {
+                  const key = (a.name || '').toLowerCase();
+                  const display = a.display_name || a.name || '';
+                  if (key) positions[key] = { x: a.x, y: a.y, display };
+                  if (display) positions[display.toLowerCase()] = { x: a.x, y: a.y, display };
+                }
+              }
+              w._goosetown_town_agents = positions;
             } catch { /* Godot not loaded yet */ }
             const gsMsg = msg as GameServerWorldState;
             const now = Date.now();

@@ -99,6 +99,43 @@ export default function App() {
     return () => window.removeEventListener('goosetown_scene_changed', handler);
   }, [location.pathname, navigate]);
 
+  // View in Town focus handler — when ?focus=<name> is present on /, pan the
+  // camera to that agent. Retries for a few seconds to handle the case where
+  // the Godot scene is still switching from apartment to town.
+  useEffect(() => {
+    if (location.pathname !== '/') return;
+    const params = new URLSearchParams(location.search);
+    const focus = params.get('focus');
+    if (!focus) return;
+
+    let cancelled = false;
+    const tryFocus = (attempt: number): void => {
+      if (cancelled) return;
+      const w = window as unknown as Record<string, unknown>;
+      const positions = w._goosetown_town_agents as
+        | Record<string, { x: number; y: number; display: string }>
+        | undefined;
+      const bridge = w._godotBridge as { setCamera?: (x: number, y: number, zoom: number) => void } | undefined;
+      const agent = positions?.[focus.toLowerCase()];
+      if (agent && bridge?.setCamera) {
+        bridge.setCamera(agent.x, agent.y, 2.5);
+        console.log('[GooseTown] focused camera on', agent.display, 'at', agent.x, agent.y);
+        return;
+      }
+      if (attempt < 10) {
+        setTimeout(() => tryFocus(attempt + 1), 300);
+      } else {
+        console.warn('[GooseTown] could not focus on', focus, '- agent not in world_state');
+      }
+    };
+    // Small initial delay so scene switch can complete first
+    const timer = setTimeout(() => tryFocus(0), 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [location.pathname, location.search]);
+
   // Only switch to apartment if authenticated AND on apartment route
   const scene: 'town' | 'apartment' =
     location.pathname === '/apartment' && isSignedIn ? 'apartment' : 'town';
