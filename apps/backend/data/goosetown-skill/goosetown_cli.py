@@ -658,7 +658,7 @@ def cmd_act(args: argparse.Namespace) -> None:
         payload = {"action": "move", "destination": dest}
     elif action == "chat":
         if len(rest) < 2:
-            _die("Usage: act chat <agent_name> <message>")
+            _die("Usage: act chat <agent_id> <message>")
         payload = {"action": "chat", "target": rest[0], "message": " ".join(rest[1:])}
     elif action == "say":
         if len(rest) < 2:
@@ -1482,11 +1482,11 @@ class TownDaemon:
             if nearby:
                 nearby_chat_options = "**Start a conversation:**\n"
                 for a in nearby:
-                    machine_name = a.get("agent_name", a.get("name", ""))
-                    display = a.get("display_name", machine_name)
-                    if machine_name:
+                    agent_id = a.get("agent_id", "")
+                    display = a.get("name", a.get("display_name", "unknown"))
+                    if agent_id:
                         nearby_chat_options += (
-                            f"- `python3 goosetown_cli.py act chat {machine_name} <message>` — Talk to {display}\n"
+                            f"- `python3 goosetown_cli.py act chat {agent_id} <message>` — Talk to {display}\n"
                         )
                 nearby_chat_options += "\n"
 
@@ -1513,7 +1513,7 @@ class TownDaemon:
                 f"{nearby_chat_options}"
                 f"{nearby_conv_block}"
                 "**Other actions:**\n"
-                "- `python3 goosetown_cli.py act chat <agent_name> <message>` — Start a conversation\n"
+                "- `python3 goosetown_cli.py act chat <agent_id> <message>` — Start a conversation (use ids shown above)\n"
                 "- `python3 goosetown_cli.py act say <conv_id> <message>` — Reply in an ongoing conversation\n"
                 "- `python3 goosetown_cli.py act end <conv_id>` — Leave a conversation\n"
                 "- `python3 goosetown_cli.py act join_conversation <conv_id>` — Join a nearby conversation\n"

@@ -1301,10 +1301,10 @@ async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
         except Exception as exc:
             logger.warning("Failed to send chat_rejected to %s: %s", initiator_id, exc)
 
-    target_agent_name = body.get("target", "").strip()
+    target_agent_id = body.get("target", "").strip()
     opening_message = body.get("message", "").strip()
 
-    if not target_agent_name or not opening_message:
+    if not target_agent_id or not opening_message:
         _reject("missing_target_or_message")
         return
 
@@ -1319,27 +1319,10 @@ async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
         _reject("already_in_conversation")
         return
 
-    # Resolve the target agent. Accept (in order): machine name, UUID, or display name.
-    # The game server's nearby event sends display name, so OpenClaw agents may
-    # pass either depending on what they read from TOWN_STATUS.md.
-    target = service.get_agent_by_agent_name_active(target_agent_name)
-    if not target:
-        # Fallback: try as agent UUID
-        try:
-            candidate = service.get_town_agent_by_id(target_agent_name)
-            if candidate and candidate.get("isActive") == "true":
-                target = candidate
-        except Exception:
-            target = None
-    if not target:
-        # Fallback: try as display name (case-insensitive) across active agents
-        needle = target_agent_name.lower()
-        for active in service.get_all_active_agents():
-            display = active.get("displayName", "").lower()
-            if display == needle:
-                target = active
-                break
-    if not target:
+    # Target is agent_id (UUID). Globally unique — the only identifier safe
+    # to use for cross-user chat. Machine names and display names can collide.
+    target = service.get_town_agent_by_id(target_agent_id)
+    if not target or target.get("isActive") != "true":
         _reject("target_not_found")
         return
 
@@ -1413,7 +1396,7 @@ async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
                 "event": "act_ok",
                 "action": "chat",
                 "conv_id": conv_id,
-                "target": target_agent_name,
+                "target": target.get("displayName", target.get("agentName", target_agent_id)),
             },
         )
     except Exception as exc:

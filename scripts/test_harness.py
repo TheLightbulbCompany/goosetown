@@ -349,17 +349,12 @@ class AgentCLI:
         r = random.random()
         if nearby and r < 0.5:
             target = random.choice(nearby)
-            # Prefer agent_id (UUID — always unique, no spaces) over names.
-            # Backend accepts agent_name, agent_id, or display_name.
+            # agent_id (UUID) is the only globally unique identifier — machine
+            # names are per-user and display names can collide.
             target_id = target.get("agent_id", "")
-            target_name = target.get("agent_name") or target.get("name", "")
             if target_id:
                 opener = random.choice(OPENERS[self.name])
                 await self.act("chat", target_id, opener)
-                return
-            if target_name:
-                opener = random.choice(OPENERS[self.name])
-                await self.act("chat", target_name, opener)
                 return
 
         if location in ACTIVITIES_BY_LOCATION and r < 0.75:

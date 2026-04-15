@@ -38,7 +38,7 @@ def translate_agent_state(agent_state: dict, enrichment: dict) -> str:
     if nearby:
         lines.append("**Nearby:**")
         for agent in nearby:
-            agent_id = agent.get("id", "")
+            agent_id = agent.get("agent_id", agent.get("id", ""))
             name = agent.get("name", "unknown")
             distance = agent.get("distance", 0)
             agent_activity = agent.get("activity", "idle")
@@ -105,7 +105,9 @@ def translate_agent_state(agent_state: dict, enrichment: dict) -> str:
 
     for agent in nearby:
         name = agent.get("name", "unknown")
-        lines.append(f"- `town_act chat {name.lower()} <message>` — Talk to {name}")
+        agent_id = agent.get("agent_id", "")
+        if agent_id:
+            lines.append(f"- `town_act chat {agent_id} <message>` — Talk to {name}")
 
     if available_activities:
         lines.append("- See activities listed above")
