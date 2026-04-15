@@ -86,6 +86,15 @@ var _is_moving: bool = false
 var _idle_bob_timer: float = 0.0
 ## True when NavigationAgent2D pathfinding is active (set on first set_navigation_target call)
 var _use_navigation: bool = false
+## Viewer uses snapshot interpolation instead of nav — lerp from last pos to new pos
+## over the broadcast interval. Nav on viewer causes circles because server broadcasts
+## the agent's *current* position every 2s, which is always a moving target.
+var _viewer_interp: bool = false
+var _interp_prev: Vector2 = Vector2.ZERO
+var _interp_target: Vector2 = Vector2.ZERO
+var _interp_start_ms: int = 0
+## Nominal time to traverse between two broadcasts. Matches game server broadcast cadence.
+const INTERP_DURATION_MS: int = 2000
 ## Cached AtlasTexture instances keyed by "animation/facing" to avoid per-frame allocations
 var _atlas_cache: Dictionary = {}
 
@@ -118,8 +127,25 @@ func _physics_process(delta: float) -> void:
 	if OS.has_feature("web"):
 		_update_hover()
 
-	if _use_navigation:
-		# Navigation-based movement (server and viewer use the same code)
+	if _viewer_interp:
+		# Viewer mode — snapshot interpolation between server broadcasts.
+		# Server broadcasts are authoritative; viewer just smoothly moves
+		# from the previous broadcast position to the latest one.
+		var elapsed_ms: int = Time.get_ticks_msec() - _interp_start_ms
+		var t: float = clampf(float(elapsed_ms) / float(INTERP_DURATION_MS), 0.0, 1.0)
+		var new_pos: Vector2 = _interp_prev.lerp(_interp_target, t)
+		var delta_vec: Vector2 = new_pos - global_position
+		global_position = new_pos
+		# _is_moving is "still traveling toward latest broadcast target"
+		_is_moving = t < 1.0 and delta_vec.length() > 0.5
+		# Update facing from motion direction
+		if _is_moving:
+			if abs(delta_vec.x) > abs(delta_vec.y):
+				facing = "east" if delta_vec.x > 0 else "west"
+			else:
+				facing = "south" if delta_vec.y > 0 else "north"
+	elif _use_navigation:
+		# Server mode — pathfinding via NavigationAgent2D.
 		if not nav_agent.is_navigation_finished():
 			var next_pos: Vector2 = nav_agent.get_next_path_position()
 			var desired_velocity: Vector2 = (next_pos - global_position).normalized() * move_speed
@@ -135,7 +161,7 @@ func _physics_process(delta: float) -> void:
 			velocity = Vector2.ZERO
 			_is_moving = false
 	else:
-		# Direct movement (viewer/client mode — no navmesh)
+		# Direct movement (no navmesh, no interpolation — used by JS bridge moveAgent)
 		var direction: Vector2 = target_position - position
 		var distance: float = direction.length()
 
@@ -264,8 +290,28 @@ func _hide_speech_bubble() -> void:
 
 
 func set_navigation_target(target: Vector2) -> void:
+	## Server-mode pathfinding via NavigationAgent2D. The headless game server
+	## uses this when an agent issues a move command — nav plots a path around
+	## buildings on the navmesh.
+	##
+	## In the viewer (WebGL), this is called by agent_manager on every
+	## world_state broadcast with the agent's CURRENT position. Using nav
+	## against a moving target causes endless re-planning (circles), so the
+	## viewer routes through snapshot interpolation instead.
+	if OS.has_feature("web"):
+		_set_interp_target(target)
+		return
 	_use_navigation = true
 	nav_agent.target_position = target
+
+
+func _set_interp_target(target: Vector2) -> void:
+	## Set a new snapshot target for viewer-mode interpolation.
+	## Captures current visual position as prev so the lerp is continuous.
+	_viewer_interp = true
+	_interp_prev = global_position
+	_interp_target = target
+	_interp_start_ms = Time.get_ticks_msec()
 
 
 func set_spritesheet(tex: Texture2D, animation_name: String = "walk") -> void:
