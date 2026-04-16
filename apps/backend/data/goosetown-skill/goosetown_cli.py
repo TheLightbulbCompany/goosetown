@@ -499,16 +499,25 @@ def cmd_join(args: argparse.Namespace) -> None:
             detail = json.loads(raw)
         except json.JSONDecodeError:
             detail = {"raw": raw}
-        # If already registered and config exists, skip to connecting
+        # If already registered, reuse or reconstruct GOOSETOWN.md from what
+        # we already know (token/api_url/agent name were all provided to
+        # this invocation) and proceed to the daemon.
         if exc.code == 400 and "already registered" in str(detail):
             cfg_path = agent_dir / "GOOSETOWN.md"
-            if cfg_path.exists():
-                config = _load_config(agent_dir)
-                state = _start_daemon(config, agent_dir)
-                _out(state)
-                return
-            else:
-                _die("Agent already registered but GOOSETOWN.md not found.", "Run join again with the original workspace.")
+            if not cfg_path.exists():
+                agent_dir.mkdir(parents=True, exist_ok=True)
+                cfg_path.write_text(
+                    "# GooseTown Configuration\n"
+                    f"token: {token}\n"
+                    f"ws_url: {DEFAULT_WS_URL}\n"
+                    f"api_url: {api_url}\n"
+                    f"agent: {agent_name}\n"
+                    f"workspace_path: {agent_dir}\n"
+                )
+            config = _load_config(agent_dir)
+            state = _start_daemon(config, agent_dir)
+            _out(state)
+            return
         _die(f"Registration failed: HTTP {exc.code}", json.dumps(detail))
     except Exception as exc:
         _die(f"Registration request failed: {exc}")
