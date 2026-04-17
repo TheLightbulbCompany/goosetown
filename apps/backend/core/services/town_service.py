@@ -32,26 +32,21 @@ def _decimal_to_native(obj):
 
 
 def versioned_sprite_url(raw_url: Optional[str], agent: Optional[dict]) -> str:
-    """Append a content-version query to a sprite URL for cache-busting.
+    """Append ``?v=<spriteUpdatedAt>`` to a sprite URL for cache-busting.
 
-    Sprite URLs are content-addressed by agent UUID (``/sprites/<id>/walk.png``)
-    with ``Cache-Control: max-age=31536000``, which means any bad response
-    cached by a client persists effectively forever. If a sprite is ever
-    regenerated, or was once fetched before the distribution's
-    ``Cross-Origin-Resource-Policy`` header was in place, the client's cache
-    is poisoned until the URL string itself changes.
+    Sprite URLs are content-addressed by agent UUID with a 1-year
+    ``Cache-Control``. When a sprite is regenerated the underlying object is
+    overwritten but the URL string is stable, so any browser-cached response
+    sticks forever. ``spriteUpdatedAt`` is bumped on every sprite_url write
+    (see ``update_agent_state``) and emitted as ``?v=`` so the URL string
+    changes whenever the bytes do.
 
-    This helper appends ``?v=<spriteUpdatedAt>`` so each regeneration
-    produces a fresh URL. For pre-existing records without
-    ``spriteUpdatedAt``, the agent ``id`` is used as a stable fallback — any
-    query param is enough to bypass stale cache entries keyed on the
-    un-versioned URL.
+    Returns the raw URL unchanged if the agent has no ``spriteUpdatedAt``
+    — which shouldn't happen post-backfill but is a safe no-op.
     """
     if not raw_url:
         return ""
-    version = None
-    if agent is not None:
-        version = agent.get("spriteUpdatedAt") or agent.get("id")
+    version = agent.get("spriteUpdatedAt") if agent else None
     if not version:
         return raw_url
     sep = "&" if "?" in raw_url else "?"
