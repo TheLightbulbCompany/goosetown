@@ -965,6 +965,16 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      - name: Smoke-test sprite CORP header
+        run: >-
+          HEADERS=$(curl -sI
+          "https://assets-dev.goosetown.isol8.co/_corp-check.png")
+
+          echo "$HEADERS" | grep -qi "^cross-origin-resource-policy:
+          *cross-origin" || { echo "FAIL: CORP header missing or wrong on sprite
+          CDN"; echo "$HEADERS"; exit 1; }
+
+          echo "OK: sprite CDN has Cross-Origin-Resource-Policy: cross-origin"
   prod-ApproveProduction:
     name: ApproveProduction
     permissions:
