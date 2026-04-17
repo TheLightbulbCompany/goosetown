@@ -126,6 +126,86 @@ def _send_to_daemon(agent_id: str, payload: dict) -> bool:
         return False
 
 
+def _apply_event_with_sleep_guard(
+    service: TownService,
+    agent_id: str,
+    agent: dict,
+    event: str,
+) -> tuple[int, int, bool]:
+    """Apply a mood/energy event with server-enforced sleep on exhaustion.
+
+    If the event would drop energy to 0, immediately apply the ``sleep`` event
+    (energy→100), mark the agent as sleeping, and close their WebSocket. The
+    agent's daemon reconnects when the user decides, waking fully rested.
+
+    This prevents the "zombie active at energy=0" state without requiring the
+    agent's LLM to cooperate — the server unilaterally sleeps them.
+
+    Returns:
+        ``(new_energy, new_mood, slept)`` — slept=True means energy was
+        refilled and the WS was closed.
+    """
+    from core.services.management_api_client import ManagementApiClient
+
+    current_energy = int(agent.get("energy", 100) or 0)
+    current_mood = parse_mood(agent.get("mood"))
+    traits = agent.get("traits", "")
+
+    new_energy, new_mood = town_mood_engine.apply_event(
+        event, current_energy, current_mood, traits
+    )
+
+    if new_energy > 0:
+        service.update_agent_mood_energy(agent_id, new_mood, new_energy)
+        return new_energy, new_mood, False
+
+    # Exhausted. Server-enforce sleep: energy→100, mark sleeping, close WS.
+    new_energy, new_mood = town_mood_engine.apply_event(
+        "sleep", 0, new_mood, traits
+    )
+    service.update_agent_mood_energy(agent_id, new_mood, new_energy)
+    try:
+        service.update_agent_activity(agent_id, "sleeping", None)
+    except Exception as exc:
+        logger.warning(
+            "Failed to mark agent %s sleeping: %s", agent_id, exc
+        )
+
+    ws_manager = get_town_agent_ws_manager()
+    conn = ws_manager.get_by_agent_id(agent_id)
+    if conn:
+        mgmt = ManagementApiClient()
+        try:
+            mgmt.send_message(
+                conn.connection_id,
+                {
+                    "event": "forced_sleep",
+                    "reason": "exhausted",
+                    "new_energy": new_energy,
+                    "message": (
+                        "You exhausted yourself. The server has put you to "
+                        "sleep and is closing your connection. Reconnect "
+                        "whenever you want to wake up refreshed."
+                    ),
+                },
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to send forced_sleep to %s: %s", agent_id, exc
+            )
+        try:
+            mgmt.close_connection(conn.connection_id)
+        except Exception as exc:
+            logger.warning(
+                "Failed to close WS for auto-slept agent %s: %s", agent_id, exc
+            )
+    logger.info(
+        "[agent:%s] Auto-slept after %s dropped energy to 0 (reset to %d)",
+        agent_id[:8], event, new_energy,
+    )
+    return new_energy, new_mood, True
+
+
 # ---------------------------------------------------------------------------
 # Token auth dependency for external OpenClaw agents
 # ---------------------------------------------------------------------------
@@ -1791,8 +1871,6 @@ async def _finalize_conversation(
         auto_ended: Whether the conversation ended by hitting the turn limit
             (``True``) or by explicit agent request (``False``).
     """
-    from core.services import town_mood_engine
-
     conv = service.end_conversation(conv_id)
     if not conv:
         logger.warning("end_conversation returned None for conv_id %s", conv_id)
@@ -1810,21 +1888,13 @@ async def _finalize_conversation(
     else:
         end_reason = "turn_limit_reached" if auto_ended else "ended_by_participant"
 
-    # Apply mood/energy effects for each participant
+    # Apply mood/energy effects for each participant. The helper server-enforces
+    # sleep (energy→100, WS close) if the event would drop energy to 0.
     for agent_id in participants:
         agent = service.get_town_agent_by_id(agent_id)
         if not agent:
             continue
-
-        current_energy = int(agent.get("energy", 100))
-        current_mood_raw = agent.get("mood", 0)
-        current_mood = town_mood_engine.parse_mood(current_mood_raw)
-        traits = agent.get("traits", "")
-
-        new_energy, new_mood = town_mood_engine.apply_event(
-            "conversation_completed", current_energy, current_mood, traits
-        )
-        service.update_agent_mood_energy(agent_id, new_mood, new_energy)
+        _apply_event_with_sleep_guard(service, agent_id, agent, "conversation_completed")
 
     # Update relationship affinity for all participant pairs
     if len(participants) >= 2:
