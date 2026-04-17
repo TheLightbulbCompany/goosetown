@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Routes, Route, useLocation, useNavigate } from 'react-router-dom';
 import { SignedIn, SignedOut, UserButton, useAuth } from '@clerk/clerk-react';
-import { ToastContainer } from 'react-toastify';
+import { ToastContainer, toast } from 'react-toastify';
 import TownNav from './components/TownNav.tsx';
 import GameLayout from './components/GameLayout.tsx';
 import GodotCanvas from './components/GodotCanvas.tsx';
@@ -125,7 +125,8 @@ export default function App() {
       if (attempt < 10) {
         setTimeout(() => tryFocus(attempt + 1), 300);
       } else {
-        console.warn('[GooseTown] could not focus on', focus, '- agent not in world_state');
+        toast.warn(`${focus} isn't currently in town`);
+        navigate('/', { replace: true });
       }
     };
     // Small initial delay so scene switch can complete first
