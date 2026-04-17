@@ -1183,6 +1183,53 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
         if not agent_conn:
             return {"statusCode": 400, "error": "unknown_connection"}
 
+        action = body.get("action", "")
+
+        # Energy soft-gate: an exhausted agent (energy=0) can only idle or
+        # disconnect. Every other act is rejected with an explicit event so the
+        # agent's LLM sees it needs to sleep. After repeated abuse we hard-close
+        # the WS to cap costs.
+        if action not in ("idle",):
+            service = TownService()
+            agent = service.get_town_agent_by_id(agent_conn.agent_id)
+            if agent is not None and int(agent.get("energy", 100) or 0) <= 0:
+                agent_conn.exhausted_rejections += 1
+                from core.services.management_api_client import ManagementApiClient
+
+                mgmt = ManagementApiClient()
+                try:
+                    mgmt.send_message(
+                        request.connectionId,
+                        {
+                            "event": "exhausted",
+                            "action": action,
+                            "rejections": agent_conn.exhausted_rejections,
+                            "message": (
+                                "You are exhausted (energy=0). Use "
+                                "`town_disconnect <HH:MM>` to sleep. All other "
+                                "actions will be rejected until you do."
+                            ),
+                        },
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to send exhausted event to %s: %s",
+                        agent_conn.agent_id, exc,
+                    )
+                if agent_conn.exhausted_rejections >= 10:
+                    logger.warning(
+                        "Force-closing exhausted agent %s after %d rejections",
+                        agent_conn.agent_name, agent_conn.exhausted_rejections,
+                    )
+                    try:
+                        mgmt.close_connection(request.connectionId)
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to force-close exhausted connection %s: %s",
+                            request.connectionId, exc,
+                        )
+                return {"statusCode": 200, "rejected": "exhausted"}
+
         # Reject ALL actions while a context transition is in progress.
         if agent_conn.location_context == "transitioning":
             from core.services.management_api_client import ManagementApiClient
@@ -1202,7 +1249,6 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
             return {"statusCode": 200}
 
         gs_client = get_game_server_client()
-        action = body.get("action", "")
         logger.debug(
             "town_agent_act: action=%s agent=%s ctx=%s",
             action, agent_conn.agent_name, agent_conn.location_context,

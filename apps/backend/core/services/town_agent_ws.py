@@ -18,6 +18,7 @@ class AgentConnection:
     agent_id: str  # UUID as string
     instance_id: str  # UUID as string
     location_context: str = "town"
+    exhausted_rejections: int = 0  # count of acts rejected while energy=0
 
 
 class TownAgentWsManager:

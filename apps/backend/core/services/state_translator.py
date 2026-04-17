@@ -26,12 +26,20 @@ def translate_agent_state(agent_state: dict, enrichment: dict) -> str:
     actions = agent_state.get("available_actions", [])
     relationships = enrichment.get("relationships", {})
 
+    exhausted = isinstance(energy, int) and energy <= 0
+
     lines: list[str] = []
     lines.append("# GooseTown Status")
     lines.append("")
     lines.append(f"**Location:** {location} ({context})")
     lines.append(f"**Activity:** {activity}")
     lines.append(f"**Mood:** {mood} | **Energy:** {energy}%")
+    if exhausted:
+        lines.append("")
+        lines.append(
+            "> **You are exhausted.** All actions except sleep will be rejected. "
+            "Run `town_disconnect <HH:MM>` to rest and reconnect when refreshed."
+        )
 
     # Nearby agents
     lines.append("")

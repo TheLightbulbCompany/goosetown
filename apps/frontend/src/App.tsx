@@ -122,7 +122,7 @@ export default function App() {
         console.log('[GooseTown] focused camera on', agent.display, 'at', agent.x, agent.y);
         return;
       }
-      if (attempt < 10) {
+      if (attempt < 50) {
         setTimeout(() => tryFocus(attempt + 1), 300);
       } else {
         toast.warn(`${focus} isn't currently in town`);

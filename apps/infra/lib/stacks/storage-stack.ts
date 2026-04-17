@@ -39,6 +39,28 @@ export class StorageStack extends cdk.Stack {
       ],
     });
 
+    // ResponseHeadersPolicy: add Cross-Origin-Resource-Policy so sprites can be
+    // <img> loaded by the frontend, which serves Cross-Origin-Embedder-Policy:
+    // require-corp (needed for Godot WebGL SharedArrayBuffer). Without this
+    // header, COEP blocks cross-origin image loads even when HTTP 200s.
+    const responseHeadersPolicy = new cloudfront.ResponseHeadersPolicy(
+      this,
+      "SpriteResponseHeaders",
+      {
+        responseHeadersPolicyName: `goosetown-${env}-sprite-headers`,
+        comment: "Allow embedding in COEP:require-corp pages",
+        customHeadersBehavior: {
+          customHeaders: [
+            {
+              header: "Cross-Origin-Resource-Policy",
+              value: "cross-origin",
+              override: true,
+            },
+          ],
+        },
+      }
+    );
+
     // CloudFront distribution with S3 bucket origin (OAC managed automatically)
     const domainName = `assets-${env}.goosetown.isol8.co`;
     this.distribution = new cloudfront.Distribution(this, "Distribution", {
@@ -48,6 +70,7 @@ export class StorageStack extends cdk.Stack {
         viewerProtocolPolicy:
           cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+        responseHeadersPolicy,
         allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
       },
       priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
