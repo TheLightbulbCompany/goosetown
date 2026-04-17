@@ -81,6 +81,21 @@ pipeline.addStageWithGitHubOptions(
             run: "vercel alias ${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }} dev.goosetown.isol8.co --token=$VERCEL_TOKEN",
             env: vercelEnv,
           },
+          {
+            // Regression guard: the sprite CDN must carry
+            // Cross-Origin-Resource-Policy: cross-origin so <img> tags on
+            // the frontend (served COEP:require-corp for Godot WebGL) can
+            // load them. A missing header silently breaks all agent
+            // sprites and was only caught once by humans eyeballing the
+            // sidebar. Curl a (possibly 404) asset — CloudFront applies
+            // the ResponseHeadersPolicy to all responses including errors.
+            name: "Smoke-test sprite CORP header",
+            run: [
+              'HEADERS=$(curl -sI "https://assets-dev.goosetown.isol8.co/_corp-check.png")',
+              'echo "$HEADERS" | grep -qi "^cross-origin-resource-policy: *cross-origin" || { echo "FAIL: CORP header missing or wrong on sprite CDN"; echo "$HEADERS"; exit 1; }',
+              'echo "OK: sprite CDN has Cross-Origin-Resource-Policy: cross-origin"',
+            ].join("\n"),
+          },
         ],
       }),
     ],

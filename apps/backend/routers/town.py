@@ -21,7 +21,7 @@ from core.services import town_mood_engine
 from core.services.game_server_client import get_game_server_client
 from core.services.town_agent_ws import get_town_agent_ws_manager
 from core.services.town_mood_engine import mood_label, parse_mood
-from core.services.town_service import TownService
+from core.services.town_service import TownService, versioned_sprite_url
 from schemas.town import (
     ApartmentAgentState,
     ApartmentResponse,
@@ -1072,7 +1072,7 @@ async def get_apartment(
                 facing_y=1.0,
                 current_spot=item.get("currentLocation"),
                 is_active=item.get("isActive") == "true",
-                sprite_url=(item.get("spriteUrl") or "") if item.get("spriteReady") else "",
+                sprite_url=versioned_sprite_url(item.get("spriteUrl"), item) if item.get("spriteReady") else "",
             )
         )
 

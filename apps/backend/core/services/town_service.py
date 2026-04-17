@@ -31,6 +31,33 @@ def _decimal_to_native(obj):
     return obj
 
 
+def versioned_sprite_url(raw_url: Optional[str], agent: Optional[dict]) -> str:
+    """Append a content-version query to a sprite URL for cache-busting.
+
+    Sprite URLs are content-addressed by agent UUID (``/sprites/<id>/walk.png``)
+    with ``Cache-Control: max-age=31536000``, which means any bad response
+    cached by a client persists effectively forever. If a sprite is ever
+    regenerated, or was once fetched before the distribution's
+    ``Cross-Origin-Resource-Policy`` header was in place, the client's cache
+    is poisoned until the URL string itself changes.
+
+    This helper appends ``?v=<spriteUpdatedAt>`` so each regeneration
+    produces a fresh URL. For pre-existing records without
+    ``spriteUpdatedAt``, the agent ``id`` is used as a stable fallback — any
+    query param is enough to bypass stale cache entries keyed on the
+    un-versioned URL.
+    """
+    if not raw_url:
+        return ""
+    version = None
+    if agent is not None:
+        version = agent.get("spriteUpdatedAt") or agent.get("id")
+    if not version:
+        return raw_url
+    sep = "&" if "?" in raw_url else "?"
+    return f"{raw_url}{sep}v={version}"
+
+
 class TownService:
     """Service for GooseTown CRUD operations (DynamoDB backend)."""
 
@@ -212,6 +239,12 @@ class TownService:
         if not kwargs:
             return self.get_town_agent_by_id(agent_id)
 
+        # Auto-bump spriteUpdatedAt whenever sprite_url changes so downstream
+        # URL versioning (versioned_sprite_url) gets a fresh cache-bust token.
+        if "sprite_url" in kwargs and "sprite_updated_at" not in kwargs:
+            import time as _time
+            kwargs["sprite_updated_at"] = int(_time.time())
+
         # Map snake_case kwargs to camelCase DynamoDB attribute names
         field_map = {
             "current_conversation_id": "currentConversationId",
@@ -220,6 +253,7 @@ class TownService:
             "status_message": "statusMessage",
             "sprite_ready": "spriteReady",
             "sprite_url": "spriteUrl",
+            "sprite_updated_at": "spriteUpdatedAt",
             "sprite_animations": "spriteAnimations",
             "daemon_connection_id": "daemonConnectionId",
             "sprite_status": "spriteStatus",
