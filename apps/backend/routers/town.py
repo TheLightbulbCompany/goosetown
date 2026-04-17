@@ -17,6 +17,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Requ
 from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user
+from core.services import town_mood_engine
 from core.services.game_server_client import get_game_server_client
 from core.services.town_agent_ws import get_town_agent_ws_manager
 from core.services.town_mood_engine import mood_label, parse_mood
@@ -1221,6 +1222,23 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
                         "Force-closing exhausted agent %s after %d rejections",
                         agent_conn.agent_name, agent_conn.exhausted_rejections,
                     )
+                    # Apply the sleep event so the agent wakes refreshed on
+                    # reconnect. Without this, the agent comes back with
+                    # energy=0 and immediately hits the same rejection loop.
+                    try:
+                        current_mood = town_mood_engine.parse_mood(agent.get("mood"))
+                        traits = agent.get("traits", "")
+                        new_energy, new_mood = town_mood_engine.apply_event(
+                            "sleep", 0, current_mood, traits
+                        )
+                        service.update_agent_mood_energy(
+                            agent_conn.agent_id, new_mood, new_energy
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to apply sleep event for exhausted agent %s: %s",
+                            agent_conn.agent_id, exc,
+                        )
                     try:
                         mgmt.close_connection(request.connectionId)
                     except Exception as exc:

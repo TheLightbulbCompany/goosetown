@@ -68,7 +68,7 @@ export default function ApartmentCard({ agent }: { agent: ApartmentAgent }) {
               src={agent.sprite_url}
               alt={agent.display_name}
               className="w-12 h-12 object-none [image-rendering:pixelated]"
-              style={{ objectPosition: '0 0' }}
+              style={{ objectPosition: '-24px -24px' }}
             />
           ) : (
             '?'
