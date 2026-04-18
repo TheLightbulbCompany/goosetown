@@ -28,7 +28,7 @@ jobs:
           ENVIRONMENT: test
 
   frontend-lint:
-    name: Frontend Lint & Typecheck
+    name: Frontend Lint, Typecheck & Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,3 +42,5 @@ jobs:
         run: pnpm --filter @goosetown/frontend run lint
       - name: Typecheck
         run: pnpm --filter @goosetown/frontend run typecheck
+      - name: Test
+        run: pnpm --filter @goosetown/frontend run test
