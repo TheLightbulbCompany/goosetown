@@ -21,10 +21,19 @@ security_optional = HTTPBearer(auto_error=False)
 # JWKS cache with TTL
 _jwks_cache: dict = {"data": None, "expires_at": None}
 JWKS_CACHE_TTL = timedelta(hours=1)
+# Maximum time we'll keep serving a stale-but-previously-valid JWKS after
+# Clerk starts failing. Long enough to ride out a short outage, short enough
+# that a compromised/rotated key doesn't stay trusted for days.
+JWKS_STALE_GRACE = timedelta(minutes=5)
 
 
 async def _get_cached_jwks(jwks_url: str) -> dict:
-    """Fetch JWKS with TTL-based caching to avoid hitting Clerk on every request."""
+    """Fetch JWKS with TTL-based caching to avoid hitting Clerk on every request.
+
+    If Clerk is unreachable, fall back to the last cached JWKS — but only
+    within ``JWKS_STALE_GRACE``. Beyond that, raise so the outage surfaces
+    as 5xx rather than silently trusting stale keys forever.
+    """
     now = datetime.now(timezone.utc)
 
     # Return cached data if still valid
@@ -44,10 +53,19 @@ async def _get_cached_jwks(jwks_url: str) -> dict:
         logger.info("JWKS cache refreshed")
         return jwks
     except httpx.HTTPError as e:
-        # If fetch fails but we have stale cached data, use it as fallback
-        if _jwks_cache["data"]:
-            logger.warning(f"JWKS fetch failed, using stale cache: {e}")
-            return _jwks_cache["data"]
+        cached = _jwks_cache["data"]
+        expires_at = _jwks_cache["expires_at"]
+        if cached and expires_at and now - expires_at <= JWKS_STALE_GRACE:
+            stale_by = now - expires_at
+            logger.warning(
+                "JWKS fetch failed, serving stale cache (stale by %ss): %s",
+                int(stale_by.total_seconds()), e,
+            )
+            return cached
+        logger.error(
+            "JWKS fetch failed and no recent cached data (grace %s): %s",
+            JWKS_STALE_GRACE, e,
+        )
         raise
 
 

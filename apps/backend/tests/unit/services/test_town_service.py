@@ -213,14 +213,6 @@ class TestRelationships:
         assert created is False
         assert rel["agentAId"] == "aaa"
 
-    def test_get_all_relationships(self, dynamodb_tables):
-        svc = TownService()
-        svc.get_or_create_relationship("aaa", "bbb")
-        svc.get_or_create_relationship("ccc", "ddd")
-        rels = svc.get_all_relationships()
-        assert len(rels) == 2
-
-
 class TestConversations:
     def test_store_conversation(self, dynamodb_tables):
         svc = TownService()

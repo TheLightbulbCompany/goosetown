@@ -361,8 +361,14 @@ class PixelLabService:
                         completed += 1
                     elif status == "failed":
                         failed += 1
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # Don't raise — a single transient PixelLab error
+                    # shouldn't abort the whole batch — but make the
+                    # failure visible so outages don't look like stalls.
+                    logger.warning(
+                        "PixelLab poll failed for job %s (%s attempt %d/%d): %s",
+                        jid, progress_label, attempt + 1, max_attempts, exc,
+                    )
 
             if on_progress:
                 await on_progress(

@@ -584,54 +584,6 @@ class TownService:
         )
         return _decimal_to_native(resp.get("Attributes", {}))
 
-    def get_all_relationships(self) -> list[dict]:
-        """Get all relationships with latest conversation topics. Paginated."""
-        table = dynamo.relationships_table()
-        rels: list[dict] = []
-        scan_kwargs: dict = {}
-        max_total = 500  # Safety cap
-        while True:
-            resp = table.scan(**scan_kwargs)
-            rels.extend(resp.get("Items", []))
-            if len(rels) >= max_total:
-                rels = rels[:max_total]
-                break
-            last_key = resp.get("LastEvaluatedKey")
-            if not last_key:
-                break
-            scan_kwargs["ExclusiveStartKey"] = last_key
-
-        conv_table = dynamo.conversations_table()
-        out = []
-        for r in rels:
-            r = _decimal_to_native(r)
-            a_id = r["agentAId"]
-            b_id = r["agentBId"]
-
-            # Query for last ended conversation between these two agents
-            last_topic = None
-            conv_resp = conv_table.query(
-                IndexName="participantA-endedAt-index",
-                KeyConditionExpression=Key("participantAId").eq(a_id),
-                FilterExpression=Attr("participantBId").eq(b_id) & Attr("status").eq("ended"),
-                ScanIndexForward=False,
-                Limit=1,
-            )
-            items = conv_resp.get("Items", [])
-            if items:
-                last_topic = items[0].get("topicSummary")
-
-            out.append(
-                {
-                    "agent_a_id": a_id,
-                    "agent_b_id": b_id,
-                    "relationship_type": r.get("relationshipType"),
-                    "interaction_count": r.get("interactionCount", 0),
-                    "last_topic": last_topic,
-                }
-            )
-        return out
-
     # ------------------------------------------------------------------
     # Conversations
     # ------------------------------------------------------------------
