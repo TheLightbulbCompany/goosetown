@@ -390,12 +390,40 @@ class GameServerClient:
                     if locs:
                         self._locations = locs
         except websockets.ConnectionClosed:
-            logger.warning("Game server viewer connection closed")
+            logger.warning("Game server viewer connection closed, reconnecting...")
+            self._viewer_connection = None
+            self._listen_tasks.pop("__viewer__", None)
+            await self._reconnect_viewer()
+            return
         except asyncio.CancelledError:
             raise
 
         self._viewer_connection = None
         self._listen_tasks.pop("__viewer__", None)
+
+    async def _reconnect_viewer(self, max_retries: int = 5) -> None:
+        """Reconnect the viewer WebSocket with exponential backoff.
+
+        Mirrors ``_reconnect_agent`` so a brief game-server blip doesn't
+        permanently lose the viewer's ``locations`` stream.
+        """
+        for attempt in range(1, max_retries + 1):
+            delay = min(30, 2**attempt)
+            logger.info(
+                "Viewer reconnect attempt %d/%d (waiting %ds)",
+                attempt, max_retries, delay,
+            )
+            await asyncio.sleep(delay)
+            try:
+                await self.connect_viewer()
+                logger.info("Viewer reconnected on attempt %d", attempt)
+                return
+            except Exception as exc:
+                logger.warning(
+                    "Viewer reconnect attempt %d/%d failed: %s",
+                    attempt, max_retries, exc,
+                )
+        logger.error("Viewer failed to reconnect after %d attempts", max_retries)
 
 
 # Module-level singleton

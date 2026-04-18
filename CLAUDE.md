@@ -319,18 +319,13 @@ aws sso login --profile isol8-admin
 ### Still Open
 
 **High priority:**
-- **Token in WebSocket URL**: Daemon passes token as query param (`?token=...`), visible in logs. Should use header or subprotocol.
-- **JWKS stale cache**: If Clerk JWKS fetch fails, uses stale cache indefinitely (auth.py:47-49). Should cap stale usage to ~5 minutes.
-- **DynamoDB scan with no limit**: `get_all_relationships()` scans entire table, then queries conversations for each. O(n*m).
-- **Silent PixelLab job-poll failures**: `pixellab_service.py:365` catches exceptions in job polling without propagating — PixelLab outages can look like stalls.
+- **Token in WebSocket URL**: Daemon passes token as query param (`?token=...`), visible in logs. Should use header or subprotocol. Requires coordinated daemon + API Gateway change.
 
 **Medium priority:**
-- **Unused frontend code**: `ActivityFeed.tsx` (never imported), `react-modal` dep (never used), `data/characters.ts` (empty stubs).
 - **Dual REST+WS polling**: `useTownState.ts` runs both REST polling and WebSocket without mutual exclusion.
 - **No sprite CORS handling in Godot**: `agent.gd` fetches sprites via JS but has no error recovery if CORS fails.
-- **Dev token secret in repo**: `town_token.py:26` falls back to hardcoded `"dev-town-secret-change-in-prod"` (dev-only, but still).
+- **Dev token secret in repo**: `town_token.py:26` falls back to hardcoded `"dev-town-secret-change-in-prod"` (dev-only fallback; production path already raises).
 - **Decimal conversion inconsistency**: `town_service.py` converts float→Decimal but not int→Decimal for DynamoDB writes.
-- **No viewer reconnect**: Viewer WebSocket disconnect in `game_server_client.py` has no reconnection logic (unlike agents, which have `_reconnect_agent` with 5 retries).
 
 ### Resolved (kept here for search visibility)
 
@@ -346,6 +341,11 @@ aws sso login --profile isol8-admin
 - ~~Sprite CORP header missing~~: CloudFront `ResponseHeadersPolicy` + CI curl smoke test (`DeployVercelDev` post-step + Playwright `smoke.spec.ts`).
 - ~~Sprite URLs un-cache-busted~~: `/apartment` emits `?v=<spriteUpdatedAt>`; `TownService.update_agent_state` auto-bumps on `sprite_url` write.
 - ~~Energy at 0 never enforced~~: `_apply_event_with_sleep_guard` auto-sleeps, refills energy, closes WS; `town_agent_act` soft-gate rejects non-idle actions at energy=0.
+- ~~JWKS stale-cache indefinite~~: `JWKS_STALE_GRACE = 5 min` in `core/auth.py`; fetch errors beyond that raise.
+- ~~Silent PixelLab job-poll failures~~: `pixellab_service.py:_poll_jobs` now logs a WARNING per failed poll with job id + attempt.
+- ~~get_all_relationships O(n*m)~~: deleted — orphan code, only used by its own test.
+- ~~No viewer reconnect~~: `game_server_client._reconnect_viewer` mirrors `_reconnect_agent`, 5 attempts with exponential backoff.
+- ~~Unused frontend code (ActivityFeed, react-modal, data/characters.ts)~~: already removed.
 
 ## Production Roadmap
 
