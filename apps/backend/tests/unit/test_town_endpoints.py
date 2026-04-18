@@ -1,0 +1,284 @@
+"""Endpoint tests for routers/town.py using FastAPI's TestClient.
+
+Covers the user-facing HTTP surface that was untested:
+    - ``GET /apartment`` — auth, user-scoped filter, sprite_url versioning.
+    - ``GET /conversations`` — public endpoint, shape of public_log, limit.
+    - ``POST /instance`` — idempotent, returns signed town_token.
+
+Auth is bypassed via FastAPI's ``dependency_overrides`` so tests don't need
+real Clerk JWTs. DynamoDB is mocked via the shared ``dynamodb_tables``
+fixture.
+"""
+
+from __future__ import annotations
+
+import pytest
+from fastapi.testclient import TestClient
+
+TEST_USER_ID = "user_test_123"
+OTHER_USER_ID = "user_other_456"
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _auth_override():
+    from core.auth import AuthContext
+
+    return AuthContext(user_id=TEST_USER_ID)
+
+
+@pytest.fixture
+def client(dynamodb_tables):
+    """TestClient with Clerk auth short-circuited to TEST_USER_ID."""
+    from core.auth import get_current_user
+    from main import app
+
+    app.dependency_overrides[get_current_user] = _auth_override
+    try:
+        yield TestClient(app)
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+def _seed_agent(
+    dynamodb_tables,
+    agent_id: str,
+    user_id: str = TEST_USER_ID,
+    agent_name: str = "lucky",
+    display_name: str = "Lucky",
+    sprite_ready: bool = True,
+    sprite_url: str = "https://cdn.example/sprites/lucky/walk.png",
+    sprite_updated_at: int | None = 1_776_000_000,
+    current_location: str = "plaza",
+    location_context: str = "town",
+    energy: int = 80,
+    mood: int = 5,
+    is_active: str = "true",
+):
+    """Insert a minimal agent record into the mock agents table."""
+    table = dynamodb_tables.Table("goosetown-agents")
+    item = {
+        "id": agent_id,
+        "userId": user_id,
+        "agentName": agent_name,
+        "displayName": display_name,
+        "instanceId": "inst-1",
+        "isActive": is_active,
+        "joinedAt": "2026-04-17T00:00:00Z",
+        "spriteReady": sprite_ready,
+        "spriteUrl": sprite_url,
+        "currentLocation": current_location,
+        "locationContext": location_context,
+        "energy": energy,
+        "mood": mood,
+    }
+    if sprite_updated_at is not None:
+        item["spriteUpdatedAt"] = sprite_updated_at
+    table.put_item(Item=item)
+    return item
+
+
+def _seed_conversation(
+    dynamodb_tables,
+    conv_id: str,
+    participant_a: str,
+    participant_b: str,
+    location: str = "cafe",
+    status: str = "ended",
+    public_log: list | None = None,
+    started_at: str = "2026-04-17T00:00:00Z",
+    ended_at: str = "2026-04-17T00:05:00Z",
+    updated_at: str = "2026-04-17T00:05:00Z",
+):
+    table = dynamodb_tables.Table("goosetown-conversations")
+    table.put_item(
+        Item={
+            "id": conv_id,
+            "participantAId": participant_a,
+            "participantBId": participant_b,
+            "location": location,
+            "status": status,
+            "startedAt": started_at,
+            "endedAt": ended_at,
+            "updatedAt": updated_at,
+            "turnCount": len(public_log or []),
+            "publicLog": public_log or [],
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /apartment
+# ---------------------------------------------------------------------------
+
+
+class TestApartmentEndpoint:
+    def test_returns_only_current_users_agents(self, client, dynamodb_tables):
+        _seed_agent(dynamodb_tables, "a-1", user_id=TEST_USER_ID, agent_name="mine")
+        _seed_agent(
+            dynamodb_tables, "a-2", user_id=OTHER_USER_ID, agent_name="somebody_elses"
+        )
+
+        resp = client.get("/api/v1/town/apartment")
+        assert resp.status_code == 200
+        body = resp.json()
+        agent_ids = {a["agent_id"] for a in body["agents"]}
+        assert agent_ids == {"a-1"}
+
+    def test_sprite_url_includes_cache_buster(self, client, dynamodb_tables):
+        """The endpoint must return ``?v=<spriteUpdatedAt>`` on every sprite
+        URL so browsers don't serve stale cached responses forever."""
+        _seed_agent(
+            dynamodb_tables,
+            "a-1",
+            sprite_updated_at=1_776_400_000,
+            sprite_url="https://cdn.example/sprites/a-1/walk.png",
+        )
+
+        resp = client.get("/api/v1/town/apartment")
+        assert resp.status_code == 200
+        agent = resp.json()["agents"][0]
+        assert agent["sprite_url"] == (
+            "https://cdn.example/sprites/a-1/walk.png?v=1776400000"
+        )
+
+    def test_empty_sprite_url_when_sprite_not_ready(self, client, dynamodb_tables):
+        """108068f fix — sprite_ready=False must NOT return a URL (or a
+        literal ``None`` that would render as '<null>' via GDScript). We
+        return an empty string so the frontend fallback branch fires."""
+        _seed_agent(dynamodb_tables, "a-1", sprite_ready=False, sprite_url="")
+
+        resp = client.get("/api/v1/town/apartment")
+        assert resp.status_code == 200
+        agent = resp.json()["agents"][0]
+        assert agent["sprite_url"] == ""
+
+    def test_returns_empty_list_for_user_with_no_agents(self, client):
+        resp = client.get("/api/v1/town/apartment")
+        assert resp.status_code == 200
+        assert resp.json() == {"agents": [], "activity": []}
+
+
+# ---------------------------------------------------------------------------
+# GET /conversations
+# ---------------------------------------------------------------------------
+
+
+class TestConversationsEndpoint:
+    def test_public_endpoint_requires_no_auth(self, dynamodb_tables):
+        """/conversations is deliberately public — don't regress this."""
+        from main import app
+
+        client = TestClient(app)
+        resp = client.get("/api/v1/town/conversations")
+        assert resp.status_code == 200
+
+    def test_returns_conversations_with_full_public_log(
+        self, client, dynamodb_tables
+    ):
+        """Modal UX (53038d7) depends on the full public_log being returned,
+        not a truncated summary."""
+        _seed_agent(
+            dynamodb_tables, "agent-a", agent_name="a", display_name="Agent A"
+        )
+        _seed_agent(
+            dynamodb_tables, "agent-b", agent_name="b", display_name="Agent B"
+        )
+        _seed_conversation(
+            dynamodb_tables,
+            "conv-1",
+            participant_a="agent-a",
+            participant_b="agent-b",
+            location="cafe",
+            public_log=[
+                {"speaker": "Agent A", "text": "hi"},
+                {"speaker": "Agent B", "text": "hello"},
+                {"speaker": "Agent A", "text": "how are you"},
+            ],
+        )
+
+        resp = client.get("/api/v1/town/conversations")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body["conversations"]) == 1
+        conv = body["conversations"][0]
+        assert conv["participant_a"] == "Agent A"
+        assert conv["participant_b"] == "Agent B"
+        assert conv["location"] == "cafe"
+        assert conv["turn_count"] == 3
+        assert len(conv["public_log"]) == 3
+        assert conv["public_log"][0] == {"speaker": "Agent A", "text": "hi"}
+
+    def test_limit_parameter_respected(self, client, dynamodb_tables):
+        _seed_agent(
+            dynamodb_tables, "agent-a", agent_name="a", display_name="Agent A"
+        )
+        _seed_agent(
+            dynamodb_tables, "agent-b", agent_name="b", display_name="Agent B"
+        )
+        for i in range(5):
+            _seed_conversation(
+                dynamodb_tables,
+                f"conv-{i}",
+                participant_a="agent-a",
+                participant_b="agent-b",
+                started_at=f"2026-04-17T00:0{i}:00Z",
+                ended_at=f"2026-04-17T00:0{i + 1}:00Z",
+                updated_at=f"2026-04-17T00:0{i + 1}:00Z",
+            )
+
+        resp = client.get("/api/v1/town/conversations?limit=3")
+        assert resp.status_code == 200
+        assert len(resp.json()["conversations"]) == 3
+
+    def test_missing_participant_falls_back_to_unknown(
+        self, client, dynamodb_tables
+    ):
+        """If an agent record was deleted but a conversation still references
+        it, we shouldn't 500 — just show 'Unknown'."""
+        _seed_agent(dynamodb_tables, "agent-a", display_name="Rachel")
+        # participant_b intentionally not seeded
+        _seed_conversation(
+            dynamodb_tables,
+            "conv-1",
+            participant_a="agent-a",
+            participant_b="missing-agent-id",
+            public_log=[{"speaker": "Rachel", "text": "hi"}],
+        )
+
+        resp = client.get("/api/v1/town/conversations")
+        assert resp.status_code == 200
+        conv = resp.json()["conversations"][0]
+        assert conv["participant_a"] == "Rachel"
+        assert conv["participant_b"] == "Unknown"
+
+
+# ---------------------------------------------------------------------------
+# POST /instance
+# ---------------------------------------------------------------------------
+
+
+class TestInstanceEndpoint:
+    def test_creates_instance_for_new_user_and_returns_token(
+        self, client, dynamodb_tables
+    ):
+        resp = client.post("/api/v1/town/instance")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["town_token"]  # non-empty signed token
+        assert "." in body["town_token"]  # HMAC-signed format "<payload>.<sig>"
+        assert body["apartment_unit"] >= 1
+        # New user has no agents yet
+        assert body["agents"] == []
+
+    def test_idempotent_for_same_user(self, client, dynamodb_tables):
+        """Calling twice returns the same underlying instance — no duplicate
+        apartment allocation."""
+        first = client.post("/api/v1/town/instance").json()
+        second = client.post("/api/v1/town/instance").json()
+        # Same apartment unit means same instance was reused.
+        assert first["apartment_unit"] == second["apartment_unit"]
+        assert first["town_token"] == second["town_token"]
