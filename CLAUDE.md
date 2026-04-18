@@ -322,10 +322,7 @@ aws sso login --profile isol8-admin
 - **Token in WebSocket URL**: Daemon passes token as query param (`?token=...`), visible in logs. Should use header or subprotocol. Requires coordinated daemon + API Gateway change.
 
 **Medium priority:**
-- **Dual REST+WS polling**: `useTownState.ts` runs both REST polling and WebSocket without mutual exclusion.
-- **No sprite CORS handling in Godot**: `agent.gd` fetches sprites via JS but has no error recovery if CORS fails.
-- **Dev token secret in repo**: `town_token.py:26` falls back to hardcoded `"dev-town-secret-change-in-prod"` (dev-only fallback; production path already raises).
-- **Decimal conversion inconsistency**: `town_service.py` converts float→Decimal but not int→Decimal for DynamoDB writes.
+- **Dev token secret in repo**: `town_token.py:26` falls back to hardcoded `"dev-town-secret-change-in-prod"` (dev-only fallback; production path already raises). By design for local dev ergonomics — not worth fixing.
 
 ### Resolved (kept here for search visibility)
 
@@ -346,6 +343,9 @@ aws sso login --profile isol8-admin
 - ~~get_all_relationships O(n*m)~~: deleted — orphan code, only used by its own test.
 - ~~No viewer reconnect~~: `game_server_client._reconnect_viewer` mirrors `_reconnect_agent`, 5 attempts with exponential backoff.
 - ~~Unused frontend code (ActivityFeed, react-modal, data/characters.ts)~~: already removed.
+- ~~Dual REST+WS polling without mutual exclusion~~: `useTownState.ts:239` gates REST poll on `wsConnectedRef.current`; REST yields when WS is active.
+- ~~Decimal conversion inconsistency~~: false alarm — boto3 Table accepts native `int` for DynamoDB number type; only floats need Decimal conversion (which `town_service.py:271` does correctly).
+- ~~No sprite CORS handling in Godot~~: resolved-by-prevention — CORP header fix + cache-bust versioning + post-deploy smoke test eliminate the sprite failure modes that would have needed client-side recovery. Existing shadow-placeholder fallback handles any residual case.
 
 ## Production Roadmap
 
