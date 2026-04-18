@@ -316,46 +316,54 @@ aws sso login --profile isol8-admin
 
 ## Known Issues & Technical Debt
 
-### Critical (blocks production)
+### Still Open
 
-1. **WebSocket message type mismatch**: Frontend `useTownState.ts` expects `type: 'town_state'` but game server sends `event: 'world_state'`. Frontend never processes WS messages from game server.
-2. **Facing direction encoding**: Game server sends `facing: "south"` (string) but `agent.gd` calls `JSON.parse_string()` expecting `{"direction": "south"}`.
-3. **No apartment map**: Apartment route (`/apartment`) is a stub. No Godot map, no locations, no apartment-specific Godot scene. The apartment constants exist in `core/apartment_constants.py` but have no game server implementation.
-4. **`/state` and `/descriptions` endpoints**: Catch all exceptions and return defaults silently. Clients can't distinguish real data from fallback.
-5. **No auth on `/ws-message`**: The endpoint is unauthenticated — relies on API Gateway Lambda forwarding, but anyone could POST directly.
+**High priority:**
+- **Token in WebSocket URL**: Daemon passes token as query param (`?token=...`), visible in logs. Should use header or subprotocol.
+- **JWKS stale cache**: If Clerk JWKS fetch fails, uses stale cache indefinitely (auth.py:47-49). Should cap stale usage to ~5 minutes.
+- **DynamoDB scan with no limit**: `get_all_relationships()` scans entire table, then queries conversations for each. O(n*m).
+- **Silent PixelLab job-poll failures**: `pixellab_service.py:365` catches exceptions in job polling without propagating — PixelLab outages can look like stalls.
 
-### High Priority
+**Medium priority:**
+- **Unused frontend code**: `ActivityFeed.tsx` (never imported), `react-modal` dep (never used), `data/characters.ts` (empty stubs).
+- **Dual REST+WS polling**: `useTownState.ts` runs both REST polling and WebSocket without mutual exclusion.
+- **No sprite CORS handling in Godot**: `agent.gd` fetches sprites via JS but has no error recovery if CORS fails.
+- **Dev token secret in repo**: `town_token.py:26` falls back to hardcoded `"dev-town-secret-change-in-prod"` (dev-only, but still).
+- **Decimal conversion inconsistency**: `town_service.py` converts float→Decimal but not int→Decimal for DynamoDB writes.
+- **No viewer reconnect**: Viewer WebSocket disconnect in `game_server_client.py` has no reconnection logic (unlike agents, which have `_reconnect_agent` with 5 retries).
 
-6. **Token in WebSocket URL**: Daemon passes token as query param (`?token=...`), visible in logs. Should use header or subprotocol.
-7. **JWKS stale cache**: If Clerk JWKS fetch fails, uses stale cache indefinitely (auth.py). Should cap stale usage to 5 minutes.
-8. **Sprite generation race condition**: No check for in-progress sprite jobs before starting new one. Re-registration creates duplicate PixelLab jobs.
-9. **Game server reconnect loop**: `game_server_client.py` reconnects forever with no max retries. Memory leak if game server is down.
-10. **DynamoDB scan with no limit**: `get_all_relationships()` scans entire table, then queries conversations for each. O(n*m).
-11. **Missing config validation**: No startup checks for required env vars (`TOWN_TOKEN_SECRET`, `WS_MANAGEMENT_API_URL`).
-12. **Hardcoded path in export_map_data.gd**: Points to `/Users/.../freebird/backend/` — breaks for all other developers.
+### Resolved (kept here for search visibility)
 
-### Medium Priority
-
-13. **Unused frontend code**: `ActivityFeed.tsx` (never imported), `react-modal` dep (never used), `data/characters.ts` (empty stubs).
-14. **Dual REST+WS polling**: `useTownState.ts` runs both REST polling and WebSocket without mutual exclusion.
-15. **No sprite CORS handling in Godot**: `agent.gd` fetches sprites via JS but has no error recovery if CORS fails.
-16. **Dev token secret in repo**: `town_token.py` falls back to hardcoded `"dev-town-secret-change-in-prod"`.
-17. **Decimal conversion inconsistency**: `town_service.py` converts float→Decimal but not int→Decimal for DynamoDB writes.
-18. **No viewer reconnect**: Viewer WebSocket disconnect in `game_server_client.py` has no reconnection logic (unlike agents).
+- ~~WebSocket message type mismatch~~: `useTownState.ts:106` handles `msg.event === 'world_state'` and legacy `msg.type === 'town_state'` (line 189).
+- ~~Facing direction encoding~~: `agent.gd:_parse_facing` (line 408) accepts both plain strings and legacy JSON dicts.
+- ~~No apartment map~~: `apps/godot/maps/apartment/ApartmentMap.tscn` exists with `apartment_manager.gd` and `apartment_agent_controller.gd` server-side.
+- ~~/state and /descriptions silent exception catches~~: current handlers return directly, no try/except-all.
+- ~~/ws-message unauthenticated~~: now requires `x-ws-lambda-secret` header in non-dev (town.py:1159-1162).
+- ~~Sprite generation race condition~~: `sprite_queue.py` dedupes re-enqueues of in-flight agents (`enqueue` returns -1).
+- ~~Game server reconnect loop unbounded~~: `_reconnect_agent` caps at 5 attempts (game_server_client.py:341).
+- ~~Missing config validation~~: `core/config.py` lists required vars and fails with a clear message.
+- ~~Hardcoded path in export_map_data.gd~~: removed.
+- ~~Sprite CORP header missing~~: CloudFront `ResponseHeadersPolicy` + CI curl smoke test (`DeployVercelDev` post-step + Playwright `smoke.spec.ts`).
+- ~~Sprite URLs un-cache-busted~~: `/apartment` emits `?v=<spriteUpdatedAt>`; `TownService.update_agent_state` auto-bumps on `sprite_url` write.
+- ~~Energy at 0 never enforced~~: `_apply_event_with_sleep_guard` auto-sleeps, refills energy, closes WS; `town_agent_act` soft-gate rejects non-idle actions at energy=0.
 
 ## Production Roadmap
 
 ### Phase 1: Stability & Testing (make it work end-to-end)
 
-- [ ] Fix WebSocket message type mismatch (frontend expects `town_state`, server sends `world_state`)
-- [ ] Fix facing direction encoding (string vs JSON)
-- [ ] Add auth to `/ws-message` endpoint
-- [ ] Fix config validation (fail fast on missing required env vars)
-- [ ] Fix sprite generation race condition (check in-progress before starting)
-- [ ] Add max retries to game server reconnect loop
-- [ ] Add pagination to relationship scan
-- [ ] Test full agent lifecycle end-to-end: register → sprite → connect → move → chat
-- [ ] Increase test coverage from ~40% to 80%+
+- [x] Fix WebSocket message type mismatch (`useTownState.ts` handles both events)
+- [x] Fix facing direction encoding (`agent.gd:_parse_facing` handles both)
+- [x] Add auth to `/ws-message` endpoint (shared-secret header in non-dev)
+- [x] Fix config validation (missing required-var check)
+- [x] Fix sprite generation race condition (sprite_queue dedupes in-flight)
+- [x] Add max retries to game server reconnect loop (5 attempts)
+- [x] Energy-exhaustion enforcement (server-initiated sleep + soft-gate)
+- [x] Sprite CORP / cache-bust / post-deploy curl regression guard
+- [ ] Add pagination to relationship scan (still O(n*m))
+- [ ] Cap JWKS stale-cache age (currently unbounded)
+- [ ] Surface PixelLab job-poll failures instead of swallowing (pixellab_service.py:365)
+- [ ] Test full agent lifecycle end-to-end in CI (skipped for Clerk-creds reasons)
+- [x] Frontend + backend + E2E test coverage in CI (215 backend / 17 frontend / 2 smoke)
 
 ### Phase 2: Apartment System (make agents have a home)
 
