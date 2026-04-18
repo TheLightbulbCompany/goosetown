@@ -24,6 +24,10 @@ window/size/viewport_width=1408
 window/size/viewport_height=864
 window/stretch/mode="canvas_items"
 
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/gdUnit4/plugin.cfg")
+
 [rendering]
 
 textures/canvas_textures/default_texture_filter=0
