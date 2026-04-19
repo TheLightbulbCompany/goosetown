@@ -117,6 +117,29 @@ body {
 			};
 			// Add more __gt_dispatch_event_<name> handlers as emit_to_react call sites
 			// appear. Only scene_changed is used today (see emit_to_react call in js_bridge.gd).
+			window.__gt_load_sprite = function(args) {
+				// args: { url, agent_id, animation_name? }
+				var url = String(args.url || '');
+				var agentId = String(args.agent_id || '');
+				var anim = args.animation_name ? String(args.animation_name) : null;
+				if (!url || !agentId) return;
+				fetch(url)
+					.then(function(r) { return r.blob(); })
+					.then(function(blob) {
+						var reader = new FileReader();
+						reader.onloadend = function() {
+							var base64 = reader.result.split(',')[1];
+							if (window.godotUpdateAgentSprite) {
+								var payload = anim
+									? { id: agentId, base64: base64, animation: anim }
+									: { id: agentId, base64: base64 };
+								window.godotUpdateAgentSprite(JSON.stringify(payload));
+							}
+						};
+						reader.readAsDataURL(blob);
+					})
+					.catch(function(e) { console.warn('[GooseTown] sprite load failed:', e); });
+			};
 		</script>
 		<script src="goosetown.js"></script>
 		<script>
