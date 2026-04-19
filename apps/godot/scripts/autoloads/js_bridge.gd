@@ -75,6 +75,36 @@ func _emit_ready_event() -> void:
 	""")
 
 
+## Build the JS string that call_js() will eval. Pure function for testability.
+## Both inputs MUST come from non-user-controlled sources (fn_name is a
+## whitelist constant in every call site; key is generated here from time+rand).
+## User payload data goes through window.set() — never into the eval string.
+func _build_eval_script(fn_name: String, key: String) -> String:
+	return (
+		"(function(){"
+		+ "var p = window['%s'];" % key
+		+ "if(window.__gt_%s && p)window.__gt_%s(JSON.parse(p));" % [fn_name, fn_name]
+		+ "delete window['%s'];" % key
+		+ "})()"
+	)
+
+
+## Call a pre-defined JS handler (window.__gt_<fn_name>) with a dictionary
+## payload. User-controlled values are stashed on the window object via the
+## JavaScriptObject.set API, never interpolated into the eval string.
+##
+## The receiving side (frontend JS) must define window.__gt_<fn_name>(args).
+func call_js(fn_name: String, args: Dictionary) -> void:
+	if not OS.has_feature("web"):
+		return
+	var window: JavaScriptObject = JavaScriptBridge.get_interface("window")
+	var json_str: String = JSON.stringify(args)
+	var key: String = "__gt_payload_%d_%d" % [Time.get_ticks_msec(), randi()]
+	# Stash user data as a string property — never touches eval.
+	window.set(key, json_str)
+	JavaScriptBridge.eval(_build_eval_script(fn_name, key))
+
+
 func emit_to_react(event_name: String, data: Dictionary = {}) -> void:
 	if OS.has_feature("web"):
 		var json_str: String = JSON.stringify(data)
