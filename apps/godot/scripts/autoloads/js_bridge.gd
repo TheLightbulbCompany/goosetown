@@ -117,12 +117,11 @@ func call_js(fn_name: String, args: Dictionary) -> void:
 
 
 func emit_to_react(event_name: String, data: Dictionary = {}) -> void:
-	if OS.has_feature("web"):
-		var json_str: String = JSON.stringify(data)
-		JavaScriptBridge.eval(
-			"window.dispatchEvent(new CustomEvent('godot_%s', {detail: JSON.parse('%s')}))"
-			% [event_name, json_str]
-		)
+	# event_name is always a constant literal at the call site (whitelist);
+	# data goes through call_js which stashes it via window.set().
+	if not OS.has_feature("web"):
+		return
+	call_js("dispatch_event_" + event_name, data)
 
 
 func _on_spawn_agent(args: Array) -> void:
