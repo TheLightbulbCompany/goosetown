@@ -63,4 +63,41 @@ test.describe('GooseTown smoke', () => {
     const corp = resp.headers()['cross-origin-resource-policy'];
     expect(corp).toBe('cross-origin');
   });
+
+  test('at least one agent sprite renders in the canvas', async ({ page }) => {
+    // Regression guard for the JsBridge.call_js migration (security-hardening
+    // sub-project #1). If the __gt_load_sprite handler or window.set() path
+    // broke, no sprite ever gets uploaded to the Godot texture, so agents
+    // render as blank shadow placeholders. We detect a non-blank sprite by
+    // polling the counter incremented in the __gt_load_sprite handler.
+    //
+    // Runs against live dev, so on a PR whose code hasn't deployed yet the
+    // handler may not exist. In that case we skip — the deploy pipeline
+    // re-runs smoke tests post-deploy, which is where the real guard fires.
+    await page.goto('/');
+    await expect(page.locator('canvas').first()).toBeVisible({ timeout: 20_000 });
+
+    const handlerExists = await page.evaluate(
+      () =>
+        typeof (window as unknown as { __gt_load_sprite?: unknown })
+          .__gt_load_sprite === 'function',
+    );
+    test.skip(
+      !handlerExists,
+      'Live dev deploy predates the JsBridge migration; post-deploy run will enforce.',
+    );
+
+    // Handler is deployed — enforce the real guard.
+    await expect
+      .poll(
+        async () =>
+          await page.evaluate(
+            () =>
+              (window as unknown as { __gt_sprite_load_count?: number })
+                .__gt_sprite_load_count || 0,
+          ),
+        { timeout: 30_000, intervals: [1000, 2000, 3000] },
+      )
+      .toBeGreaterThan(0);
+  });
 });

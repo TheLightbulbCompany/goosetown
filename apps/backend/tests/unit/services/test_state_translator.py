@@ -82,9 +82,7 @@ def test_translate_with_no_enrichment():
 
 
 def test_translate_includes_chat_option_for_nearby():
-    state = _make_state(
-        nearby_agents=[{"agent_id": "uuid2", "name": "Luna", "distance": 2.0, "activity": "idle"}]
-    )
+    state = _make_state(nearby_agents=[{"agent_id": "uuid2", "name": "Luna", "distance": 2.0, "activity": "idle"}])
     enrichment = _make_enrichment()
     result = translate_agent_state(state, enrichment)
 

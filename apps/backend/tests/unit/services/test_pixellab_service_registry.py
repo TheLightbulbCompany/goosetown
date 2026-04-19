@@ -1,4 +1,5 @@
 """Tests for ANIMATION_REGISTRY auto_generate filtering."""
+
 from core.services.pixellab_service import (
     ANIMATION_REGISTRY,
     SIGNUP_ANIMATIONS,

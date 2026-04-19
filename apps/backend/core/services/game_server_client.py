@@ -144,7 +144,8 @@ class GameServerClient:
         except Exception as exc:
             logger.warning(
                 "[agent:%s] Game server send failed (%s), invalidating connection",
-                agent_id[:8], exc,
+                agent_id[:8],
+                exc,
             )
             self._agent_connections.pop(agent_id, None)
             task = self._listen_tasks.pop(agent_id, None)
@@ -185,7 +186,8 @@ class GameServerClient:
             await ws.send(json.dumps(command))
             logger.info(
                 "update_agent_sprites pushed to game server for %s: %d animations",
-                agent_id, len(sprite_animations),
+                agent_id,
+                len(sprite_animations),
             )
         except Exception:
             logger.exception(
@@ -193,9 +195,7 @@ class GameServerClient:
                 agent_id,
             )
 
-    async def transition_agent(
-        self, agent_id: str, to_context: str, user_id: str, agent_data: dict
-    ) -> None:
+    async def transition_agent(self, agent_id: str, to_context: str, user_id: str, agent_data: dict) -> None:
         """Send a transition command and wait for game server confirmation."""
         ws = self._agent_connections.get(agent_id)
         if not ws:
@@ -206,16 +206,21 @@ class GameServerClient:
         self._transition_events[agent_id] = event
 
         try:
-            await ws.send(json.dumps({
-                "cmd": "transition",
-                "to": to_context,
-                "user_id": user_id,
-                "agent_data": agent_data,
-            }))
+            await ws.send(
+                json.dumps(
+                    {
+                        "cmd": "transition",
+                        "to": to_context,
+                        "user_id": user_id,
+                        "agent_data": agent_data,
+                    }
+                )
+            )
         except Exception as exc:
             logger.warning(
                 "[agent:%s] Game server transition send failed (%s), invalidating connection",
-                agent_id[:8], exc,
+                agent_id[:8],
+                exc,
             )
             self._agent_connections.pop(agent_id, None)
             task = self._listen_tasks.pop(agent_id, None)
@@ -366,7 +371,10 @@ class GameServerClient:
                 delay = min(delay * 2, 10.0)
                 logger.warning(
                     "Reconnect failed for agent %s (attempt %d/%d): %s",
-                    agent_id, attempt, max_retries, e,
+                    agent_id,
+                    attempt,
+                    max_retries,
+                    e,
                 )
 
         logger.error("Failed to reconnect agent %s after %d attempts", agent_id, max_retries)
@@ -390,12 +398,44 @@ class GameServerClient:
                     if locs:
                         self._locations = locs
         except websockets.ConnectionClosed:
-            logger.warning("Game server viewer connection closed")
+            logger.warning("Game server viewer connection closed, reconnecting...")
+            self._viewer_connection = None
+            self._listen_tasks.pop("__viewer__", None)
+            await self._reconnect_viewer()
+            return
         except asyncio.CancelledError:
             raise
 
         self._viewer_connection = None
         self._listen_tasks.pop("__viewer__", None)
+
+    async def _reconnect_viewer(self, max_retries: int = 5) -> None:
+        """Reconnect the viewer WebSocket with exponential backoff.
+
+        Mirrors ``_reconnect_agent`` so a brief game-server blip doesn't
+        permanently lose the viewer's ``locations`` stream.
+        """
+        for attempt in range(1, max_retries + 1):
+            delay = min(30, 2**attempt)
+            logger.info(
+                "Viewer reconnect attempt %d/%d (waiting %ds)",
+                attempt,
+                max_retries,
+                delay,
+            )
+            await asyncio.sleep(delay)
+            try:
+                await self.connect_viewer()
+                logger.info("Viewer reconnected on attempt %d", attempt)
+                return
+            except Exception as exc:
+                logger.warning(
+                    "Viewer reconnect attempt %d/%d failed: %s",
+                    attempt,
+                    max_retries,
+                    exc,
+                )
+        logger.error("Viewer failed to reconnect after %d attempts", max_retries)
 
 
 # Module-level singleton

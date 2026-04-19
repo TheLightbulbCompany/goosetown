@@ -220,25 +220,8 @@ func _on_sprite_loaded(args: Array) -> void:
 func _load_sprite_for_agent(agent_id: String, url: String, animation_name: String) -> void:
 	if not OS.has_feature("web"):
 		return
-	var js_code := """
-		(function() {
-			fetch('%s')
-				.then(function(r) { return r.blob(); })
-				.then(function(b) {
-					var reader = new FileReader();
-					reader.onloadend = function() {
-						var base64 = reader.result.split(',')[1];
-						if (window.godotUpdateAgentSprite) {
-							window.godotUpdateAgentSprite(JSON.stringify({
-								id: '%s',
-								base64: base64,
-								animation: '%s'
-							}));
-						}
-					};
-					reader.readAsDataURL(b);
-				})
-				.catch(function(e) { console.error('Sprite load failed:', e); });
-		})();
-	""" % [url, agent_id, animation_name]
-	JavaScriptBridge.eval(js_code)
+	JsBridge.call_js("load_sprite", {
+		"url": url,
+		"agent_id": agent_id,
+		"animation_name": animation_name,
+	})

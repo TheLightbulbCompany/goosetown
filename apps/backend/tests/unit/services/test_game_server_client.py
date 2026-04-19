@@ -145,16 +145,19 @@ async def test_listen_agent_clears_connection_on_disconnect():
 
     mock_ws = AsyncMock()
     mock_ws.__aiter__ = MagicMock(
-        return_value=AsyncMock(
-            __anext__=AsyncMock(side_effect=websockets.ConnectionClosed(None, None))
-        )
+        return_value=AsyncMock(__anext__=AsyncMock(side_effect=websockets.ConnectionClosed(None, None)))
     )
 
     client._agent_connections["agent-1"] = mock_ws
     client._agent_connect_params["agent-1"] = {
-        "type": "agent", "agent_id": "agent-1", "name": "Test",
-        "sprite_url": "", "location": "plaza", "context": "town",
-        "user_id": "", "sprite_animations": {},
+        "type": "agent",
+        "agent_id": "agent-1",
+        "name": "Test",
+        "sprite_url": "",
+        "location": "plaza",
+        "context": "town",
+        "user_id": "",
+        "sprite_animations": {},
     }
 
     client._reconnect_agent = AsyncMock()
@@ -173,15 +176,11 @@ async def test_connect_agent_replaces_existing_connection():
     mock_ws_old = AsyncMock()
     mock_ws_old.state = 1  # Appears OPEN
     mock_ws_old.close = AsyncMock()
-    mock_ws_old.__aiter__ = MagicMock(
-        return_value=AsyncMock(__anext__=AsyncMock(side_effect=StopAsyncIteration))
-    )
+    mock_ws_old.__aiter__ = MagicMock(return_value=AsyncMock(__anext__=AsyncMock(side_effect=StopAsyncIteration)))
 
     mock_ws_new = AsyncMock()
     mock_ws_new.send = AsyncMock()
-    mock_ws_new.__aiter__ = MagicMock(
-        return_value=AsyncMock(__anext__=AsyncMock(side_effect=StopAsyncIteration))
-    )
+    mock_ws_new.__aiter__ = MagicMock(return_value=AsyncMock(__anext__=AsyncMock(side_effect=StopAsyncIteration)))
 
     client = GameServerClient(base_url="ws://test:8080")
     client._agent_connections["agent-1"] = mock_ws_old
@@ -208,9 +207,12 @@ async def test_update_agent_sprites_sends_command_on_open_connection():
     fake_ws = AsyncMock()
     client._agent_connections["agent-1"] = fake_ws
 
-    await client.update_agent_sprites("agent-1", {
-        "walk": {"url": "https://cdn.example.com/walk.png", "frameCount": 6, "fps": 8},
-    })
+    await client.update_agent_sprites(
+        "agent-1",
+        {
+            "walk": {"url": "https://cdn.example.com/walk.png", "frameCount": 6, "fps": 8},
+        },
+    )
 
     fake_ws.send.assert_awaited_once()
     sent = json.loads(fake_ws.send.call_args[0][0])

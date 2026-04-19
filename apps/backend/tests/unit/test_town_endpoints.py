@@ -118,9 +118,7 @@ def _seed_conversation(
 class TestApartmentEndpoint:
     def test_returns_only_current_users_agents(self, client, dynamodb_tables):
         _seed_agent(dynamodb_tables, "a-1", user_id=TEST_USER_ID, agent_name="mine")
-        _seed_agent(
-            dynamodb_tables, "a-2", user_id=OTHER_USER_ID, agent_name="somebody_elses"
-        )
+        _seed_agent(dynamodb_tables, "a-2", user_id=OTHER_USER_ID, agent_name="somebody_elses")
 
         resp = client.get("/api/v1/town/apartment")
         assert resp.status_code == 200
@@ -141,9 +139,7 @@ class TestApartmentEndpoint:
         resp = client.get("/api/v1/town/apartment")
         assert resp.status_code == 200
         agent = resp.json()["agents"][0]
-        assert agent["sprite_url"] == (
-            "https://cdn.example/sprites/a-1/walk.png?v=1776400000"
-        )
+        assert agent["sprite_url"] == ("https://cdn.example/sprites/a-1/walk.png?v=1776400000")
 
     def test_empty_sprite_url_when_sprite_not_ready(self, client, dynamodb_tables):
         """108068f fix — sprite_ready=False must NOT return a URL (or a
@@ -176,17 +172,11 @@ class TestConversationsEndpoint:
         resp = client.get("/api/v1/town/conversations")
         assert resp.status_code == 200
 
-    def test_returns_conversations_with_full_public_log(
-        self, client, dynamodb_tables
-    ):
+    def test_returns_conversations_with_full_public_log(self, client, dynamodb_tables):
         """Modal UX (53038d7) depends on the full public_log being returned,
         not a truncated summary."""
-        _seed_agent(
-            dynamodb_tables, "agent-a", agent_name="a", display_name="Agent A"
-        )
-        _seed_agent(
-            dynamodb_tables, "agent-b", agent_name="b", display_name="Agent B"
-        )
+        _seed_agent(dynamodb_tables, "agent-a", agent_name="a", display_name="Agent A")
+        _seed_agent(dynamodb_tables, "agent-b", agent_name="b", display_name="Agent B")
         _seed_conversation(
             dynamodb_tables,
             "conv-1",
@@ -213,12 +203,8 @@ class TestConversationsEndpoint:
         assert conv["public_log"][0] == {"speaker": "Agent A", "text": "hi"}
 
     def test_limit_parameter_respected(self, client, dynamodb_tables):
-        _seed_agent(
-            dynamodb_tables, "agent-a", agent_name="a", display_name="Agent A"
-        )
-        _seed_agent(
-            dynamodb_tables, "agent-b", agent_name="b", display_name="Agent B"
-        )
+        _seed_agent(dynamodb_tables, "agent-a", agent_name="a", display_name="Agent A")
+        _seed_agent(dynamodb_tables, "agent-b", agent_name="b", display_name="Agent B")
         for i in range(5):
             _seed_conversation(
                 dynamodb_tables,
@@ -234,9 +220,7 @@ class TestConversationsEndpoint:
         assert resp.status_code == 200
         assert len(resp.json()["conversations"]) == 3
 
-    def test_missing_participant_falls_back_to_unknown(
-        self, client, dynamodb_tables
-    ):
+    def test_missing_participant_falls_back_to_unknown(self, client, dynamodb_tables):
         """If an agent record was deleted but a conversation still references
         it, we shouldn't 500 — just show 'Unknown'."""
         _seed_agent(dynamodb_tables, "agent-a", display_name="Rachel")
@@ -262,9 +246,7 @@ class TestConversationsEndpoint:
 
 
 class TestInstanceEndpoint:
-    def test_creates_instance_for_new_user_and_returns_token(
-        self, client, dynamodb_tables
-    ):
+    def test_creates_instance_for_new_user_and_returns_token(self, client, dynamodb_tables):
         resp = client.post("/api/v1/town/instance")
         assert resp.status_code == 200
         body = resp.json()
@@ -282,3 +264,53 @@ class TestInstanceEndpoint:
         # Same apartment unit means same instance was reused.
         assert first["apartment_unit"] == second["apartment_unit"]
         assert first["town_token"] == second["town_token"]
+
+
+class TestWsMessageValidation:
+    """Boundary-validation regression tests for /ws-message under
+    WS_STRICT_VALIDATION=True (the default).
+
+    Auth setup: the shared-secret check at town.py is skipped when
+    ``settings.ENVIRONMENT == "dev"`` AND ``settings.WS_LAMBDA_SECRET`` is
+    falsy. The conftest sets ENVIRONMENT=dev; we just need to make sure the
+    secret is empty. If the conftest sets a value, pass it as a header.
+    """
+
+    _HEADERS = {"x-ws-lambda-secret": ""}
+
+    def test_rejects_unknown_type(self, client) -> None:
+        resp = client.post(
+            "/api/v1/town/ws-message",
+            json={
+                "connectionId": "c1",
+                "principalId": "p1",
+                "body": {"type": "town_eat_sandwich"},
+            },
+            headers=self._HEADERS,
+        )
+        assert resp.status_code == 422
+
+    def test_rejects_agent_act_with_unknown_action(self, client) -> None:
+        resp = client.post(
+            "/api/v1/town/ws-message",
+            json={
+                "connectionId": "c1",
+                "principalId": "p1",
+                "body": {"type": "town_agent_act", "action": "eat_the_pigeons"},
+            },
+            headers=self._HEADERS,
+        )
+        assert resp.status_code == 422
+
+    def test_rejects_say_with_missing_text(self, client) -> None:
+        # say with no conv_id and no message — missing 'message' triggers rejection.
+        resp = client.post(
+            "/api/v1/town/ws-message",
+            json={
+                "connectionId": "c1",
+                "principalId": "p1",
+                "body": {"type": "town_agent_act", "action": "say"},
+            },
+            headers=self._HEADERS,
+        )
+        assert resp.status_code == 422

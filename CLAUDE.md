@@ -319,21 +319,31 @@ aws sso login --profile isol8-admin
 ### Still Open
 
 **High priority:**
-- **Token in WebSocket URL**: Daemon passes token as query param (`?token=...`), visible in logs. Should use header or subprotocol.
-- **JWKS stale cache**: If Clerk JWKS fetch fails, uses stale cache indefinitely (auth.py:47-49). Should cap stale usage to ~5 minutes.
-- **DynamoDB scan with no limit**: `get_all_relationships()` scans entire table, then queries conversations for each. O(n*m).
-- **Silent PixelLab job-poll failures**: `pixellab_service.py:365` catches exceptions in job polling without propagating — PixelLab outages can look like stalls.
+- **Token in WebSocket URL**: Daemon passes token as query param (`?token=...`), visible in logs. Should use header or subprotocol. Requires coordinated daemon + API Gateway change.
+- **Circular import: sprite_queue → routers.town**: `sprite_queue.py:74` does `from routers.town import _sprite_pipeline_task`. A service importing from a router is an inverted dependency. Fix: move `_sprite_pipeline_task` into `core/services/sprite_pipeline.py`.
+- **Hot-path O(N²) DynamoDB reads in `_send_to_daemon`**: `routers/town.py:85-126` hits DynamoDB twice per game-server broadcast (every 2s per agent), plus per-nearby-agent lookups inside `get_nearby_conversations`. Fix: cache `daemonConnectionId` on the in-memory `AgentConnection`.
+- **TOCTOU on agent registration**: `routers/town.py:773-845` checks `get_agent_by_name` then calls `opt_in` — two concurrent registers can race. Fix: add `ConditionExpression="attribute_not_exists(id)"` to the `put_item` inside `opt_in`.
+- **Server-side iteration-during-mutation risk**: `agent_controller.gd:269-289` iterates `_agents` / `_speech_timers` in `_process` while proximity/arrival checks may erase keys. Fix: snapshot keys before iterating.
+- **CDK deploy ordering hazard**: `compute-stack.ts:138` uses `Fn.importValue` for `goosetown-${env}-management-api-url` (exported by ApiStack), but deploy order is `Compute → Api`. Fresh deploys fail at CloudFormation time. Fix: declare explicit stack dependency or export from an earlier stack.
+- **ALB rolling update blocked by single task**: `compute-stack.ts:222` sets `minHealthyPercent: 100` with `desiredCount: 1` — no window for a rolling update; failed health check crash-loops. Fix: raise `desiredCount` to 2 or drop `minHealthyPercent` to 0.
+- **Single game server replica, no auto-scaling**: `gameserver-stack.ts:76-89` has `desiredCount: 1`. Agent reconnects cap at 5 attempts, so agents drop permanently if the task restarts > ~1 min. Fix: CloudWatch alarm + documented restart procedure at minimum; multi-replica when sharding is designed.
+- **Single NAT gateway across 2 AZs**: `network-stack.ts:18` — NAT AZ failure stops all private-subnet egress. ~$32/month per env to fix with `natGateways: 2`.
 
 **Medium priority:**
-- **Unused frontend code**: `ActivityFeed.tsx` (never imported), `react-modal` dep (never used), `data/characters.ts` (empty stubs).
-- **Dual REST+WS polling**: `useTownState.ts` runs both REST polling and WebSocket without mutual exclusion.
-- **No sprite CORS handling in Godot**: `agent.gd` fetches sprites via JS but has no error recovery if CORS fails.
-- **Dev token secret in repo**: `town_token.py:26` falls back to hardcoded `"dev-town-secret-change-in-prod"` (dev-only, but still).
-- **Decimal conversion inconsistency**: `town_service.py` converts float→Decimal but not int→Decimal for DynamoDB writes.
-- **No viewer reconnect**: Viewer WebSocket disconnect in `game_server_client.py` has no reconnection logic (unlike agents, which have `_reconnect_agent` with 5 retries).
+- **Dev token secret in repo**: `town_token.py:26` falls back to hardcoded `"dev-town-secret-change-in-prod"` (dev-only fallback; production path already raises). By design for local dev ergonomics — not worth fixing.
+- **Frontend `any` casts leak API shapes**: `useTownState.ts:23-28` casts `import.meta.env as any` (also in `useApartment.ts`, `useConversations.ts`); `JoinTownModal.tsx` types agents as `any[]`; `types/town.ts:24` has `conversations: any[]`. Fix: declare env vars in `vite-env.d.ts`, extract `InstanceAgent` interface, type `TownWorld.conversations`.
+- **MusicButton keyboard handler stale closure**: `MusicButton.tsx:30-37` — `handleKeyPress` reads `isPlaying` from initial render closure; M-key toggles incorrectly after first press. Fix: `useRef` or co-locate the handler with the playback effect.
+- **Read-modify-write race on relationship affinity**: `town_service.py:553-584` — concurrent conversation turns between the same pair can apply the same delta twice. Fix: DynamoDB atomic `ADD` with clamp-on-read.
+- **JWKS refresh has no lock**: `core/auth.py:22` — concurrent cache misses can issue duplicate Clerk fetches. Fix: `asyncio.Lock` around refresh path.
+- **Authorizer Lambda timeout may be tight**: `api-stack.ts:50-51` — 10s timeout covers JWKS fetch + JWT validation under cold start. Raise to 15s and pin reserved concurrency of 1.
+- **`/apartment` fetches all active agents globally**: `routers/town.py:1045-1079` filters by `userId` in Python after scanning all active agents. Fix: `userId` GSI query.
 
 ### Resolved (kept here for search visibility)
 
+- ~~JS injection in Godot WebGL client~~: 2026-04-19 sub-project #1. `JsBridge.call_js` helper in `js_bridge.gd:81-122` serializes user-controlled payload to JSON, stashes on `window[key]` via `JavaScriptObject.set`, and evals only a template with regex-validated `fn_name` (`^[a-zA-Z0-9_]+$`) and `key` (`^__gt_payload_[0-9]+_[0-9]+$`). Call sites migrated: `agent.gd:_load_sprite_from_url`, `agent_manager.gd:_load_sprite_for_agent`, `emit_to_react`. Grep confirms zero `JavaScriptBridge.eval.*%` sites in `apps/godot/scripts/`.
+- ~~`/ws-message` body has no schema validation~~: 2026-04-19 sub-project #1. `core/ws_models.py` defines a flat discriminated union (`WsMessage` over `TownAgentConnect | TownAgentAct | TownDisconnect | TownSubscribe`); `routers/town.py:handle_ws_message` validates at the boundary via `TypeAdapter(WsMessage).validate_python(body)`, gated on `WS_STRICT_VALIDATION=true` (48h rollback lever). Malformed bodies return 422.
+- ~~WS packet size unbounded on server~~: 2026-04-19 sub-project #1. `server_protocol.gd` caps packets at `MAX_PACKET_BYTES = 262144` (256 KB); oversize packets disconnect the peer with a WARN log.
+- ~~Pre-auth peer accumulation~~: 2026-04-19 sub-project #1. `server_protocol.gd` tracks `_peer_connected_at` and evicts peers that don't send a first `type` message within `IDENTIFICATION_TIMEOUT_SEC = 10.0`.
 - ~~WebSocket message type mismatch~~: `useTownState.ts:106` handles `msg.event === 'world_state'` and legacy `msg.type === 'town_state'` (line 189).
 - ~~Facing direction encoding~~: `agent.gd:_parse_facing` (line 408) accepts both plain strings and legacy JSON dicts.
 - ~~No apartment map~~: `apps/godot/maps/apartment/ApartmentMap.tscn` exists with `apartment_manager.gd` and `apartment_agent_controller.gd` server-side.
@@ -346,6 +356,14 @@ aws sso login --profile isol8-admin
 - ~~Sprite CORP header missing~~: CloudFront `ResponseHeadersPolicy` + CI curl smoke test (`DeployVercelDev` post-step + Playwright `smoke.spec.ts`).
 - ~~Sprite URLs un-cache-busted~~: `/apartment` emits `?v=<spriteUpdatedAt>`; `TownService.update_agent_state` auto-bumps on `sprite_url` write.
 - ~~Energy at 0 never enforced~~: `_apply_event_with_sleep_guard` auto-sleeps, refills energy, closes WS; `town_agent_act` soft-gate rejects non-idle actions at energy=0.
+- ~~JWKS stale-cache indefinite~~: `JWKS_STALE_GRACE = 5 min` in `core/auth.py`; fetch errors beyond that raise.
+- ~~Silent PixelLab job-poll failures~~: `pixellab_service.py:_poll_jobs` now logs a WARNING per failed poll with job id + attempt.
+- ~~get_all_relationships O(n*m)~~: deleted — orphan code, only used by its own test.
+- ~~No viewer reconnect~~: `game_server_client._reconnect_viewer` mirrors `_reconnect_agent`, 5 attempts with exponential backoff.
+- ~~Unused frontend code (ActivityFeed, react-modal, data/characters.ts)~~: already removed.
+- ~~Dual REST+WS polling without mutual exclusion~~: `useTownState.ts:239` gates REST poll on `wsConnectedRef.current`; REST yields when WS is active.
+- ~~Decimal conversion inconsistency~~: false alarm — boto3 Table accepts native `int` for DynamoDB number type; only floats need Decimal conversion (which `town_service.py:271` does correctly).
+- ~~No sprite CORS handling in Godot~~: resolved-by-prevention — CORP header fix + cache-bust versioning + post-deploy smoke test eliminate the sprite failure modes that would have needed client-side recovery. Existing shadow-placeholder fallback handles any residual case.
 
 ## Production Roadmap
 
@@ -360,10 +378,11 @@ aws sso login --profile isol8-admin
 - [x] Energy-exhaustion enforcement (server-initiated sleep + soft-gate)
 - [x] Sprite CORP / cache-bust / post-deploy curl regression guard
 - [ ] Add pagination to relationship scan (still O(n*m))
-- [ ] Cap JWKS stale-cache age (currently unbounded)
-- [ ] Surface PixelLab job-poll failures instead of swallowing (pixellab_service.py:365)
+- [x] Cap JWKS stale-cache age (`JWKS_STALE_GRACE = 5 min` in `core/auth.py`)
+- [x] Surface PixelLab job-poll failures (`pixellab_service.py:_poll_jobs` logs WARNING per failed poll)
 - [ ] Test full agent lifecycle end-to-end in CI (skipped for Clerk-creds reasons)
-- [x] Frontend + backend + E2E test coverage in CI (215 backend / 17 frontend / 2 smoke)
+- [x] Frontend + backend + E2E test coverage in CI (283 backend / 40 frontend / 25 Godot / 3 smoke)
+- [ ] Address code-review findings (2026-04-19): sub-project #1 (security hardening at trust boundaries) complete; remaining sub-projects — CDK deploy ordering + resilience, backend service-layer decomposition, concurrency correctness, hot-path perf + frontend type hygiene, test coverage floor — see Known Issues
 
 ### Phase 2: Apartment System (make agents have a home)
 

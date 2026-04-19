@@ -22,6 +22,7 @@ def _make_solid_rotation_png(color: tuple[int, int, int]) -> bytes:
 
 def test_frame_size_is_96():
     from core.services.sprite_storage import FRAME_SIZE, SHEET_HEIGHT, SHEET_WIDTH
+
     assert FRAME_SIZE == 96
     assert SHEET_WIDTH == 576  # 6 * 96
     assert SHEET_HEIGHT == 384  # 4 * 96
@@ -30,8 +31,8 @@ def test_frame_size_is_96():
 def test_build_static_spritesheet_is_288_by_192():
     rotations = {
         "south": _make_solid_rotation_png((255, 0, 0)),
-        "west":  _make_solid_rotation_png((0, 255, 0)),
-        "east":  _make_solid_rotation_png((0, 0, 255)),
+        "west": _make_solid_rotation_png((0, 255, 0)),
+        "east": _make_solid_rotation_png((0, 0, 255)),
         "north": _make_solid_rotation_png((255, 255, 0)),
     }
 
@@ -45,8 +46,8 @@ def test_build_static_spritesheet_is_288_by_192():
 def test_build_static_spritesheet_row_columns_are_identical():
     rotations = {
         "south": _make_solid_rotation_png((255, 0, 0)),
-        "west":  _make_solid_rotation_png((0, 255, 0)),
-        "east":  _make_solid_rotation_png((0, 0, 255)),
+        "west": _make_solid_rotation_png((0, 255, 0)),
+        "east": _make_solid_rotation_png((0, 0, 255)),
         "north": _make_solid_rotation_png((255, 255, 0)),
     }
 
@@ -79,6 +80,7 @@ def test_upload_sprite_to_s3_custom_filename():
         mock_s3 = MagicMock()
         mock_boto3.client.return_value = mock_s3
         from core.services.sprite_storage import upload_sprite_to_s3
+
         key = upload_sprite_to_s3(b"png-data", "agent-123", "test-bucket", filename="idle.png")
         assert key == "sprites/agent-123/idle.png"
         mock_s3.put_object.assert_called_once()
@@ -91,6 +93,7 @@ def test_upload_sprite_to_s3_default_filename():
         mock_s3 = MagicMock()
         mock_boto3.client.return_value = mock_s3
         from core.services.sprite_storage import upload_sprite_to_s3
+
         key = upload_sprite_to_s3(b"png-data", "agent-456", "test-bucket")
         assert key == "sprites/agent-456/walk.png"
 
@@ -108,6 +111,7 @@ def _make_test_frame(width: int = 136, height: int = 136, color: tuple = (255, 0
 
 def test_composite_animation_spritesheet_4_dirs_6_frames():
     from core.services.sprite_storage import FRAME_SIZE, composite_animation_spritesheet
+
     frames = _make_test_frame()
     direction_frames = {
         "south": [frames] * 6,
@@ -126,6 +130,7 @@ def test_composite_animation_spritesheet_4_dirs_6_frames():
 
 def test_composite_animation_spritesheet_partial_directions():
     from core.services.sprite_storage import FRAME_SIZE, composite_animation_spritesheet
+
     frames = _make_test_frame()
     direction_frames = {
         "south": [frames] * 4,
@@ -142,4 +147,5 @@ def test_composite_animation_spritesheet_partial_directions():
 
 def test_composite_animation_spritesheet_empty_returns_none():
     from core.services.sprite_storage import composite_animation_spritesheet
+
     assert composite_animation_spritesheet({}) is None

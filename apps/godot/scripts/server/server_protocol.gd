@@ -24,12 +24,28 @@ signal command_received(peer_id: int, data: Dictionary)
 ## lifecycle and will disconnect explicitly when needed.
 const PEER_TIMEOUT: float = 600.0  # 10 minutes
 
+## Maximum WS frame size. Protects against memory exhaustion from a hostile
+## or broken peer. World-state broadcasts with ~20 agents are < 8 KB; 256 KB
+## gives generous headroom.
+const MAX_PACKET_BYTES: int = 262144  # 256 KB
+
+## Peers that connect but never send a first ``type`` message within this
+## window are evicted. Protects against TCP-level squatting.
+const IDENTIFICATION_TIMEOUT_SEC: float = 10.0
+
+
+## Pure helper: is this packet size acceptable?
+func _should_accept_packet_size(size: int) -> bool:
+	return size <= MAX_PACKET_BYTES
+
+
 var _tcp_server: TCPServer = null
 var _peers: Dictionary = {}  # peer_id -> WebSocketPeer
 var _pending_tcp: Dictionary = {}  # peer_id -> StreamPeerTCP (awaiting WS upgrade)
 var _identified: Dictionary = {}  # peer_id -> bool (has sent first "type" message)
 var _peer_type: Dictionary = {}  # peer_id -> String ("viewer" or "agent")
 var _last_message_time: Dictionary = {}  # peer_id -> float (Time.get_unix_time_from_system)
+var _peer_connected_at: Dictionary = {}  # peer_id -> float (Time.get_unix_time_from_system)
 var _next_peer_id: int = 1
 
 
@@ -63,6 +79,7 @@ func stop() -> void:
 	_pending_tcp.clear()
 
 	_identified.clear()
+	_peer_connected_at.clear()
 	_next_peer_id = 1
 
 	if _tcp_server != null:
@@ -129,6 +146,7 @@ func _process(_delta: float) -> void:
 		_peers[peer_id] = ws
 		_identified[peer_id] = false
 		_last_message_time[peer_id] = Time.get_unix_time_from_system()
+		_peer_connected_at[peer_id] = Time.get_unix_time_from_system()
 		upgraded_ids.append(peer_id)
 
 	for peer_id in upgraded_ids:
@@ -155,6 +173,14 @@ func _process(_delta: float) -> void:
 		# Read all available packets.
 		while ws.get_available_packet_count() > 0:
 			var packet := ws.get_packet()
+			if not _should_accept_packet_size(packet.size()):
+				push_warning(
+					"ServerProtocol: peer %d sent oversize packet (%d bytes), disconnecting"
+					% [peer_id, packet.size()]
+				)
+				ws.close()
+				disconnected_ids.append(peer_id)
+				break
 			var text := packet.get_string_from_utf8()
 			_last_message_time[peer_id] = Time.get_unix_time_from_system()
 			_handle_message(peer_id, text)
@@ -168,6 +194,19 @@ func _process(_delta: float) -> void:
 				ws.close()
 				disconnected_ids.append(peer_id)
 
+	# Evict unidentified peers past the timeout window.
+	var stale_peers: Array = _unidentified_peers_to_evict(Time.get_unix_time_from_system())
+	for peer_id in stale_peers:
+		print(
+			"ServerProtocol: peer %d unidentified after %.1fs, disconnecting"
+			% [peer_id, Time.get_unix_time_from_system() - _peer_connected_at[peer_id]]
+		)
+		if _peers.has(peer_id):
+			var ws: WebSocketPeer = _peers[peer_id]
+			ws.close()
+		disconnected_ids.append(peer_id)
+		_peer_connected_at.erase(peer_id)
+
 	# Emit disconnected signals and clean up.
 	for peer_id in disconnected_ids:
 		_peers.erase(peer_id)
@@ -175,8 +214,21 @@ func _process(_delta: float) -> void:
 		_identified.erase(peer_id)
 		_peer_type.erase(peer_id)
 		_last_message_time.erase(peer_id)
+		_peer_connected_at.erase(peer_id)
 		if was_identified:
 			client_disconnected.emit(peer_id)
+
+
+## Pure helper: return peer_ids whose pre-auth window has expired.
+## ``now`` is expected to be ``Time.get_unix_time_from_system()`` in prod; tests
+## pass a controlled value to avoid flake.
+func _unidentified_peers_to_evict(now: float) -> Array:
+	var result: Array = []
+	for peer_id in _peer_connected_at.keys():
+		var connected_at: float = _peer_connected_at[peer_id]
+		if now - connected_at > IDENTIFICATION_TIMEOUT_SEC:
+			result.append(peer_id)
+	return result
 
 
 func _handle_message(peer_id: int, text: String) -> void:
@@ -195,6 +247,7 @@ func _handle_message(peer_id: int, text: String) -> void:
 	if not _identified.get(peer_id, false):
 		if data.has("type"):
 			_identified[peer_id] = true
+			_peer_connected_at.erase(peer_id)
 			_peer_type[peer_id] = str(data.get("type", ""))
 			client_connected.emit(peer_id, data)
 		else:

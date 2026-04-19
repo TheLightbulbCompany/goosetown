@@ -12,3 +12,6 @@ export_presets.cfg
 
 # PixelLab terrain imports (generated, large)
 pixellab_import/
+
+# GdUnit4 test reports (generated)
+reports/

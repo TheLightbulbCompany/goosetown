@@ -72,9 +72,7 @@ def translate_agent_state(agent_state: dict, enrichment: dict) -> str:
     current_location = agent_state.get("location", "unknown")
     location_context = agent_state.get("context", "town")
     available_activities = get_activities_for_location(current_location)
-    available_activities = [
-        a for a in available_activities if a.location_context == location_context
-    ]
+    available_activities = [a for a in available_activities if a.location_context == location_context]
 
     if available_activities:
         lines.append("")

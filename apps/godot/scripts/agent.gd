@@ -422,26 +422,7 @@ func _parse_facing(facing_str: String) -> void:
 func _load_sprite_from_url(url: String) -> void:
 	if not OS.has_feature("web"):
 		return
-
-	var js_code: String = """
-	(async function() {
-		try {
-			var resp = await fetch('%s');
-			var blob = await resp.blob();
-			var reader = new FileReader();
-			reader.onload = function() {
-				var base64 = reader.result.split(',')[1];
-				if (window.godotUpdateAgentSprite) {
-					window.godotUpdateAgentSprite(JSON.stringify({id: '%s', base64: base64}));
-				}
-			};
-			reader.readAsDataURL(blob);
-		} catch(e) {
-			console.warn('Failed to load sprite:', e);
-		}
-	})();
-	""" % [url, agent_id]
-	JavaScriptBridge.eval(js_code)
+	JsBridge.call_js("load_sprite", {"url": url, "agent_id": agent_id})
 
 # ---------------------------------------------------------------------------
 # Signal callbacks

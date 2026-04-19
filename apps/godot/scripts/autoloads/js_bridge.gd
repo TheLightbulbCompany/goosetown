@@ -75,13 +75,60 @@ func _emit_ready_event() -> void:
 	""")
 
 
+## Build the JS string that call_js() will eval. Pure function for testability.
+## Both inputs MUST come from non-user-controlled sources (fn_name is a
+## whitelist constant in every call site; key is generated here from time+rand).
+## User payload data goes through window.set() — never into the eval string.
+func _build_eval_script(fn_name: String, key: String) -> String:
+	# Defense-in-depth: key must match the pattern call_js() generates.
+	# Prevents a future caller from accidentally interpolating a hostile
+	# value into the eval string.
+	var re := RegEx.new()
+	re.compile("^__gt_payload_[0-9]+_[0-9]+$")
+	if re.search(key) == null:
+		push_error("JsBridge._build_eval_script: rejected malformed key %s" % key)
+		return ""
+	return (
+		"(function(){"
+		+ "var p = window['%s'];" % key
+		+ "if(window.__gt_%s && p)window.__gt_%s(JSON.parse(p));" % [fn_name, fn_name]
+		+ "delete window['%s'];" % key
+		+ "})()"
+	)
+
+
+## Call a pre-defined JS handler (window.__gt_<fn_name>) with a dictionary
+## payload. User-controlled values are stashed on the window object via the
+## JavaScriptObject.set API, never interpolated into the eval string.
+##
+## The receiving side (frontend JS) must define window.__gt_<fn_name>(args).
+func call_js(fn_name: String, args: Dictionary) -> void:
+	if not OS.has_feature("web"):
+		return
+	# fn_name becomes part of the eval string (`window.__gt_<fn_name>`).
+	# Require identifier-safe characters to prevent injection.
+	var fn_re := RegEx.new()
+	fn_re.compile("^[a-zA-Z0-9_]+$")
+	if fn_re.search(fn_name) == null:
+		push_error("JsBridge.call_js: rejected unsafe fn_name: %s" % fn_name)
+		return
+	var window: JavaScriptObject = JavaScriptBridge.get_interface("window")
+	var json_str: String = JSON.stringify(args)
+	var key: String = "__gt_payload_%d_%d" % [Time.get_ticks_msec(), randi()]
+	var script: String = _build_eval_script(fn_name, key)
+	if script == "":
+		return
+	# Stash user data as a string property — never touches eval.
+	window.set(key, json_str)
+	JavaScriptBridge.eval(script)
+
+
 func emit_to_react(event_name: String, data: Dictionary = {}) -> void:
-	if OS.has_feature("web"):
-		var json_str: String = JSON.stringify(data)
-		JavaScriptBridge.eval(
-			"window.dispatchEvent(new CustomEvent('godot_%s', {detail: JSON.parse('%s')}))"
-			% [event_name, json_str]
-		)
+	# event_name is always a constant literal at the call site (whitelist);
+	# data goes through call_js which stashes it via window.set().
+	if not OS.has_feature("web"):
+		return
+	call_js("dispatch_event_" + event_name, data)
 
 
 func _on_spawn_agent(args: Array) -> void:

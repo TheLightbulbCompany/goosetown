@@ -19,12 +19,12 @@ PIXELLAB_API_URL = "https://api.pixellab.ai/v2"
 # ---------------------------------------------------------------------------
 ANIMATION_REGISTRY: dict[str, dict] = {
     # Templates (1 gen/direction, auto all directions)
-    "walk":       {"type": "template", "template_id": "walk", "fps": 8.0, "auto_generate": True},
-    "idle":       {"type": "template", "template_id": "breathing-idle", "fps": 4.0, "auto_generate": True},
-    "run":        {"type": "template", "template_id": "running-6-frames", "fps": 12.0, "auto_generate": False},
-    "drink":      {"type": "template", "template_id": "drinking", "fps": 6.0, "auto_generate": False},
-    "crouch":     {"type": "template", "template_id": "crouching", "fps": 6.0, "auto_generate": False},
-    "pick_up":    {"type": "template", "template_id": "picking-up", "fps": 6.0, "auto_generate": False},
+    "walk": {"type": "template", "template_id": "walk", "fps": 8.0, "auto_generate": True},
+    "idle": {"type": "template", "template_id": "breathing-idle", "fps": 4.0, "auto_generate": True},
+    "run": {"type": "template", "template_id": "running-6-frames", "fps": 12.0, "auto_generate": False},
+    "drink": {"type": "template", "template_id": "drinking", "fps": 6.0, "auto_generate": False},
+    "crouch": {"type": "template", "template_id": "crouching", "fps": 6.0, "auto_generate": False},
+    "pick_up": {"type": "template", "template_id": "picking-up", "fps": 6.0, "auto_generate": False},
     # Custom V3 (generated lazily on first use)
     # Prompts describe the full movement sequence for PixelLab frame generation.
     "sitting": {
@@ -32,7 +32,6 @@ ANIMATION_REGISTRY: dict[str, dict] = {
         "auto_generate": False,
         "frames": 8,
         "fps": 1.0,
-
         "prompt": (
             "Sitting down relaxed on a low surface, hands resting on knees, "
             "gently shifting weight side to side, head tilting slightly, "
@@ -44,7 +43,6 @@ ANIMATION_REGISTRY: dict[str, dict] = {
         "auto_generate": False,
         "frames": 8,
         "fps": 1.0,
-
         "prompt": (
             "Sitting cross-legged holding an open book, eyes scanning the pages, "
             "one hand reaching to turn a page then returning, head nodding "
@@ -56,7 +54,6 @@ ANIMATION_REGISTRY: dict[str, dict] = {
         "auto_generate": False,
         "frames": 8,
         "fps": 2.0,
-
         "prompt": (
             "Sitting at a surface writing in a notebook, hand moving steadily "
             "across the page in short strokes, pausing briefly to think with "
@@ -68,7 +65,6 @@ ANIMATION_REGISTRY: dict[str, dict] = {
         "auto_generate": False,
         "frames": 8,
         "fps": 2.0,
-
         "prompt": (
             "Sitting hunched forward over a laptop, fingers tapping rapidly on "
             "the keyboard, occasionally leaning back to think then leaning "
@@ -135,7 +131,6 @@ ANIMATION_REGISTRY: dict[str, dict] = {
         "auto_generate": False,
         "frames": 8,
         "fps": 0.5,
-
         "prompt": (
             "Lying down on side in a curled sleeping position, chest slowly "
             "rising and falling with deep breaths, small subtle shifts in "
@@ -288,9 +283,13 @@ class PixelLabService:
                     # Assume PNG/JPEG encoded
                     frames.append(raw_bytes)
 
-            logger.info("Got %d frames from V2 job %s (%dx%d)", len(frames), job_id,
-                        images[0].get("width", 0) if images else 0,
-                        images[0].get("height", 0) if images else 0)
+            logger.info(
+                "Got %d frames from V2 job %s (%dx%d)",
+                len(frames),
+                job_id,
+                images[0].get("width", 0) if images else 0,
+                images[0].get("height", 0) if images else 0,
+            )
             return frames
         except Exception:
             logger.exception("Failed to get V2 frames from job %s", job_id)
@@ -361,18 +360,28 @@ class PixelLabService:
                         completed += 1
                     elif status == "failed":
                         failed += 1
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # Don't raise — a single transient PixelLab error
+                    # shouldn't abort the whole batch — but make the
+                    # failure visible so outages don't look like stalls.
+                    logger.warning(
+                        "PixelLab poll failed for job %s (%s attempt %d/%d): %s",
+                        jid,
+                        progress_label,
+                        attempt + 1,
+                        max_attempts,
+                        exc,
+                    )
 
             if on_progress:
-                await on_progress(
-                    f"{progress_label} {completed}/{len(job_ids)} done"
-                )
+                await on_progress(f"{progress_label} {completed}/{len(job_ids)} done")
 
             if completed + failed == len(job_ids):
                 logger.info(
                     "All jobs done for %s: %d completed, %d failed",
-                    progress_label, completed, failed,
+                    progress_label,
+                    completed,
+                    failed,
                 )
                 return completed > 0
 
@@ -412,12 +421,14 @@ class PixelLabService:
                     if template_id in existing:
                         logger.info(
                             "Template %s already exists on character %s, skipping",
-                            name, character_id,
+                            name,
+                            character_id,
                         )
                         results[name] = []
                         continue
                     job_ids = await self.animate_character(
-                        character_id, animation=template_id,
+                        character_id,
+                        animation=template_id,
                     )
                 elif config["type"] == "custom":
                     prompt: str = config["prompt"]
@@ -429,13 +440,16 @@ class PixelLabService:
                 else:
                     logger.warning(
                         "Unknown animation type for %s: %r",
-                        name, config.get("type"),
+                        name,
+                        config.get("type"),
                     )
                     continue
 
                 logger.info(
                     "Queued signup animation %r for %s: %d jobs",
-                    name, character_id, len(job_ids),
+                    name,
+                    character_id,
+                    len(job_ids),
                 )
                 results[name] = job_ids
 
@@ -448,13 +462,15 @@ class PixelLabService:
             except Exception:
                 logger.exception(
                     "Failed to queue signup animation %r for %s — continuing",
-                    name, character_id,
+                    name,
+                    character_id,
                 )
                 results.setdefault(name, [])
 
         logger.info(
             "Signup animations done for %s: %s",
-            character_id, {k: len(v) for k, v in results.items()},
+            character_id,
+            {k: len(v) for k, v in results.items()},
         )
         return results
 
@@ -469,7 +485,8 @@ class PixelLabService:
             char_data = await self.get_character(character_id)
         except Exception:
             logger.exception(
-                "Failed to get character %s for rotation fetch", character_id,
+                "Failed to get character %s for rotation fetch",
+                character_id,
             )
             return {}
 
@@ -483,7 +500,8 @@ class PixelLabService:
                 if not url:
                     logger.warning(
                         "No %s rotation URL for character %s",
-                        direction, character_id,
+                        direction,
+                        character_id,
                     )
                     continue
                 try:
@@ -493,14 +511,13 @@ class PixelLabService:
                 except Exception:
                     logger.exception(
                         "Failed to fetch %s rotation for character %s",
-                        direction, character_id,
+                        direction,
+                        character_id,
                     )
 
         return result
 
-    async def fetch_animation_spritesheets(
-        self, character_id: str
-    ) -> dict[str, dict[str, list[bytes]]]:
+    async def fetch_animation_spritesheets(self, character_id: str) -> dict[str, dict[str, list[bytes]]]:
         """Download animation frames grouped by clean API animation name and direction.
 
         Cross-references the character API (clean names like 'walk', 'breathing-idle')
@@ -557,7 +574,9 @@ class PixelLabService:
                 if anim_name is None:
                     logger.debug(
                         "No API match for ZIP folder %s (%s, %d frames)",
-                        folder_name, direction, num_frames,
+                        folder_name,
+                        direction,
+                        num_frames,
                     )
                     continue
 
@@ -573,7 +592,8 @@ class PixelLabService:
 
         logger.info(
             "Resolved %d animations from ZIP for character %s: %s",
-            len(result), character_id,
+            len(result),
+            character_id,
             {k: list(v.keys()) for k, v in result.items()},
         )
         return result
@@ -595,6 +615,7 @@ class PixelLabService:
                 resp = await client.get(url, timeout=30.0)
                 resp.raise_for_status()
                 import base64
+
                 b64 = base64.b64encode(resp.content).decode()
                 size = char_data.get("size", {})
                 w = size.get("width", 96)
@@ -658,7 +679,10 @@ class PixelLabService:
                     if resp.status_code not in (200, 202):
                         logger.error(
                             "PixelLab animate-with-text-v2 %s/%s %s: %s",
-                            animation_name, direction, resp.status_code, resp.text[:500],
+                            animation_name,
+                            direction,
+                            resp.status_code,
+                            resp.text[:500],
                         )
                         continue
                     data = resp.json()
@@ -667,16 +691,24 @@ class PixelLabService:
                         job_ids.append(job_id)
                         logger.info(
                             "Custom animation %s/%s queued for %s: job %s",
-                            animation_name, direction, character_id, job_id,
+                            animation_name,
+                            direction,
+                            character_id,
+                            job_id,
                         )
                 except Exception:
                     logger.exception(
                         "Failed to queue custom animation %s/%s for %s",
-                        animation_name, direction, character_id,
+                        animation_name,
+                        direction,
+                        character_id,
                     )
 
         logger.info(
             "Custom animation %s: %d/%d directions queued for character %s",
-            animation_name, len(job_ids), len(directions), character_id,
+            animation_name,
+            len(job_ids),
+            len(directions),
+            character_id,
         )
         return job_ids

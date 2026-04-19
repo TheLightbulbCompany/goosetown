@@ -1,4 +1,5 @@
 """Tests for PixelLabService.fetch_all_rotations."""
+
 import io
 import json
 import zipfile
@@ -15,8 +16,8 @@ async def test_fetch_all_rotations_returns_dict_of_bytes():
     stub_char = {
         "rotation_urls": {
             "south": "https://cdn.example.com/s.png",
-            "west":  "https://cdn.example.com/w.png",
-            "east":  "https://cdn.example.com/e.png",
+            "west": "https://cdn.example.com/w.png",
+            "east": "https://cdn.example.com/e.png",
             "north": "https://cdn.example.com/n.png",
         },
         "size": {"width": 96, "height": 96},
@@ -31,8 +32,10 @@ async def test_fetch_all_rotations_returns_dict_of_bytes():
     fake_client.__aenter__ = AsyncMock(return_value=fake_client)
     fake_client.__aexit__ = AsyncMock(return_value=None)
 
-    with patch.object(service, "get_character", AsyncMock(return_value=stub_char)), \
-         patch("core.services.pixellab_service.httpx.AsyncClient", return_value=fake_client):
+    with (
+        patch.object(service, "get_character", AsyncMock(return_value=stub_char)),
+        patch("core.services.pixellab_service.httpx.AsyncClient", return_value=fake_client),
+    ):
         result = await service.fetch_all_rotations("char-123")
 
     assert set(result.keys()) == {"south", "west", "east", "north"}
@@ -59,8 +62,10 @@ async def test_fetch_all_rotations_skips_missing_direction_urls():
     fake_client.__aenter__ = AsyncMock(return_value=fake_client)
     fake_client.__aexit__ = AsyncMock(return_value=None)
 
-    with patch.object(service, "get_character", AsyncMock(return_value=stub_char)), \
-         patch("core.services.pixellab_service.httpx.AsyncClient", return_value=fake_client):
+    with (
+        patch.object(service, "get_character", AsyncMock(return_value=stub_char)),
+        patch("core.services.pixellab_service.httpx.AsyncClient", return_value=fake_client),
+    ):
         result = await service.fetch_all_rotations("char-123")
 
     assert set(result.keys()) == {"south"}
@@ -92,8 +97,12 @@ def _make_test_zip() -> bytes:
             "animations": {
                 "walking-abc123": {"south": ["animations/walking-abc123/south/frame_000.png"]},
                 "walking-def456": {"west": ["animations/walking-def456/west/frame_000.png"]},
-                "animating-ghi789": {"south": ["animations/animating-ghi789/south/frame_000.png",
-                                                "animations/animating-ghi789/south/frame_001.png"]},
+                "animating-ghi789": {
+                    "south": [
+                        "animations/animating-ghi789/south/frame_000.png",
+                        "animations/animating-ghi789/south/frame_001.png",
+                    ]
+                },
             },
         },
     }

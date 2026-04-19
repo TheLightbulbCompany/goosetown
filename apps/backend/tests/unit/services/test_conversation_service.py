@@ -1,6 +1,5 @@
 """Tests for the conversation methods on TownService and TownAgentWsManager."""
 
-
 from core.services.town_agent_ws import TownAgentWsManager
 from core.services.town_service import TownService
 

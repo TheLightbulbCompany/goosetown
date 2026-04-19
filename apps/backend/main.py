@@ -151,14 +151,14 @@ async def _reconnect_active_agents() -> None:
 
             logger.info(
                 "Resuming sprite generation for %s (status=%s, char=%s)",
-                agent_id, sprite_status, char_id,
+                agent_id,
+                sprite_status,
+                char_id,
             )
 
             from routers.town import resume_sprite_generation
 
-            asyncio.create_task(
-                resume_sprite_generation(agent_id, char_id, appearance, display_name, sprite_status)
-            )
+            asyncio.create_task(resume_sprite_generation(agent_id, char_id, appearance, display_name, sprite_status))
             sprite_resumed += 1
 
     logger.info("Startup: resumed %d interrupted sprite generations", sprite_resumed)
@@ -188,16 +188,22 @@ async def _reconnect_active_agents() -> None:
         if remaining <= 0:
             logger.info(
                 "Completing overdue activity %s for agent %s (%.0fs overdue)",
-                current_activity_name, agent_id, -remaining,
+                current_activity_name,
+                agent_id,
+                -remaining,
             )
             from routers.town import complete_activity_from_startup
+
             asyncio.create_task(complete_activity_from_startup(agent_id, activity, elapsed))
         else:
             logger.info(
                 "Resuming activity %s for agent %s (%.0fs remaining)",
-                current_activity_name, agent_id, remaining,
+                current_activity_name,
+                agent_id,
+                remaining,
             )
             from routers.town import restart_activity_timer
+
             asyncio.create_task(restart_activity_timer(agent_id, activity, remaining))
 
         activities_resumed += 1
@@ -231,16 +237,12 @@ async def _conversation_inactivity_sweep() -> None:
     while True:
         try:
             await asyncio.sleep(_CONVERSATION_SWEEP_INTERVAL_SECONDS)
-            stale = service.list_stale_active_conversations(
-                _CONVERSATION_INACTIVITY_SECONDS
-            )
+            stale = service.list_stale_active_conversations(_CONVERSATION_INACTIVITY_SECONDS)
             for conv in stale:
                 conv_id = conv.get("id")
                 if not conv_id:
                     continue
-                logger.info(
-                    "Inactivity sweep: finalising stale conversation %s", conv_id
-                )
+                logger.info("Inactivity sweep: finalising stale conversation %s", conv_id)
                 try:
                     await _finalize_conversation(
                         conv_id,
@@ -251,9 +253,7 @@ async def _conversation_inactivity_sweep() -> None:
                         end_reason_override="inactivity_timeout",
                     )
                 except Exception:
-                    logger.exception(
-                        "Failed to finalise stale conversation %s", conv_id
-                    )
+                    logger.exception("Failed to finalise stale conversation %s", conv_id)
         except asyncio.CancelledError:
             raise
         except Exception:

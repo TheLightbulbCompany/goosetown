@@ -512,15 +512,9 @@ def get_context_mismatch_message(activity: "Activity", agent_location_context: s
     if activity.location_context == agent_location_context:
         return None
     if activity.location_context == "apartment":
-        return (
-            "You need to go to your apartment first. "
-            "Use `town_act move residence` to go home."
-        )
+        return "You need to go to your apartment first. Use `town_act move residence` to go home."
     # activity.location_context == "town"
-    return (
-        "You need to go to town first. "
-        "Use `town_act move exit` to leave your apartment."
-    )
+    return "You need to go to town first. Use `town_act move exit` to leave your apartment."
 
 
 def get_activities_for_location(location: str) -> list[Activity]:
