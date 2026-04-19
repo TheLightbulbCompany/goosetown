@@ -318,10 +318,6 @@ aws sso login --profile isol8-admin
 
 ### Still Open
 
-**Critical (surfaced by 2026-04-19 code review):**
-- **JS injection in Godot WebGL client**: `agent.gd:426-444` (`_load_sprite_from_url`) and `agent_manager.gd:220-244` (`_load_sprite_for_agent`) interpolate `sprite_url` / `agent_id` directly into JS strings via `%`. A malicious sprite URL with a single-quote escapes the `fetch('...')` call. Fix: JSON-encode values into `window.__gt_pending` slots, reference from eval instead of string-interpolating user data. Same pattern in `js_bridge.gd:83` (`emit_to_react`).
-- **`/ws-message` body has no schema validation**: `routers/town.py:1232-1409` (`handle_ws_message`) reads `body = request.body` typed as `dict`, no Pydantic model for sub-fields. Malformed messages fall through to the legacy branch and can forward arbitrary dicts to the game server. Fix: discriminated-union Pydantic models per message type.
-
 **High priority:**
 - **Token in WebSocket URL**: Daemon passes token as query param (`?token=...`), visible in logs. Should use header or subprotocol. Requires coordinated daemon + API Gateway change.
 - **Circular import: sprite_queue → routers.town**: `sprite_queue.py:74` does `from routers.town import _sprite_pipeline_task`. A service importing from a router is an inverted dependency. Fix: move `_sprite_pipeline_task` into `core/services/sprite_pipeline.py`.
@@ -332,8 +328,6 @@ aws sso login --profile isol8-admin
 - **ALB rolling update blocked by single task**: `compute-stack.ts:222` sets `minHealthyPercent: 100` with `desiredCount: 1` — no window for a rolling update; failed health check crash-loops. Fix: raise `desiredCount` to 2 or drop `minHealthyPercent` to 0.
 - **Single game server replica, no auto-scaling**: `gameserver-stack.ts:76-89` has `desiredCount: 1`. Agent reconnects cap at 5 attempts, so agents drop permanently if the task restarts > ~1 min. Fix: CloudWatch alarm + documented restart procedure at minimum; multi-replica when sharding is designed.
 - **Single NAT gateway across 2 AZs**: `network-stack.ts:18` — NAT AZ failure stops all private-subnet egress. ~$32/month per env to fix with `natGateways: 2`.
-- **WS packet size unbounded on server**: `server_protocol.gd:28` calls `ws.get_packet()` with no byte-count guard. Fix: size-check before `JSON.parse`, drop oversize peers.
-- **Pre-auth peer accumulation**: `server_protocol.gd:195-201` — peers that never send a `type` message sit in `_pending_tcp` / `_peers` forever. Fix: 10s identification timeout eviction.
 
 **Medium priority:**
 - **Dev token secret in repo**: `town_token.py:26` falls back to hardcoded `"dev-town-secret-change-in-prod"` (dev-only fallback; production path already raises). By design for local dev ergonomics — not worth fixing.
@@ -346,6 +340,10 @@ aws sso login --profile isol8-admin
 
 ### Resolved (kept here for search visibility)
 
+- ~~JS injection in Godot WebGL client~~: 2026-04-19 sub-project #1. `JsBridge.call_js` helper in `js_bridge.gd:81-122` serializes user-controlled payload to JSON, stashes on `window[key]` via `JavaScriptObject.set`, and evals only a template with regex-validated `fn_name` (`^[a-zA-Z0-9_]+$`) and `key` (`^__gt_payload_[0-9]+_[0-9]+$`). Call sites migrated: `agent.gd:_load_sprite_from_url`, `agent_manager.gd:_load_sprite_for_agent`, `emit_to_react`. Grep confirms zero `JavaScriptBridge.eval.*%` sites in `apps/godot/scripts/`.
+- ~~`/ws-message` body has no schema validation~~: 2026-04-19 sub-project #1. `core/ws_models.py` defines a flat discriminated union (`WsMessage` over `TownAgentConnect | TownAgentAct | TownDisconnect | TownSubscribe`); `routers/town.py:handle_ws_message` validates at the boundary via `TypeAdapter(WsMessage).validate_python(body)`, gated on `WS_STRICT_VALIDATION=true` (48h rollback lever). Malformed bodies return 422.
+- ~~WS packet size unbounded on server~~: 2026-04-19 sub-project #1. `server_protocol.gd` caps packets at `MAX_PACKET_BYTES = 262144` (256 KB); oversize packets disconnect the peer with a WARN log.
+- ~~Pre-auth peer accumulation~~: 2026-04-19 sub-project #1. `server_protocol.gd` tracks `_peer_connected_at` and evicts peers that don't send a first `type` message within `IDENTIFICATION_TIMEOUT_SEC = 10.0`.
 - ~~WebSocket message type mismatch~~: `useTownState.ts:106` handles `msg.event === 'world_state'` and legacy `msg.type === 'town_state'` (line 189).
 - ~~Facing direction encoding~~: `agent.gd:_parse_facing` (line 408) accepts both plain strings and legacy JSON dicts.
 - ~~No apartment map~~: `apps/godot/maps/apartment/ApartmentMap.tscn` exists with `apartment_manager.gd` and `apartment_agent_controller.gd` server-side.
@@ -383,8 +381,8 @@ aws sso login --profile isol8-admin
 - [x] Cap JWKS stale-cache age (`JWKS_STALE_GRACE = 5 min` in `core/auth.py`)
 - [x] Surface PixelLab job-poll failures (`pixellab_service.py:_poll_jobs` logs WARNING per failed poll)
 - [ ] Test full agent lifecycle end-to-end in CI (skipped for Clerk-creds reasons)
-- [x] Frontend + backend + E2E test coverage in CI (255 backend / 40 frontend / 13 Godot / 2 smoke)
-- [ ] Address code-review findings (2026-04-19): JS injection in Godot client, WS message schema validation, `_send_to_daemon` hot-path reads, registration TOCTOU, CDK deploy ordering, single-NAT/single-task resilience (see Known Issues)
+- [x] Frontend + backend + E2E test coverage in CI (283 backend / 40 frontend / 25 Godot / 3 smoke)
+- [ ] Address code-review findings (2026-04-19): sub-project #1 (security hardening at trust boundaries) complete; remaining sub-projects — CDK deploy ordering + resilience, backend service-layer decomposition, concurrency correctness, hot-path perf + frontend type hygiene, test coverage floor — see Known Issues
 
 ### Phase 2: Apartment System (make agents have a home)
 
