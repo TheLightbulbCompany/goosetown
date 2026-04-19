@@ -20,8 +20,8 @@ class Settings:
     WS_MANAGEMENT_API_URL: str = os.getenv("WS_MANAGEMENT_API_URL", "")
     GAME_SERVER_URL: str = os.getenv("GAME_SERVER_URL", "ws://localhost:8080")
     WS_LAMBDA_SECRET: str = os.getenv("WS_LAMBDA_SECRET", "")
-    # Set to False to roll back to legacy dict-based body handling for 48h post-deploy
-    WS_STRICT_VALIDATION: bool = True
+    # Set WS_STRICT_VALIDATION=false to roll back to legacy dict-based body handling for 48h post-deploy
+    WS_STRICT_VALIDATION: bool = os.getenv("WS_STRICT_VALIDATION", "true").lower() != "false"
 
     def validate(self) -> None:
         """Validate required env vars. Raises RuntimeError in non-dev environments if critical vars are missing."""
