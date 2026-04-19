@@ -80,6 +80,14 @@ func _emit_ready_event() -> void:
 ## whitelist constant in every call site; key is generated here from time+rand).
 ## User payload data goes through window.set() — never into the eval string.
 func _build_eval_script(fn_name: String, key: String) -> String:
+	# Defense-in-depth: key must match the pattern call_js() generates.
+	# Prevents a future caller from accidentally interpolating a hostile
+	# value into the eval string.
+	var re := RegEx.new()
+	re.compile("^__gt_payload_[0-9]+_[0-9]+$")
+	if re.search(key) == null:
+		push_error("JsBridge._build_eval_script: rejected malformed key %s" % key)
+		return ""
 	return (
 		"(function(){"
 		+ "var p = window['%s'];" % key
@@ -100,9 +108,12 @@ func call_js(fn_name: String, args: Dictionary) -> void:
 	var window: JavaScriptObject = JavaScriptBridge.get_interface("window")
 	var json_str: String = JSON.stringify(args)
 	var key: String = "__gt_payload_%d_%d" % [Time.get_ticks_msec(), randi()]
+	var script: String = _build_eval_script(fn_name, key)
+	if script == "":
+		return
 	# Stash user data as a string property — never touches eval.
 	window.set(key, json_str)
-	JavaScriptBridge.eval(_build_eval_script(fn_name, key))
+	JavaScriptBridge.eval(script)
 
 
 func emit_to_react(event_name: String, data: Dictionary = {}) -> void:

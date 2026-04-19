@@ -43,3 +43,17 @@ func test_json_stringify_escapes_single_quotes_in_payload() -> void:
 	var round_trip: Variant = JSON.parse_string(serialized)
 	assert_that(round_trip is Dictionary).is_true()
 	assert_that((round_trip as Dictionary).get("url")).is_equal(hostile["url"])
+
+
+func test_build_eval_script_rejects_hostile_key() -> void:
+	var bridge := _make_bridge()
+	# A hostile key with quote / bracket injection attempt
+	var result: String = bridge._build_eval_script("load_sprite", "']); alert(1); window['x")
+	assert_that(result).is_equal("")
+
+
+func test_build_eval_script_rejects_non_pattern_key() -> void:
+	var bridge := _make_bridge()
+	# Keys must match __gt_payload_<int>_<int>; this does not
+	var result: String = bridge._build_eval_script("load_sprite", "random_other_key")
+	assert_that(result).is_equal("")
