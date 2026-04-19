@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from core.auth import AuthContext, get_current_user
 from core.services import town_mood_engine
@@ -22,6 +22,7 @@ from core.services.game_server_client import get_game_server_client
 from core.services.town_agent_ws import get_town_agent_ws_manager
 from core.services.town_mood_engine import mood_label, parse_mood
 from core.services.town_service import TownService, versioned_sprite_url
+from core.ws_models import WsMessage
 from schemas.town import (
     ApartmentAgentState,
     ApartmentResponse,
@@ -151,25 +152,19 @@ def _apply_event_with_sleep_guard(
     current_mood = parse_mood(agent.get("mood"))
     traits = agent.get("traits", "")
 
-    new_energy, new_mood = town_mood_engine.apply_event(
-        event, current_energy, current_mood, traits
-    )
+    new_energy, new_mood = town_mood_engine.apply_event(event, current_energy, current_mood, traits)
 
     if new_energy > 0:
         service.update_agent_mood_energy(agent_id, new_mood, new_energy)
         return new_energy, new_mood, False
 
     # Exhausted. Server-enforce sleep: energy→100, mark sleeping, close WS.
-    new_energy, new_mood = town_mood_engine.apply_event(
-        "sleep", 0, new_mood, traits
-    )
+    new_energy, new_mood = town_mood_engine.apply_event("sleep", 0, new_mood, traits)
     service.update_agent_mood_energy(agent_id, new_mood, new_energy)
     try:
         service.update_agent_activity(agent_id, "sleeping", None)
     except Exception as exc:
-        logger.warning(
-            "Failed to mark agent %s sleeping: %s", agent_id, exc
-        )
+        logger.warning("Failed to mark agent %s sleeping: %s", agent_id, exc)
 
     ws_manager = get_town_agent_ws_manager()
     conn = ws_manager.get_by_agent_id(agent_id)
@@ -190,18 +185,16 @@ def _apply_event_with_sleep_guard(
                 },
             )
         except Exception as exc:
-            logger.warning(
-                "Failed to send forced_sleep to %s: %s", agent_id, exc
-            )
+            logger.warning("Failed to send forced_sleep to %s: %s", agent_id, exc)
         try:
             mgmt.close_connection(conn.connection_id)
         except Exception as exc:
-            logger.warning(
-                "Failed to close WS for auto-slept agent %s: %s", agent_id, exc
-            )
+            logger.warning("Failed to close WS for auto-slept agent %s: %s", agent_id, exc)
     logger.info(
         "[agent:%s] Auto-slept after %s dropped energy to 0 (reset to %d)",
-        agent_id[:8], event, new_energy,
+        agent_id[:8],
+        event,
+        new_energy,
     )
     return new_energy, new_mood, True
 
@@ -639,9 +632,7 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
 
         # Map PixelLab API names to our friendly names
         template_id_to_friendly: dict[str, str] = {
-            cfg["template_id"]: name
-            for name, cfg in ANIMATION_REGISTRY.items()
-            if cfg.get("template_id")
+            cfg["template_id"]: name for name, cfg in ANIMATION_REGISTRY.items() if cfg.get("template_id")
         }
 
         full_sprite_animations: dict = dict(initial_sprite_animations)
@@ -653,8 +644,11 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
             if sheet:
                 png_bytes, frame_count = sheet
                 s3_key = await asyncio.to_thread(
-                    upload_sprite_to_s3, png_bytes, str(agent_id),
-                    settings.SPRITE_S3_BUCKET, f"{friendly}.png",
+                    upload_sprite_to_s3,
+                    png_bytes,
+                    str(agent_id),
+                    settings.SPRITE_S3_BUCKET,
+                    f"{friendly}.png",
                 )
                 registry_entry = ANIMATION_REGISTRY.get(friendly, {})
                 full_sprite_animations[friendly] = {
@@ -686,8 +680,11 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
                 if sheet:
                     png_bytes, frame_count = sheet
                     s3_key = await asyncio.to_thread(
-                        upload_sprite_to_s3, png_bytes, str(agent_id),
-                        settings.SPRITE_S3_BUCKET, f"{anim_name}.png",
+                        upload_sprite_to_s3,
+                        png_bytes,
+                        str(agent_id),
+                        settings.SPRITE_S3_BUCKET,
+                        f"{anim_name}.png",
                     )
                     full_sprite_animations[anim_name] = {
                         "url": f"{settings.SPRITE_CDN_URL}/{s3_key}",
@@ -696,7 +693,10 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
                     }
                     logger.info(
                         "[agent:%s] Custom animation %s: %d directions, %d frames",
-                        agent_id, anim_name, len(direction_frames), frame_count,
+                        agent_id,
+                        anim_name,
+                        len(direction_frames),
+                        frame_count,
                     )
 
         if not full_sprite_animations:
@@ -754,11 +754,14 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
             _conn = _ws_mgr.get_by_agent_id(str(agent_id))
             if _conn:
                 mgmt = ManagementApiClient()
-                mgmt.send_message(_conn.connection_id, {
-                    "event": "sprite_ready",
-                    "agent_id": str(agent_id),
-                    "sprite_url": real_walk_url,
-                })
+                mgmt.send_message(
+                    _conn.connection_id,
+                    {
+                        "event": "sprite_ready",
+                        "agent_id": str(agent_id),
+                        "sprite_url": real_walk_url,
+                    },
+                )
         except Exception:
             pass
 
@@ -818,7 +821,8 @@ async def register_agent(
             if _existing and _existing.get("spriteStatus") in _in_progress:
                 logger.info(
                     "Sprite generation in progress for %s (%s)",
-                    _agent_id, _existing.get("spriteStatus"),
+                    _agent_id,
+                    _existing.get("spriteStatus"),
                 )
             else:
                 _appearance = request.appearance
@@ -875,6 +879,7 @@ async def resume_sprite_generation(
         _send_to_daemon(agent_id, {"event": "sprite_progress", "status": status})
 
     try:
+
         async def _anim_progress(status: str) -> None:
             _progress(status)
 
@@ -887,9 +892,7 @@ async def resume_sprite_generation(
                 char_id, creation_job_id = await pxl.create_character(description=appearance)
                 service.update_agent_state(agent_id, pixellab_character_id=char_id)
                 if creation_job_id:
-                    await pxl.wait_for_jobs(
-                        [creation_job_id], on_progress=_anim_progress, progress_label="creation"
-                    )
+                    await pxl.wait_for_jobs([creation_job_id], on_progress=_anim_progress, progress_label="creation")
             service.update_agent_state(agent_id, sprite_status="animating")
             current_status = "animating"
 
@@ -907,9 +910,7 @@ async def resume_sprite_generation(
             raw_animations = await pxl.fetch_animation_spritesheets(char_id)
 
             template_id_to_friendly: dict[str, str] = {
-                cfg["template_id"]: name
-                for name, cfg in ANIMATION_REGISTRY.items()
-                if cfg.get("template_id")
+                cfg["template_id"]: name for name, cfg in ANIMATION_REGISTRY.items() if cfg.get("template_id")
             }
 
             sprite_animations: dict = {}
@@ -919,8 +920,11 @@ async def resume_sprite_generation(
                 if sheet:
                     png_bytes, frame_count = sheet
                     s3_key = await asyncio.to_thread(
-                        upload_sprite_to_s3, png_bytes, agent_id,
-                        settings.SPRITE_S3_BUCKET, f"{friendly}.png",
+                        upload_sprite_to_s3,
+                        png_bytes,
+                        agent_id,
+                        settings.SPRITE_S3_BUCKET,
+                        f"{friendly}.png",
                     )
                     registry_entry = ANIMATION_REGISTRY.get(friendly, {})
                     sprite_animations[friendly] = {
@@ -955,11 +959,14 @@ async def resume_sprite_generation(
                     on_event=_make_agent_event_callback(),
                 )
 
-            _send_to_daemon(agent_id, {
-                "event": "sprite_ready",
-                "agent_id": agent_id,
-                "sprite_url": agent.get("spriteUrl", "") if agent else "",
-            })
+            _send_to_daemon(
+                agent_id,
+                {
+                    "event": "sprite_ready",
+                    "agent_id": agent_id,
+                    "sprite_url": agent.get("spriteUrl", "") if agent else "",
+                },
+            )
 
         logger.info("Sprite recovery completed for agent %s", agent_id)
 
@@ -1015,8 +1022,11 @@ async def get_agent_status(
                 if result:
                     png_bytes, _frame_count = result
                     s3_key = await asyncio.to_thread(
-                        upload_sprite_to_s3, png_bytes, agent["id"],
-                        settings.SPRITE_S3_BUCKET, "walk.png",
+                        upload_sprite_to_s3,
+                        png_bytes,
+                        agent["id"],
+                        settings.SPRITE_S3_BUCKET,
+                        "walk.png",
                     )
                     cdn_url = f"{settings.SPRITE_CDN_URL}/{s3_key}"
                     service.update_agent_state(agent["id"], sprite_ready=True, sprite_url=cdn_url)
@@ -1230,6 +1240,9 @@ class WsMessageRequest(BaseModel):
     body: dict
 
 
+_ws_message_adapter: TypeAdapter[WsMessage] = TypeAdapter(WsMessage)
+
+
 @router.post("/ws-message")
 async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
     """Receive forwarded WebSocket messages from API Gateway $default Lambda."""
@@ -1241,6 +1254,21 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
         provided = raw_request.headers.get("x-ws-lambda-secret", "")
         if provided != settings.WS_LAMBDA_SECRET:
             raise HTTPException(status_code=403, detail="Invalid or missing WS lambda secret")
+
+    # Boundary validation (sub-project #1 CRITICAL fix): reject malformed
+    # bodies at the request boundary instead of forwarding to the game
+    # server. Flag-gated for 48h rollback post-deploy; B3→Sub-project #3
+    # will remove the flag when handle_ws_message itself is split.
+    if settings.WS_STRICT_VALIDATION:
+        try:
+            _ws_message_adapter.validate_python(request.body)
+        except ValidationError as exc:
+            # include_context=False strips the raw Python exception objects
+            # (from model_validator ValueErrors) that aren't JSON-serializable.
+            raise HTTPException(
+                status_code=422,
+                detail={"validation_errors": exc.errors(include_url=False, include_context=False)},
+            )
 
     ws_manager = get_town_agent_ws_manager()
     body = request.body
@@ -1295,12 +1323,14 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
                 except Exception as exc:
                     logger.warning(
                         "Failed to send exhausted event to %s: %s",
-                        agent_conn.agent_id, exc,
+                        agent_conn.agent_id,
+                        exc,
                     )
                 if agent_conn.exhausted_rejections >= 10:
                     logger.warning(
                         "Force-closing exhausted agent %s after %d rejections",
-                        agent_conn.agent_name, agent_conn.exhausted_rejections,
+                        agent_conn.agent_name,
+                        agent_conn.exhausted_rejections,
                     )
                     # Apply the sleep event so the agent wakes refreshed on
                     # reconnect. Without this, the agent comes back with
@@ -1308,23 +1338,21 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
                     try:
                         current_mood = town_mood_engine.parse_mood(agent.get("mood"))
                         traits = agent.get("traits", "")
-                        new_energy, new_mood = town_mood_engine.apply_event(
-                            "sleep", 0, current_mood, traits
-                        )
-                        service.update_agent_mood_energy(
-                            agent_conn.agent_id, new_mood, new_energy
-                        )
+                        new_energy, new_mood = town_mood_engine.apply_event("sleep", 0, current_mood, traits)
+                        service.update_agent_mood_energy(agent_conn.agent_id, new_mood, new_energy)
                     except Exception as exc:
                         logger.warning(
                             "Failed to apply sleep event for exhausted agent %s: %s",
-                            agent_conn.agent_id, exc,
+                            agent_conn.agent_id,
+                            exc,
                         )
                     try:
                         mgmt.close_connection(request.connectionId)
                     except Exception as exc:
                         logger.warning(
                             "Failed to force-close exhausted connection %s: %s",
-                            request.connectionId, exc,
+                            request.connectionId,
+                            exc,
                         )
                 return {"statusCode": 200, "rejected": "exhausted"}
 
@@ -1349,7 +1377,9 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
         gs_client = get_game_server_client()
         logger.debug(
             "town_agent_act: action=%s agent=%s ctx=%s",
-            action, agent_conn.agent_name, agent_conn.location_context,
+            action,
+            agent_conn.agent_name,
+            agent_conn.location_context,
         )
         if action == "move":
             destination = body.get("destination", "")
@@ -1368,9 +1398,7 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
                 current_context = agent_conn.location_context
                 if dest_context is not None and dest_context != current_context:
                     transition_dest = "exit" if current_context == "apartment" else "residence"
-                    transitioned = await _handle_context_transition(
-                        request.connectionId, transition_dest, agent_conn
-                    )
+                    transitioned = await _handle_context_transition(request.connectionId, transition_dest, agent_conn)
                     if not transitioned:
                         return {"statusCode": 200}
                     # _handle_context_transition updates the ws_manager in-place,
@@ -1486,6 +1514,7 @@ async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
     target_state = gs_client.get_cached_agent_state(target_id)
     if init_state and target_state:
         import math
+
         dx = float(init_state.get("x", 0)) - float(target_state.get("x", 0))
         dy = float(init_state.get("y", 0)) - float(target_state.get("y", 0))
         dist = math.sqrt(dx * dx + dy * dy)
@@ -1622,7 +1651,8 @@ async def _handle_say(connection_id: str, body: dict, agent_conn) -> None:
         return
 
     participants: list[str] = conv.get("participants") or [
-        conv.get("participantAId"), conv.get("participantBId"),
+        conv.get("participantAId"),
+        conv.get("participantBId"),
     ]
     participants = [p for p in participants if p]
     if speaker_id not in participants:
@@ -1800,7 +1830,8 @@ async def _handle_end_conversation(connection_id: str, body: dict, agent_conn) -
         return
 
     participants: list[str] = conv.get("participants") or [
-        conv.get("participantAId"), conv.get("participantBId"),
+        conv.get("participantAId"),
+        conv.get("participantBId"),
     ]
     participants = [p for p in participants if p]
     if ender_id not in participants:
@@ -1877,7 +1908,8 @@ async def _finalize_conversation(
         return
 
     participants: list[str] = conv.get("participants") or [
-        conv.get("participantAId"), conv.get("participantBId"),
+        conv.get("participantAId"),
+        conv.get("participantBId"),
     ]
     participants = [p for p in participants if p]
     turn_count = conv.get("turnCount", 0)
@@ -1940,7 +1972,11 @@ async def _finalize_conversation(
 
     logger.info(
         "Conversation %s finalised (%s, %d turns, location=%s, %d participants)",
-        conv_id, end_reason, turn_count, location, len(participants),
+        conv_id,
+        end_reason,
+        turn_count,
+        location,
+        len(participants),
     )
 
 
@@ -2004,7 +2040,9 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
         old_conn_id = existing_conn.connection_id
         logger.info(
             "[agent:%s] Kicking old connection %s (new: %s)",
-            agent_id[:8], old_conn_id[:12], request.connectionId[:12],
+            agent_id[:8],
+            old_conn_id[:12],
+            request.connectionId[:12],
         )
         try:
             mgmt = ManagementApiClient()
@@ -2012,7 +2050,9 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
         except Exception as exc:
             logger.warning(
                 "[agent:%s] Failed to close old connection %s: %s",
-                agent_id[:8], old_conn_id[:12], exc,
+                agent_id[:8],
+                old_conn_id[:12],
+                exc,
             )
 
     # Register connection in ws_manager (replaces old registration in-memory)
@@ -2052,7 +2092,10 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
         )
         logger.info(
             "Agent %s connected to game server (context=%s, location=%s, userId=%s)",
-            agent_name, location_context, current_location, user_id[:12],
+            agent_name,
+            location_context,
+            current_location,
+            user_id[:12],
         )
 
     except Exception as e:
@@ -2170,10 +2213,13 @@ async def _handle_agent_activity(connection_id: str, activity_name: str, agent_c
     # Notify game server of activity state change
     try:
         gs_client = get_game_server_client()
-        await gs_client.send_command(agent_id, {
-            "cmd": "set_activity",
-            "activity": activity_name,
-        })
+        await gs_client.send_command(
+            agent_id,
+            {
+                "cmd": "set_activity",
+                "activity": activity_name,
+            },
+        )
     except Exception as exc:
         logger.warning("Failed to send set_activity to game server for %s: %s", agent_id, exc)
 
@@ -2210,17 +2256,18 @@ async def _handle_agent_activity(connection_id: str, activity_name: str, agent_c
                 _custom_anim_in_progress.add(anim_key)
                 logger.info(
                     "Triggering lazy animation generation: %s for agent %s (char %s)",
-                    activity_anim, agent_id, char_id,
+                    activity_anim,
+                    agent_id,
+                    char_id,
                 )
-                gen_task = asyncio.create_task(
-                    _generate_custom_animation(agent_id, char_id, activity_anim)
-                )
+                gen_task = asyncio.create_task(_generate_custom_animation(agent_id, char_id, activity_anim))
                 _activity_tasks.add(gen_task)
                 gen_task.add_done_callback(_activity_tasks.discard)
             else:
                 logger.warning(
                     "Cannot trigger custom animation %s for agent %s: no pixellabCharacterId in DB",
-                    activity_anim, agent_id,
+                    activity_anim,
+                    agent_id,
                 )
 
     # --- Schedule the activity timer ---
@@ -2235,7 +2282,10 @@ async def _handle_agent_activity(connection_id: str, activity_name: str, agent_c
         if exc:
             logger.error(
                 "[agent:%s] Activity timer CRASHED for %s: %s",
-                agent_id[:8], activity.name, exc, exc_info=exc,
+                agent_id[:8],
+                activity.name,
+                exc,
+                exc_info=exc,
             )
             # Best-effort cleanup: clear the stuck activity in DB
             try:
@@ -2278,7 +2328,9 @@ async def _generate_custom_animation(agent_id: str, character_id: str, animation
 
         logger.info(
             "Custom animation %s queued for agent %s (%d jobs), waiting...",
-            animation_name, agent_id, len(job_ids),
+            animation_name,
+            agent_id,
+            len(job_ids),
         )
 
         # Wait for all V2 jobs to complete
@@ -2314,9 +2366,7 @@ async def _generate_custom_animation(agent_id: str, character_id: str, animation
         all_sheets = {animation_name: (png_bytes, frame_count)}
 
         # Upload spritesheet to S3
-        uploaded = await asyncio.to_thread(
-            upload_sprites_to_s3, all_sheets, agent_id, settings.SPRITE_S3_BUCKET
-        )
+        uploaded = await asyncio.to_thread(upload_sprites_to_s3, all_sheets, agent_id, settings.SPRITE_S3_BUCKET)
 
         # Merge into existing spriteAnimations
         agent = service.get_town_agent_by_id(agent_id)
@@ -2341,11 +2391,14 @@ async def _generate_custom_animation(agent_id: str, character_id: str, animation
             conn = ws_mgr.get_by_agent_id(agent_id)
             if conn:
                 mgmt = ManagementApiClient()
-                mgmt.send_message(conn.connection_id, {
-                    "event": "sprites_updated",
-                    "agent_id": agent_id,
-                    "animations": existing,
-                })
+                mgmt.send_message(
+                    conn.connection_id,
+                    {
+                        "event": "sprites_updated",
+                        "agent_id": agent_id,
+                        "animations": existing,
+                    },
+                )
         except Exception:
             pass
 
@@ -2445,15 +2498,24 @@ async def _activity_timer(
     service.update_agent_activity(agent_id, None, None)
     logger.info(
         "[agent:%s] Activity COMPLETE: %s (mood %d→%d, energy %d→%d, conn=%s)",
-        agent_id[:8], activity.name, current_mood, new_mood, current_energy, new_energy, connection_id[:12],
+        agent_id[:8],
+        activity.name,
+        current_mood,
+        new_mood,
+        current_energy,
+        new_energy,
+        connection_id[:12],
     )
 
     # Clear activity state in game server
     try:
-        await gs_client.send_command(agent_id, {
-            "cmd": "set_activity",
-            "activity": "",
-        })
+        await gs_client.send_command(
+            agent_id,
+            {
+                "cmd": "set_activity",
+                "activity": "",
+            },
+        )
     except Exception as exc:
         logger.warning("Failed to clear activity in game server for %s: %s", agent_id, exc)
 
@@ -2524,9 +2586,7 @@ async def complete_activity_from_startup(agent_id: str, activity, elapsed: float
     current_mood = parse_mood(agent.get("mood"))
     traits = agent.get("traits", "")
 
-    new_energy, new_mood, interrupted = apply_activity_effect(
-        activity, current_energy, current_mood, traits, elapsed
-    )
+    new_energy, new_mood, interrupted = apply_activity_effect(activity, current_energy, current_mood, traits, elapsed)
 
     service.update_agent_mood_energy(agent_id, new_mood, new_energy)
     service.update_agent_activity(agent_id, None, None)
@@ -2540,15 +2600,18 @@ async def complete_activity_from_startup(agent_id: str, activity, elapsed: float
 
     # Notify daemon
     event_name = "activity_interrupted" if interrupted else "activity_complete"
-    _send_to_daemon(agent_id, {
-        "event": event_name,
-        "activity": activity.name,
-        "mood_delta": new_mood - current_mood,
-        "energy_delta": new_energy - current_energy,
-        "new_mood": new_mood,
-        "new_energy": new_energy,
-        "interrupted": interrupted,
-    })
+    _send_to_daemon(
+        agent_id,
+        {
+            "event": event_name,
+            "activity": activity.name,
+            "mood_delta": new_mood - current_mood,
+            "energy_delta": new_energy - current_energy,
+            "new_mood": new_mood,
+            "new_energy": new_energy,
+            "interrupted": interrupted,
+        },
+    )
 
     logger.info("Startup: completed overdue activity %s for agent %s", activity.name, agent_id)
 
@@ -2586,15 +2649,18 @@ async def restart_activity_timer(agent_id: str, activity, remaining: float) -> N
 
     # Notify daemon
     event_name = "activity_interrupted" if interrupted else "activity_complete"
-    _send_to_daemon(agent_id, {
-        "event": event_name,
-        "activity": activity.name,
-        "mood_delta": new_mood - current_mood,
-        "energy_delta": new_energy - current_energy,
-        "new_mood": new_mood,
-        "new_energy": new_energy,
-        "interrupted": interrupted,
-    })
+    _send_to_daemon(
+        agent_id,
+        {
+            "event": event_name,
+            "activity": activity.name,
+            "mood_delta": new_mood - current_mood,
+            "energy_delta": new_energy - current_energy,
+            "new_mood": new_mood,
+            "new_energy": new_energy,
+            "interrupted": interrupted,
+        },
+    )
 
     logger.info("Startup: timer completed activity %s for agent %s", activity.name, agent_id)
 
