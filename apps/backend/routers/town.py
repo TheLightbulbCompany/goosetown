@@ -1089,6 +1089,23 @@ async def get_apartment(
     return ApartmentResponse(agents=agents, activity=[])
 
 
+def _token_uid(town_token: str) -> str | None:
+    """Best-effort decode of the 'uid' field from a signed town_token.
+    Returns None on malformed input — no signature verification here, the
+    caller only uses this to detect uid drift before re-signing.
+    """
+    import base64
+    import json
+
+    try:
+        payload_b64 = town_token.split(".", 1)[0]
+        pad = "=" * (-len(payload_b64) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64 + pad))
+        return payload.get("uid")
+    except Exception:
+        return None
+
+
 @router.post("/instance")
 async def get_or_create_instance(
     auth: AuthContext = Depends(get_current_user),
@@ -1101,18 +1118,21 @@ async def get_or_create_instance(
 
     if not instance:
         instance = service.create_instance(auth.user_id)
-    elif "." not in instance.get("townToken", ""):
-        # Re-sign legacy unsigned tokens
-        instance["townToken"] = sign_town_token(auth.user_id, instance["id"])
-        # Update in DynamoDB
-        from core import dynamo
+    else:
+        # Re-sign the stored token when it's missing, legacy-unsigned, or
+        # signed for a different uid (e.g. userId column reassigned since).
+        stored = instance.get("townToken", "")
+        needs_resign = "." not in stored or _token_uid(stored) != auth.user_id
+        if needs_resign:
+            instance["townToken"] = sign_town_token(auth.user_id, instance["id"])
+            from core import dynamo
 
-        table = dynamo.instances_table()
-        table.update_item(
-            Key={"id": instance["id"]},
-            UpdateExpression="SET townToken = :t",
-            ExpressionAttributeValues={":t": instance["townToken"]},
-        )
+            table = dynamo.instances_table()
+            table.update_item(
+                Key={"id": instance["id"]},
+                UpdateExpression="SET townToken = :t",
+                ExpressionAttributeValues={":t": instance["townToken"]},
+            )
 
     agents = service.get_instance_agents(instance["id"])
 
