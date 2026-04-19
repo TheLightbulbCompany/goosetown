@@ -72,9 +72,7 @@ async def test_serves_stale_cache_within_grace_on_fetch_failure():
     auth._jwks_cache["expires_at"] = datetime.now(timezone.utc) - timedelta(minutes=2)
 
     mock_client = AsyncMock()
-    mock_client.get = AsyncMock(
-        side_effect=httpx.ConnectError("clerk unreachable")
-    )
+    mock_client.get = AsyncMock(side_effect=httpx.ConnectError("clerk unreachable"))
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=None)
 
@@ -95,9 +93,7 @@ async def test_raises_when_stale_cache_exceeds_grace():
     auth._jwks_cache["expires_at"] = datetime.now(timezone.utc) - timedelta(minutes=30)
 
     mock_client = AsyncMock()
-    mock_client.get = AsyncMock(
-        side_effect=httpx.ConnectError("clerk still down")
-    )
+    mock_client.get = AsyncMock(side_effect=httpx.ConnectError("clerk still down"))
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=None)
 

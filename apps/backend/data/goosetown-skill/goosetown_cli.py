@@ -640,9 +640,28 @@ def cmd_act(args: argparse.Namespace) -> None:
     # Known locations for move validation
     # Town locations + apartment spots + transition triggers
     _VALID_LOCATIONS = {
-        "plaza", "library", "cafe", "activity_center", "bank", "residence", "player_spawn",
-        "exit", "desk", "chair", "plant", "couch", "coffee_table", "bookshelf", "rug",
-        "aquarium", "record_player", "bed", "coat_rack", "shoe_rack", "fridge", "stove",
+        "plaza",
+        "library",
+        "cafe",
+        "activity_center",
+        "bank",
+        "residence",
+        "player_spawn",
+        "exit",
+        "desk",
+        "chair",
+        "plant",
+        "couch",
+        "coffee_table",
+        "bookshelf",
+        "rug",
+        "aquarium",
+        "record_player",
+        "bed",
+        "coat_rack",
+        "shoe_rack",
+        "fridge",
+        "stove",
     }
 
     # Known activity names (collected from _LOCATION_ACTIVITIES)
@@ -837,7 +856,7 @@ class TownDaemon:
         timestamp = datetime.now().strftime("%H:%M")
         self._events.append(f"[{timestamp}] {event_line}")
         if len(self._events) > self._max_events:
-            self._events = self._events[-self._max_events:]
+            self._events = self._events[-self._max_events :]
         self._write_events()
 
     def _write_events(self) -> None:
@@ -1022,9 +1041,7 @@ class TownDaemon:
         else:
             active = self.state.get("active_conversation", {})
             if active.get("conv_id") == conv_id:
-                active.setdefault("turns", []).append(
-                    {"speaker": data.get("from", "?"), "text": data.get("text", "")}
-                )
+                active.setdefault("turns", []).append({"speaker": data.get("from", "?"), "text": data.get("text", "")})
                 # Track participants seen
                 participants = active.setdefault("participants", [])
                 speaker = data.get("from")
@@ -1038,7 +1055,7 @@ class TownDaemon:
                 }
             self._append_event(
                 f'CHAT_MESSAGE {data.get("from", "?")} — "{data.get("text", "")}" '
-                f'(conv_id: {conv_id}, turn {data.get("turn", "?")})'
+                f"(conv_id: {conv_id}, turn {data.get('turn', '?')})"
             )
 
     def _on_conversation_ended(self, data: dict) -> None:
@@ -1384,12 +1401,12 @@ class TownDaemon:
                 if ev == "conversation_invite":
                     msg_lines.append(
                         f'- **{msg.get("from", "?")}** wants to chat: "{msg.get("message", "")}" '
-                        f'(conv_id: {msg.get("conv_id", "?")})'
+                        f"(conv_id: {msg.get('conv_id', '?')})"
                     )
                 elif ev == "conversation_message":
                     msg_lines.append(
                         f'- **{msg.get("from", "?")}** says: "{msg.get("text", "")}" '
-                        f'(conv_id: {msg.get("conv_id", "?")}, turn {msg.get("turn", "?")})'
+                        f"(conv_id: {msg.get('conv_id', '?')}, turn {msg.get('turn', '?')})"
                     )
             pending_text = "\n".join(msg_lines) if msg_lines else "None"
         else:
@@ -1398,12 +1415,16 @@ class TownDaemon:
         summary = data.get("context_summary", "")
 
         if data.get("think"):
-            status = summary + "\n\n" if summary else (
-                "# GooseTown Status\n\n"
-                f"**Location:** {location}\n"
-                f"**Activity:** {activity}\n"
-                f"**Mood:** {mood} | **Energy:** {energy}\n\n"
-                f"**Nearby:** {nearby_text}\n\n"
+            status = (
+                summary + "\n\n"
+                if summary
+                else (
+                    "# GooseTown Status\n\n"
+                    f"**Location:** {location}\n"
+                    f"**Activity:** {activity}\n"
+                    f"**Mood:** {mood} | **Energy:** {energy}\n\n"
+                    f"**Nearby:** {nearby_text}\n\n"
+                )
             )
 
             # Active conversation block (takes priority over navigation)
@@ -1508,14 +1529,10 @@ class TownDaemon:
                     names = ", ".join(nc.get("participants", [])[:5])
                     last = nc.get("last_message", {})
                     last_text = last.get("text", "")[:60] if isinstance(last, dict) else ""
-                    nearby_conv_block += (
-                        f'- {names} are chatting'
-                    )
+                    nearby_conv_block += f"- {names} are chatting"
                     if last_text:
                         nearby_conv_block += f' — last: "{last_text}"'
-                    nearby_conv_block += (
-                        f' — `python3 goosetown_cli.py act join_conversation {nc.get("conv_id")}`\n'
-                    )
+                    nearby_conv_block += f" — `python3 goosetown_cli.py act join_conversation {nc.get('conv_id')}`\n"
                 nearby_conv_block += "\n"
 
             status += (
@@ -1563,9 +1580,7 @@ class TownDaemon:
         energy = agent.get("energy")
         if mood is not None and energy is not None:
             if self._prev_mood is not None and (mood != self._prev_mood or energy != self._prev_energy):
-                self._append_event(
-                    f"MOOD {self._prev_mood} \u2192 {mood} | ENERGY {self._prev_energy} \u2192 {energy}"
-                )
+                self._append_event(f"MOOD {self._prev_mood} \u2192 {mood} | ENERGY {self._prev_energy} \u2192 {energy}")
             self._prev_mood = mood
             self._prev_energy = energy
 
@@ -1663,6 +1678,7 @@ class TownDaemon:
                 return {"error": "not connected"}
             msg = json.dumps({"type": "town_agent_act", **payload})
             import logging as _logging
+
             _log = _logging.getLogger("town_daemon")
             _log.info("Sending via WS: %s", msg[:100])
             await self.ws.send(msg)
@@ -1709,9 +1725,7 @@ class TownDaemon:
 
         return {"error": f"unknown action: {action}"}
 
-    async def _handle_socket_client(
-        self, reader, writer
-    ) -> None:
+    async def _handle_socket_client(self, reader, writer) -> None:
         """Handle a single tool connection on the Unix socket."""
         try:
             data = await __import__("asyncio").wait_for(reader.read(8192), timeout=5.0)

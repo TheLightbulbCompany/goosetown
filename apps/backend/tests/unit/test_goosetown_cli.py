@@ -1,4 +1,5 @@
 """Unit tests for TownDaemon — welcome blurb and group conversations."""
+
 import sys
 from pathlib import Path
 
@@ -104,12 +105,15 @@ class TestConversationInviteTracksParticipants:
     """conversation_invite creates active_conversation with participants list."""
 
     def test_invite_creates_participants_list(self, daemon):
-        daemon._on_conversation_message("conversation_invite", {
-            "conv_id": "conv-1",
-            "from": "Alice",
-            "from_agent_name": "alice",
-            "message": "Hey there!",
-        })
+        daemon._on_conversation_message(
+            "conversation_invite",
+            {
+                "conv_id": "conv-1",
+                "from": "Alice",
+                "from_agent_name": "alice",
+                "message": "Hey there!",
+            },
+        )
 
         active = daemon.state.get("active_conversation")
         assert active is not None
@@ -120,19 +124,25 @@ class TestConversationInviteTracksParticipants:
 
     def test_message_adds_new_participant(self, daemon):
         """conversation_message from a new speaker adds them to participants."""
-        daemon._on_conversation_message("conversation_invite", {
-            "conv_id": "conv-1",
-            "from": "Alice",
-            "from_agent_name": "alice",
-            "message": "Hey!",
-        })
-        daemon._on_conversation_message("conversation_message", {
-            "conv_id": "conv-1",
-            "from": "Bob",
-            "from_agent_name": "bob",
-            "text": "Hi Alice!",
-            "turn": 2,
-        })
+        daemon._on_conversation_message(
+            "conversation_invite",
+            {
+                "conv_id": "conv-1",
+                "from": "Alice",
+                "from_agent_name": "alice",
+                "message": "Hey!",
+            },
+        )
+        daemon._on_conversation_message(
+            "conversation_message",
+            {
+                "conv_id": "conv-1",
+                "from": "Bob",
+                "from_agent_name": "bob",
+                "text": "Hi Alice!",
+                "turn": 2,
+            },
+        )
 
         active = daemon.state["active_conversation"]
         assert "Alice" in active["participants"]
@@ -141,19 +151,25 @@ class TestConversationInviteTracksParticipants:
 
     def test_message_does_not_duplicate_participant(self, daemon):
         """Same speaker speaking again shouldn't duplicate in participants."""
-        daemon._on_conversation_message("conversation_invite", {
-            "conv_id": "conv-1",
-            "from": "Alice",
-            "from_agent_name": "alice",
-            "message": "Hey!",
-        })
-        daemon._on_conversation_message("conversation_message", {
-            "conv_id": "conv-1",
-            "from": "Alice",
-            "from_agent_name": "alice",
-            "text": "Hello again",
-            "turn": 2,
-        })
+        daemon._on_conversation_message(
+            "conversation_invite",
+            {
+                "conv_id": "conv-1",
+                "from": "Alice",
+                "from_agent_name": "alice",
+                "message": "Hey!",
+            },
+        )
+        daemon._on_conversation_message(
+            "conversation_message",
+            {
+                "conv_id": "conv-1",
+                "from": "Alice",
+                "from_agent_name": "alice",
+                "text": "Hello again",
+                "turn": 2,
+            },
+        )
 
         active = daemon.state["active_conversation"]
         assert active["participants"].count("Alice") == 1
@@ -169,11 +185,13 @@ class TestParticipantJoined:
             "turns": [],
         }
 
-        daemon._on_participant_joined({
-            "conv_id": "conv-1",
-            "agent_id": "c1",
-            "display_name": "Charlie",
-        })
+        daemon._on_participant_joined(
+            {
+                "conv_id": "conv-1",
+                "agent_id": "c1",
+                "display_name": "Charlie",
+            }
+        )
 
         assert "Charlie" in daemon.state["active_conversation"]["participants"]
 
@@ -184,11 +202,13 @@ class TestParticipantJoined:
             "turns": [],
         }
 
-        daemon._on_participant_joined({
-            "conv_id": "conv-OTHER",
-            "agent_id": "c1",
-            "display_name": "Charlie",
-        })
+        daemon._on_participant_joined(
+            {
+                "conv_id": "conv-OTHER",
+                "agent_id": "c1",
+                "display_name": "Charlie",
+            }
+        )
 
         assert "Charlie" not in daemon.state["active_conversation"]["participants"]
 
@@ -199,11 +219,13 @@ class TestParticipantJoined:
             "turns": [],
         }
 
-        daemon._on_participant_joined({
-            "conv_id": "conv-1",
-            "agent_id": "a1",
-            "display_name": "Alice",
-        })
+        daemon._on_participant_joined(
+            {
+                "conv_id": "conv-1",
+                "agent_id": "a1",
+                "display_name": "Alice",
+            }
+        )
 
         assert daemon.state["active_conversation"]["participants"].count("Alice") == 1
 
@@ -218,12 +240,14 @@ class TestParticipantLeft:
             "turns": [],
         }
 
-        daemon._on_participant_left({
-            "conv_id": "conv-1",
-            "agent_id": "b1",
-            "display_name": "Bob",
-            "remaining": 2,
-        })
+        daemon._on_participant_left(
+            {
+                "conv_id": "conv-1",
+                "agent_id": "b1",
+                "display_name": "Bob",
+                "remaining": 2,
+            }
+        )
 
         assert "Bob" not in daemon.state["active_conversation"]["participants"]
         assert len(daemon.state["active_conversation"]["participants"]) == 2
@@ -235,12 +259,14 @@ class TestParticipantLeft:
             "turns": [],
         }
 
-        daemon._on_participant_left({
-            "conv_id": "conv-OTHER",
-            "agent_id": "b1",
-            "display_name": "Bob",
-            "remaining": 1,
-        })
+        daemon._on_participant_left(
+            {
+                "conv_id": "conv-OTHER",
+                "agent_id": "b1",
+                "display_name": "Bob",
+                "remaining": 1,
+            }
+        )
 
         assert "Bob" in daemon.state["active_conversation"]["participants"]
 
@@ -256,12 +282,14 @@ class TestConversationEndedClearsState:
         }
         daemon.state["pending_messages"] = [{"event": "conversation_invite"}]
 
-        daemon._on_conversation_ended({
-            "conv_id": "conv-1",
-            "turn_count": 3,
-            "location": "plaza",
-            "log_summary": "They chatted about the weather.",
-        })
+        daemon._on_conversation_ended(
+            {
+                "conv_id": "conv-1",
+                "turn_count": 3,
+                "location": "plaza",
+                "log_summary": "They chatted about the weather.",
+            }
+        )
 
         assert "active_conversation" not in daemon.state
         assert daemon.state["pending_messages"] == []
@@ -331,30 +359,35 @@ class TestEventDrivenThink:
         daemon.state["nearby"] = []
 
         # First agent_state — no nearby, idle, should think (first time)
-        daemon._handle_agent_state({
-            "event": "agent_state",
-            "location": "plaza",
-            "activity": "idle",
-            "speed": 0,
-            "nearby_agents": [],
-            "context": "town",
-        })
+        daemon._handle_agent_state(
+            {
+                "event": "agent_state",
+                "location": "plaza",
+                "activity": "idle",
+                "speed": 0,
+                "nearby_agents": [],
+                "context": "town",
+            }
+        )
         content1 = (daemon._workspace_path / "TOWN_STATUS.md").read_text()
         assert "act move" in content1
 
         # Reset think time to simulate 5s passing (under 12s throttle)
         import time
+
         daemon._last_think_time = time.time() - 5.0
 
         # New agent appears nearby — should trigger think immediately
-        daemon._handle_agent_state({
-            "event": "agent_state",
-            "location": "plaza",
-            "activity": "idle",
-            "speed": 0,
-            "nearby_agents": [{"agent_id": "a1", "name": "Alice", "display_name": "Alice"}],
-            "context": "town",
-        })
+        daemon._handle_agent_state(
+            {
+                "event": "agent_state",
+                "location": "plaza",
+                "activity": "idle",
+                "speed": 0,
+                "nearby_agents": [{"agent_id": "a1", "name": "Alice", "display_name": "Alice"}],
+                "context": "town",
+            }
+        )
         content2 = (daemon._workspace_path / "TOWN_STATUS.md").read_text()
         assert "Alice" in content2
 
@@ -363,15 +396,18 @@ class TestEventDrivenThink:
         daemon.state["nearby"] = [{"agent_id": "a1"}]
 
         import time
+
         daemon._last_think_time = time.time() - 5.0
 
-        daemon._handle_agent_state({
-            "event": "agent_state",
-            "location": "plaza",
-            "activity": "idle",
-            "speed": 0,
-            "nearby_agents": [{"agent_id": "a1", "name": "Alice"}],
-            "context": "town",
-        })
+        daemon._handle_agent_state(
+            {
+                "event": "agent_state",
+                "location": "plaza",
+                "activity": "idle",
+                "speed": 0,
+                "nearby_agents": [{"agent_id": "a1", "name": "Alice"}],
+                "context": "town",
+            }
+        )
         # Should NOT have written a new think prompt (under throttle, no change)
         assert not (daemon._workspace_path / "TOWN_STATUS.md").exists()

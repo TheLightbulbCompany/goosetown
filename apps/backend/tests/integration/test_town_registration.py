@@ -4,6 +4,7 @@ Tests that after Phase B (character creation + rotation fetch + static upload)
 the agent record already has sprite_ready=True, sprite_url non-empty, and
 onboarding_phase='static' — BEFORE any animations are downloaded.
 """
+
 import asyncio
 import base64
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -13,8 +14,7 @@ import pytest
 # Minimal 1x1 white PNG for use as a fake rotation image.
 # build_static_spritesheet_from_rotations calls Pillow, which needs a real PNG.
 _MINIMAL_PNG = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/"
-    "PchI6QAAAABJRU5ErkJggg=="
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI6QAAAABJRU5ErkJggg=="
 )
 
 
@@ -111,6 +111,7 @@ async def test_registration_sets_static_phase_before_animations():
     ):
         # Also set settings attributes directly in case they were already cached
         from core import config as _config_mod
+
         _config_mod.settings.PIXELLAB_API_KEY = "test-key"
         _config_mod.settings.SPRITE_S3_BUCKET = "test-bucket"
         _config_mod.settings.SPRITE_CDN_URL = "https://cdn.example.com"
@@ -136,12 +137,8 @@ async def test_registration_sets_static_phase_before_animations():
     )
 
     sprite_url = final_state.get("sprite_url", "")
-    assert sprite_url, (
-        f"sprite_url was empty after Phase B. Captured state: {final_state}"
-    )
-    assert sprite_url.startswith("https://cdn.example.com"), (
-        f"sprite_url has unexpected prefix: {sprite_url!r}"
-    )
+    assert sprite_url, f"sprite_url was empty after Phase B. Captured state: {final_state}"
+    assert sprite_url.startswith("https://cdn.example.com"), f"sprite_url has unexpected prefix: {sprite_url!r}"
 
     assert final_state.get("onboarding_phase") == "static", (
         f"onboarding_phase was not 'static' after Phase B. Captured state: {final_state}"

@@ -213,6 +213,7 @@ class TestRelationships:
         assert created is False
         assert rel["agentAId"] == "aaa"
 
+
 class TestConversations:
     def test_store_conversation(self, dynamodb_tables):
         svc = TownService()

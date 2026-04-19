@@ -9,7 +9,6 @@
  * persists across scene switches — only the Godot scene tree changes.
  */
 
-import { useAuth } from '@clerk/clerk-react';
 import { useEffect, useRef, useState } from 'react';
 
 const GODOT_JS_PATH = '/godot/goosetown.js';
@@ -51,7 +50,6 @@ export default function GodotCanvas({ className, scene = 'town' }: GodotCanvasPr
   const [error, setError] = useState<string | null>(null);
   const [engineReady, setEngineReady] = useState(false);
   const currentSceneRef = useRef<string>('town');
-  const { getToken } = useAuth();
 
   // Load engine once on mount
   useEffect(() => {
@@ -145,10 +143,8 @@ export default function GodotCanvas({ className, scene = 'town' }: GodotCanvasPr
         engineRef.current = null;
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- getToken is a new
-    // function reference on every render (from useAuth), so including it in deps
-    // would cause the engine to reload in an infinite loop. We only need it once
-    // at mount time to fetch the viewer token.
+    // Intentionally empty deps: the engine is mount-once; reloading on any
+    // prop change would cause an infinite reload loop.
   }, []);
 
   // Switch scenes when the scene prop changes (after engine is ready)

@@ -59,12 +59,14 @@ async def _get_cached_jwks(jwks_url: str) -> dict:
             stale_by = now - expires_at
             logger.warning(
                 "JWKS fetch failed, serving stale cache (stale by %ss): %s",
-                int(stale_by.total_seconds()), e,
+                int(stale_by.total_seconds()),
+                e,
             )
             return cached
         logger.error(
             "JWKS fetch failed and no recent cached data (grace %s): %s",
-            JWKS_STALE_GRACE, e,
+            JWKS_STALE_GRACE,
+            e,
         )
         raise
 

@@ -106,9 +106,7 @@ class TestVersionedSpriteUrl:
 
 
 class TestSpriteUpdatedAtAutoBump:
-    def test_writing_sprite_url_also_sets_sprite_updated_at(
-        self, dynamodb_tables, monkeypatch
-    ):
+    def test_writing_sprite_url_also_sets_sprite_updated_at(self, dynamodb_tables, monkeypatch):
         """Setting sprite_url via update_agent_state should auto-populate
         spriteUpdatedAt so downstream versioned_sprite_url has a token to use.
         """
@@ -131,17 +129,13 @@ class TestSpriteUpdatedAtAutoBump:
         monkeypatch.setattr("time.time", lambda: 1_700_000_000.0)
 
         service = TownService()
-        service.update_agent_state(
-            "agent-1", sprite_url="https://cdn.example/sprites/agent-1/walk.png"
-        )
+        service.update_agent_state("agent-1", sprite_url="https://cdn.example/sprites/agent-1/walk.png")
 
         refreshed = service.get_town_agent_by_id("agent-1")
         assert refreshed["spriteUrl"] == "https://cdn.example/sprites/agent-1/walk.png"
         assert refreshed["spriteUpdatedAt"] == 1_700_000_000
 
-    def test_explicit_sprite_updated_at_is_respected(
-        self, dynamodb_tables, monkeypatch
-    ):
+    def test_explicit_sprite_updated_at_is_respected(self, dynamodb_tables, monkeypatch):
         from core.services.town_service import TownService
 
         agents_table = dynamodb_tables.Table("goosetown-agents")
@@ -180,9 +174,7 @@ class TestApplyEventWithSleepGuard:
     def mocks(self):
         """Patch the helper's external dependencies at their source modules."""
         patches = {
-            "mgmt_class": patch(
-                "core.services.management_api_client.ManagementApiClient"
-            ),
+            "mgmt_class": patch("core.services.management_api_client.ManagementApiClient"),
             "ws_mgr": patch("routers.town.get_town_agent_ws_manager"),
         }
         started = {name: p.start() for name, p in patches.items()}
@@ -199,16 +191,12 @@ class TestApplyEventWithSleepGuard:
         agent = _make_agent(energy=80, mood=0, traits="extrovert")
         mocks["ws_mgr"].return_value.get_by_agent_id.return_value = None
 
-        new_e, new_m, slept = _apply_event_with_sleep_guard(
-            service, "agent-1", agent, "conversation_completed"
-        )
+        new_e, new_m, slept = _apply_event_with_sleep_guard(service, "agent-1", agent, "conversation_completed")
 
         assert slept is False
         # conversation_completed for extrovert: energy -2, mood +8 per mood_engine
         assert 60 <= new_e < 80
-        service.update_agent_mood_energy.assert_called_once_with(
-            "agent-1", new_m, new_e
-        )
+        service.update_agent_mood_energy.assert_called_once_with("agent-1", new_m, new_e)
         service.update_agent_activity.assert_not_called()
 
     def test_event_that_exhausts_triggers_sleep_and_closes_ws(self, mocks):
@@ -225,9 +213,7 @@ class TestApplyEventWithSleepGuard:
         mgmt_instance = MagicMock()
         mocks["mgmt_class"].return_value = mgmt_instance
 
-        new_e, new_m, slept = _apply_event_with_sleep_guard(
-            service, "agent-1", agent, "conversation_completed"
-        )
+        new_e, new_m, slept = _apply_event_with_sleep_guard(service, "agent-1", agent, "conversation_completed")
 
         assert slept is True
         assert new_e == 100  # sleep refills
@@ -236,9 +222,7 @@ class TestApplyEventWithSleepGuard:
         call_args = service.update_agent_mood_energy.call_args
         assert call_args[0][0] == "agent-1"
         assert call_args[0][2] == 100  # energy arg is 100
-        service.update_agent_activity.assert_called_once_with(
-            "agent-1", "sleeping", None
-        )
+        service.update_agent_activity.assert_called_once_with("agent-1", "sleeping", None)
         # WS: forced_sleep sent, then close_connection
         mgmt_instance.send_message.assert_called_once()
         sent_payload = mgmt_instance.send_message.call_args[0][1]
@@ -255,16 +239,12 @@ class TestApplyEventWithSleepGuard:
         agent = _make_agent(energy=1, mood=0, traits="extrovert")
         mocks["ws_mgr"].return_value.get_by_agent_id.return_value = None
 
-        new_e, _new_m, slept = _apply_event_with_sleep_guard(
-            service, "agent-1", agent, "conversation_completed"
-        )
+        new_e, _new_m, slept = _apply_event_with_sleep_guard(service, "agent-1", agent, "conversation_completed")
 
         assert slept is True
         assert new_e == 100
         service.update_agent_mood_energy.assert_called_once()
-        service.update_agent_activity.assert_called_once_with(
-            "agent-1", "sleeping", None
-        )
+        service.update_agent_activity.assert_called_once_with("agent-1", "sleeping", None)
 
 
 # ---------------------------------------------------------------------------
@@ -288,12 +268,14 @@ class TestEnergySoftGate:
 
         mgmt_instance = MagicMock()
 
-        with patch("routers.town.get_town_agent_ws_manager", return_value=ws_manager), \
-             patch("routers.town.TownService", return_value=service), \
-             patch(
-                 "core.services.management_api_client.ManagementApiClient",
-                 return_value=mgmt_instance,
-             ):
+        with (
+            patch("routers.town.get_town_agent_ws_manager", return_value=ws_manager),
+            patch("routers.town.TownService", return_value=service),
+            patch(
+                "core.services.management_api_client.ManagementApiClient",
+                return_value=mgmt_instance,
+            ),
+        ):
             yield SimpleNamespace(
                 ws_manager=ws_manager,
                 agent_conn=agent_conn,

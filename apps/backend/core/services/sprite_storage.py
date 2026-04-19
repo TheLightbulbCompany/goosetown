@@ -97,7 +97,8 @@ def composite_v2_animation(
 
     logger.info(
         "Composited V2 animation spritesheet: %d directions, %d frames",
-        directions_found, frame_count,
+        directions_found,
+        frame_count,
     )
     buf = io.BytesIO()
     sheet.save(buf, format="PNG")
@@ -176,16 +177,16 @@ def composite_animation_spritesheet(
 
     logger.info(
         "Composited animation spritesheet: %d directions, %d frames, %dpx",
-        directions_found, frame_count, frame_size,
+        directions_found,
+        frame_count,
+        frame_size,
     )
     buf = io.BytesIO()
     sheet.save(buf, format="PNG")
     return buf.getvalue(), frame_count
 
 
-def upload_sprite_to_s3(
-    png_bytes: bytes, agent_id: str, bucket: str | None = None, filename: str = "walk.png"
-) -> str:
+def upload_sprite_to_s3(png_bytes: bytes, agent_id: str, bucket: str | None = None, filename: str = "walk.png") -> str:
     """Upload a sprite PNG to S3 and return the S3 key.
 
     Key pattern: sprites/{agent_id}/{filename}

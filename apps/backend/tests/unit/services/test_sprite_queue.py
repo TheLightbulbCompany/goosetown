@@ -65,9 +65,7 @@ async def test_worker_processes_jobs_with_bounded_concurrency():
         await gate.wait()
         in_flight -= 1
 
-    with patch(
-        "routers.town._sprite_pipeline_task", side_effect=fake_pipeline
-    ):
+    with patch("routers.town._sprite_pipeline_task", side_effect=fake_pipeline):
         q.start()
         for i in range(5):
             q.enqueue(f"agent-{i}", f"Name{i}", "appearance")
@@ -103,10 +101,13 @@ async def test_failed_job_re_enqueues_with_incremented_retry():
     async def instant_sleep(_):
         return None
 
-    with patch(
-        "routers.town._sprite_pipeline_task",
-        new=AsyncMock(side_effect=RuntimeError("PixelLab 500")),
-    ), patch.object(sq.asyncio, "sleep", side_effect=instant_sleep):
+    with (
+        patch(
+            "routers.town._sprite_pipeline_task",
+            new=AsyncMock(side_effect=RuntimeError("PixelLab 500")),
+        ),
+        patch.object(sq.asyncio, "sleep", side_effect=instant_sleep),
+    ):
         await q._process_job(job)
 
     # The job should have been re-enqueued with retries=1.

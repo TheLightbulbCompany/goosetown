@@ -238,6 +238,7 @@ class TownService:
         # URL versioning (versioned_sprite_url) gets a fresh cache-bust token.
         if "sprite_url" in kwargs and "sprite_updated_at" not in kwargs:
             import time as _time
+
             kwargs["sprite_updated_at"] = int(_time.time())
 
         # Map snake_case kwargs to camelCase DynamoDB attribute names
@@ -702,9 +703,7 @@ class TownService:
 
         return _decimal_to_native(item)
 
-    def get_nearby_conversations(
-        self, nearby_agent_ids: list[str], exclude_conv_id: str | None = None
-    ) -> list[dict]:
+    def get_nearby_conversations(self, nearby_agent_ids: list[str], exclude_conv_id: str | None = None) -> list[dict]:
         """Find active conversations that any of the nearby agents are in."""
         conversations: list[dict] = []
         seen_conv_ids: set[str] = set()
@@ -720,24 +719,25 @@ class TownService:
             if not conv or conv.get("status") != "active":
                 continue
             participants: list[str] = conv.get("participants") or [
-                conv.get("participantAId"), conv.get("participantBId"),
+                conv.get("participantAId"),
+                conv.get("participantBId"),
             ]
             participant_names = []
             for pid in participants:
                 if pid:
                     p = self.get_town_agent_by_id(pid)
                     if p:
-                        participant_names.append(
-                            p.get("displayName", p.get("agentName", pid[:8]))
-                        )
+                        participant_names.append(p.get("displayName", p.get("agentName", pid[:8])))
             pub_log = conv.get("publicLog") or []
             last_msg = pub_log[-1] if pub_log else {}
-            conversations.append({
-                "conv_id": conv_id,
-                "participants": participant_names,
-                "last_message": last_msg,
-                "location": conv.get("location", ""),
-            })
+            conversations.append(
+                {
+                    "conv_id": conv_id,
+                    "participants": participant_names,
+                    "last_message": last_msg,
+                    "location": conv.get("location", ""),
+                }
+            )
         return conversations
 
     def get_conversation_by_id(self, conv_id: str) -> Optional[dict]:
@@ -816,13 +816,8 @@ class TownService:
         try:
             resp = table.update_item(
                 Key={"id": conv_id},
-                UpdateExpression=(
-                    "SET participants = list_append(participants, :new), updatedAt = :now"
-                ),
-                ConditionExpression=(
-                    "attribute_exists(id) AND #s = :active "
-                    "AND NOT contains(participants, :aid)"
-                ),
+                UpdateExpression=("SET participants = list_append(participants, :new), updatedAt = :now"),
+                ConditionExpression=("attribute_exists(id) AND #s = :active AND NOT contains(participants, :aid)"),
                 ExpressionAttributeNames={"#s": "status"},
                 ExpressionAttributeValues={
                     ":new": [agent_id],
@@ -919,7 +914,8 @@ class TownService:
         # Clear currentConversationId on all participants
         agents_table = dynamo.agents_table()
         participants_list: list[str] = conv.get("participants") or [
-            conv.get("participantAId"), conv.get("participantBId"),
+            conv.get("participantAId"),
+            conv.get("participantBId"),
         ]
         for agent_id in participants_list:
             if not agent_id:
@@ -951,15 +947,12 @@ class TownService:
             List of conversation records (plain dicts). Empty list on any
             query failure — callers should log and proceed.
         """
-        cutoff_iso = (
-            datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)
-        ).isoformat()
+        cutoff_iso = (datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)).isoformat()
         table = dynamo.conversations_table()
         try:
             resp = table.query(
                 IndexName="status-updatedAt-index",
-                KeyConditionExpression=Key("status").eq("active")
-                & Key("updatedAt").lt(cutoff_iso),
+                KeyConditionExpression=Key("status").eq("active") & Key("updatedAt").lt(cutoff_iso),
                 Limit=50,
             )
         except Exception as exc:
