@@ -155,3 +155,42 @@ func test_should_accept_packet_size_rejects_oversize() -> void:
 func test_max_packet_bytes_is_256kb() -> void:
 	# Documented protocol limit; any future change must be deliberate.
 	assert_that(ServerProtocolScript.MAX_PACKET_BYTES).is_equal(262144)
+
+
+# ---------------------------------------------------------------------------
+# Pre-auth identification timeout
+# ---------------------------------------------------------------------------
+
+
+func test_identification_timeout_is_10_seconds() -> void:
+	assert_that(ServerProtocolScript.IDENTIFICATION_TIMEOUT_SEC).is_equal(10.0)
+
+
+func test_unidentified_peers_evict_returns_stale_peers() -> void:
+	var proto: ServerProtocol = ServerProtocolScript.new()
+	add_child(auto_free(proto))
+
+	# Seed two peers: one fresh, one stale.
+	proto._peer_connected_at[1] = 100.0
+	proto._peer_connected_at[2] = 50.0
+
+	# At t=105s: peer 2 is 55s old (evict), peer 1 is 5s old (keep).
+	var evict: Array = proto._unidentified_peers_to_evict(105.0)
+	assert_that(evict).contains_exactly([2])
+
+
+func test_unidentified_peers_evict_empty_when_no_peers() -> void:
+	var proto: ServerProtocol = ServerProtocolScript.new()
+	add_child(auto_free(proto))
+	assert_that(proto._unidentified_peers_to_evict(1000.0)).is_empty()
+
+
+func test_unidentified_peers_evict_respects_exact_threshold() -> void:
+	var proto: ServerProtocol = ServerProtocolScript.new()
+	add_child(auto_free(proto))
+
+	proto._peer_connected_at[1] = 0.0
+	# Exactly at the timeout boundary — should NOT evict (strict greater-than).
+	assert_that(proto._unidentified_peers_to_evict(10.0)).is_empty()
+	# Just past — should evict.
+	assert_that(proto._unidentified_peers_to_evict(10.01)).contains_exactly([1])
