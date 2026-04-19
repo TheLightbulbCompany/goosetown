@@ -1,5 +1,9 @@
 """Tests for core.ws_models — Pydantic discriminated union validating
-incoming WebSocket messages forwarded from API Gateway."""
+incoming WebSocket message bodies forwarded from API Gateway.
+
+The wire format is flat: {type, action, ...action-fields}. These tests
+verify validation catches every way a message can be malformed.
+"""
 
 from __future__ import annotations
 
@@ -13,128 +17,160 @@ _adapter: TypeAdapter[WsMessage] = TypeAdapter(WsMessage)
 
 class TestTownAgentConnect:
     def test_accepts_minimal_valid_payload(self) -> None:
-        msg = _adapter.validate_python(
-            {
-                "type": "town_agent_connect",
-                "token": "abc",
-                "connection_id": "c1",
-            }
-        )
+        msg = _adapter.validate_python({"type": "town_agent_connect", "token": "abc"})
         assert msg.type == "town_agent_connect"
         assert msg.token == "abc"
 
+    def test_accepts_with_agent_name(self) -> None:
+        msg = _adapter.validate_python({"type": "town_agent_connect", "token": "abc", "agent_name": "Goose"})
+        assert msg.agent_name == "Goose"
+
     def test_rejects_missing_token(self) -> None:
         with pytest.raises(ValidationError):
-            _adapter.validate_python(
-                {
-                    "type": "town_agent_connect",
-                    "connection_id": "c1",
-                }
-            )
+            _adapter.validate_python({"type": "town_agent_connect"})
 
 
 class TestTownAgentAct:
     def test_accepts_move_action(self) -> None:
+        msg = _adapter.validate_python({"type": "town_agent_act", "action": "move", "destination": "plaza"})
+        assert msg.action == "move"
+        assert msg.destination == "plaza"
+
+    def test_rejects_move_without_destination(self) -> None:
+        with pytest.raises(ValidationError):
+            _adapter.validate_python({"type": "town_agent_act", "action": "move"})
+
+    def test_accepts_chat_action_with_target(self) -> None:
+        msg = _adapter.validate_python({"type": "town_agent_act", "action": "chat", "target": "agent_b"})
+        assert msg.target == "agent_b"
+
+    def test_accepts_chat_action_with_opening_message(self) -> None:
         msg = _adapter.validate_python(
             {
                 "type": "town_agent_act",
-                "connection_id": "c1",
-                "body": {"action": "move", "target": "plaza"},
+                "action": "chat",
+                "target": "agent_b",
+                "message": "Hello!",
             }
         )
-        assert msg.type == "town_agent_act"
-        assert msg.body.action == "move"
-        assert msg.body.target == "plaza"
+        assert msg.message == "Hello!"
 
-    def test_accepts_say_action_with_text(self) -> None:
+    def test_rejects_chat_without_target(self) -> None:
+        with pytest.raises(ValidationError):
+            _adapter.validate_python({"type": "town_agent_act", "action": "chat"})
+
+    def test_accepts_say_action(self) -> None:
         msg = _adapter.validate_python(
             {
                 "type": "town_agent_act",
-                "connection_id": "c1",
-                "body": {"action": "say", "text": "hello"},
+                "action": "say",
+                "conv_id": "c1",
+                "message": "hi",
             }
         )
-        assert msg.body.action == "say"
-        assert msg.body.text == "hello"
+        assert msg.conv_id == "c1"
+        assert msg.message == "hi"
 
-    def test_rejects_say_text_over_max_length(self) -> None:
+    def test_accepts_say_without_conv_id(self) -> None:
+        """Handler tolerates empty/missing conv_id (defaults to ''). Schema
+        matches that behavior rather than rejecting the message here."""
+        msg = _adapter.validate_python({"type": "town_agent_act", "action": "say", "message": "hi"})
+        assert msg.conv_id is None
+        assert msg.message == "hi"
+
+    def test_rejects_say_without_message(self) -> None:
+        with pytest.raises(ValidationError):
+            _adapter.validate_python({"type": "town_agent_act", "action": "say", "conv_id": "c1"})
+
+    def test_rejects_say_message_over_max_length(self) -> None:
         with pytest.raises(ValidationError):
             _adapter.validate_python(
                 {
                     "type": "town_agent_act",
-                    "connection_id": "c1",
-                    "body": {"action": "say", "text": "x" * 501},
+                    "action": "say",
+                    "conv_id": "c1",
+                    "message": "x" * 501,
                 }
             )
+
+    def test_accepts_idle_action(self) -> None:
+        msg = _adapter.validate_python({"type": "town_agent_act", "action": "idle"})
+        assert msg.action == "idle"
+
+    def test_accepts_end_action(self) -> None:
+        msg = _adapter.validate_python({"type": "town_agent_act", "action": "end", "conv_id": "c1"})
+        assert msg.conv_id == "c1"
+
+    def test_accepts_end_without_conv_id(self) -> None:
+        """Like 'say', the handler tolerates missing conv_id (defaults to '').
+        Schema matches: no model_validator enforcement."""
+        msg = _adapter.validate_python({"type": "town_agent_act", "action": "end"})
+        assert msg.action == "end"
+        assert msg.conv_id is None
+
+    def test_accepts_context_transition(self) -> None:
+        msg = _adapter.validate_python(
+            {
+                "type": "town_agent_act",
+                "action": "context_transition",
+                "target_context": "apartment",
+            }
+        )
+        assert msg.target_context == "apartment"
+
+    def test_rejects_context_transition_with_invalid_target(self) -> None:
+        with pytest.raises(ValidationError):
+            _adapter.validate_python(
+                {
+                    "type": "town_agent_act",
+                    "action": "context_transition",
+                    "target_context": "moon",
+                }
+            )
+
+    def test_accepts_activity_action(self) -> None:
+        msg = _adapter.validate_python({"type": "town_agent_act", "action": "activity", "activity_id": "read"})
+        assert msg.activity_id == "read"
 
     def test_rejects_unknown_action(self) -> None:
         with pytest.raises(ValidationError):
-            _adapter.validate_python(
-                {
-                    "type": "town_agent_act",
-                    "connection_id": "c1",
-                    "body": {"action": "eat_the_pigeons"},
-                }
-            )
-
-    def test_rejects_move_without_target(self) -> None:
-        with pytest.raises(ValidationError):
-            _adapter.validate_python(
-                {
-                    "type": "town_agent_act",
-                    "connection_id": "c1",
-                    "body": {"action": "move"},
-                }
-            )
+            _adapter.validate_python({"type": "town_agent_act", "action": "eat_the_pigeons"})
 
 
 class TestTownDisconnect:
     def test_accepts_without_alarm(self) -> None:
-        msg = _adapter.validate_python(
-            {
-                "type": "town_disconnect",
-                "connection_id": "c1",
-            }
-        )
+        msg = _adapter.validate_python({"type": "town_disconnect"})
         assert msg.alarm is None
 
-    def test_accepts_with_alarm_string(self) -> None:
-        msg = _adapter.validate_python(
-            {
-                "type": "town_disconnect",
-                "connection_id": "c1",
-                "alarm": "07:30",
-            }
-        )
+    def test_accepts_with_alarm(self) -> None:
+        msg = _adapter.validate_python({"type": "town_disconnect", "alarm": "07:30"})
         assert msg.alarm == "07:30"
+
+
+class TestTownSubscribe:
+    def test_accepts_subscribe(self) -> None:
+        msg = _adapter.validate_python({"type": "town_subscribe"})
+        assert msg.type == "town_subscribe"
 
 
 class TestTopLevelValidation:
     def test_rejects_unknown_type(self) -> None:
         with pytest.raises(ValidationError):
-            _adapter.validate_python(
-                {
-                    "type": "town_eat_sandwich",
-                    "connection_id": "c1",
-                }
-            )
+            _adapter.validate_python({"type": "town_eat_sandwich"})
 
     def test_rejects_missing_type(self) -> None:
         with pytest.raises(ValidationError):
-            _adapter.validate_python({"connection_id": "c1"})
+            _adapter.validate_python({})
 
-    def test_cve_regression_extra_keys_do_not_pass_through(self) -> None:
-        """Regression guard for the 2026-04-19 CRITICAL finding: arbitrary
-        extra keys in body must not be silently forwarded to the game server.
-        Pydantic's default is to ignore extras, but we verify it explicitly
-        here so a future config change doesn't reintroduce the bug."""
+    def test_cve_regression_extra_keys_are_ignored(self) -> None:
+        """CRITICAL regression: arbitrary extra keys must not surface in
+        model_dump(). Pydantic's default extra='ignore' gives us this, but
+        we assert it explicitly so a config change won't reintroduce the bug."""
         msg = _adapter.validate_python(
             {
                 "type": "town_agent_act",
-                "connection_id": "c1",
-                "body": {"action": "idle", "malicious_extra": "drop_table"},
+                "action": "idle",
+                "malicious_extra": "drop_table",
             }
         )
-        body_dict = msg.body.model_dump()
-        assert "malicious_extra" not in body_dict
-        assert body_dict == {"action": "idle"}
+        assert "malicious_extra" not in msg.model_dump()
