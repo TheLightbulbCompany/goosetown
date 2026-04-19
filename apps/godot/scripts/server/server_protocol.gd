@@ -24,6 +24,17 @@ signal command_received(peer_id: int, data: Dictionary)
 ## lifecycle and will disconnect explicitly when needed.
 const PEER_TIMEOUT: float = 600.0  # 10 minutes
 
+## Maximum WS frame size. Protects against memory exhaustion from a hostile
+## or broken peer. World-state broadcasts with ~20 agents are < 8 KB; 256 KB
+## gives generous headroom.
+const MAX_PACKET_BYTES: int = 262144  # 256 KB
+
+
+## Pure helper: is this packet size acceptable?
+func _should_accept_packet_size(size: int) -> bool:
+	return size <= MAX_PACKET_BYTES
+
+
 var _tcp_server: TCPServer = null
 var _peers: Dictionary = {}  # peer_id -> WebSocketPeer
 var _pending_tcp: Dictionary = {}  # peer_id -> StreamPeerTCP (awaiting WS upgrade)
@@ -155,6 +166,14 @@ func _process(_delta: float) -> void:
 		# Read all available packets.
 		while ws.get_available_packet_count() > 0:
 			var packet := ws.get_packet()
+			if not _should_accept_packet_size(packet.size()):
+				push_warning(
+					"ServerProtocol: peer %d sent oversize packet (%d bytes), disconnecting"
+					% [peer_id, packet.size()]
+				)
+				ws.close()
+				disconnected_ids.append(peer_id)
+				break
 			var text := packet.get_string_from_utf8()
 			_last_message_time[peer_id] = Time.get_unix_time_from_system()
 			_handle_message(peer_id, text)

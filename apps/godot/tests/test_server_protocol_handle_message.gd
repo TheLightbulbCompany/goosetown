@@ -135,3 +135,23 @@ func test_non_dictionary_json_emits_nothing() -> void:
 
 	assert_that(connected.size()).is_equal(0)
 	assert_that(commands.size()).is_equal(0)
+
+
+# ---------------------------------------------------------------------------
+# Packet size cap
+# ---------------------------------------------------------------------------
+
+
+func test_should_accept_packet_size_rejects_oversize() -> void:
+	var proto: ServerProtocol = ServerProtocolScript.new()
+	add_child(auto_free(proto))
+
+	assert_that(proto._should_accept_packet_size(100)).is_true()
+	assert_that(proto._should_accept_packet_size(262144)).is_true()  # exactly at limit OK
+	assert_that(proto._should_accept_packet_size(262145)).is_false()
+	assert_that(proto._should_accept_packet_size(5_000_000)).is_false()
+
+
+func test_max_packet_bytes_is_256kb() -> void:
+	# Documented protocol limit; any future change must be deliberate.
+	assert_that(ServerProtocolScript.MAX_PACKET_BYTES).is_equal(262144)
