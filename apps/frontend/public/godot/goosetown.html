@@ -110,13 +110,13 @@ body {
 		</div>
 
 		<script>
-	// Secure bridge handlers. Godot calls window.__gt_<name>(args) with a
-	// pre-parsed object; no string interpolation occurs on the Godot side.
-	window.__gt_dispatch_event_scene_changed = function(args) {
-		window.dispatchEvent(new CustomEvent('godot_scene_changed', { detail: args }));
-	};
-	// Add more __gt_dispatch_event_<name> handlers as emit_to_react call sites
-	// appear. Only scene_changed is used today (see js_bridge.gd:183).
+			// Secure bridge handlers. Godot calls window.__gt_<name>(args) with a
+			// pre-parsed object; no string interpolation occurs on the Godot side.
+			window.__gt_dispatch_event_scene_changed = function(args) {
+				window.dispatchEvent(new CustomEvent('godot_scene_changed', { detail: args }));
+			};
+			// Add more __gt_dispatch_event_<name> handlers as emit_to_react call sites
+			// appear. Only scene_changed is used today (see emit_to_react call in js_bridge.gd).
 		</script>
 		<script src="goosetown.js"></script>
 		<script>

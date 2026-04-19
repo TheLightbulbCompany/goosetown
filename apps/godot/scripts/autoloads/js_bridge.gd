@@ -105,6 +105,13 @@ func _build_eval_script(fn_name: String, key: String) -> String:
 func call_js(fn_name: String, args: Dictionary) -> void:
 	if not OS.has_feature("web"):
 		return
+	# fn_name becomes part of the eval string (`window.__gt_<fn_name>`).
+	# Require identifier-safe characters to prevent injection.
+	var fn_re := RegEx.new()
+	fn_re.compile("^[a-zA-Z0-9_]+$")
+	if fn_re.search(fn_name) == null:
+		push_error("JsBridge.call_js: rejected unsafe fn_name: %s" % fn_name)
+		return
 	var window: JavaScriptObject = JavaScriptBridge.get_interface("window")
 	var json_str: String = JSON.stringify(args)
 	var key: String = "__gt_payload_%d_%d" % [Time.get_ticks_msec(), randi()]
