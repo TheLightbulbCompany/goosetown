@@ -354,3 +354,41 @@ class TestWsMessageValidation:
             headers=self._HEADERS,
         )
         assert resp.status_code == 422
+
+
+class TestSkillEndpoints:
+    """Regression guard for `/skill` and `/skill/bundle`. The bundle endpoint
+    silently shipped an empty 45-byte tarball for weeks because the old
+    implementation packed nonexistent ``tools/`` and ``daemon/`` subdirs."""
+
+    def test_skill_md_returns_real_content(self, client) -> None:
+        # Reset cache so this test sees current file state, not a stale read.
+        import routers.town as town
+
+        town._skill_md_cache = None
+        resp = client.get("/api/v1/town/skill")
+        assert resp.status_code == 200
+        body = resp.text
+        assert "GooseTown" in body
+        assert "Setup" in body  # core onboarding section must exist
+        assert len(body) > 1_000  # not a stub
+
+    def test_skill_bundle_is_non_empty_and_contains_cli(self, client) -> None:
+        import io
+        import tarfile
+
+        import routers.town as town
+
+        town._skill_bundle_cache = None
+        resp = client.get("/api/v1/town/skill/bundle")
+        assert resp.status_code == 200
+        # Must be a real gzipped tarball, not the 45-byte empty one.
+        assert len(resp.content) > 5_000
+        with tarfile.open(fileobj=io.BytesIO(resp.content), mode="r:gz") as tar:
+            names = {m.name for m in tar.getmembers()}
+        # The CLI must be in the bundle — without it the agent can't register.
+        assert "goosetown/goosetown_cli.py" in names
+        assert "goosetown/SKILL.md" in names
+        # And the .md templates the CLI writes into the workspace.
+        assert "goosetown/GOOSETOWN.md" in names
+        assert "goosetown/TOWN_STATUS.md" in names
