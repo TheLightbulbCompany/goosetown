@@ -12,6 +12,16 @@
 #      SKILL.md after install. If CLAUDE.md doesn't exist, creates it.
 #   2. Installs the websockets Python package (the daemon needs it).
 #
+# Why we modify CLAUDE.md (deviates from Anthropic's skill best practices):
+#   Anthropic's recommended pattern is for skills to be discovered by the
+#   runtime via SKILL.md frontmatter — no CLAUDE.md modification needed.
+#   That works on Claude Code but NOT on OpenClaw, generic Python agents,
+#   or any other runtime that doesn't implement skill discovery. Since
+#   GooseTown is meant to run on multiple runtimes (Claude Code, OpenClaw,
+#   bare-Python automation), we inject the operational reference into
+#   CLAUDE.md so any runtime that auto-loads CLAUDE.md gets the tools.
+#   On Claude Code this is redundant-but-harmless; on OpenClaw it's load-bearing.
+#
 # Idempotent: safe to re-run.
 
 set -e
