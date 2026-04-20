@@ -103,30 +103,9 @@ pipeline.addStageWithGitHubOptions(
 );
 
 // ---------------------------------------------------------------------------
-// Manual approval gate between dev and prod
-// ---------------------------------------------------------------------------
-const approvalStep = new GitHubActionStep("ApproveProduction", {
-  jobSteps: [
-    {
-      name: "Approval Required",
-      uses: "trstringer/manual-approval@v1",
-      with: {
-        secret: "${{ github.TOKEN }}",
-        approvers: "prez2307",
-        "issue-title": "Approve production deployment",
-        "issue-body":
-          "A new deployment is ready for production. Review the dev deployment at https://dev.goosetown.isol8.co and approve or deny.",
-        "minimum-approvals": "1",
-      },
-    },
-  ],
-  permissions: {
-    issues: JobPermission.WRITE,
-  },
-});
-
-// ---------------------------------------------------------------------------
-// Prod stage — deploy after manual approval
+// Prod stage — auto-deploys after dev succeeds.
+// (The manual approval gate was removed 2026-04-19; reinstate by passing
+// `pre: [approvalStep]` to addStageWithGitHubOptions when a gate is needed.)
 // ---------------------------------------------------------------------------
 pipeline.addStageWithGitHubOptions(
   new GooseTownStage(app, "prod", { env: awsEnv, environment: "prod" }),
@@ -135,7 +114,6 @@ pipeline.addStageWithGitHubOptions(
       StackCapabilities.NAMED_IAM,
       StackCapabilities.AUTO_EXPAND,
     ],
-    pre: [approvalStep],
     post: [
       new GitHubActionStep("DeployVercelProd", {
         jobSteps: [

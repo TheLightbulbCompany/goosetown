@@ -975,33 +975,6 @@ jobs:
           CDN"; echo "$HEADERS"; exit 1; }
 
           echo "OK: sprite CDN has Cross-Origin-Resource-Policy: cross-origin"
-  prod-ApproveProduction:
-    name: ApproveProduction
-    permissions:
-      issues: write
-    runs-on: ubuntu-latest
-    needs:
-      - Build-Synth
-      - dev-goosetown-dev-auth-Deploy
-      - dev-goosetown-dev-database-Deploy
-      - dev-goosetown-dev-dns-Deploy
-      - dev-goosetown-dev-network-Deploy
-      - dev-goosetown-dev-api-Deploy
-      - dev-goosetown-dev-gameserver-Deploy
-      - dev-goosetown-dev-storage-Deploy
-      - dev-goosetown-dev-compute-Deploy
-      - dev-DeployVercelDev
-    env: {}
-    steps:
-      - name: Approval Required
-        uses: trstringer/manual-approval@v1
-        with:
-          secret: ${{ github.TOKEN }}
-          approvers: prez2307
-          issue-title: Approve production deployment
-          issue-body: A new deployment is ready for production. Review the dev deployment
-            at https://dev.goosetown.isol8.co and approve or deny.
-          minimum-approvals: "1"
   prod-goosetown-prod-auth-Deploy:
     name: Deploy prodgoosetownprodauthFC3A2E9B
     permissions:
@@ -1010,7 +983,6 @@ jobs:
     needs:
       - Build-Synth
       - Assets-FileAsset11
-      - prod-ApproveProduction
       - dev-goosetown-dev-auth-Deploy
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
@@ -1057,7 +1029,6 @@ jobs:
     needs:
       - Build-Synth
       - Assets-FileAsset12
-      - prod-ApproveProduction
       - dev-goosetown-dev-auth-Deploy
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
@@ -1104,7 +1075,6 @@ jobs:
     needs:
       - Build-Synth
       - Assets-FileAsset13
-      - prod-ApproveProduction
       - dev-goosetown-dev-auth-Deploy
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
@@ -1152,7 +1122,6 @@ jobs:
       - Build-Synth
       - Assets-FileAsset14
       - Assets-FileAsset5
-      - prod-ApproveProduction
       - dev-goosetown-dev-auth-Deploy
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
@@ -1203,7 +1172,6 @@ jobs:
       - prod-goosetown-prod-auth-Deploy
       - prod-goosetown-prod-database-Deploy
       - prod-goosetown-prod-dns-Deploy
-      - prod-ApproveProduction
       - dev-goosetown-dev-auth-Deploy
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
@@ -1252,7 +1220,6 @@ jobs:
       - Assets-FileAsset16
       - Assets-DockerAsset1
       - prod-goosetown-prod-network-Deploy
-      - prod-ApproveProduction
       - dev-goosetown-dev-auth-Deploy
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
@@ -1300,7 +1267,6 @@ jobs:
       - Build-Synth
       - Assets-FileAsset17
       - prod-goosetown-prod-dns-Deploy
-      - prod-ApproveProduction
       - dev-goosetown-dev-auth-Deploy
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
@@ -1355,7 +1321,6 @@ jobs:
       - prod-goosetown-prod-api-Deploy
       - prod-goosetown-prod-dns-Deploy
       - prod-goosetown-prod-gameserver-Deploy
-      - prod-ApproveProduction
       - dev-goosetown-dev-auth-Deploy
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy

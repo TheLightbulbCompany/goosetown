@@ -109,40 +109,9 @@ body {
 			<div id="status-notice"></div>
 		</div>
 
-		<script>
-			// Secure bridge handlers. Godot calls window.__gt_<name>(args) with a
-			// pre-parsed object; no string interpolation occurs on the Godot side.
-			window.__gt_dispatch_event_scene_changed = function(args) {
-				window.dispatchEvent(new CustomEvent('godot_scene_changed', { detail: args }));
-			};
-			window.__gt_load_sprite = function(args) {
-				// args: { url, agent_id, animation_name? }
-				var url = String(args.url || '');
-				var agentId = String(args.agent_id || '');
-				var anim = args.animation_name ? String(args.animation_name) : null;
-				if (!url || !agentId) return;
-				fetch(url)
-					.then(function(r) { return r.blob(); })
-					.then(function(blob) {
-						var reader = new FileReader();
-						reader.onloadend = function() {
-							var base64 = reader.result.split(',')[1];
-							if (window.godotUpdateAgentSprite) {
-								var payload = anim
-									? { id: agentId, base64: base64, animation: anim }
-									: { id: agentId, base64: base64 };
-								window.godotUpdateAgentSprite(JSON.stringify(payload));
-								window.__gt_sprite_load_count = (window.__gt_sprite_load_count || 0) + 1;
-							}
-						};
-						reader.readAsDataURL(blob);
-					})
-					.catch(function(e) { console.warn('[GooseTown] sprite load failed:', e); });
-			};
-		</script>
 		<script src="goosetown.js"></script>
 		<script>
-const GODOT_CONFIG = {"args":[],"canvasResizePolicy":2,"emscriptenPoolSize":8,"ensureCrossOriginIsolationHeaders":true,"executable":"goosetown","experimentalVK":false,"fileSizes":{"goosetown.pck":6797076,"goosetown.wasm":35749181},"focusCanvas":true,"gdextensionLibs":[],"godotPoolSize":4};
+const GODOT_CONFIG = {"args":[],"canvasResizePolicy":2,"emscriptenPoolSize":8,"ensureCrossOriginIsolationHeaders":true,"executable":"goosetown","experimentalVK":false,"fileSizes":{"goosetown.pck":6841788,"goosetown.wasm":35749181},"focusCanvas":true,"gdextensionLibs":[],"godotPoolSize":4};
 const GODOT_THREADS_ENABLED = false;
 const engine = new Engine(GODOT_CONFIG);
 
