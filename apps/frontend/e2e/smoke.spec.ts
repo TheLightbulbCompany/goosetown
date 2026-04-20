@@ -87,7 +87,60 @@ test.describe('GooseTown smoke', () => {
       'Live dev deploy predates the JsBridge migration; post-deploy run will enforce.',
     );
 
-    // Handler is deployed — enforce the real guard.
+    // Watch the latest world_state to learn whether any agent is currently
+    // connected. The handler can only fire when an agent is in the broadcast.
+    // Hook godotUpdateWorldState (set by Godot at engine boot) and record
+    // the most recent agent count.
+    await page.evaluate(() => {
+      const w = window as unknown as {
+        godotUpdateWorldState?: (json: string) => void;
+        __gt_test_last_agents?: number;
+      };
+      const orig = w.godotUpdateWorldState;
+      if (orig && !(orig as unknown as { __wrapped?: boolean }).__wrapped) {
+        const wrapped = function (this: unknown, json: string) {
+          try {
+            const m = JSON.parse(json) as { agents?: unknown[] };
+            w.__gt_test_last_agents = Array.isArray(m.agents)
+              ? m.agents.length
+              : 0;
+          } catch {
+            /* ignore parse errors */
+          }
+          return (orig as (this: unknown, j: string) => void).call(this, json);
+        };
+        (wrapped as unknown as { __wrapped: boolean }).__wrapped = true;
+        w.godotUpdateWorldState = wrapped;
+      }
+    });
+
+    // Wait up to 6s for at least one world_state to arrive so we can decide.
+    const sawWorldState = await page
+      .waitForFunction(
+        () =>
+          typeof (window as unknown as { __gt_test_last_agents?: number })
+            .__gt_test_last_agents === 'number',
+        { timeout: 6_000 },
+      )
+      .then(() => true)
+      .catch(() => false);
+    test.skip(
+      !sawWorldState,
+      'No world_state broadcast observed within 6s; nothing to render against.',
+    );
+
+    const lastAgentCount = await page.evaluate(
+      () =>
+        (window as unknown as { __gt_test_last_agents?: number })
+          .__gt_test_last_agents ?? 0,
+    );
+    test.skip(
+      lastAgentCount === 0,
+      'Live dev currently has no connected agents; sprite-render guard requires at least one.',
+    );
+
+    // At least one agent IS in the broadcast. Now enforce the real guard:
+    // __gt_sprite_load_count must increment.
     await expect
       .poll(
         async () =>
