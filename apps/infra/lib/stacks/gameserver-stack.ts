@@ -4,12 +4,17 @@ import * as ecs from "aws-cdk-lib/aws-ecs";
 import { DockerImageAsset, Platform } from "aws-cdk-lib/aws-ecr-assets";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
+import * as sns from "aws-cdk-lib/aws-sns";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
+import * as cw_actions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as path from "path";
 import { Construct } from "constructs";
 
 export interface GameServerStackProps extends cdk.StackProps {
   environment: string;
   vpc: ec2.IVpc;
+  /** SNS topic for CloudWatch alarm actions. Wired by ObservabilityStack. */
+  alarmTopic?: sns.ITopic;
 }
 
 export class GameServerStack extends cdk.Stack {
@@ -90,6 +95,27 @@ export class GameServerStack extends cdk.Stack {
 
     this.securityGroup = service.connections.securityGroups[0];
     this.serviceUrl = `gameserver.goosetown-${env}.local`;
+
+    // Single-replica game server (sharding not yet designed). Alarm fires if
+    // RunningTaskCount drops below 1 for 5 consecutive minutes — at that point
+    // OpenClaw agents have exhausted their 5 reconnect attempts and have dropped
+    // permanently. Operator response: restart per RUNBOOK.md.
+    if (props.alarmTopic) {
+      const taskMissingAlarm = new cloudwatch.Alarm(this, "GameServerTaskMissing", {
+        alarmName: `goosetown-${env}-gameserver-task-missing`,
+        metric: service.metric("RunningTaskCount", {
+          statistic: "Minimum",
+          period: cdk.Duration.minutes(1),
+        }),
+        threshold: 1,
+        comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+        evaluationPeriods: 5,
+        treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+        alarmDescription:
+          "Game server has no running task. Agents cannot connect. See RUNBOOK.md.",
+      });
+      taskMissingAlarm.addAlarmAction(new cw_actions.SnsAction(props.alarmTopic));
+    }
 
     // Outputs
     new cdk.CfnOutput(this, "ServiceUrl", { value: this.serviceUrl });

@@ -44,7 +44,7 @@ export class ApiStack extends cdk.Stack {
       functionName: `goosetown-${env}-ws-authorizer`,
       runtime: lambda_.Runtime.PYTHON_3_12,
       handler: "index.handler",
-      timeout: cdk.Duration.seconds(10),
+      timeout: cdk.Duration.seconds(15),
       memorySize: 128,
       logGroup: authorizerLogGroup,
       environment: {
@@ -284,7 +284,7 @@ def generate_policy(principal_id, effect, method_arn):
       functionName: `goosetown-${env}-ws-connect`,
       runtime: lambda_.Runtime.PYTHON_3_12,
       handler: "index.handler",
-      timeout: cdk.Duration.seconds(10),
+      timeout: cdk.Duration.seconds(15),
       memorySize: 128,
       logGroup: connectLogGroup,
       environment: {
@@ -338,7 +338,7 @@ def handler(event, context):
       functionName: `goosetown-${env}-ws-disconnect`,
       runtime: lambda_.Runtime.PYTHON_3_12,
       handler: "index.handler",
-      timeout: cdk.Duration.seconds(10),
+      timeout: cdk.Duration.seconds(15),
       memorySize: 128,
       logGroup: disconnectLogGroup,
       vpc: props.vpc,
@@ -587,6 +587,9 @@ def handler(event, context):
       value: this.wsApiEndpoint,
       exportName: `goosetown-${env}-ws-url`,
     });
+    // TODO(sub-project-3): remove this dangling CfnOutput once compute-stack has deployed without
+    // importValue. Left in place for one deploy cycle so an emergency rollback to an older
+    // ComputeStack revision (which still uses Fn.importValue) can resolve the export.
     new cdk.CfnOutput(this, "ManagementApiUrl", {
       value: this.managementApiUrl,
       exportName: `goosetown-${env}-management-api-url`,
