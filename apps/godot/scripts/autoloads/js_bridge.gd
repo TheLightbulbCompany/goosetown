@@ -171,14 +171,22 @@ func _on_set_camera(args: Array) -> void:
 
 ## Handles world_state updates forwarded from React's WebSocket.
 ## This bypasses Godot's WebSocketPeer URL issues in WebGL.
+##
+## Emits world_state_received synchronously. A previous version used
+## call_deferred to defer the signal by one frame, but in Godot 4 WebGL the
+## deferred queue does not drain when the enqueue happens inside a
+## JavaScriptBridge.create_callback invocation — so the signal was never
+## emitted and no AgentManager ever saw a world_state update. Every other
+## bridge callback (_on_spawn_agent, _on_move_agent, _on_update_agent_state)
+## emits directly; match that pattern.
+##
+## ``parsed`` is typed Variant (not Dictionary) so a malformed JSON payload
+## is rejected with the ``is Dictionary`` guard instead of crashing on a
+## null typed assignment.
 func _on_update_world_state(args: Array) -> void:
-	var parsed: Dictionary = JSON.parse_string(str(args[0]))
-	if parsed:
-		_emit_world_state_deferred.call_deferred(parsed)
-
-
-func _emit_world_state_deferred(data: Dictionary) -> void:
-	world_state_received.emit(data)
+	var parsed: Variant = JSON.parse_string(str(args[0]))
+	if parsed is Dictionary:
+		world_state_received.emit(parsed as Dictionary)
 
 
 ## Handles scene switch requests from React.
