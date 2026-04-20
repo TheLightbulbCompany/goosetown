@@ -383,25 +383,44 @@ def _load_skill_md() -> str:
     return _skill_md_cache
 
 
+_SKILL_BUNDLE_FILES = (
+    "SKILL.md",
+    "goosetown_cli.py",
+    "install.sh",
+    "CLAUDE_FRAGMENT.md",
+    "GOOSETOWN.md",
+    "TOWN_STATUS.md",
+    "TOWN_EVENTS.md",
+    "TOWN_LIFE.md",
+)
+
+
 def _build_skill_bundle() -> bytes:
+    """Pack the current skill directory into a tarball for `GET /skill/bundle`.
+
+    Earlier versions packed nonexistent ``tools/`` and ``daemon/`` subdirs
+    (left over from a refactor) and shipped an empty 45-byte tarball; the
+    explicit allowlist below prevents that class of regression. New skill
+    files must be added to ``_SKILL_BUNDLE_FILES``.
+    """
     global _skill_bundle_cache
     if _skill_bundle_cache is None:
         import io
         import tarfile
 
         buf = io.BytesIO()
+        included = 0
         with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-            for subdir in ["tools", "daemon"]:
-                dirpath = _SKILL_DIR / subdir
-                if dirpath.exists():
-                    for filepath in dirpath.rglob("*"):
-                        if filepath.is_file() and "__pycache__" not in str(filepath):
-                            arcname = f"goosetown/{subdir}/{filepath.relative_to(dirpath)}"
-                            tar.add(str(filepath), arcname=arcname)
-            # Include env.sh
-            env_sh = _SKILL_DIR / "env.sh"
-            if env_sh.exists():
-                tar.add(str(env_sh), arcname="goosetown/env.sh")
+            for filename in _SKILL_BUNDLE_FILES:
+                filepath = _SKILL_DIR / filename
+                if filepath.is_file():
+                    tar.add(str(filepath), arcname=f"goosetown/{filename}")
+                    included += 1
+        if included == 0:
+            raise RuntimeError(
+                "Skill bundle would be empty — missing all expected files in "
+                f"{_SKILL_DIR}. Check that the skill directory is shipped with the container."
+            )
         _skill_bundle_cache = buf.getvalue()
     return _skill_bundle_cache
 
