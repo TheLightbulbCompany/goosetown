@@ -1683,18 +1683,35 @@ class TownDaemon:
             _log.info("Sending via WS: %s", msg[:100])
             await self.ws.send(msg)
             _log.info("WS send complete")
-            # Block on move until arrived (max 120 s)
+            # Block on move until arrived (max 120 s). If the arrived event
+            # doesn't fire in time, cross-check the cached state before
+            # declaring timeout — the daemon may have received the updated
+            # location via agent_state (every ~2s) even when the discrete
+            # arrived event was dropped upstream.
             if payload.get("action") == "move":
                 self._arrived_event.clear()
+                requested_dest = payload.get("destination", "")
                 try:
                     await asyncio.wait_for(self._arrived_event.wait(), timeout=120.0)
+                    return {
+                        "status": "arrived",
+                        "location": self.state.get("agent", {}).get("location"),
+                    }
                 except asyncio.TimeoutError:
+                    cached_loc = self.state.get("agent", {}).get("location", "")
+                    if cached_loc and requested_dest and cached_loc == requested_dest:
+                        # State caught up even though the discrete signal didn't.
+                        return {
+                            "status": "arrived",
+                            "location": cached_loc,
+                            "note": "recovered via state cache (arrived signal missed)",
+                        }
                     return {
                         "status": "timeout",
                         "action": "move",
                         "message": "Did not arrive within 120s",
+                        "last_known_location": cached_loc,
                     }
-                return {"status": "arrived", "location": self.state.get("agent", {}).get("location")}
             # Clear pending messages after agent responds
             if payload.get("action") in ("chat", "say"):
                 self.state["pending_messages"] = []

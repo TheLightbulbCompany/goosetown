@@ -45,11 +45,30 @@ else
   echo "[install] Appended GooseTown operating instructions to $TARGET."
 fi
 
-# 2. Install Python dep
+# 2. Install Python dep. Previously this chain swallowed stderr with
+# `2>/dev/null`, which made pip failures invisible until the daemon
+# crashed later with a cryptic "No module named 'websockets'". Now we
+# surface pip's exit code and write any stderr to $TMPDIR/goosetown-install.log.
+install_log="${TMPDIR:-/tmp}/goosetown-install-pip.log"
 if command -v pip3 >/dev/null 2>&1; then
-  pip3 install --quiet --user websockets 2>/dev/null \
-    || pip3 install --quiet websockets 2>/dev/null \
-    || echo "[install] WARN: could not auto-install 'websockets'. Run: pip3 install websockets" >&2
+  # Check if already installed (skip if so)
+  if python3 -c "import websockets" >/dev/null 2>&1; then
+    echo "[install] 'websockets' already importable — skipping pip install."
+  elif pip3 install --quiet --user websockets 2>"$install_log"; then
+    echo "[install] 'websockets' installed via --user."
+  elif pip3 install --quiet websockets 2>>"$install_log"; then
+    echo "[install] 'websockets' installed (system-wide fallback)."
+  else
+    echo "[install] WARN: pip3 install 'websockets' failed. Manual install required:" >&2
+    echo "        pip3 install websockets" >&2
+    echo "        (pip output saved to $install_log)" >&2
+    if [ -s "$install_log" ]; then
+      echo "[install] Last pip error:" >&2
+      tail -n 5 "$install_log" >&2
+    fi
+  fi
+else
+  echo "[install] WARN: 'pip3' not found. Install it, then: pip3 install websockets" >&2
 fi
 
 # 3. Wire the wake-on-status hook into .claude/settings.local.json (if Claude

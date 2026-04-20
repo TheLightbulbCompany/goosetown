@@ -73,6 +73,7 @@ func spawn_agent(peer_id: int, data: Dictionary) -> void:
 	var location_id: String = str(data.get("location", "plaza"))
 	var marker: Marker2D = _find_location(location_id)
 	var spawn_pos: Vector2 = marker.global_position if marker else Vector2(576.0, 384.0)
+	spawn_pos = _offset_if_occupied(spawn_pos)
 	print("AgentController.spawn_agent: location=%s marker=%s pos=(%.0f,%.0f) locations_count=%d" % [
 		location_id, "FOUND" if marker else "NOT_FOUND", spawn_pos.x, spawn_pos.y, _locations.size()
 	])
@@ -113,6 +114,26 @@ func spawn_agent(peer_id: int, data: Dictionary) -> void:
 		"location": location_id,
 		"position": { "x": spawn_pos.x / TILE_SIZE, "y": spawn_pos.y / TILE_SIZE },
 	})
+
+
+## Avoid two agents landing on the exact same tile when spawning / arriving.
+## If another agent is already within ~1.5 tiles of the intended position,
+## offset the spawn point around a 6-slot circle so each gets a distinct
+## cell. Deterministic per-count so successive arrivals don't collide with
+## each other either.
+func _offset_if_occupied(pos: Vector2) -> Vector2:
+	var radius: float = TILE_SIZE * 1.5
+	var collisions: int = 0
+	for peer in _agents.keys():
+		var other: CharacterBody2D = _agents[peer]
+		if other == null or not is_instance_valid(other):
+			continue
+		if other.global_position.distance_to(pos) < radius:
+			collisions += 1
+	if collisions == 0:
+		return pos
+	var angle: float = float(collisions) * TAU / 6.0
+	return pos + Vector2(cos(angle), sin(angle)) * TILE_SIZE * 1.2
 
 
 func remove_agent(peer_id: int) -> void:
