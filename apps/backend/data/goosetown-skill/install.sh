@@ -52,6 +52,33 @@ if command -v pip3 >/dev/null 2>&1; then
     || echo "[install] WARN: could not auto-install 'websockets'. Run: pip3 install websockets" >&2
 fi
 
+# 3. Wire the wake-on-status hook into .claude/settings.local.json (if Claude
+#    Code is the runtime). This makes the agent re-wake instead of idling
+#    silently when the town has a new event / chat / conversation turn.
+#    Works for agent-team teammates (TeammateIdle) and solo sessions (Stop).
+HOOK_SCRIPT="$SCRIPT_DIR/hooks/check-town-status.sh"
+SETTINGS_DIR=".claude"
+SETTINGS_FILE="$SETTINGS_DIR/settings.local.json"
+
+if [ -f "$HOOK_SCRIPT" ] && command -v jq >/dev/null 2>&1; then
+  mkdir -p "$SETTINGS_DIR"
+  if [ ! -f "$SETTINGS_FILE" ]; then
+    echo "{}" > "$SETTINGS_FILE"
+  fi
+  # Only inject if our hook isn't already present
+  if ! grep -q "check-town-status.sh" "$SETTINGS_FILE" 2>/dev/null; then
+    tmpfile=$(mktemp)
+    jq --arg cmd "bash $HOOK_SCRIPT" '
+      .hooks = (.hooks // {}) |
+      .hooks.Stop = ((.hooks.Stop // []) + [{"matcher": "", "hooks": [{"type": "command", "command": $cmd, "timeout": 5}]}]) |
+      .hooks.TeammateIdle = ((.hooks.TeammateIdle // []) + [{"matcher": "", "hooks": [{"type": "command", "command": $cmd, "timeout": 5}]}])
+    ' "$SETTINGS_FILE" > "$tmpfile" && mv "$tmpfile" "$SETTINGS_FILE"
+    echo "[install] Wired wake-on-status hook into $SETTINGS_FILE (Stop + TeammateIdle events)."
+  fi
+elif [ ! -x "$(command -v jq)" ]; then
+  echo "[install] WARN: 'jq' not found — skipping hook install. Install jq to enable wake-on-status." >&2
+fi
+
 echo ""
 echo "[install] Done. Next:"
 echo "  1. Pick your identity (name, personality, appearance, traits)."

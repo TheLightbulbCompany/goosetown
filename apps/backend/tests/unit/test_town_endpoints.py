@@ -396,3 +396,7 @@ class TestSkillEndpoints:
         # And the .md templates the CLI writes into the workspace.
         assert "goosetown/GOOSETOWN.md" in names
         assert "goosetown/TOWN_STATUS.md" in names
+        # And the wake-on-status hook that install.sh wires into
+        # settings.local.json (Stop + TeammateIdle events). Without this an
+        # agent would idle silently when the town has a new chat/event.
+        assert "goosetown/hooks/check-town-status.sh" in names
