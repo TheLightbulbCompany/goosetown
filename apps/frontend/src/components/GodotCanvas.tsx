@@ -13,6 +13,73 @@ import { useEffect, useRef, useState } from 'react';
 
 const GODOT_JS_PATH = '/godot/goosetown.js';
 
+// ---------------------------------------------------------------------------
+// Secure JsBridge handlers (paired with apps/godot/scripts/autoloads/js_bridge.gd).
+//
+// The Godot side calls window.__gt_<name>(args) via a template-only eval; all
+// user-controlled payload flows through window.set(key, json) and is parsed
+// back into `args` before this handler runs. These handlers must exist on
+// window BEFORE the Godot engine script runs, otherwise call_js is a no-op.
+// ---------------------------------------------------------------------------
+
+interface GtLoadSpriteArgs {
+  url?: string;
+  agent_id?: string;
+  animation_name?: string;
+}
+
+interface GtDispatchEventArgs {
+  [key: string]: unknown;
+}
+
+let _handlersRegistered = false;
+
+function registerJsBridgeHandlers(): void {
+  if (_handlersRegistered) return;
+  _handlersRegistered = true;
+
+  const w = window as unknown as {
+    __gt_load_sprite?: (args: GtLoadSpriteArgs) => void;
+    __gt_dispatch_event_scene_changed?: (args: GtDispatchEventArgs) => void;
+    __gt_sprite_load_count?: number;
+    godotUpdateAgentSprite?: (json: string) => void;
+  };
+
+  w.__gt_dispatch_event_scene_changed = (args) => {
+    window.dispatchEvent(new CustomEvent('godot_scene_changed', { detail: args }));
+  };
+
+  w.__gt_load_sprite = (args) => {
+    const url = String(args.url || '');
+    const agentId = String(args.agent_id || '');
+    const anim = args.animation_name ? String(args.animation_name) : null;
+    if (!url || !agentId) return;
+    fetch(url)
+      .then((r) => r.blob())
+      .then(
+        (blob) =>
+          new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(String(reader.result));
+            reader.onerror = () => reject(new Error('FileReader failed'));
+            reader.readAsDataURL(blob);
+          }),
+      )
+      .then((dataUrl) => {
+        const base64 = dataUrl.split(',')[1];
+        if (!w.godotUpdateAgentSprite) return;
+        const payload = anim
+          ? { id: agentId, base64, animation: anim }
+          : { id: agentId, base64 };
+        w.godotUpdateAgentSprite(JSON.stringify(payload));
+        w.__gt_sprite_load_count = (w.__gt_sprite_load_count || 0) + 1;
+      })
+      .catch((e) => {
+        console.warn('[GooseTown] sprite load failed:', e);
+      });
+  };
+}
+
 interface GodotEngine {
   startGame: (config?: Record<string, unknown>) => Promise<void>;
   requestQuit: () => void;
@@ -58,6 +125,12 @@ export default function GodotCanvas({ className, scene = 'town' }: GodotCanvasPr
     if (!canvas || !container) return;
 
     let cancelled = false;
+
+    // Register secure JsBridge handlers before loading the engine. The Godot
+    // side calls window.__gt_<name>(args) with a pre-parsed object (see
+    // apps/godot/scripts/autoloads/js_bridge.gd::call_js). User data never
+    // touches an eval string — it flows through window.set(key, json).
+    registerJsBridgeHandlers();
 
     const loadEngine = async () => {
       try {

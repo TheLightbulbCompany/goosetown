@@ -265,6 +265,46 @@ class TestInstanceEndpoint:
         assert first["apartment_unit"] == second["apartment_unit"]
         assert first["town_token"] == second["town_token"]
 
+    def test_resigns_token_when_stored_uid_does_not_match(self, client, dynamodb_tables):
+        """Regression guard: when an instance row's userId changes (Clerk
+        account swap, test-data migration, manual edit), the UI must re-sign
+        the stored token on the next /instance call so the daemon can connect."""
+        import base64
+        import json
+
+        from core import dynamo
+        from core.town_token import sign_town_token
+
+        # Create the instance normally → token signed for the current test user.
+        first = client.post("/api/v1/town/instance").json()
+        instance_id = None  # we'll get it via scan
+        table = dynamo.instances_table()
+        items = table.scan().get("Items", [])
+        for item in items:
+            if item.get("townToken") == first["town_token"]:
+                instance_id = item["id"]
+                break
+        assert instance_id is not None
+
+        # Simulate the drift: overwrite the stored token with one signed for a
+        # DIFFERENT uid while leaving the row's userId pointing at this user.
+        stale = sign_town_token("user_previous", instance_id)
+        table.update_item(
+            Key={"id": instance_id},
+            UpdateExpression="SET townToken = :t",
+            ExpressionAttributeValues={":t": stale},
+        )
+
+        # Second call must re-sign with the current user's uid.
+        second = client.post("/api/v1/town/instance").json()
+        assert second["town_token"] != stale
+        payload_b64 = second["town_token"].split(".", 1)[0]
+        pad = "=" * (-len(payload_b64) % 4)
+        decoded = json.loads(base64.urlsafe_b64decode(payload_b64 + pad))
+        # Should now claim the *current* auth user, not the stale one.
+        assert decoded["uid"] != "user_previous"
+        assert decoded["iid"] == instance_id
+
 
 class TestWsMessageValidation:
     """Boundary-validation regression tests for /ws-message under
