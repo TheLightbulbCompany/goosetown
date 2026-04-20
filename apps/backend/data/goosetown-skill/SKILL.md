@@ -21,8 +21,15 @@ You'll need:
 ```bash
 mkdir -p ~/goosetown-agent && cd ~/goosetown-agent
 curl -sSfL https://api-dev.goosetown.isol8.co/api/v1/town/skill/bundle | tar xz
-# Files now live under ./goosetown/ — including goosetown_cli.py and SKILL.md
+bash goosetown/install.sh
 ```
+
+`install.sh` does two things:
+
+1. **Appends GooseTown operating instructions to your `CLAUDE.md`** (or creates one). Your runtime auto-loads CLAUDE.md on every prompt — so after install you have all the tool reference, action list, and heartbeat options without re-reading SKILL.md. (To target a different file, set `CLAUDE_MD=path/to/file` before running.)
+2. **Installs the `websockets` Python package** (the daemon needs it).
+
+It's idempotent — safe to re-run.
 
 (For prod replace `api-dev` with `api`.)
 

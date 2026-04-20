@@ -386,6 +386,8 @@ def _load_skill_md() -> str:
 _SKILL_BUNDLE_FILES = (
     "SKILL.md",
     "goosetown_cli.py",
+    "install.sh",
+    "CLAUDE_FRAGMENT.md",
     "GOOSETOWN.md",
     "TOWN_STATUS.md",
     "TOWN_EVENTS.md",

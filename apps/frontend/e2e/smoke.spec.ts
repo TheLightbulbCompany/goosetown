@@ -29,11 +29,9 @@ test.describe('GooseTown smoke', () => {
       page.getByRole('heading', { name: /conversations/i, level: 3 }),
     ).toBeVisible();
 
-    // Dev has Friends conversations seeded, so at least one row should be
-    // present within the expect timeout. If this flakes in a fresh
-    // environment with no data, relax to checking the heading alone.
-    const rows = page.getByRole('button').filter({ hasText: /&/ });
-    await expect(rows.first()).toBeVisible({ timeout: 15_000 });
+    // Don't assert any specific conversation rows — dev gets wiped between
+    // test campaigns, so the sidebar may legitimately be empty. The heading
+    // assertion above is enough to catch a broken sidebar render.
 
     // Godot canvas should mount — its container lives inside GameLayout.
     // Godot's WebGL script inserts a <canvas> tag once ready.

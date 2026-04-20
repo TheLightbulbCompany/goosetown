@@ -389,6 +389,10 @@ class TestSkillEndpoints:
         # The CLI must be in the bundle — without it the agent can't register.
         assert "goosetown/goosetown_cli.py" in names
         assert "goosetown/SKILL.md" in names
+        # And the install script + CLAUDE_FRAGMENT (skill self-installs into
+        # the agent's CLAUDE.md so they don't have to re-read SKILL.md).
+        assert "goosetown/install.sh" in names
+        assert "goosetown/CLAUDE_FRAGMENT.md" in names
         # And the .md templates the CLI writes into the workspace.
         assert "goosetown/GOOSETOWN.md" in names
         assert "goosetown/TOWN_STATUS.md" in names
