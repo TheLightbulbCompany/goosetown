@@ -8,6 +8,7 @@ import { StorageStack } from "./stacks/storage-stack";
 import { ComputeStack } from "./stacks/compute-stack";
 import { GameServerStack } from "./stacks/gameserver-stack";
 import { ApiStack } from "./stacks/api-stack";
+import { ObservabilityStack } from "./stacks/observability-stack";
 
 export interface GooseTownStageProps extends cdk.StageProps {
   environment: string;
@@ -22,9 +23,21 @@ export class GooseTownStage extends cdk.Stage {
     // stack names when moving from app-scope to Stage-scope. Without this, CDK
     // prepends the stage ID, creating new stacks and orphaning existing ones.
 
+    // ObservabilityStack deploys first — no Fargate/Lambda dependencies.
+    // Creates the shared SNS alarm topic that other stacks publish to.
+    const observability = new ObservabilityStack(
+      this,
+      `goosetown-${env}-observability`,
+      {
+        stackName: `goosetown-${env}-observability`,
+        environment: env,
+      }
+    );
+
     const network = new NetworkStack(this, `goosetown-${env}-network`, {
       stackName: `goosetown-${env}-network`,
       environment: env,
+      alarmTopic: observability.snsTopic,
     });
     const database = new DatabaseStack(this, `goosetown-${env}-database`, {
       stackName: `goosetown-${env}-database`,
@@ -53,6 +66,7 @@ export class GooseTownStage extends cdk.Stage {
         stackName: `goosetown-${env}-gameserver`,
         environment: env,
         vpc: network.vpc,
+        alarmTopic: observability.snsTopic,
       }
     );
 
@@ -67,6 +81,7 @@ export class GooseTownStage extends cdk.Stage {
       hostedZone: dns.hostedZone,
       gameServerUrl: gameServer.serviceUrl,
       gameServerSg: gameServer.securityGroup,
+      alarmTopic: observability.snsTopic,
     });
 
     new ApiStack(this, `goosetown-${env}-api`, {

@@ -12,6 +12,9 @@ import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import * as route53 from "aws-cdk-lib/aws-route53";
 import * as route53Targets from "aws-cdk-lib/aws-route53-targets";
+import * as sns from "aws-cdk-lib/aws-sns";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
+import * as cw_actions from "aws-cdk-lib/aws-cloudwatch-actions";
 import { Construct } from "constructs";
 import { DatabaseTables } from "./database-stack";
 import { AuthSecrets } from "./auth-stack";
@@ -26,6 +29,8 @@ export interface ComputeStackProps extends cdk.StackProps {
   hostedZone?: route53.IHostedZone;
   gameServerUrl?: string;
   gameServerSg?: ec2.ISecurityGroup;
+  /** SNS topic for CloudWatch alarm actions. Wired by ObservabilityStack. */
+  alarmTopic?: sns.ITopic;
 }
 
 export class ComputeStack extends cdk.Stack {
@@ -133,9 +138,15 @@ export class ComputeStack extends cdk.Stack {
         TOWN_API_URL: env === "prod"
           ? "https://api.goosetown.isol8.co/api/v1"
           : "https://api-dev.goosetown.isol8.co/api/v1",
-        // Uses Fn.importValue from ApiStack — requires ApiStack to exist first.
-        // Safe for existing environments; for fresh deploys, deploy ApiStack first.
-        WS_MANAGEMENT_API_URL: cdk.Fn.importValue(`goosetown-${env}-management-api-url`),
+        // Using the custom-domain string avoids an Fn.importValue cross-stack
+        // reference from ComputeStack to ApiStack — which would be circular
+        // because ApiStack already depends on ComputeStack via fargateTaskRole,
+        // and Compute deploys before Api on fresh environments.
+        // The ApiStack export (goosetown-${env}-management-api-url) is kept in
+        // place for at least one week of clean prod runtime before removal.
+        WS_MANAGEMENT_API_URL: env === "prod"
+          ? "https://ws.goosetown.isol8.co"
+          : "https://ws-dev.goosetown.isol8.co",
       },
       secrets: {
         CLERK_ISSUER: ecs.Secret.fromSecretsManager(props.secrets.clerkIssuer),
@@ -215,18 +226,44 @@ export class ComputeStack extends cdk.Stack {
     }
 
     // Fargate Service
+    // Prod: 2 tasks + minHealthyPercent:100 → true HA, zero-downtime rolling deploys.
+    // Dev:  1 task + minHealthyPercent:0   → accepts ~30s downtime, unblocks rolling
+    //       update so a single unhealthy task doesn't crash-loop indefinitely.
+    const isProd = env === "prod";
     this.service = new ecs.FargateService(this, "Service", {
       serviceName: `goosetown-${env}-backend`,
       cluster,
       taskDefinition,
-      desiredCount: 1,
+      desiredCount: isProd ? 2 : 1,
       assignPublicIp: false,
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       circuitBreaker: { rollback: true },
-      minHealthyPercent: 100,
+      minHealthyPercent: isProd ? 100 : 0,
     });
 
     this.service.attachToApplicationTargetGroup(targetGroup);
+
+    // CloudWatch alarm: fire if fewer tasks are running than desired for 5+ minutes.
+    // In prod (desiredCount=2) the threshold is 2; in dev (desiredCount=1) it is 1.
+    // Silently skipped when alarmTopic is absent (local synth / CI without observability stack).
+    if (props.alarmTopic) {
+      const taskMissingAlarm = new cloudwatch.Alarm(this, "BackendTaskMissing", {
+        alarmName: `goosetown-${env}-backend-task-missing`,
+        metric: this.service.metric("RunningTaskCount", {
+          statistic: "Minimum",
+          period: cdk.Duration.minutes(1),
+        }),
+        threshold: isProd ? 2 : 1,
+        comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+        evaluationPeriods: 5,
+        treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+        alarmDescription:
+          "Backend has fewer running tasks than desired. See RUNBOOK.md.",
+      });
+      taskMissingAlarm.addAlarmAction(
+        new cw_actions.SnsAction(props.alarmTopic)
+      );
+    }
 
     // Allow ALB to reach Fargate tasks
     this.service.connections.allowFrom(

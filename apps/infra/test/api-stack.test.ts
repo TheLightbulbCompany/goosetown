@@ -1,0 +1,152 @@
+/**
+ * api-stack.test.ts
+ *
+ * Asserts that all four Lambda functions (authorizer, connect, disconnect,
+ * default) have a 15-second timeout. The authorizer and connect/disconnect
+ * functions were raised from 10s to 15s to give headroom for cold-start +
+ * JWKS fetch under load.
+ *
+ * Also asserts that the ManagementApiUrl CfnOutput is still present — it is
+ * kept as a rollback safety valve for one prod deploy cycle so an emergency
+ * revert to an older ComputeStack revision (which still used Fn.importValue)
+ * can resolve the export.
+ */
+
+import * as cdk from "aws-cdk-lib";
+import { Template, Match } from "aws-cdk-lib/assertions";
+import * as ec2 from "aws-cdk-lib/aws-ec2";
+import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
+import { ApiStack } from "../lib/stacks/api-stack";
+
+function buildTestApp(): { template: Template } {
+  const app = new cdk.App();
+
+  const depsStack = new cdk.Stack(app, "deps", {
+    env: { account: "123456789012", region: "us-east-1" },
+  });
+
+  const vpc = ec2.Vpc.fromVpcAttributes(depsStack, "Vpc", {
+    vpcId: "vpc-12345",
+    availabilityZones: ["us-east-1a", "us-east-1b"],
+    privateSubnetIds: ["subnet-private-1a", "subnet-private-1b"],
+    publicSubnetIds: ["subnet-public-1a", "subnet-public-1b"],
+  });
+
+  const connectionsTable = dynamodb.Table.fromTableName(
+    depsStack,
+    "ConnectionsTable",
+    "goosetown-dev-connections"
+  );
+
+  const makeSecret = (logicalId: string, name: string) =>
+    secretsmanager.Secret.fromSecretNameV2(depsStack, logicalId, name);
+
+  const secrets = {
+    clerkIssuer: makeSecret("ClerkIssuer", "goosetown-dev-clerk-issuer"),
+    clerkSecretKey: makeSecret(
+      "ClerkSecretKey",
+      "goosetown-dev-clerk-secret-key"
+    ),
+    townTokenSecret: makeSecret(
+      "TownTokenSecret",
+      "goosetown-dev-town-token-secret"
+    ),
+    pixelLabApiKey: makeSecret(
+      "PixelLabApiKey",
+      "goosetown-dev-pixellab-api-key"
+    ),
+  };
+
+  const stack = new ApiStack(app, "goosetown-dev-api", {
+    stackName: "goosetown-dev-api",
+    environment: "dev",
+    env: { account: "123456789012", region: "us-east-1" },
+    connectionsTable,
+    secrets: secrets as any,
+    vpc,
+    backendUrl: "https://api-dev.goosetown.isol8.co",
+  });
+
+  return { template: Template.fromStack(stack) };
+}
+
+describe("ApiStack — Lambda timeouts", () => {
+  let template: Template;
+
+  beforeAll(() => {
+    ({ template } = buildTestApp());
+  });
+
+  test("all Lambda functions have a 15-second timeout", () => {
+    // CDK encodes Duration.seconds(15) as Timeout: 15 in CloudFormation.
+    // There are 4 Lambda functions: authorizer, connect, disconnect, default.
+    const resources = template.findResources("AWS::Lambda::Function", {
+      Properties: {
+        Timeout: 15,
+      },
+    });
+    // All 4 functions must have Timeout=15. Capture count as a sanity check.
+    const count = Object.keys(resources).length;
+    expect(count).toBeGreaterThanOrEqual(4);
+  });
+
+  test("authorizer Lambda has timeout 15", () => {
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      FunctionName: Match.stringLikeRegexp("ws-authorizer"),
+      Timeout: 15,
+    });
+  });
+
+  test("connect Lambda has timeout 15", () => {
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      FunctionName: Match.stringLikeRegexp("ws-connect"),
+      Timeout: 15,
+    });
+  });
+
+  test("disconnect Lambda has timeout 15", () => {
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      FunctionName: Match.stringLikeRegexp("ws-disconnect"),
+      Timeout: 15,
+    });
+  });
+
+  test("default-route Lambda has timeout 15", () => {
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      FunctionName: Match.stringLikeRegexp("ws-default"),
+      Timeout: 15,
+    });
+  });
+
+  test("no Lambda function has a timeout of 10 (old value — regression guard)", () => {
+    const resources = template.findResources("AWS::Lambda::Function", {
+      Properties: {
+        Timeout: 10,
+      },
+    });
+    expect(Object.keys(resources).length).toBe(0);
+  });
+});
+
+describe("ApiStack — ManagementApiUrl CfnOutput (rollback safety)", () => {
+  let template: Template;
+
+  beforeAll(() => {
+    ({ template } = buildTestApp());
+  });
+
+  test("ManagementApiUrl output exists for emergency rollback compatibility", () => {
+    // This output is kept for at least one prod deploy cycle so that an
+    // emergency rollback to an older ComputeStack revision (which still used
+    // Fn.importValue for goosetown-${env}-management-api-url) can resolve it.
+    const outputs = template.findOutputs("ManagementApiUrl");
+    expect(Object.keys(outputs).length).toBe(1);
+  });
+
+  test("ManagementApiUrl export name follows goosetown-{env}-management-api-url convention", () => {
+    const outputs = template.findOutputs("ManagementApiUrl");
+    const output = Object.values(outputs)[0] as any;
+    expect(output.Export?.Name).toMatch(/goosetown-\w+-management-api-url/);
+  });
+});
