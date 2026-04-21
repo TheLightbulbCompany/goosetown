@@ -121,10 +121,16 @@ func spawn_agent(peer_id: int, data: Dictionary) -> void:
 ## offset the spawn point around a 6-slot circle so each gets a distinct
 ## cell. Deterministic per-count so successive arrivals don't collide with
 ## each other either.
-func _offset_if_occupied(pos: Vector2) -> Vector2:
+##
+## ``exclude_peer`` skips one agent from the collision count — used by
+## arrival dedup so an already-placed agent doesn't think it's colliding
+## with itself when checked at its own position.
+func _offset_if_occupied(pos: Vector2, exclude_peer: int = -1) -> Vector2:
 	var radius: float = TILE_SIZE * 1.5
 	var collisions: int = 0
 	for peer in _agents.keys():
+		if peer == exclude_peer:
+			continue
 		var other: CharacterBody2D = _agents[peer]
 		if other == null or not is_instance_valid(other):
 			continue
@@ -402,6 +408,19 @@ func _check_arrivals() -> void:
 
 			# Only emit arrived if location changed (dedup)
 			if current_loc != prev_loc:
+				# F2: if another agent is already sitting on (or within 1.5
+				# tiles of) this spot, nudge ourselves to an offset slot.
+				# PR #164 handled the spawn path, but two agents pathfinding
+				# to the same destination from different directions could
+				# still land on identical tiles because both nav-finished in
+				# the same physics tick.
+				var dedup_pos: Vector2 = _offset_if_occupied(
+					agent_node.global_position, peer_id
+				)
+				if dedup_pos != agent_node.global_position:
+					agent_node.global_position = dedup_pos
+					agent_node.nav_agent.target_position = dedup_pos
+
 				_arrived_at[peer_id] = current_loc
 				send_to_peer.emit(peer_id, {
 					"event": "arrived",

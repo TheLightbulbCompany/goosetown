@@ -308,10 +308,28 @@ func set_navigation_target(target: Vector2) -> void:
 func _set_interp_target(target: Vector2) -> void:
 	## Set a new snapshot target for viewer-mode interpolation.
 	## Captures current visual position as prev so the lerp is continuous.
+	##
+	## Staleness detection (F7): when the browser backgrounds the tab, both
+	## the render loop AND _physics_process freeze, but the WebSocket still
+	## delivers world_state broadcasts. Each one calls _set_interp_target
+	## with `global_position` as the new prev — which is frozen at whatever
+	## position the agent had when the tab went away. Once the tab is
+	## refocused the lerp "plays back" the accumulated backlog, walking
+	## agents in a straight line through buildings to their current spot.
+	##
+	## If more than ~2x the normal interp window has elapsed since the last
+	## target, treat this as a wake-from-background and snap instantly
+	## instead of lerping across who-knows-how-many minutes of stale state.
+	var now_ms: int = Time.get_ticks_msec()
+	var stale: bool = _viewer_interp and (now_ms - _interp_start_ms) > (INTERP_DURATION_MS * 2)
 	_viewer_interp = true
-	_interp_prev = global_position
+	if stale:
+		global_position = target
+		_interp_prev = target
+	else:
+		_interp_prev = global_position
 	_interp_target = target
-	_interp_start_ms = Time.get_ticks_msec()
+	_interp_start_ms = now_ms
 
 
 func set_spritesheet(tex: Texture2D, animation_name: String = "walk") -> void:
@@ -419,10 +437,45 @@ func _parse_facing(facing_str: String) -> void:
 			facing = dir
 
 
+## Max attempts for sprite load. The JS-side fetch has no error callback back
+## to GDScript, so we poll `_spritesheets` — if nothing arrived after each
+## backoff window, retry. After all retries fail, fall back to the shadow
+## placeholder so the agent still has a visible silhouette instead of
+## rendering as just a floating name label. F1 from the 2026-04-21 dry run.
+const _SPRITE_LOAD_MAX_ATTEMPTS: int = 3
+const _SPRITE_LOAD_BACKOFF_SEC: Array = [2.0, 4.0, 8.0]
+
 func _load_sprite_from_url(url: String) -> void:
 	if not OS.has_feature("web"):
 		return
+	_load_sprite_with_retry(url, 0)
+
+
+func _load_sprite_with_retry(url: String, attempt: int) -> void:
+	if attempt >= _SPRITE_LOAD_MAX_ATTEMPTS:
+		push_warning(
+			"Sprite load failed after %d attempts for agent %s (%s) — falling back to shadow placeholder"
+			% [_SPRITE_LOAD_MAX_ATTEMPTS, agent_id, url]
+		)
+		set_spritesheet(SHADOW_TEXTURE, "walk")
+		return
+	# Fire the JS fetch — still handled by the load_sprite callback the
+	# frontend registers on window. If it succeeds, the JS side calls back
+	# into Godot via godotSetAgentTexture which ends up in set_spritesheet.
 	JsBridge.call_js("load_sprite", {"url": url, "agent_id": agent_id})
+	# Wait for the response (or silence) and decide whether to retry.
+	var backoff: float = _SPRITE_LOAD_BACKOFF_SEC[attempt]
+	await get_tree().create_timer(backoff).timeout
+	# If the agent was freed mid-wait, bail silently.
+	if not is_inside_tree():
+		return
+	if _spritesheets.has("walk") and _spritesheets["walk"] != SHADOW_TEXTURE:
+		return
+	print(
+		"Sprite load retry %d/%d for agent %s (%s)"
+		% [attempt + 1, _SPRITE_LOAD_MAX_ATTEMPTS, agent_id, url]
+	)
+	_load_sprite_with_retry(url, attempt + 1)
 
 # ---------------------------------------------------------------------------
 # Signal callbacks
