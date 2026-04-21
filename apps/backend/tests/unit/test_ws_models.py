@@ -153,6 +153,31 @@ class TestTownSubscribe:
         assert msg.type == "town_subscribe"
 
 
+class TestTownAgentSleep:
+    """Clean-leave signal must parse so the $disconnect Lambda can tell
+    intentional sleep from a server-initiated drop (F12)."""
+
+    def test_accepts_without_alarm(self) -> None:
+        msg = _adapter.validate_python({"type": "town_agent_sleep"})
+        assert msg.type == "town_agent_sleep"
+        assert msg.wake_time is None
+
+    def test_accepts_with_alarm(self) -> None:
+        msg = _adapter.validate_python(
+            {"type": "town_agent_sleep", "wake_time": "07:30", "timezone": "America/New_York"}
+        )
+        assert msg.wake_time == "07:30"
+        assert msg.timezone == "America/New_York"
+
+
+class TestTownAgentKeepalive:
+    """Daemon keepalive pings must not 422 under strict validation (F12)."""
+
+    def test_accepts_ping(self) -> None:
+        msg = _adapter.validate_python({"type": "ping"})
+        assert msg.type == "ping"
+
+
 class TestTopLevelValidation:
     def test_rejects_unknown_type(self) -> None:
         with pytest.raises(ValidationError):
