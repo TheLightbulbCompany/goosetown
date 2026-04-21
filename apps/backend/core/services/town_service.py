@@ -932,34 +932,6 @@ class TownService:
 
         return conv
 
-    def list_stale_active_conversations(self, max_age_seconds: int) -> list[dict]:
-        """Return active conversations whose ``updatedAt`` is older than the cutoff.
-
-        Used by the backend inactivity sweeper to auto-end conversations where
-        one side never replied — otherwise both agents would be stuck with
-        ``currentConversationId`` set forever.
-
-        Args:
-            max_age_seconds: Age threshold. Conversations with ``updatedAt``
-                older than ``now - max_age_seconds`` are returned.
-
-        Returns:
-            List of conversation records (plain dicts). Empty list on any
-            query failure — callers should log and proceed.
-        """
-        cutoff_iso = (datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)).isoformat()
-        table = dynamo.conversations_table()
-        try:
-            resp = table.query(
-                IndexName="status-updatedAt-index",
-                KeyConditionExpression=Key("status").eq("active") & Key("updatedAt").lt(cutoff_iso),
-                Limit=50,
-            )
-        except Exception as exc:
-            logger.warning("list_stale_active_conversations query failed: %s", exc)
-            return []
-        return [_decimal_to_native(item) for item in resp.get("Items", [])]
-
     def get_agent_by_agent_name_active(self, agent_name: str) -> Optional[dict]:
         """Find any active agent by machine name across all users.
 

@@ -101,6 +101,50 @@ class TestWelcomeBlurbDuringStaticOnboarding:
 # ===========================================================================
 
 
+class TestConversationStartedPopulatesInitiatorState:
+    """conversation_started echoes the chat back to the initiator so their
+    daemon can populate active_conversation without waiting for a reply.
+    F11 from the 2026-04-21 dry run."""
+
+    def test_started_creates_active_conversation_with_opening_turn(self, daemon):
+        daemon._on_conversation_started(
+            {
+                "conv_id": "conv-xyz",
+                "with_agent_id": "agent-target",
+                "with_display": "Marbles",
+                "with_agent_name": "marbles",
+                "opening_message": "howdy neighbor",
+                "location": "cafe",
+            }
+        )
+
+        active = daemon.state.get("active_conversation")
+        assert active is not None
+        assert active["conv_id"] == "conv-xyz"
+        assert active["participants"] == ["Marbles"]
+        assert len(active["turns"]) == 1
+        # Speaker is the initiator themselves — they spoke, so the turn
+        # records it as "you" (matches how the daemon displays it).
+        assert active["turns"][0]["speaker"] == "you"
+        assert active["turns"][0]["text"] == "howdy neighbor"
+
+    def test_started_without_opening_message_still_tracks_conv_id(self, daemon):
+        """Empty opening (shouldn't happen but defensive) still sets conv_id."""
+        daemon._on_conversation_started(
+            {
+                "conv_id": "conv-xyz",
+                "with_agent_id": "agent-target",
+                "with_display": "Marbles",
+                "opening_message": "",
+                "location": "cafe",
+            }
+        )
+        active = daemon.state.get("active_conversation")
+        assert active is not None
+        assert active["conv_id"] == "conv-xyz"
+        assert active["turns"] == []
+
+
 class TestConversationInviteTracksParticipants:
     """conversation_invite creates active_conversation with participants list."""
 
@@ -391,7 +435,7 @@ class TestEventDrivenThink:
         content2 = (daemon._workspace_path / "TOWN_STATUS.md").read_text()
         assert "Alice" in content2
 
-    def test_no_think_when_nearby_unchanged_and_under_throttle(self, daemon):
+    def test_no_action_menu_when_nearby_unchanged_and_under_throttle(self, daemon):
         daemon.state["agent"] = {"onboardingPhase": "alive", "location": "plaza"}
         daemon.state["nearby"] = [{"agent_id": "a1"}]
 
@@ -409,5 +453,13 @@ class TestEventDrivenThink:
                 "context": "town",
             }
         )
-        # Should NOT have written a new think prompt (under throttle, no change)
-        assert not (daemon._workspace_path / "TOWN_STATUS.md").exists()
+        # F10: TOWN_STATUS.md is now always written so the file reflects
+        # current location/mood/nearby. But the action menu ("Your turn —
+        # decide what to do next") must NOT appear when think=False —
+        # otherwise the agent's 2s passive updates would clobber a stale
+        # action prompt with fresh ones it shouldn't yet act on.
+        status_file = daemon._workspace_path / "TOWN_STATUS.md"
+        assert status_file.exists()
+        content = status_file.read_text()
+        assert "Your turn" not in content
+        assert "decide what to do next" not in content
