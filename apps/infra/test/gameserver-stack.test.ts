@@ -55,6 +55,29 @@ describe("GameServerStack — CloudWatch restart alarm", () => {
     });
   });
 
+  test("alarm pulls from ECS/ContainerInsights namespace (not AWS/ECS)", () => {
+    // RunningTaskCount is published under ECS/ContainerInsights only; using
+    // the default AWS/ECS namespace produces an alarm that never sees data
+    // and latches on ALARM when TreatMissingData=BREACHING.
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      Namespace: "ECS/ContainerInsights",
+    });
+  });
+
+  test("cluster has Container Insights enabled", () => {
+    // CDK's ecs.ContainerInsights.ENABLED renders to CFN ClusterSettings as
+    // Name=containerInsights, Value=enabled. Without this, the RunningTaskCount
+    // metric in the ECS/ContainerInsights namespace is never published.
+    template.hasResourceProperties("AWS::ECS::Cluster", {
+      ClusterSettings: Match.arrayWith([
+        Match.objectLike({
+          Name: "containerInsights",
+          Value: "enabled",
+        }),
+      ]),
+    });
+  });
+
   test("alarm uses LessThanThreshold comparison operator", () => {
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       ComparisonOperator: "LessThanThreshold",
@@ -80,10 +103,18 @@ describe("GameServerStack — CloudWatch restart alarm", () => {
   });
 
   test("alarm has an SNS action (alarm topic wired)", () => {
-    // AlarmActions should contain at least one entry (the SNS topic ARN)
-    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmActions: Match.arrayWith([Match.anyValue()]),
-    });
+    // AlarmActions should contain at least one entry (the SNS topic ARN).
+    // CDK renders the ARN as a Ref-resolved intrinsic, so assert that the
+    // property exists and is a non-empty array without nesting anyValue()
+    // inside arrayWith() (which CDK's assertion library forbids).
+    const alarms = template.findResources("AWS::CloudWatch::Alarm");
+    const alarmIds = Object.keys(alarms);
+    expect(alarmIds.length).toBeGreaterThan(0);
+    for (const id of alarmIds) {
+      const actions = alarms[id].Properties?.AlarmActions;
+      expect(Array.isArray(actions)).toBe(true);
+      expect(actions.length).toBeGreaterThan(0);
+    }
   });
 
   test("exactly one CloudWatch alarm is created", () => {

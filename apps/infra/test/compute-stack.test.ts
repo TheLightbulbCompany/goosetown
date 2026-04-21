@@ -200,6 +200,87 @@ describe("ComputeStack — prod rolling-update config", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Backend-task-missing alarm uses HealthyHostCount (published by ELB)
+// not RunningTaskCount (which is only under ECS/ContainerInsights).
+// Regression guard: the AWS/ECS RunningTaskCount approach left the alarm
+// stuck in ALARM after deploy (see F5 in 2026-04-21 dry run).
+// ---------------------------------------------------------------------------
+
+describe("ComputeStack — backend-task-missing alarm metric", () => {
+  test("alarm uses HealthyHostCount, not RunningTaskCount", () => {
+    // Build a test app that provides alarmTopic so the alarm is synthesized.
+    const app = new cdk.App();
+    const depsStack = new cdk.Stack(app, "deps-alarm", {
+      env: { account: "123456789012", region: "us-east-1" },
+    });
+    const vpc = ec2.Vpc.fromVpcAttributes(depsStack, "Vpc", {
+      vpcId: "vpc-12345",
+      availabilityZones: ["us-east-1a", "us-east-1b"],
+      privateSubnetIds: ["subnet-private-1a", "subnet-private-1b"],
+      publicSubnetIds: ["subnet-public-1a", "subnet-public-1b"],
+    });
+    const spriteBucket = s3.Bucket.fromBucketName(
+      depsStack,
+      "SpriteBucket",
+      "goosetown-dev-sprites"
+    );
+    const makeTable = (name: string) =>
+      dynamodb.Table.fromTableName(
+        depsStack,
+        name,
+        `goosetown-dev-${name}`
+      );
+    const tables = {
+      agents: makeTable("agents"),
+      instances: makeTable("instances"),
+      relationships: makeTable("relationships"),
+      conversations: makeTable("conversations"),
+      connections: makeTable("connections"),
+    };
+    const makeSecret = (logicalId: string, name: string) =>
+      secretsmanager.Secret.fromSecretNameV2(depsStack, logicalId, name);
+    const secrets = {
+      clerkIssuer: makeSecret("ClerkIssuer", "goosetown-dev-clerk-issuer"),
+      clerkSecretKey: makeSecret(
+        "ClerkSecretKey",
+        "goosetown-dev-clerk-secret-key"
+      ),
+      townTokenSecret: makeSecret(
+        "TownTokenSecret",
+        "goosetown-dev-town-token-secret"
+      ),
+      pixelLabApiKey: makeSecret(
+        "PixelLabApiKey",
+        "goosetown-dev-pixellab-api-key"
+      ),
+    };
+    const alarmTopic = new (require("aws-cdk-lib/aws-sns").Topic)(
+      depsStack,
+      "AlarmTopic",
+      { topicName: "goosetown-dev-alarms" }
+    );
+    const computeStack = new ComputeStack(app, "goosetown-dev-compute-alarm", {
+      stackName: "goosetown-dev-compute-alarm",
+      environment: "dev",
+      env: { account: "123456789012", region: "us-east-1" },
+      vpc,
+      tables: tables as any,
+      spriteBucket,
+      secrets: secrets as any,
+      alarmTopic,
+    });
+    const template = Template.fromStack(computeStack);
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      MetricName: "HealthyHostCount",
+      Namespace: "AWS/ApplicationELB",
+    });
+    // Extra guard: the old-metric name should NOT appear anywhere in the template.
+    const json = JSON.stringify(template.toJSON());
+    expect(json).not.toContain('"MetricName":"RunningTaskCount"');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // WS_MANAGEMENT_API_URL is a plain string (not an import token)
 // ---------------------------------------------------------------------------
 

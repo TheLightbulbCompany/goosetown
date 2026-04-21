@@ -243,13 +243,18 @@ export class ComputeStack extends cdk.Stack {
 
     this.service.attachToApplicationTargetGroup(targetGroup);
 
-    // CloudWatch alarm: fire if fewer tasks are running than desired for 5+ minutes.
-    // In prod (desiredCount=2) the threshold is 2; in dev (desiredCount=1) it is 1.
+    // CloudWatch alarm: fire if fewer healthy targets are registered with the
+    // ALB than desired for 5+ minutes. We use HealthyHostCount (AWS/ApplicationELB
+    // namespace, always published) instead of ECS RunningTaskCount because the
+    // latter is only published under ECS/ContainerInsights, which this cluster
+    // has disabled for cost reasons (see ecs.Cluster above). HealthyHostCount
+    // is a tighter signal anyway — a task can be "running" but failing health
+    // checks, which from the user's perspective is the same as missing.
     // Silently skipped when alarmTopic is absent (local synth / CI without observability stack).
     if (props.alarmTopic) {
       const taskMissingAlarm = new cloudwatch.Alarm(this, "BackendTaskMissing", {
         alarmName: `goosetown-${env}-backend-task-missing`,
-        metric: this.service.metric("RunningTaskCount", {
+        metric: targetGroup.metrics.healthyHostCount({
           statistic: "Minimum",
           period: cdk.Duration.minutes(1),
         }),
@@ -258,7 +263,7 @@ export class ComputeStack extends cdk.Stack {
         evaluationPeriods: 5,
         treatMissingData: cloudwatch.TreatMissingData.BREACHING,
         alarmDescription:
-          "Backend has fewer running tasks than desired. See RUNBOOK.md.",
+          "Backend has fewer healthy ALB targets than desired. See RUNBOOK.md.",
       });
       taskMissingAlarm.addAlarmAction(
         new cw_actions.SnsAction(props.alarmTopic)
