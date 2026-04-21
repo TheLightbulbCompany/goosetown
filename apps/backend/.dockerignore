@@ -1,0 +1,27 @@
+# Local Python virtualenv — huge, breaks CDK DockerImageAsset hash step
+# (synth hangs indefinitely on macOS if this is not excluded).
+.venv/
+venv/
+
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Test artifacts
+test-workspace/
+test-workspace-*/
+htmlcov/
+.coverage
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
