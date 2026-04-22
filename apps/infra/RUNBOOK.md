@@ -15,8 +15,8 @@ aws sso login --profile isol8-admin
 
 | Alarm name | Threshold | SNS topic | What it means |
 |---|---|---|---|
-| `goosetown-{env}-gameserver-task-missing` | RunningTaskCount < 1 for 5 min | `goosetown-{env}-alarms` | Game server Fargate task has crashed or failed to start. All connected agents will drop after ~1 min (5-retry cap in daemon). |
-| `goosetown-{env}-backend-task-missing` | RunningTaskCount < desired (1 dev / 2 prod) for 5 min | `goosetown-{env}-alarms` | Backend FastAPI task is down. REST API and WebSocket forwarding are unavailable. |
+| `goosetown-{env}-gameserver-task-missing` | `ECS/ContainerInsights/RunningTaskCount` < 1 for 5 min (Container Insights enabled on gameserver cluster) | `goosetown-{env}-alarms` | Game server Fargate task has crashed or failed to start. All connected agents will drop after ~1 min (5-retry cap in daemon). |
+| `goosetown-{env}-backend-task-missing` | `AWS/ApplicationELB/HealthyHostCount` < desired (1 dev / 2 prod) for 5 min | `goosetown-{env}-alarms` | Backend ALB has fewer healthy targets than desired. Either the Fargate task is down or it's failing `/health`. REST API and WebSocket forwarding are unavailable either way. |
 | `goosetown-{env}-nat-port-errors` | ErrorPortAllocation >= 1 in 5 min | `goosetown-{env}-alarms` | NAT gateway port exhaustion or AZ-level fault. Private-subnet egress (backend → Clerk, PixelLab, DynamoDB endpoint) may be degraded. Awareness-only in dev — see issue #165. |
 
 SNS subscriptions are managed manually per environment:

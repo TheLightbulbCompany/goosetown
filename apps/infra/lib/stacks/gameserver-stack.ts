@@ -41,9 +41,14 @@ export class GameServerStack extends cdk.Stack {
       }
     );
 
-    // ECS cluster (separate from backend cluster)
+    // ECS cluster (separate from backend cluster). Container Insights is
+    // enabled here (unlike the backend cluster) because this stack has no
+    // ALB — without Container Insights there's no cheap signal that the
+    // single game-server task is alive, and "RunningTaskCount" lives
+    // exclusively in the ECS/ContainerInsights namespace.
     const cluster = new ecs.Cluster(this, "Cluster", {
       vpc: props.vpc,
+      containerInsightsV2: ecs.ContainerInsights.ENABLED,
     });
 
     // Log group
@@ -103,7 +108,17 @@ export class GameServerStack extends cdk.Stack {
     if (props.alarmTopic) {
       const taskMissingAlarm = new cloudwatch.Alarm(this, "GameServerTaskMissing", {
         alarmName: `goosetown-${env}-gameserver-task-missing`,
-        metric: service.metric("RunningTaskCount", {
+        // RunningTaskCount is only emitted under ECS/ContainerInsights (enabled
+        // on the cluster above). The default service.metric() helper hits
+        // AWS/ECS, where this metric does not exist, so the alarm would latch
+        // on ALARM with TreatMissingData=BREACHING.
+        metric: new cloudwatch.Metric({
+          namespace: "ECS/ContainerInsights",
+          metricName: "RunningTaskCount",
+          dimensionsMap: {
+            ClusterName: cluster.clusterName,
+            ServiceName: service.serviceName,
+          },
           statistic: "Minimum",
           period: cdk.Duration.minutes(1),
         }),
