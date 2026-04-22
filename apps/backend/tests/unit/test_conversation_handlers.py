@@ -388,10 +388,14 @@ class TestHandleChat:
         assert call_kwargs["opening_message"] == "howdy"
         assert call_kwargs["location"] == "cafe"
 
-        # Two mgmt sends: invite to target, act_ok to initiator
+        # Three mgmt sends: invite to target, conversation_started + act_ok to initiator.
+        # conversation_started (F11) is what makes the initiator's daemon
+        # populate active_conversation with the conv_id and opening line —
+        # without it, the initiator has no local view of their own outgoing chat.
         recipients = [cid for cid, _ in sent]
         events = [msg["event"] for _, msg in sent]
         assert "conversation_invite" in events
+        assert "conversation_started" in events
         assert "act_ok" in events
         assert "conn-target" in recipients
         assert "conn-abc" in recipients
@@ -399,6 +403,11 @@ class TestHandleChat:
         invite_msg = next(m for _, m in sent if m["event"] == "conversation_invite")
         assert invite_msg["conv_id"] == "conv-new"
         assert invite_msg["message"] == "howdy"
+
+        started_msg = next(m for _, m in sent if m["event"] == "conversation_started")
+        assert started_msg["conv_id"] == "conv-new"
+        assert started_msg["opening_message"] == "howdy"
+        assert started_msg["with_display"] == "Marbles"
 
     @pytest.mark.asyncio
     async def test_happy_path_target_offline_still_creates_conversation(self):
@@ -563,13 +572,57 @@ class TestHandleSay:
             )
 
         svc_mock.append_message_to_conversation.assert_called_once_with("conv-1", "agent-A", "Alice", "hello there")
-        # Message forwarded to B only, not back to speaker A
+        # Message forwarded to all participants, INCLUDING the speaker, so the
+        # speaker's daemon can append their own turn to active_conversation.
+        # F8 from 2026-04-21 dry run — without the self-echo, speakers couldn't
+        # see their own messages in TOWN_STATUS.md. Since agent-A's conn isn't
+        # in the ws_manager mock, only B is actually delivered to in this test
+        # — but we assert the loop no longer skips the speaker by verifying
+        # B's forward + checking the send path didn't filter on speaker_id.
         forwarded = [(cid, msg) for cid, msg in sent if msg["event"] == "conversation_message"]
         assert len(forwarded) == 1
         assert forwarded[0][0] == "conn-B"
         assert forwarded[0][1]["text"] == "hello there"
         assert forwarded[0][1]["turn"] == 3
         assert forwarded[0][1]["from"] == "Alice"
+
+    @pytest.mark.asyncio
+    async def test_speaker_receives_own_message_echo(self):
+        """Speaker's connection gets the conversation_message echo too (F8)."""
+        from routers.town import _handle_say
+
+        sent: list = []
+        svc_mock = MagicMock()
+        svc_mock.get_conversation_by_id.return_value = {
+            "id": "conv-1",
+            "status": "active",
+            "participants": ["agent-A", "agent-B"],
+        }
+        svc_mock.get_town_agent_by_id.return_value = _make_agent(agent_id="agent-A", display_name="Alice")
+        svc_mock.append_message_to_conversation.return_value = {"turnCount": 2}
+
+        # BOTH speaker and other connected — so we can verify speaker also
+        # receives the conversation_message echo.
+        speaker_conn = SimpleNamespace(agent_id="agent-A", connection_id="conn-A", agent_name="Alice")
+        other_conn = SimpleNamespace(agent_id="agent-B", connection_id="conn-B", agent_name="Bob")
+        ws_mock = _make_ws_manager_mock({"agent-A": speaker_conn, "agent-B": other_conn})
+
+        with (
+            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(SERVICE_PATH, return_value=svc_mock),
+            patch(WS_MANAGER_PATH, return_value=ws_mock),
+            patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
+        ):
+            await _handle_say(
+                "conn-A",
+                {"conv_id": "conv-1", "message": "hi there"},
+                _make_agent_conn(agent_id="agent-A", agent_name="Alice"),
+            )
+
+        forwarded = [(cid, msg) for cid, msg in sent if msg["event"] == "conversation_message"]
+        recipients = {cid for cid, _ in forwarded}
+        assert "conn-A" in recipients, "Speaker must receive own message echo (F8)"
+        assert "conn-B" in recipients
 
     @pytest.mark.asyncio
     async def test_auto_end_at_turn_limit(self):

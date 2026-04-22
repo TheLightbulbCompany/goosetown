@@ -37,19 +37,9 @@ async def lifespan(app: FastAPI):
     sprite_queue = get_sprite_queue()
     sprite_queue.start()
 
-    # Start inactivity sweep for dangling conversations
-    import asyncio as _asyncio
-
-    sweep_task = _asyncio.create_task(_conversation_inactivity_sweep())
-
     yield
 
     # Cleanup
-    sweep_task.cancel()
-    try:
-        await sweep_task
-    except _asyncio.CancelledError:
-        pass
     await sprite_queue.stop()
     await relay.stop()
     gs_client = get_game_server_client()
@@ -209,55 +199,6 @@ async def _reconnect_active_agents() -> None:
         activities_resumed += 1
 
     logger.info("Startup: resumed %d activity timers", activities_resumed)
-
-
-_CONVERSATION_INACTIVITY_SECONDS = 180  # 3 minutes with no new turn → auto-end
-_CONVERSATION_SWEEP_INTERVAL_SECONDS = 30
-
-
-async def _conversation_inactivity_sweep() -> None:
-    """Periodically auto-end conversations that stalled mid-flight.
-
-    A conversation whose ``updatedAt`` has not advanced for
-    ``_CONVERSATION_INACTIVITY_SECONDS`` is considered abandoned (one side
-    invited, never replied, or both went silent). Left alone, both agents
-    stay stuck with ``currentConversationId`` set and cannot start new chats.
-    """
-    import asyncio
-
-    from core.services.management_api_client import ManagementApiClient
-    from core.services.town_agent_ws import get_town_agent_ws_manager
-    from core.services.town_service import TownService
-    from routers.town import _finalize_conversation
-
-    service = TownService()
-    mgmt = ManagementApiClient()
-    ws_manager = get_town_agent_ws_manager()
-
-    while True:
-        try:
-            await asyncio.sleep(_CONVERSATION_SWEEP_INTERVAL_SECONDS)
-            stale = service.list_stale_active_conversations(_CONVERSATION_INACTIVITY_SECONDS)
-            for conv in stale:
-                conv_id = conv.get("id")
-                if not conv_id:
-                    continue
-                logger.info("Inactivity sweep: finalising stale conversation %s", conv_id)
-                try:
-                    await _finalize_conversation(
-                        conv_id,
-                        service,
-                        mgmt,
-                        ws_manager,
-                        auto_ended=True,
-                        end_reason_override="inactivity_timeout",
-                    )
-                except Exception:
-                    logger.exception("Failed to finalise stale conversation %s", conv_id)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("conversation_inactivity_sweep iteration failed")
 
 
 app = FastAPI(title="GooseTown API", lifespan=lifespan)

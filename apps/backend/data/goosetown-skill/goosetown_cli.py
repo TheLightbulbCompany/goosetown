@@ -899,6 +899,8 @@ class TownDaemon:
             self._on_state_update(data)
         elif event in ("conversation_invite", "conversation_message"):
             self._on_conversation_message(event, data)
+        elif event == "conversation_started":
+            self._on_conversation_started(data)
         elif event == "conversation_ended":
             self._on_conversation_ended(data)
         elif event == "participant_joined":
@@ -1024,6 +1026,23 @@ class TownDaemon:
         if "nearby" in data:
             self.state["nearby"] = data["nearby"]
 
+    def _on_conversation_started(self, data: dict) -> None:
+        """Handle conversation_started — echoed to the initiator after `act chat`.
+
+        Without this, the initiator has no local view of their own outgoing
+        chat: no conv_id, no participants list, no opening-line turn. F11
+        from the 2026-04-21 agent-team dry run.
+        """
+        conv_id = data.get("conv_id", "")
+        with_display = data.get("with_display", "?")
+        opening = data.get("opening_message", "")
+        self.state["active_conversation"] = {
+            "conv_id": conv_id,
+            "participants": [with_display],
+            "turns": [{"speaker": "you", "text": opening}] if opening else [],
+        }
+        self._append_event(f'CHAT_STARTED with {with_display} — "{opening}" (conv_id: {conv_id})')
+
     def _on_conversation_message(self, event: str, data: dict) -> None:
         """Handle conversation_invite and conversation_message events."""
         self.state.setdefault("pending_messages", []).append(data)
@@ -1063,11 +1082,17 @@ class TownDaemon:
         conv_id = data.get("conv_id", "?")
         turn_count = data.get("turn_count", 0)
         location = data.get("location", "")
+        reason = data.get("reason", "ended")
         log_summary = data.get("log_summary", "")
         self.state.pop("active_conversation", None)
         self.state["pending_messages"] = []
+        # Surface the reason in the event log so the agent knows whether they
+        # were kicked out by the turn cap, left voluntarily, or the other party
+        # ended it. Otherwise the LLM has no way to distinguish "ran out of
+        # turns" from "peer walked away", which matters for what to write in
+        # TOWN_LIFE.md.
         self._append_event(
-            f"CHAT_ENDED (conv_id: {conv_id}, {turn_count} turns at {location}). "
+            f"CHAT_ENDED (conv_id: {conv_id}, {turn_count} turns at {location}, reason: {reason}). "
             "Write about this conversation in TOWN_LIFE.md — who you spoke with, what you discussed, "
             "and how it made you feel."
         )
@@ -1338,15 +1363,18 @@ class TownDaemon:
         self.state["nearby"] = data.get("nearby_agents", [])
         self._write_state()
 
-        # Only write TOWN_STATUS.md on think events — passive updates
-        # would overwrite the activity list every 2 seconds
-        if think:
-            world_data = {
-                "you": agent_info,
-                "nearby_agents": data.get("nearby_agents", []),
-                "think": True,
-            }
-            self._handle_world_update(world_data)
+        # Always refresh TOWN_STATUS.md so the file reflects the current
+        # location/mood/nearby — otherwise it stays stuck on the last
+        # think-prompt snapshot from before a move completed. Action menus
+        # only render when think=True; passive writes render a header-only
+        # view that doesn't clobber the prompt the agent is reading.
+        # F10 from the 2026-04-21 agent-team dry run.
+        world_data = {
+            "you": agent_info,
+            "nearby_agents": data.get("nearby_agents", []),
+            "think": think,
+        }
+        self._handle_world_update(world_data)
 
     # ------------------------------------------------------------------
     # World update handler

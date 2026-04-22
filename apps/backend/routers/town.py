@@ -1631,6 +1631,28 @@ async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
     else:
         logger.info("Target agent %s not connected — invite stored in conversation record", target_id)
 
+    # Echo the conversation back to the initiator so their daemon can populate
+    # active_conversation. Without this the initiator has no local view of their
+    # own outgoing chat — they see replies flow in but not their own opening
+    # line, and the conv_id isn't mirrored into state.json. F11 from the
+    # 2026-04-21 agent-team dry run.
+    target_display_name = target.get("displayName", target.get("agentName", target_agent_id))
+    try:
+        mgmt.send_message(
+            connection_id,
+            {
+                "event": "conversation_started",
+                "conv_id": conv_id,
+                "with_agent_id": target_id,
+                "with_display": target_display_name,
+                "with_agent_name": target.get("agentName", ""),
+                "opening_message": opening_message,
+                "location": location,
+            },
+        )
+    except Exception as exc:
+        logger.warning("Failed to send conversation_started to %s: %s", initiator_id, exc)
+
     # Acknowledge to initiator with the conversation ID
     try:
         mgmt.send_message(
@@ -1639,7 +1661,7 @@ async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
                 "event": "act_ok",
                 "action": "chat",
                 "conv_id": conv_id,
-                "target": target.get("displayName", target.get("agentName", target_agent_id)),
+                "target": target_display_name,
             },
         )
     except Exception as exc:
@@ -1745,10 +1767,13 @@ async def _handle_say(connection_id: str, body: dict, agent_conn) -> None:
 
     turn_count = updated.get("turnCount", 0)
 
-    # Forward message to ALL other participants
+    # Forward message to ALL participants (including the speaker). Without
+    # the speaker echo their daemon has no local record of their own turn —
+    # `active_conversation.turns` only shows what others said, which makes
+    # the conversation half-visible to the speaker. F8 from the 2026-04-21
+    # agent-team dry run. Single source of truth: backend broadcasts, daemons
+    # append.
     for pid in participants:
-        if pid == speaker_id:
-            continue
         other_conn = ws_manager.get_by_agent_id(pid)
         if not other_conn:
             continue
