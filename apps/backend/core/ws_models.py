@@ -23,7 +23,16 @@ from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, Field, model_validator
 
-AgentAction = Literal["move", "chat", "say", "idle", "end", "context_transition", "activity"]
+AgentAction = Literal[
+    "move",
+    "chat",
+    "say",
+    "idle",
+    "end_conversation",
+    "join_conversation",
+    "context_transition",
+    "activity",
+]
 
 
 class TownAgentConnect(BaseModel):

@@ -97,16 +97,30 @@ class TestTownAgentAct:
         msg = _adapter.validate_python({"type": "town_agent_act", "action": "idle"})
         assert msg.action == "idle"
 
-    def test_accepts_end_action(self) -> None:
-        msg = _adapter.validate_python({"type": "town_agent_act", "action": "end", "conv_id": "c1"})
+    def test_accepts_end_conversation_action(self) -> None:
+        msg = _adapter.validate_python({"type": "town_agent_act", "action": "end_conversation", "conv_id": "c1"})
+        assert msg.action == "end_conversation"
         assert msg.conv_id == "c1"
 
-    def test_accepts_end_without_conv_id(self) -> None:
+    def test_accepts_end_conversation_without_conv_id(self) -> None:
         """Like 'say', the handler tolerates missing conv_id (defaults to '').
         Schema matches: no model_validator enforcement."""
-        msg = _adapter.validate_python({"type": "town_agent_act", "action": "end"})
-        assert msg.action == "end"
+        msg = _adapter.validate_python({"type": "town_agent_act", "action": "end_conversation"})
+        assert msg.action == "end_conversation"
         assert msg.conv_id is None
+
+    def test_accepts_join_conversation_action(self) -> None:
+        """F9 also added join_conversation — CLI uses it but the old literal
+        silently 422'd it alongside end_conversation."""
+        msg = _adapter.validate_python({"type": "town_agent_act", "action": "join_conversation", "conv_id": "c1"})
+        assert msg.action == "join_conversation"
+        assert msg.conv_id == "c1"
+
+    def test_rejects_old_end_literal(self) -> None:
+        """Regression guard: the bare 'end' literal was the F9 bug —
+        CLI dispatchers match 'end_conversation' so 'end' must stay rejected."""
+        with pytest.raises(ValidationError):
+            _adapter.validate_python({"type": "town_agent_act", "action": "end", "conv_id": "c1"})
 
     def test_accepts_context_transition(self) -> None:
         msg = _adapter.validate_python(
