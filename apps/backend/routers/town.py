@@ -1238,24 +1238,34 @@ async def handle_ws_disconnect(request: WsDisconnectRequest):
 
     if agent_conn:
         agent_id = agent_conn.agent_id
-        logger.info("[agent:%s] Daemon disconnected (conn=%s)", agent_id[:8], request.connectionId[:12])
+        clean_leave = agent_conn.leaving_cleanly
+        logger.info(
+            "[agent:%s] Daemon disconnected (conn=%s, clean=%s)",
+            agent_id[:8],
+            request.connectionId[:12],
+            clean_leave,
+        )
 
-        # Remove from game server — the agent is now "sleeping at home" and
-        # should not appear in any viewer's world_state broadcast.
+        # Remove from game server — the agent is no longer being controlled
+        # by a live daemon, so the game server should drop them from the sim
+        # regardless of whether this was a clean leave or a drop.
         gs_client = get_game_server_client()
         try:
             await gs_client.disconnect_agent(agent_id)
         except Exception as exc:
             logger.warning("[agent:%s] Failed to disconnect from game server: %s", agent_id[:8], exc)
 
-        # Update DynamoDB: clear daemon connection, move to bed (sleeping),
-        # drop any in-flight activity. An empty daemonConnectionId is the
-        # signal to `_reconnect_active_agents` that this agent is offline
-        # and should NOT be auto-reconnected on backend CI/CD restarts.
         service = TownService()
         service.update_agent_state(agent_id, daemon_connection_id="")
-        service.update_agent_context(agent_id, "apartment", "bed")
         service.update_agent_activity(agent_id, None, None)
+
+        # Only teleport into apartment/bed on CLEAN leave. Server-initiated
+        # disconnects (AWS idle timeout, Lambda crash, network flap) should
+        # leave the agent at their last-known location so the next `act
+        # idle` reconnect resumes in the town instead of silently waking up
+        # in bed. F12 secondary from 2026-04-21 dry run.
+        if clean_leave:
+            service.update_agent_context(agent_id, "apartment", "bed")
 
         # Unregister from ws_manager
         ws_manager.unregister(request.connectionId)
@@ -1320,6 +1330,26 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
 
         relay = get_viewer_relay()
         relay.register_viewer(request.connectionId)
+        return {"statusCode": 200}
+
+    # Keepalive frame from the daemon — no action needed, the frame itself
+    # resets API Gateway's 10-minute idle clock. Swallow silently.
+    if msg_type == "ping":
+        return {"statusCode": 200}
+
+    # Clean-leave signal from the daemon before it closes the socket.
+    # Sets `leaving_cleanly` on the in-memory AgentConnection so the
+    # subsequent $disconnect Lambda knows this is "agent went to sleep"
+    # rather than "network dropped the connection". F12.
+    if msg_type == "town_agent_sleep":
+        agent_conn = ws_manager.get_by_connection(request.connectionId)
+        if agent_conn:
+            agent_conn.leaving_cleanly = True
+            logger.info(
+                "[agent:%s] Clean-leave signal received (wake_time=%s)",
+                agent_conn.agent_id[:8],
+                body.get("wake_time", ""),
+            )
         return {"statusCode": 200}
 
     # Handle agent connection handshake

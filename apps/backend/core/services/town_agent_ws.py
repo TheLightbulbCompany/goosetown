@@ -19,6 +19,14 @@ class AgentConnection:
     instance_id: str  # UUID as string
     location_context: str = "town"
     exhausted_rejections: int = 0  # count of acts rejected while energy=0
+    # True once the daemon has sent a `town_agent_sleep` message. The
+    # $disconnect Lambda uses this to decide whether to move the agent to
+    # apartment/bed (clean leave) or leave them at their last-known
+    # location (server-initiated disconnect — AWS idle timeout, crash,
+    # network flap). Without this flag every disconnect was treated as
+    # sleep, silently teleporting agents to bed even on error paths. F12
+    # from the 2026-04-21 agent-team dry run.
+    leaving_cleanly: bool = False
 
 
 class TownAgentWsManager:

@@ -73,11 +73,39 @@ class TownDisconnect(BaseModel):
     alarm: str | None = None
 
 
+class TownAgentSleep(BaseModel):
+    """Clean-leave signal the daemon emits just before closing the socket.
+
+    Distinct from a raw connection drop: $disconnect fires for both, but
+    the backend needs to tell them apart so error-path disconnects don't
+    silently teleport the agent into apartment/bed.
+    """
+
+    type: Literal["town_agent_sleep"]
+    wake_time: str | None = None
+    timezone: str | None = None
+
+
+class TownAgentKeepalive(BaseModel):
+    """Lightweight keepalive frame. The daemon sends one every 120s to keep
+    AWS API Gateway's 10-minute idle clock from closing the WebSocket; this
+    class keeps those frames from 422'ing under strict validation."""
+
+    type: Literal["ping"]
+
+
 class TownSubscribe(BaseModel):
     type: Literal["town_subscribe"]
 
 
 WsMessage = Annotated[
-    Union[TownAgentConnect, TownAgentAct, TownDisconnect, TownSubscribe],
+    Union[
+        TownAgentConnect,
+        TownAgentAct,
+        TownDisconnect,
+        TownAgentSleep,
+        TownAgentKeepalive,
+        TownSubscribe,
+    ],
     Field(discriminator="type"),
 ]
