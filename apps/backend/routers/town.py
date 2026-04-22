@@ -1230,6 +1230,84 @@ class WsDisconnectRequest(BaseModel):
     connectionId: str
 
 
+# ---------------------------------------------------------------------------
+# Sleep grace window
+# ---------------------------------------------------------------------------
+#
+# A daemon disconnect doesn't always mean "agent went to sleep" — it might
+# be a brief network flap, an AWS idle-timeout with an auto-reconnect
+# behind it, or a transient Lambda error. Immediately teleporting the
+# agent into apartment/bed on every $disconnect (the behavior before this
+# module) made a 9-second flap look like "agent spontaneously went home",
+# which was confusing for both viewers and the agent on reconnect.
+#
+# Instead: on a non-clean disconnect we schedule a delayed move-to-bed.
+# If the daemon reconnects within the grace window, _cancel_sleep_grace
+# removes the pending task and `_handle_agent_connect` resumes the agent
+# at their last-known location (no forced wake-in-bed). If the window
+# expires with no reconnect, the task executes the move-to-bed.
+#
+# In-memory only — a backend restart during the grace drops pending tasks.
+# That window is narrow enough (seconds, not minutes of missed reconnects)
+# that we haven't invested in durable scheduling yet.
+
+_SLEEP_GRACE_SECONDS: float = 90.0
+_pending_sleep_tasks: dict[str, asyncio.Task] = {}
+
+
+async def _delayed_sleep(agent_id: str) -> None:
+    """Wait the grace window, then move the agent to apartment/bed."""
+    try:
+        await asyncio.sleep(_SLEEP_GRACE_SECONDS)
+    except asyncio.CancelledError:
+        logger.info("[agent:%s] Sleep grace cancelled (daemon reconnected)", agent_id[:8])
+        raise
+
+    try:
+        service = TownService()
+        agent = service.get_town_agent_by_id(agent_id)
+        if not agent:
+            return
+        # Defensive: a reconnect that didn't go through _cancel_sleep_grace
+        # (e.g. raced past the await) could leave a populated connection ID.
+        # In that case, the agent is back — don't move them.
+        if agent.get("daemonConnectionId"):
+            logger.info(
+                "[agent:%s] Sleep grace expired but agent is reconnected — skipping move-to-bed",
+                agent_id[:8],
+            )
+            return
+        logger.info("[agent:%s] Sleep grace expired — moving to apartment/bed", agent_id[:8])
+        service.update_agent_context(agent_id, "apartment", "bed")
+    finally:
+        # Clear the registry entry in the SAME task that owns it, whether we
+        # moved the agent or not. Popping on cancel happens in the caller.
+        _pending_sleep_tasks.pop(agent_id, None)
+
+
+def _schedule_sleep_grace(agent_id: str) -> None:
+    """Schedule a delayed move-to-bed for a disconnected agent.
+    Cancels any existing pending task for the same agent first (last-writer-wins)."""
+    existing = _pending_sleep_tasks.get(agent_id)
+    if existing and not existing.done():
+        existing.cancel()
+    _pending_sleep_tasks[agent_id] = asyncio.create_task(_delayed_sleep(agent_id))
+
+
+def _cancel_sleep_grace(agent_id: str) -> bool:
+    """Cancel a pending sleep grace task. Returns True if one was active.
+
+    A True return means "this reconnect happened within the grace window";
+    the caller should preserve the agent's current location instead of
+    re-initializing to apartment/bed.
+    """
+    task = _pending_sleep_tasks.pop(agent_id, None)
+    if task and not task.done():
+        task.cancel()
+        return True
+    return False
+
+
 @router.post("/ws-disconnect")
 async def handle_ws_disconnect(request: WsDisconnectRequest):
     """Handle WebSocket disconnect — clean up agent from game server and DynamoDB."""
@@ -1259,13 +1337,16 @@ async def handle_ws_disconnect(request: WsDisconnectRequest):
         service.update_agent_state(agent_id, daemon_connection_id="")
         service.update_agent_activity(agent_id, None, None)
 
-        # Only teleport into apartment/bed on CLEAN leave. Server-initiated
-        # disconnects (AWS idle timeout, Lambda crash, network flap) should
-        # leave the agent at their last-known location so the next `act
-        # idle` reconnect resumes in the town instead of silently waking up
-        # in bed. F12 secondary from 2026-04-21 dry run.
+        # Move to apartment/bed IMMEDIATELY on clean leave (user explicitly
+        # asked to sleep). On a server-initiated drop schedule a grace window
+        # instead — a 9-second network flap with an auto-reconnect should
+        # NOT teleport the agent home. If the daemon doesn't come back within
+        # the grace, the delayed task moves them to bed then. See
+        # _delayed_sleep / _schedule_sleep_grace below.
         if clean_leave:
             service.update_agent_context(agent_id, "apartment", "bed")
+        else:
+            _schedule_sleep_grace(agent_id)
 
         # Unregister from ws_manager
         ws_manager.unregister(request.connectionId)
@@ -2163,11 +2244,29 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
     logger.info("[agent:%s] daemonConnectionId updated: %s", agent_id[:8], request.connectionId[:12])
     service.update_agent_state(agent_id, daemon_connection_id=request.connectionId)
 
-    # Wake up in bed. On every daemon reconnect the agent "wakes up at home"
-    # — they can walk themselves out of the apartment from there.
-    location_context = "apartment"
-    current_location = "bed"
-    service.update_agent_context(agent_id, location_context, current_location)
+    # Sleep-grace cancellation: if this daemon dropped recently and is now
+    # reconnecting inside the grace window, `_cancel_sleep_grace` returns
+    # True. In that case preserve the agent's last-known location instead of
+    # the default "wake up at home" reset — a 9-second flap shouldn't
+    # teleport them back to bed. For fresh connects or reconnects after the
+    # grace expired, no task is pending and we fall through to the default.
+    within_grace = _cancel_sleep_grace(agent_id)
+
+    if within_grace:
+        current_location = agent.get("currentLocation") or "bed"
+        location_context = agent.get("locationContext") or "apartment"
+        logger.info(
+            "[agent:%s] Reconnect within sleep grace — resuming at %s/%s",
+            agent_id[:8],
+            location_context,
+            current_location,
+        )
+    else:
+        # Fresh connect or grace expired — wake up in bed, walk themselves
+        # out from there.
+        location_context = "apartment"
+        current_location = "bed"
+        service.update_agent_context(agent_id, location_context, current_location)
 
     # Set in-memory context on the connection record
     ws_manager.update_context(agent_id, location_context)
