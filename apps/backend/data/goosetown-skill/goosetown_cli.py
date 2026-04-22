@@ -1041,9 +1041,7 @@ class TownDaemon:
             "participants": [with_display],
             "turns": [{"speaker": "you", "text": opening}] if opening else [],
         }
-        self._append_event(
-            f'CHAT_STARTED with {with_display} — "{opening}" (conv_id: {conv_id})'
-        )
+        self._append_event(f'CHAT_STARTED with {with_display} — "{opening}" (conv_id: {conv_id})')
 
     def _on_conversation_message(self, event: str, data: dict) -> None:
         """Handle conversation_invite and conversation_message events."""
