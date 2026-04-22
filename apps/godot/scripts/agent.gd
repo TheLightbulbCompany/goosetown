@@ -237,7 +237,7 @@ func setup(id: String, url: String, x: float, y: float, facing_json: String, dis
 	_parse_facing(facing_json)
 
 	if sprite_url != "" and not OS.has_feature("headless"):
-		_load_sprite_from_url(sprite_url)
+		load_sprite(sprite_url, "walk")
 	elif not OS.has_feature("headless"):
 		# No sprite URL — use shadow placeholder
 		set_spritesheet(SHADOW_TEXTURE, "walk")
@@ -437,45 +437,79 @@ func _parse_facing(facing_str: String) -> void:
 			facing = dir
 
 
-## Max attempts for sprite load. The JS-side fetch has no error callback back
-## to GDScript, so we poll `_spritesheets` — if nothing arrived after each
-## backoff window, retry. After all retries fail, fall back to the shadow
-## placeholder so the agent still has a visible silhouette instead of
-## rendering as just a floating name label. F1 from the 2026-04-21 dry run.
+## Sprite load: single public API with retry + shadow fallback.
+##
+## Previously this lived in two places — `agent.gd:_load_sprite_from_url`
+## for the walk spritesheet at setup, and `agent_manager.gd:_load_sprite_for_agent`
+## for everything else (idle, talking, runs after a regenerate). The two paths
+## did the same JS-bridge call but only the first had retry, which meant
+## non-walk animations failed silently with no observability. Unified here
+## so one retry implementation covers every sprite the agent ever loads.
+##
+## The JS-side fetch has no error callback back to GDScript, so we poll
+## `_spritesheets` — if nothing arrived after each backoff window, retry.
+## After all retries fail, fall back to SHADOW_TEXTURE so at minimum the
+## agent renders a visible silhouette instead of a floating name label.
 const _SPRITE_LOAD_MAX_ATTEMPTS: int = 3
 const _SPRITE_LOAD_BACKOFF_SEC: Array = [2.0, 4.0, 8.0]
 
-func _load_sprite_from_url(url: String) -> void:
-	if not OS.has_feature("web"):
+## Keeps a reference to the in-flight retry coroutine so GDScript's GC
+## can't collect its `await`-suspended state mid-flight. Keyed by
+## animation name; cleared when the load resolves (success or final fallback).
+var _sprite_load_tasks: Dictionary = {}
+
+
+## Public API — load (or reload) a spritesheet for a specific animation name.
+## Safe to call multiple times for the same anim; an in-flight load for the
+## same anim is replaced by the new call.
+func load_sprite(url: String, anim_name: String = "walk") -> void:
+	if url == "" or not OS.has_feature("web"):
 		return
-	_load_sprite_with_retry(url, 0)
+	# Hold the coroutine state so the scheduler can't drop it.
+	_sprite_load_tasks[anim_name] = _load_sprite_with_retry(url, anim_name, 0)
 
 
-func _load_sprite_with_retry(url: String, attempt: int) -> void:
+func _load_sprite_with_retry(url: String, anim_name: String, attempt: int) -> void:
 	if attempt >= _SPRITE_LOAD_MAX_ATTEMPTS:
 		push_warning(
-			"Sprite load failed after %d attempts for agent %s (%s) — falling back to shadow placeholder"
-			% [_SPRITE_LOAD_MAX_ATTEMPTS, agent_id, url]
+			"Sprite load failed after %d attempts for agent %s anim=%s (%s) — falling back to shadow placeholder"
+			% [_SPRITE_LOAD_MAX_ATTEMPTS, agent_id, anim_name, url]
 		)
-		set_spritesheet(SHADOW_TEXTURE, "walk")
+		# Shadow fallback only for walk. Non-walk anims just go missing
+		# (the agent will fall back to `walk` at the _physics_process level).
+		if anim_name == "walk":
+			set_spritesheet(SHADOW_TEXTURE, "walk")
+		_sprite_load_tasks.erase(anim_name)
 		return
+	# Observability: log every JS fetch attempt so we can correlate failures
+	# with browser-console `sprite load failed` warnings from the JS side.
+	print(
+		"Sprite load dispatch: agent=%s anim=%s attempt=%d url=%s"
+		% [agent_id, anim_name, attempt + 1, url]
+	)
 	# Fire the JS fetch — still handled by the load_sprite callback the
 	# frontend registers on window. If it succeeds, the JS side calls back
-	# into Godot via godotSetAgentTexture which ends up in set_spritesheet.
-	JsBridge.call_js("load_sprite", {"url": url, "agent_id": agent_id})
+	# into Godot via godotUpdateAgentSprite which ends up in set_spritesheet.
+	JsBridge.call_js("load_sprite", {
+		"url": url,
+		"agent_id": agent_id,
+		"animation_name": anim_name,
+	})
 	# Wait for the response (or silence) and decide whether to retry.
 	var backoff: float = _SPRITE_LOAD_BACKOFF_SEC[attempt]
 	await get_tree().create_timer(backoff).timeout
 	# If the agent was freed mid-wait, bail silently.
 	if not is_inside_tree():
+		_sprite_load_tasks.erase(anim_name)
 		return
-	if _spritesheets.has("walk") and _spritesheets["walk"] != SHADOW_TEXTURE:
+	if _spritesheets.has(anim_name) and _spritesheets[anim_name] != SHADOW_TEXTURE:
+		_sprite_load_tasks.erase(anim_name)
 		return
 	print(
-		"Sprite load retry %d/%d for agent %s (%s)"
-		% [attempt + 1, _SPRITE_LOAD_MAX_ATTEMPTS, agent_id, url]
+		"Sprite load retry %d/%d for agent %s anim=%s (%s)"
+		% [attempt + 1, _SPRITE_LOAD_MAX_ATTEMPTS, agent_id, anim_name, url]
 	)
-	_load_sprite_with_retry(url, attempt + 1)
+	await _load_sprite_with_retry(url, anim_name, attempt + 1)
 
 # ---------------------------------------------------------------------------
 # Signal callbacks

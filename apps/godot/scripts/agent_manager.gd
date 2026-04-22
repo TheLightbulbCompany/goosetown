@@ -112,7 +112,7 @@ func _on_world_state(data: Dictionary) -> void:
 					if current_anims.has(anim_name):
 						old_url = str(current_anims[anim_name].get("url", ""))
 					if new_url != "" and new_url != old_url:
-						_load_sprite_for_agent(agent_id, new_url, anim_name)
+						agent_node.load_sprite(new_url, anim_name)
 						changed = true
 				if changed:
 					agent_node.sprite_animations = incoming_anims
@@ -144,7 +144,7 @@ func _on_world_state(data: Dictionary) -> void:
 				for anim_name in animations:
 					var anim_url: String = str(animations[anim_name].get("url", ""))
 					if anim_url != "" and anim_name != "walk":
-						_load_sprite_for_agent(agent_id, anim_url, anim_name)
+						agent.load_sprite(anim_url, anim_name)
 
 	# Remove agents no longer present in world_state
 	var ids_to_remove: Array = []
@@ -217,11 +217,3 @@ func _on_sprite_loaded(args: Array) -> void:
 		print("AgentManager: Loaded %s spritesheet for %s (%dx%d)" % [animation_name, agent_id, image.get_width(), image.get_height()])
 
 
-func _load_sprite_for_agent(agent_id: String, url: String, animation_name: String) -> void:
-	if not OS.has_feature("web"):
-		return
-	JsBridge.call_js("load_sprite", {
-		"url": url,
-		"agent_id": agent_id,
-		"animation_name": animation_name,
-	})
