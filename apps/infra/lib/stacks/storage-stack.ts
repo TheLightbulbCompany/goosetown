@@ -39,16 +39,44 @@ export class StorageStack extends cdk.Stack {
       ],
     });
 
-    // ResponseHeadersPolicy: add Cross-Origin-Resource-Policy so sprites can be
-    // <img> loaded by the frontend, which serves Cross-Origin-Embedder-Policy:
-    // require-corp (needed for Godot WebGL SharedArrayBuffer). Without this
-    // header, COEP blocks cross-origin image loads even when HTTP 200s.
+    // ResponseHeadersPolicy: authoritative CORS + CORP headers applied at
+    // the edge on EVERY response (including cached ones), so sprites can be
+    // loaded by the frontend, which serves Cross-Origin-Embedder-Policy:
+    // require-corp (needed for Godot WebGL SharedArrayBuffer).
+    //
+    // Two headers need to be present for a sprite fetch to succeed from the
+    // COEP page:
+    //   * Cross-Origin-Resource-Policy — COEP:require-corp will block cross-
+    //     origin images without this.
+    //   * Access-Control-Allow-Origin — Chrome's `fetch(url)` (which the
+    //     Godot JS bridge uses to decode PNG bytes into a WebGL texture) fails
+    //     without CORS even on HTTP 200.
+    //
+    // Before this change only CORP was set via customHeadersBehavior; ACAO
+    // came from S3 per-object CORS metadata, which meant responses cached at
+    // the edge BEFORE the S3 CORS config was applied lacked ACAO entirely.
+    // CloudFront served those cached-without-ACAO responses for a full year
+    // (max-age=31536000), breaking sprite loads for affected files (e.g.
+    // Pam's walk.png cached on 2026-04-20, broke after the policy change).
+    //
+    // `corsBehavior` with `originOverride: true` makes CloudFront add the
+    // CORS headers on every response regardless of what's in the cached
+    // object, which eliminates the "stale cache serves no-CORS response"
+    // failure mode.
     const responseHeadersPolicy = new cloudfront.ResponseHeadersPolicy(
       this,
       "SpriteResponseHeaders",
       {
         responseHeadersPolicyName: `goosetown-${env}-sprite-headers`,
-        comment: "Allow embedding in COEP:require-corp pages",
+        comment: "CORS + CORP for COEP:require-corp embedding",
+        corsBehavior: {
+          accessControlAllowOrigins: ["*"],
+          accessControlAllowMethods: ["GET", "HEAD"],
+          accessControlAllowHeaders: ["*"],
+          accessControlAllowCredentials: false,
+          accessControlMaxAge: cdk.Duration.seconds(86400),
+          originOverride: true,
+        },
         customHeadersBehavior: {
           customHeaders: [
             {
