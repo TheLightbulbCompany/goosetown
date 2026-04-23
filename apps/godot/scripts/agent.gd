@@ -339,8 +339,19 @@ func set_spritesheet(tex: Texture2D, animation_name: String = "walk") -> void:
 	for key in _atlas_cache.keys():
 		if (key as String).begins_with(animation_name + "/"):
 			_atlas_cache.erase(key)
-	if animation_name == _current_animation or _spritesheets.size() == 1:
-		_current_animation = animation_name
+	# Only force-switch the visible animation when we're updating the sheet
+	# that's ALREADY being played. The old `or _spritesheets.size() == 1`
+	# shortcut auto-picked whatever loaded first, which pinned idle agents to
+	# `talking` whenever `talking.png` loaded before `walk.png` (observed live
+	# on 2026-04-22: pam's walk kept erroring, talking succeeded first, and
+	# the first-sheet shortcut trapped her in a talking loop that the tick
+	# loop couldn't unwind).
+	#
+	# The default `_current_animation = "walk"` set at the variable
+	# declaration is already the correct starting state — no auto-pick
+	# needed. The tick loop in `_physics_process` picks the right animation
+	# every frame based on activity and motion.
+	if animation_name == _current_animation:
 		_anim_frame = 0
 		_update_sprite_frame()
 
