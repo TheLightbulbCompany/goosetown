@@ -25,12 +25,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 MGMT_PATH = "core.services.management_api_client.ManagementApiClient"
-SERVICE_PATH = "routers.town.TownService"
-GS_CLIENT_PATH = "routers.town.get_game_server_client"
-GET_ACTIVITY_PATH = "core.services.activity_registry.get_activity"
+# Activity handlers moved to core.services.activity_service (sub-project #3
+# third slice, 2026-04-22). Patch the module-top imports at the new home.
+SERVICE_PATH = "core.services.activity_service.TownService"
+GS_CLIENT_PATH = "core.services.activity_service.get_game_server_client"
+GET_ACTIVITY_PATH = "core.services.activity_service.get_activity"
+# Both of the below are imported DEFERRED inside `_handle_agent_activity`,
+# so we patch them at the source (activity_registry) rather than at the
+# activity_service namespace. Keep this in mind when adding new deferred
+# imports: the patch target follows the import style.
 CONTEXT_MSG_PATH = "core.services.activity_registry.get_context_mismatch_message"
 CANONICAL_LOCATION_PATH = "core.services.activity_registry.canonical_location"
-TIMER_PATH = "routers.town._activity_timer"
+TIMER_PATH = "core.services.activity_service._activity_timer"
 
 
 def _make_activity(
