@@ -69,15 +69,18 @@ def _make_ws_manager_mock() -> MagicMock:
     return mock
 
 
-# The transition functions use ``from core.services.management_api_client import
-# ManagementApiClient`` and ``from core.services.town_service import TownService``
-# inside the function body.  We must patch at those source paths.
-# ManagementApiClient is locally imported inside functions → patch at source
+# `_handle_context_transition` was extracted to
+# ``core.services.context_transition_service`` in sub-project #3 sixth slice
+# (2026-04-23). Its module-top imports (``TownService``,
+# ``get_game_server_client``, ``get_town_agent_ws_manager``) are what need
+# patching now — patching at the old ``routers.town.*`` names would only
+# affect the re-exports, not the bindings the function actually reads.
+# ManagementApiClient is still deferred-imported inside the function body,
+# so its patch target is the defining module.
 MGMT_PATH = "core.services.management_api_client.ManagementApiClient"
-# TownService is imported at top of routers/town.py → patch where it's used
-SERVICE_PATH = "routers.town.TownService"
-GS_CLIENT_PATH = "routers.town.get_game_server_client"
-WS_MANAGER_PATH = "routers.town.get_town_agent_ws_manager"
+SERVICE_PATH = "core.services.context_transition_service.TownService"
+GS_CLIENT_PATH = "core.services.context_transition_service.get_game_server_client"
+WS_MANAGER_PATH = "core.services.context_transition_service.get_town_agent_ws_manager"
 
 
 # ---------------------------------------------------------------------------
