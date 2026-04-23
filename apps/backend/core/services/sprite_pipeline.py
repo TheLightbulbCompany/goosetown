@@ -143,6 +143,9 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
                 )
                 logger.info("[agent:%s] Phase B complete: static sprite ready", agent_id)
 
+                # Hot-path cache sync (see _send_to_daemon).
+                get_town_agent_ws_manager().update_onboarding_phase(str(agent_id), "static")
+
                 # Connect to game server immediately with static sprite
                 gs_client = get_game_server_client()
                 _ws_mgr = get_town_agent_ws_manager()
@@ -257,6 +260,8 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
         if not full_sprite_animations:
             logger.warning("[agent:%s] No animations resolved — agent remains on static sprite", agent_id)
             service.update_agent_state(agent_id, onboarding_phase="alive")
+            # Hot-path cache sync (see _send_to_daemon).
+            get_town_agent_ws_manager().update_onboarding_phase(str(agent_id), "alive")
             return
 
         # Real walk URL overrides the static placeholder
@@ -301,6 +306,8 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
 
         # Flip to alive
         service.update_agent_state(agent_id, onboarding_phase="alive")
+        # Hot-path cache sync (see _send_to_daemon).
+        get_town_agent_ws_manager().update_onboarding_phase(str(agent_id), "alive")
         logger.info("[agent:%s] Agent is alive", agent_id)
 
         # Notify daemon that sprite is fully ready

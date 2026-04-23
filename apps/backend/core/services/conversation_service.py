@@ -141,6 +141,12 @@ async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
     )
     conv_id = conv["id"]
 
+    # Hot-path cache: `_send_to_daemon` reads `current_conversation_id`
+    # from ws_manager on every 2s agent_state broadcast. Keep it synced
+    # with the DB write we just did.
+    ws_manager.update_conversation(initiator_id, conv_id)
+    ws_manager.update_conversation(target_id, conv_id)
+
     # Deliver invite to target agent if they are connected
     target_conn = ws_manager.get_by_agent_id(target_id)
     if target_conn:
@@ -381,6 +387,9 @@ async def _handle_join_conversation(connection_id: str, body: dict, agent_conn) 
         _reject("conversation_not_joinable")
         return
 
+    # Hot-path cache sync (see _handle_chat).
+    ws_manager.update_conversation(joiner_id, conv_id)
+
     joiner_display = joiner.get("displayName", agent_conn.agent_name)
     participants: list[str] = updated.get("participants", [])
 
@@ -470,6 +479,9 @@ async def _handle_end_conversation(connection_id: str, body: dict, agent_conn) -
     # Leave semantics: remove agent from participants
     remaining = service.leave_conversation(conv_id, ender_id)
 
+    # Hot-path cache sync (see _handle_chat). Clear conv_id for the leaver.
+    ws_manager.update_conversation(ender_id, "")
+
     # Notify remaining participants that someone left
     leaver_display = agent_conn.agent_name
     for pid in participants:
@@ -531,6 +543,16 @@ async def _finalize_conversation(
     if not conv:
         logger.warning("end_conversation returned None for conv_id %s", conv_id)
         return
+
+    # Hot-path cache sync: end_conversation cleared currentConversationId
+    # in DynamoDB for every participant. Clear the ws_manager cache too
+    # so agent_state broadcasts stop claiming they're still in a conv.
+    for _pid in conv.get("participants", []) or [
+        conv.get("participantAId"),
+        conv.get("participantBId"),
+    ]:
+        if _pid:
+            ws_manager.update_conversation(_pid, "")
 
     participants: list[str] = conv.get("participants") or [
         conv.get("participantAId"),

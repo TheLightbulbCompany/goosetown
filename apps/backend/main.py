@@ -109,6 +109,9 @@ async def _reconnect_active_agents() -> None:
                 instance_id=agent.get("instanceId", ""),
             )
             ws_manager.update_context(agent_id, location_context)
+            # Seed hot-path cache for _send_to_daemon (see town_agent_ws.py).
+            ws_manager.update_onboarding_phase(agent_id, agent.get("onboardingPhase") or "alive")
+            ws_manager.update_conversation(agent_id, agent.get("currentConversationId") or "")
 
         try:
             await gs_client.connect_agent(
