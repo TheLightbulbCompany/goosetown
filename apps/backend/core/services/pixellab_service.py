@@ -141,7 +141,12 @@ ANIMATION_REGISTRY: dict[str, dict] = {
         "type": "custom",
         "auto_generate": True,
         "frames": 8,
-        "fps": 6.0,
+        # Talking cadence: PixelLab's custom animation endpoint frequently
+        # delivers fewer frames than requested (observed 4 instead of 8).
+        # At 6 fps a 4-frame loop is 0.67s — way too fast for a natural
+        # speaking gesture. 3 fps produces a ~1.3s loop which reads as a
+        # measured talking cadence even if only 4 frames arrive.
+        "fps": 3.0,
         "prompt": (
             "Standing upright gesturing while speaking, one hand raised making "
             "a point then lowering, head nodding along, weight shifting between "
