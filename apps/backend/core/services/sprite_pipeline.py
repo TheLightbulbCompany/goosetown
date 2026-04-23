@@ -8,11 +8,10 @@ failed to resolve at import time.
 
 Now sprite_queue imports this module at the top level, and routers.town
 imports ``_sprite_pipeline_task`` from here when registration kicks off
-a pipeline. The only remaining routers.town dependencies are the two
-daemon-messaging helpers (``_send_to_daemon`` and
-``_make_agent_event_callback``) which stay deferred inside the function
-body — moving them out is sub-project #3's job (a dedicated
-daemon-messaging module).
+a pipeline. Both daemon-messaging helpers (``_send_to_daemon`` and
+``_make_agent_event_callback``) now also live in a dedicated module
+(``core.services.daemon_bridge``) so the pipeline no longer defers
+imports back into the routers layer.
 
 Pipeline phases:
 
@@ -32,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from core.services.daemon_bridge import _make_agent_event_callback, _send_to_daemon
 from core.services.game_server_client import get_game_server_client
 from core.services.town_agent_ws import get_town_agent_ws_manager
 from core.services.town_service import TownService
@@ -63,10 +63,6 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
         composite_animation_spritesheet,
         upload_sprite_to_s3,
     )
-
-    # Deferred to break the import cycle with routers.town. See module
-    # docstring — moving these helpers to their own module is sub-project #3.
-    from routers.town import _make_agent_event_callback, _send_to_daemon
 
     pxl = PixelLabService()
     service = TownService()

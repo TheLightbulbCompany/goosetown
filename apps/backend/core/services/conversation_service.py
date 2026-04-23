@@ -5,13 +5,13 @@ decomposition. Six handlers (~585 lines) moved here; router now contains
 only the dispatch ladder plus a thin re-export for back-compat with any
 external caller still importing `routers.town._handle_chat` etc.
 
-The two external helpers used by these handlers stay in their current
-locations:
-* ``_apply_event_with_sleep_guard`` — imported deferred inside
-  ``_finalize_conversation`` because that function is a general
-  mood/energy helper used throughout ``routers.town``; extracting it is
-  a separate future PR.
-* ``ManagementApiClient`` — already deferred in every original handler.
+The two external helpers used by these handlers:
+* ``_apply_event_with_sleep_guard`` — imported from
+  ``core.services.daemon_bridge`` (module-top).
+* ``ManagementApiClient`` — deferred in every original handler because
+  the Management API client picks up its endpoint from the environment
+  at construction time; deferred import keeps import-time side effects
+  out of module-load.
 
 ``_facing_toward`` (pure function, only ever used by ``_handle_chat``) is
 moved in alongside the handlers. ``_MAX_CONVERSATION_TURNS`` constant
@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 
+from core.services.daemon_bridge import _apply_event_with_sleep_guard
 from core.services.game_server_client import get_game_server_client
 from core.services.town_agent_ws import get_town_agent_ws_manager
 from core.services.town_service import TownService
@@ -569,11 +570,6 @@ async def _finalize_conversation(
 
     # Apply mood/energy effects for each participant. The helper server-enforces
     # sleep (energy→100, WS close) if the event would drop energy to 0.
-    # Deferred import: `_apply_event_with_sleep_guard` lives in routers.town
-    # (used broadly there, not a conversation concern). Moving it out is a
-    # separate future extraction.
-    from routers.town import _apply_event_with_sleep_guard
-
     for agent_id in participants:
         agent = service.get_town_agent_by_id(agent_id)
         if not agent:
