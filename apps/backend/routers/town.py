@@ -72,43 +72,81 @@ def _make_agent_event_callback():
 
 
 def _send_to_daemon(agent_id: str, payload: dict) -> bool:
-    """Send a message to an agent's daemon using the connection ID from DynamoDB.
+    """Send a message to an agent's daemon via the in-memory ws_manager.
 
-    Returns True if sent, False if no connection or connection is gone.
+    Pre-optimization this did `TownService.get_town_agent_by_id` on every
+    call — roughly once every 2 seconds per connected agent, since the
+    game server pushes `agent_state` on that cadence. That's a lot of
+    wasted DynamoDB traffic for a field (`daemonConnectionId`) that only
+    changes on reconnect.
+
+    After this change:
+    * `daemonConnectionId` comes from `AgentConnection.connection_id`
+      (tracked by `TownAgentWsManager` since the `town_agent_connect`
+      handler runs).
+    * The two enrichment fields `agent_state` needs (onboarding_phase +
+      currentConversationId) also live on `AgentConnection` and are
+      maintained by the handful of lifecycle events that actually change
+      them. `get_nearby_conversations` still needs a DB hit (conversation
+      + participant records aren't cached) but we use the cached
+      `current_conversation_id` for the "is this agent in a conv?" gate
+      so it's one DB call, not N+1.
+
+    If the agent isn't in the ws_manager registry there's no daemon
+    connection to send to — return False immediately rather than falling
+    back to a DynamoDB lookup that would resolve to the same answer at
+    higher cost.
     """
     from core.services.management_api_client import ManagementApiClient
 
     evt = payload.get("event", payload.get("type", "?"))
 
-    service = TownService()
-    agent = service.get_town_agent_by_id(agent_id)
-    if not agent:
-        logger.warning("[agent:%s] _send_to_daemon: agent not found in DB (event=%s)", agent_id[:8], evt)
+    ws_manager = get_town_agent_ws_manager()
+    agent_conn = ws_manager.get_by_agent_id(agent_id)
+    if not agent_conn:
+        logger.warning(
+            "[agent:%s] _send_to_daemon: agent not in ws_manager (event=%s)",
+            agent_id[:8],
+            evt,
+        )
         return False
 
-    conn_id = agent.get("daemonConnectionId")
+    conn_id = agent_conn.connection_id
     if not conn_id:
-        logger.warning("[agent:%s] _send_to_daemon: no daemonConnectionId (event=%s)", agent_id[:8], evt)
+        logger.warning(
+            "[agent:%s] _send_to_daemon: empty connection_id (event=%s)",
+            agent_id[:8],
+            evt,
+        )
         return False
 
-    # Enrich agent_state events with fields the daemon needs from DynamoDB.
-    # The agent record is already in scope here — no extra DB reads required.
+    # Enrich agent_state events with the two fields the daemon needs.
+    # Both come from cached AgentConnection now; no DB read in the common case.
     if evt == "agent_state":
-        payload = {**payload, "onboardingPhase": agent.get("onboardingPhase", "alive")}
-        # Add nearby_conversations for agents not in a conversation
-        nearby_agents = payload.get("nearby_agents", [])
-        nearby_ids = [a.get("agent_id") for a in nearby_agents if a.get("agent_id")]
-        own_conv = agent.get("currentConversationId")
-        if nearby_ids and not own_conv:
-            nearby_convs = service.get_nearby_conversations(nearby_ids)
-            if nearby_convs:
-                payload = {**payload, "nearby_conversations": nearby_convs}
+        payload = {
+            **payload,
+            "onboardingPhase": agent_conn.onboarding_phase or "alive",
+        }
+        # Only fetch nearby conversations for agents not already in one.
+        own_conv = agent_conn.current_conversation_id
+        if not own_conv:
+            nearby_agents = payload.get("nearby_agents", [])
+            nearby_ids = [a.get("agent_id") for a in nearby_agents if a.get("agent_id")]
+            if nearby_ids:
+                nearby_convs = TownService().get_nearby_conversations(nearby_ids)
+                if nearby_convs:
+                    payload = {**payload, "nearby_conversations": nearby_convs}
 
     try:
         mgmt = ManagementApiClient()
         sent = mgmt.send_message(conn_id, payload)
         if not sent:
-            logger.warning("[agent:%s] _send_to_daemon: connection gone %s (event=%s)", agent_id[:8], conn_id[:12], evt)
+            logger.warning(
+                "[agent:%s] _send_to_daemon: connection gone %s (event=%s)",
+                agent_id[:8],
+                conn_id[:12],
+                evt,
+            )
         return sent
     except Exception as exc:
         logger.warning("[agent:%s] _send_to_daemon: failed (event=%s): %s", agent_id[:8], evt, exc)
@@ -1417,6 +1455,13 @@ async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
 
     # Set in-memory context on the connection record
     ws_manager.update_context(agent_id, location_context)
+
+    # Seed the hot-path cache on AgentConnection so `_send_to_daemon` doesn't
+    # re-read these fields from DynamoDB every 2s agent_state broadcast.
+    # Source of truth is still DynamoDB; this mirror is maintained at the
+    # handful of lifecycle events that change either field.
+    ws_manager.update_onboarding_phase(agent_id, agent.get("onboardingPhase") or "alive")
+    ws_manager.update_conversation(agent_id, agent.get("currentConversationId") or "")
 
     # Connect agent to game server (shadow sprite fallback if no custom sprite)
     gs_client = get_game_server_client()

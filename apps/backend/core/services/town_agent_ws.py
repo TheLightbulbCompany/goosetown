@@ -27,6 +27,16 @@ class AgentConnection:
     # sleep, silently teleporting agents to bed even on error paths. F12
     # from the 2026-04-21 agent-team dry run.
     leaving_cleanly: bool = False
+    # Cached fields the hot-path `_send_to_daemon` used to fetch from DynamoDB
+    # on every game-server broadcast (every 2s per agent). Keeping them in
+    # memory turns that per-tick DynamoDB read into a dict lookup. Updated
+    # at the handful of lifecycle events that change them:
+    #   * onboarding_phase: register + sprite pipeline transitions
+    #   * current_conversation_id: chat start / end / join / leave
+    # Everything else still reads the source (DynamoDB) — this cache is
+    # strictly for the hot path, not a general-purpose state mirror.
+    onboarding_phase: str = "alive"
+    current_conversation_id: str = ""
 
 
 class TownAgentWsManager:
@@ -115,6 +125,25 @@ class TownAgentWsManager:
             conn = self._by_connection.get(conn_id)
             if conn:
                 conn.location_context = context
+
+    def update_onboarding_phase(self, agent_id: str, phase: str) -> None:
+        """Update cached `onboarding_phase` for an agent (hot-path cache).
+        No-op if the agent isn't registered."""
+        conn_id = self._by_agent_id.get(agent_id)
+        if conn_id is not None:
+            conn = self._by_connection.get(conn_id)
+            if conn:
+                conn.onboarding_phase = phase
+
+    def update_conversation(self, agent_id: str, conv_id: str) -> None:
+        """Update cached `current_conversation_id` for an agent (hot-path
+        cache). Pass empty string when the conversation ends. No-op if the
+        agent isn't registered."""
+        conn_id = self._by_agent_id.get(agent_id)
+        if conn_id is not None:
+            conn = self._by_connection.get(conn_id)
+            if conn:
+                conn.current_conversation_id = conv_id or ""
 
     def connected_agents(self) -> list[AgentConnection]:
         """Return all currently registered agent connections."""
