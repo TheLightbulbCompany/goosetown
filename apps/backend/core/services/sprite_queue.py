@@ -9,6 +9,8 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
+from core.services.sprite_pipeline import _sprite_pipeline_task
+
 logger = logging.getLogger(__name__)
 
 
@@ -71,8 +73,6 @@ class SpriteQueue:
         """Process a single sprite generation job with semaphore throttling."""
         async with self._semaphore:
             try:
-                from routers.town import _sprite_pipeline_task
-
                 logger.info(
                     "SpriteQueue: starting job for %s (attempt %d/%d)",
                     job.agent_id[:8],

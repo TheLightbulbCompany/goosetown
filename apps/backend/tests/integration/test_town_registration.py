@@ -27,7 +27,7 @@ async def test_registration_sets_static_phase_before_animations():
     We simulate a hung Phase C by making queue_signup_animations sleep for 30 s and
     cancelling with a 1.5 s timeout, then assert the Phase B state was already written.
     """
-    from routers.town import _sprite_pipeline_task
+    from core.services.sprite_pipeline import _sprite_pipeline_task
 
     agent_id = "test-agent-id"
 
@@ -85,8 +85,14 @@ async def test_registration_sets_static_phase_before_animations():
 
     with (
         patch("core.services.pixellab_service.PixelLabService", return_value=mock_pxl),
-        # TownService is imported at module level in routers.town (line 23), so patch it there.
-        patch("routers.town.TownService", return_value=mock_service),
+        # `_sprite_pipeline_task` lives in `core.services.sprite_pipeline`.
+        # TownService, get_game_server_client, and get_town_agent_ws_manager
+        # are imported at the top of that module — so patch by that module's
+        # namespace (patching where the NAME IS LOOKED UP, not where it's
+        # defined, which is the standard unittest.mock rule).
+        patch("core.services.sprite_pipeline.TownService", return_value=mock_service),
+        patch("core.services.sprite_pipeline.get_game_server_client", return_value=mock_gs_client),
+        patch("core.services.sprite_pipeline.get_town_agent_ws_manager", return_value=mock_ws_mgr),
         patch(
             "core.services.sprite_storage.upload_sprite_to_s3",
             return_value=fake_s3_key,
@@ -95,11 +101,9 @@ async def test_registration_sets_static_phase_before_animations():
             "core.services.sprite_storage.upload_sprites_to_s3",
             return_value={},
         ),
-        patch("routers.town.get_game_server_client", return_value=mock_gs_client),
-        patch("routers.town.get_town_agent_ws_manager", return_value=mock_ws_mgr),
         patch("routers.town._send_to_daemon", return_value=True),
-        # Patch asyncio.sleep inside town.py to be instant so poll loops don't wait
-        patch("routers.town.asyncio.sleep", side_effect=_instant_sleep),
+        # asyncio.sleep is called inside the pipeline's polling loops.
+        patch("core.services.sprite_pipeline.asyncio.sleep", side_effect=_instant_sleep),
         patch.dict(
             "os.environ",
             {

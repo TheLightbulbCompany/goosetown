@@ -4,7 +4,7 @@ The queue enforces bounded concurrency against PixelLab (max 3 in flight) so
 a burst of signups doesn't hit rate limits, retries transient failures with
 exponential backoff, and deduplicates re-enqueue of in-flight agents.
 
-The upstream ``_sprite_pipeline_task`` (in routers/town.py) is patched with
+The upstream ``_sprite_pipeline_task`` (in core/services/sprite_pipeline.py) is patched with
 an AsyncMock so tests don't touch PixelLab, S3, or DynamoDB.
 """
 
@@ -65,7 +65,7 @@ async def test_worker_processes_jobs_with_bounded_concurrency():
         await gate.wait()
         in_flight -= 1
 
-    with patch("routers.town._sprite_pipeline_task", side_effect=fake_pipeline):
+    with patch("core.services.sprite_queue._sprite_pipeline_task", side_effect=fake_pipeline):
         q.start()
         for i in range(5):
             q.enqueue(f"agent-{i}", f"Name{i}", "appearance")
@@ -103,7 +103,7 @@ async def test_failed_job_re_enqueues_with_incremented_retry():
 
     with (
         patch(
-            "routers.town._sprite_pipeline_task",
+            "core.services.sprite_queue._sprite_pipeline_task",
             new=AsyncMock(side_effect=RuntimeError("PixelLab 500")),
         ),
         patch.object(sq.asyncio, "sleep", side_effect=instant_sleep),
@@ -137,7 +137,7 @@ async def test_exhausted_retries_gives_up_and_clears_active():
     q._active_jobs.add(job.agent_id)
 
     with patch(
-        "routers.town._sprite_pipeline_task",
+        "core.services.sprite_queue._sprite_pipeline_task",
         new=AsyncMock(side_effect=RuntimeError("PixelLab permanent")),
     ):
         await q._process_job(job)
@@ -154,7 +154,7 @@ async def test_successful_job_clears_active():
     job = sq.SpriteJob(agent_id="agent-ok", display_name="OK", appearance="x")
     q._active_jobs.add(job.agent_id)
 
-    with patch("routers.town._sprite_pipeline_task", new=AsyncMock(return_value=None)):
+    with patch("core.services.sprite_queue._sprite_pipeline_task", new=AsyncMock(return_value=None)):
         await q._process_job(job)
 
     assert q._queue.qsize() == 0
