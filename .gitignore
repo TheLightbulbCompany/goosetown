@@ -47,9 +47,28 @@ map-editor/godot-tilemap-mcp/node_modules/
 
 # CDK
 cdk.out/
+cdk.out.*/
 
 # Dependencies (monorepo)
 node_modules/
 
 # Git worktrees
 .worktrees/
+.claude/worktrees/
+
+# Dry-run / agent-team scratch workspaces — leftovers from manual test sessions
+.claude/test-team/
+apps/backend/test-workspace/
+apps/backend/test-workspace-*/
+apps/backend/data/goosetown-skill/workspaces/
+
+# Godot .pck export stragglers (Vercel upload creates timestamped siblings
+# like goosetown.pck-4GV6EM during atomic replace)
+apps/frontend/public/godot/goosetown.pck-*
+
+# Python virtualenv + caches
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
