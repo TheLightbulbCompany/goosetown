@@ -813,81 +813,20 @@ class WsDisconnectRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Sleep grace window
+# Sleep grace window + agent-connect handler live in
+# ``core.services.agent_connect_service``. Re-exported here so call sites
+# (tests, the `handle_ws_disconnect` route below) keep working. See the
+# service module for the invariant commentary. Sub-project #3 fifth slice,
+# 2026-04-22.
 # ---------------------------------------------------------------------------
-#
-# A daemon disconnect doesn't always mean "agent went to sleep" — it might
-# be a brief network flap, an AWS idle-timeout with an auto-reconnect
-# behind it, or a transient Lambda error. Immediately teleporting the
-# agent into apartment/bed on every $disconnect (the behavior before this
-# module) made a 9-second flap look like "agent spontaneously went home",
-# which was confusing for both viewers and the agent on reconnect.
-#
-# Instead: on a non-clean disconnect we schedule a delayed move-to-bed.
-# If the daemon reconnects within the grace window, _cancel_sleep_grace
-# removes the pending task and `_handle_agent_connect` resumes the agent
-# at their last-known location (no forced wake-in-bed). If the window
-# expires with no reconnect, the task executes the move-to-bed.
-#
-# In-memory only — a backend restart during the grace drops pending tasks.
-# That window is narrow enough (seconds, not minutes of missed reconnects)
-# that we haven't invested in durable scheduling yet.
-
-_SLEEP_GRACE_SECONDS: float = 90.0
-_pending_sleep_tasks: dict[str, asyncio.Task] = {}
-
-
-async def _delayed_sleep(agent_id: str) -> None:
-    """Wait the grace window, then move the agent to apartment/bed."""
-    try:
-        await asyncio.sleep(_SLEEP_GRACE_SECONDS)
-    except asyncio.CancelledError:
-        logger.info("[agent:%s] Sleep grace cancelled (daemon reconnected)", agent_id[:8])
-        raise
-
-    try:
-        service = TownService()
-        agent = service.get_town_agent_by_id(agent_id)
-        if not agent:
-            return
-        # Defensive: a reconnect that didn't go through _cancel_sleep_grace
-        # (e.g. raced past the await) could leave a populated connection ID.
-        # In that case, the agent is back — don't move them.
-        if agent.get("daemonConnectionId"):
-            logger.info(
-                "[agent:%s] Sleep grace expired but agent is reconnected — skipping move-to-bed",
-                agent_id[:8],
-            )
-            return
-        logger.info("[agent:%s] Sleep grace expired — moving to apartment/bed", agent_id[:8])
-        service.update_agent_context(agent_id, "apartment", "bed")
-    finally:
-        # Clear the registry entry in the SAME task that owns it, whether we
-        # moved the agent or not. Popping on cancel happens in the caller.
-        _pending_sleep_tasks.pop(agent_id, None)
-
-
-def _schedule_sleep_grace(agent_id: str) -> None:
-    """Schedule a delayed move-to-bed for a disconnected agent.
-    Cancels any existing pending task for the same agent first (last-writer-wins)."""
-    existing = _pending_sleep_tasks.get(agent_id)
-    if existing and not existing.done():
-        existing.cancel()
-    _pending_sleep_tasks[agent_id] = asyncio.create_task(_delayed_sleep(agent_id))
-
-
-def _cancel_sleep_grace(agent_id: str) -> bool:
-    """Cancel a pending sleep grace task. Returns True if one was active.
-
-    A True return means "this reconnect happened within the grace window";
-    the caller should preserve the agent's current location instead of
-    re-initializing to apartment/bed.
-    """
-    task = _pending_sleep_tasks.pop(agent_id, None)
-    if task and not task.done():
-        task.cancel()
-        return True
-    return False
+from core.services.agent_connect_service import (  # noqa: E402, F401
+    _SLEEP_GRACE_SECONDS,
+    _cancel_sleep_grace,
+    _delayed_sleep,
+    _handle_agent_connect,
+    _pending_sleep_tasks,
+    _schedule_sleep_grace,
+)
 
 
 @router.post("/ws-disconnect")
@@ -1176,170 +1115,6 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
 # `from routers.town import _handle_chat` for tests and any external caller.
 # Sub-project #3 extraction, 2026-04-22.
 # ---------------------------------------------------------------------------
-from core.services.conversation_service import (  # noqa: E402, F401
-    _MAX_CONVERSATION_TURNS,
-    _build_log_summary,
-    _facing_toward,
-    _finalize_conversation,
-    _handle_chat,
-    _handle_end_conversation,
-    _handle_join_conversation,
-    _handle_say,
-)
-
-
-async def _handle_agent_connect(request: WsMessageRequest, ws_manager):
-    """Process a town_agent_connect message: verify token, register connection, send connected event."""
-    from core.services.management_api_client import ManagementApiClient
-    from core.town_token import verify_town_token
-
-    body = request.body
-    token = body.get("token", "")
-    agent_name = body.get("agent_name", "")
-
-    if not token or not agent_name:
-        logger.warning("Agent connect missing token or agent_name")
-        return {"statusCode": 400, "error": "missing_token_or_agent_name"}
-
-    # Verify town_token
-    payload = verify_town_token(token)
-    if not payload:
-        logger.warning("Invalid town_token for agent connect: %s", agent_name)
-        return {"statusCode": 401, "error": "invalid_token"}
-
-    user_id = payload["uid"]
-    instance_id = payload["iid"]
-
-    # Look up the agent
-    service = TownService()
-    agent = service.get_agent_by_name(user_id, agent_name)
-    if not agent:
-        logger.warning("Agent not found: %s for user %s", agent_name, user_id)
-        return {"statusCode": 404, "error": "agent_not_found"}
-
-    agent_id = agent["id"]
-
-    # Kick any existing daemon connection for this agent. When a daemon
-    # reconnects, the previous WebSocket may still be open on API Gateway
-    # (e.g. the old daemon is still running locally). Leaving it alive
-    # causes both to compete for messages — only the latest wins, the old
-    # one starves and hits the inactivity timeout.
-    existing_conn = ws_manager.get_by_agent_id(agent_id)
-    if existing_conn and existing_conn.connection_id != request.connectionId:
-        old_conn_id = existing_conn.connection_id
-        logger.info(
-            "[agent:%s] Kicking old connection %s (new: %s)",
-            agent_id[:8],
-            old_conn_id[:12],
-            request.connectionId[:12],
-        )
-        try:
-            mgmt = ManagementApiClient()
-            mgmt.close_connection(old_conn_id)
-        except Exception as exc:
-            logger.warning(
-                "[agent:%s] Failed to close old connection %s: %s",
-                agent_id[:8],
-                old_conn_id[:12],
-                exc,
-            )
-
-    # Register connection in ws_manager (replaces old registration in-memory)
-    ws_manager.register(
-        connection_id=request.connectionId,
-        user_id=user_id,
-        agent_name=agent_name,
-        agent_id=agent_id,
-        instance_id=instance_id,
-    )
-
-    # Persist the daemon's connection ID to DynamoDB so it survives restarts
-    logger.info("[agent:%s] daemonConnectionId updated: %s", agent_id[:8], request.connectionId[:12])
-    service.update_agent_state(agent_id, daemon_connection_id=request.connectionId)
-
-    # Sleep-grace cancellation: if this daemon dropped recently and is now
-    # reconnecting inside the grace window, `_cancel_sleep_grace` returns
-    # True. In that case preserve the agent's last-known location instead of
-    # the default "wake up at home" reset — a 9-second flap shouldn't
-    # teleport them back to bed. For fresh connects or reconnects after the
-    # grace expired, no task is pending and we fall through to the default.
-    within_grace = _cancel_sleep_grace(agent_id)
-
-    if within_grace:
-        current_location = agent.get("currentLocation") or "bed"
-        location_context = agent.get("locationContext") or "apartment"
-        logger.info(
-            "[agent:%s] Reconnect within sleep grace — resuming at %s/%s",
-            agent_id[:8],
-            location_context,
-            current_location,
-        )
-    else:
-        # Fresh connect or grace expired — wake up in bed, walk themselves
-        # out from there.
-        location_context = "apartment"
-        current_location = "bed"
-        service.update_agent_context(agent_id, location_context, current_location)
-
-    # Set in-memory context on the connection record
-    ws_manager.update_context(agent_id, location_context)
-
-    # Seed the hot-path cache on AgentConnection so `_send_to_daemon` doesn't
-    # re-read these fields from DynamoDB every 2s agent_state broadcast.
-    # Source of truth is still DynamoDB; this mirror is maintained at the
-    # handful of lifecycle events that change either field.
-    ws_manager.update_onboarding_phase(agent_id, agent.get("onboardingPhase") or "alive")
-    ws_manager.update_conversation(agent_id, agent.get("currentConversationId") or "")
-
-    # Connect agent to game server (shadow sprite fallback if no custom sprite)
-    gs_client = get_game_server_client()
-    try:
-        await gs_client.connect_agent(
-            agent_id=agent_id,
-            display_name=agent.get("displayName", agent_name),
-            sprite_url=agent.get("spriteUrl") or "",
-            location=current_location,
-            context=location_context,
-            user_id=user_id,
-            sprite_animations=agent.get("spriteAnimations", {}),
-            on_event=_make_agent_event_callback(),
-        )
-        logger.info(
-            "Agent %s connected to game server (context=%s, location=%s, userId=%s)",
-            agent_name,
-            location_context,
-            current_location,
-            user_id[:12],
-        )
-
-    except Exception as e:
-        logger.warning("Failed to connect agent %s to game server: %s", agent_name, e)
-
-    # Send connected event back to the agent via Management API
-    try:
-        mgmt = ManagementApiClient()
-        mgmt.send_message(
-            request.connectionId,
-            {
-                "event": "connected",
-                "agent": {
-                    "id": agent_id,
-                    "name": agent.get("displayName", agent_name),
-                    "location": current_location,
-                    "locationContext": location_context,
-                    "mood": agent.get("mood", 0),
-                    "energy": agent.get("energy", 100),
-                    "spriteReady": agent.get("spriteReady", False),
-                },
-            },
-        )
-        logger.info("Sent connected event to agent %s", agent_name)
-    except Exception as e:
-        logger.error("Failed to send connected event to %s: %s", agent_name, e)
-
-    return {"statusCode": 200}
-
-
 # ---------------------------------------------------------------------------
 # Activity handlers live in `core.services.activity_service`. Re-exported
 # here so the dispatch ladder, `main.py:_reconnect_active_agents` startup
@@ -1355,6 +1130,16 @@ from core.services.activity_service import (  # noqa: E402, F401
     _handle_agent_activity,
     complete_activity_from_startup,
     restart_activity_timer,
+)
+from core.services.conversation_service import (  # noqa: E402, F401
+    _MAX_CONVERSATION_TURNS,
+    _build_log_summary,
+    _facing_toward,
+    _finalize_conversation,
+    _handle_chat,
+    _handle_end_conversation,
+    _handle_join_conversation,
+    _handle_say,
 )
 
 # ---------------------------------------------------------------------------

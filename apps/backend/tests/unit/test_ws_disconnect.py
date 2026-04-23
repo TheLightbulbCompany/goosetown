@@ -21,9 +21,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+# The `handle_ws_disconnect` route body still lives in routers.town and
+# looks up these names there — so the route-body patches target routers.town.
 SERVICE_PATH = "routers.town.TownService"
 GS_CLIENT_PATH = "routers.town.get_game_server_client"
 WS_MANAGER_PATH = "routers.town.get_town_agent_ws_manager"
+
+# The sleep-grace trio (`_delayed_sleep`, `_schedule_sleep_grace`,
+# `_cancel_sleep_grace`) + ``_SLEEP_GRACE_SECONDS`` moved to
+# ``core.services.agent_connect_service`` in sub-project #3 fifth slice
+# (2026-04-23). Background tasks spawned by ``_delayed_sleep`` look up
+# ``TownService`` from that module's namespace, so tests that await the
+# background task must patch at the new home.
+AGENT_CONNECT_SERVICE_PATH = "core.services.agent_connect_service.TownService"
+GRACE_MODULE_PATH = "core.services.agent_connect_service"
 
 
 def _make_agent_conn(leaving_cleanly: bool, agent_id: str = "agent-1") -> SimpleNamespace:
@@ -111,6 +122,7 @@ async def test_drop_schedules_grace_does_not_move_immediately():
 @pytest.mark.asyncio
 async def test_drop_then_grace_expiry_moves_to_bed():
     """If the daemon never reconnects, the task fires and moves to bed."""
+    from core.services import agent_connect_service
     from routers import town
     from routers.town import WsDisconnectRequest, handle_ws_disconnect
 
@@ -126,9 +138,13 @@ async def test_drop_then_grace_expiry_moves_to_bed():
     with (
         patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock(agent_conn)),
         patch(SERVICE_PATH, return_value=svc_mock),
+        # `_delayed_sleep` runs in the service namespace and must see the
+        # same mock that the route body does.
+        patch(AGENT_CONNECT_SERVICE_PATH, return_value=svc_mock),
         patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
-        # Shrink the grace so the test doesn't actually sleep 90s.
-        patch.object(town, "_SLEEP_GRACE_SECONDS", 0.01),
+        # Shrink the grace so the test doesn't actually sleep 90s. Patched at
+        # the service module — the routers.town re-export is a bound copy.
+        patch.object(agent_connect_service, "_SLEEP_GRACE_SECONDS", 0.01),
     ):
         await handle_ws_disconnect(WsDisconnectRequest(connectionId="conn-1"))
         task = town._pending_sleep_tasks.get("agent-1")
