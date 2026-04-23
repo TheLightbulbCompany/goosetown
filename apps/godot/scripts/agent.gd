@@ -453,23 +453,22 @@ func _parse_facing(facing_str: String) -> void:
 const _SPRITE_LOAD_MAX_ATTEMPTS: int = 3
 const _SPRITE_LOAD_BACKOFF_SEC: Array = [2.0, 4.0, 8.0]
 
-## Keeps a reference to the in-flight retry coroutine so GDScript's GC
-## can't collect its `await`-suspended state mid-flight. Keyed by
-## animation name; cleared when the load resolves (success or final fallback).
-var _sprite_load_tasks: Dictionary = {}
-
-
 ## Public API — load (or reload) a spritesheet for a specific animation name.
-## Safe to call multiple times for the same anim; an in-flight load for the
-## same anim is replaced by the new call.
+## Safe to call multiple times for the same anim; the retry coroutine is
+## fire-and-forget. Godot holds the coroutine alive via the timer signal it
+## awaits, so no explicit reference tracking is needed.
 func load_sprite(url: String, anim_name: String = "walk") -> void:
 	if url == "" or not OS.has_feature("web"):
 		return
-	# Hold the coroutine state so the scheduler can't drop it.
-	_sprite_load_tasks[anim_name] = _load_sprite_with_retry(url, anim_name, 0)
+	_load_sprite_with_retry(url, anim_name, 0)
 
 
-func _load_sprite_with_retry(url: String, anim_name: String, attempt: int) -> void:
+## Retry loop for a single anim's fetch. Declared without a return type
+## annotation because it's a coroutine (uses `await`); a `-> void`
+## annotation makes Godot 4's parser reject fire-and-forget calls from
+## `load_sprite`. Called without `await` on purpose — the signal-driven
+## timer keeps the coroutine alive until it resolves or the agent is freed.
+func _load_sprite_with_retry(url: String, anim_name: String, attempt: int):
 	if attempt >= _SPRITE_LOAD_MAX_ATTEMPTS:
 		push_warning(
 			"Sprite load failed after %d attempts for agent %s anim=%s (%s) — falling back to shadow placeholder"
@@ -479,7 +478,6 @@ func _load_sprite_with_retry(url: String, anim_name: String, attempt: int) -> vo
 		# (the agent will fall back to `walk` at the _physics_process level).
 		if anim_name == "walk":
 			set_spritesheet(SHADOW_TEXTURE, "walk")
-		_sprite_load_tasks.erase(anim_name)
 		return
 	# Observability: log every JS fetch attempt so we can correlate failures
 	# with browser-console `sprite load failed` warnings from the JS side.
@@ -500,16 +498,14 @@ func _load_sprite_with_retry(url: String, anim_name: String, attempt: int) -> vo
 	await get_tree().create_timer(backoff).timeout
 	# If the agent was freed mid-wait, bail silently.
 	if not is_inside_tree():
-		_sprite_load_tasks.erase(anim_name)
 		return
 	if _spritesheets.has(anim_name) and _spritesheets[anim_name] != SHADOW_TEXTURE:
-		_sprite_load_tasks.erase(anim_name)
 		return
 	print(
 		"Sprite load retry %d/%d for agent %s anim=%s (%s)"
 		% [attempt + 1, _SPRITE_LOAD_MAX_ATTEMPTS, agent_id, anim_name, url]
 	)
-	await _load_sprite_with_retry(url, anim_name, attempt + 1)
+	_load_sprite_with_retry(url, anim_name, attempt + 1)
 
 # ---------------------------------------------------------------------------
 # Signal callbacks
