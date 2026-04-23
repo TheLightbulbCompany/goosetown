@@ -30,9 +30,15 @@ import pytest
 # ---------------------------------------------------------------------------
 
 MGMT_PATH = "core.services.management_api_client.ManagementApiClient"
-SERVICE_PATH = "routers.town.TownService"
-GS_CLIENT_PATH = "routers.town.get_game_server_client"
-WS_MANAGER_PATH = "routers.town.get_town_agent_ws_manager"
+# Handlers moved to core.services.conversation_service (sub-project #3,
+# 2026-04-22); module-top imports there are what need patching now, not
+# the re-exports in routers.town.
+SERVICE_PATH = "core.services.conversation_service.TownService"
+GS_CLIENT_PATH = "core.services.conversation_service.get_game_server_client"
+WS_MANAGER_PATH = "core.services.conversation_service.get_town_agent_ws_manager"
+# `_apply_event_with_sleep_guard` is still defined in routers.town and
+# deferred-imported inside `_finalize_conversation`, so the patch source
+# remains at routers.town.
 APPLY_EVENT_PATH = "routers.town._apply_event_with_sleep_guard"
 
 
