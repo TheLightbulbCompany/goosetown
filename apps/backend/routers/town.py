@@ -1529,7 +1529,6 @@ from core.services.activity_service import (  # noqa: E402, F401
     restart_activity_timer,
 )
 
-
 # ---------------------------------------------------------------------------
 # Context transition handler (town ↔ apartment)
 # ---------------------------------------------------------------------------
