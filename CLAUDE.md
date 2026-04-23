@@ -363,14 +363,9 @@ Agent({
 
 **High priority:**
 - **Token in WebSocket URL**: Daemon passes token as query param (`?token=...`), visible in logs. Should use header or subprotocol. Requires coordinated daemon + API Gateway change.
-- **Circular import: sprite_queue → routers.town**: `sprite_queue.py:74` does `from routers.town import _sprite_pipeline_task`. A service importing from a router is an inverted dependency. Fix: move `_sprite_pipeline_task` into `core/services/sprite_pipeline.py`.
-- **Hot-path O(N²) DynamoDB reads in `_send_to_daemon`**: `routers/town.py:85-126` hits DynamoDB twice per game-server broadcast (every 2s per agent), plus per-nearby-agent lookups inside `get_nearby_conversations`. Fix: cache `daemonConnectionId` on the in-memory `AgentConnection`.
 - **TOCTOU on agent registration**: `routers/town.py:773-845` checks `get_agent_by_name` then calls `opt_in` — two concurrent registers can race. Fix: add `ConditionExpression="attribute_not_exists(id)"` to the `put_item` inside `opt_in`.
 - **Server-side iteration-during-mutation risk**: `agent_controller.gd:269-289` iterates `_agents` / `_speech_timers` in `_process` while proximity/arrival checks may erase keys. Fix: snapshot keys before iterating.
-- **CDK deploy ordering hazard**: `compute-stack.ts:138` uses `Fn.importValue` for `goosetown-${env}-management-api-url` (exported by ApiStack), but deploy order is `Compute → Api`. Fresh deploys fail at CloudFormation time. Fix: declare explicit stack dependency or export from an earlier stack.
-- **ALB rolling update blocked by single task**: `compute-stack.ts:222` sets `minHealthyPercent: 100` with `desiredCount: 1` — no window for a rolling update; failed health check crash-loops. Fix: raise `desiredCount` to 2 or drop `minHealthyPercent` to 0.
-- **Single game server replica, no auto-scaling**: `gameserver-stack.ts:76-89` has `desiredCount: 1`. Agent reconnects cap at 5 attempts, so agents drop permanently if the task restarts > ~1 min. Fix: CloudWatch alarm + documented restart procedure at minimum; multi-replica when sharding is designed.
-- **Single NAT gateway across 2 AZs**: `network-stack.ts:18` — NAT AZ failure stops all private-subnet egress. ~$32/month per env to fix with `natGateways: 2`.
+- **Single NAT gateway across 2 AZs**: `network-stack.ts:18` — NAT AZ failure stops all private-subnet egress. Alarm in place (ErrorPortAllocation via ObservabilityStack); multi-NAT is ~$32/month per env but deferred pending cost signal. Tracked in issue #165.
 
 **Surfaced by the 2026-04-20 agent-team dry run** (see `docs/superpowers/test-runs/2026-04-20-agent-team-dry-run.md`):
 - **Same-tile spawn on arrival**: when an agent moves to a location where another agent already stands, the game server places them on the exact same tile (observed Dwight + Michael both at `(251, 420)` at plaza). `agent_controller.gd:spawn_agent` should offset by 1-2 tiles when the target is occupied.
@@ -385,11 +380,16 @@ Agent({
 - **MusicButton keyboard handler stale closure**: `MusicButton.tsx:30-37` — `handleKeyPress` reads `isPlaying` from initial render closure; M-key toggles incorrectly after first press. Fix: `useRef` or co-locate the handler with the playback effect.
 - **Read-modify-write race on relationship affinity**: `town_service.py:553-584` — concurrent conversation turns between the same pair can apply the same delta twice. Fix: DynamoDB atomic `ADD` with clamp-on-read.
 - **JWKS refresh has no lock**: `core/auth.py:22` — concurrent cache misses can issue duplicate Clerk fetches. Fix: `asyncio.Lock` around refresh path.
-- **Authorizer Lambda timeout may be tight**: `api-stack.ts:50-51` — 10s timeout covers JWKS fetch + JWT validation under cold start. Raise to 15s and pin reserved concurrency of 1.
 - **`/apartment` fetches all active agents globally**: `routers/town.py:1045-1079` filters by `userId` in Python after scanning all active agents. Fix: `userId` GSI query.
 
 ### Resolved (kept here for search visibility)
 
+- ~~CDK deploy ordering hazard~~: 2026-04-20 sub-project #2 (PR #166). `compute-stack.ts:141` replaces `Fn.importValue` for `management-api-url` with an inline custom-domain string (`https://api-${env}.goosetown.isol8.co`), matching the existing `backendUrl` pattern. ApiStack still exports the value so in-flight ComputeStack revisions can still resolve it. Runbook at `apps/infra/RUNBOOK.md`.
+- ~~ALB rolling update blocked by single task~~: 2026-04-20 sub-project #2. `compute-stack.ts:237-241` now sets `desiredCount: isProd ? 2 : 1` and `minHealthyPercent: isProd ? 100 : 0`. Prod gets true HA + zero-downtime; dev accepts ~30s downtime so a bad health check doesn't crash-loop.
+- ~~Single game server replica awareness~~: 2026-04-20 sub-project #2. `ObservabilityStack` publishes `RunningTaskCount<1` alarms (5-min eval) on both game server and backend Fargate services, plus NAT `ErrorPortAllocation` awareness alarm. Multi-replica is deferred until sharding is designed (single task is correct for the current in-memory game-server state model).
+- ~~Authorizer Lambda timeout may be tight~~: 2026-04-20 sub-project #2. `api-stack.ts:47,287,341,408` raised to 15s for JWKS-under-cold-start headroom on authorizer / connect / disconnect / default routes.
+- ~~Hot-path O(N²) DynamoDB reads in `_send_to_daemon`~~: PR #181 (2026-04-21). `AgentConnection` now caches `onboarding_phase` and `current_conversation_id`; `_send_to_daemon` reads those from the in-memory registry and only calls `get_nearby_conversations` when the sender is NOT in a conversation and has nearby agents. Non-`agent_state` events do zero DB reads. Regression tests in `tests/unit/test_send_to_daemon_cache.py`.
+- ~~Circular import: sprite_queue → routers.town~~: PR #176 (2026-04-21). `_sprite_pipeline_task` extracted to `core/services/sprite_pipeline.py`. `sprite_queue.py:12` now imports from the service module; `routers/town.py` re-exports for backward compatibility. Also extracted: `core/services/conversation_service.py` (PR #180) and `core/services/activity_service.py` (PR #182). `routers/town.py` went 3076 → 1730 lines.
 - ~~JS injection in Godot WebGL client~~: 2026-04-19 sub-project #1. `JsBridge.call_js` helper in `js_bridge.gd:81-122` serializes user-controlled payload to JSON, stashes on `window[key]` via `JavaScriptObject.set`, and evals only a template with regex-validated `fn_name` (`^[a-zA-Z0-9_]+$`) and `key` (`^__gt_payload_[0-9]+_[0-9]+$`). Call sites migrated: `agent.gd:_load_sprite_from_url`, `agent_manager.gd:_load_sprite_for_agent`, `emit_to_react`. Grep confirms zero `JavaScriptBridge.eval.*%` sites in `apps/godot/scripts/`.
 - ~~`/ws-message` body has no schema validation~~: 2026-04-19 sub-project #1. `core/ws_models.py` defines a flat discriminated union (`WsMessage` over `TownAgentConnect | TownAgentAct | TownDisconnect | TownSubscribe`); `routers/town.py:handle_ws_message` validates at the boundary via `TypeAdapter(WsMessage).validate_python(body)`, gated on `WS_STRICT_VALIDATION=true` (48h rollback lever). Malformed bodies return 422.
 - ~~WS packet size unbounded on server~~: 2026-04-19 sub-project #1. `server_protocol.gd` caps packets at `MAX_PACKET_BYTES = 262144` (256 KB); oversize packets disconnect the peer with a WARN log.
@@ -432,7 +432,7 @@ Agent({
 - [x] Surface PixelLab job-poll failures (`pixellab_service.py:_poll_jobs` logs WARNING per failed poll)
 - [ ] Test full agent lifecycle end-to-end in CI (skipped for Clerk-creds reasons)
 - [x] Frontend + backend + E2E test coverage in CI (283 backend / 40 frontend / 25 Godot / 3 smoke)
-- [ ] Address code-review findings (2026-04-19): sub-project #1 (security hardening at trust boundaries) complete; remaining sub-projects — CDK deploy ordering + resilience, backend service-layer decomposition, concurrency correctness, hot-path perf + frontend type hygiene, test coverage floor — see Known Issues
+- [ ] Address code-review findings (2026-04-19): sub-project #1 (security hardening at trust boundaries), sub-project #2 (CDK deploy-order + resilience), and the hot-path perf fix + sprite_pipeline extraction are complete. Still open from sub-project #3: finish decomposing `routers/town.py` (currently ~1730 lines; agent-connect flow and startup reconnect logic still inline). Not yet started: concurrency correctness (TOCTOU + RMW + JWKS lock), frontend type hygiene, test coverage floor — see Known Issues
 
 ### Phase 2: Apartment System (make agents have a home)
 
