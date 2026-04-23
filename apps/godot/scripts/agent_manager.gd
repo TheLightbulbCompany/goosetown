@@ -101,20 +101,45 @@ func _on_world_state(data: Dictionary) -> void:
 			else:
 				agents[agent_id].current_activity = ""
 
-			# Diff sprite animations — reload any that are new or whose URL changed.
+			# Sync facing from world_state. Walking agents derive facing from
+			# velocity via `_update_facing_from_velocity`; non-walking agents
+			# (talking, idle, sitting) need the explicit value pushed by the
+			# game server — `_handle_chat` calls set_facing on both parties
+			# so they look at each other, but without this sync the viewer
+			# stuck at whatever facing it had at spawn time.
+			var incoming_facing: String = str(agent_data.get("facing", ""))
+			if incoming_facing in ["south", "west", "east", "north"]:
+				var is_walking: bool = bool(agent_data.get("is_moving", false))
+				if not is_walking:
+					agent_node.facing = incoming_facing
+
+			# Diff sprite animations — reload any that are new or whose URL
+			# changed, AND re-apply animation configs when fps/frameCount
+			# shift (e.g. a runtime fps tweak from backend). Without the
+			# config sync, fps changes on talking never reach Godot because
+			# the URL stays the same.
 			var incoming_anims: Dictionary = agent_data.get("spriteAnimations", {})
 			if not incoming_anims.is_empty():
 				var current_anims: Dictionary = agent_node.sprite_animations
-				var changed: bool = false
+				var url_changed: bool = false
+				var config_changed: bool = false
 				for anim_name in incoming_anims:
 					var new_url: String = str(incoming_anims[anim_name].get("url", ""))
 					var old_url: String = ""
+					var new_fps: float = float(incoming_anims[anim_name].get("fps", 0))
+					var new_frames: int = int(incoming_anims[anim_name].get("frameCount", 0))
+					var old_fps: float = 0.0
+					var old_frames: int = 0
 					if current_anims.has(anim_name):
 						old_url = str(current_anims[anim_name].get("url", ""))
+						old_fps = float(current_anims[anim_name].get("fps", 0))
+						old_frames = int(current_anims[anim_name].get("frameCount", 0))
 					if new_url != "" and new_url != old_url:
 						agent_node.load_sprite(new_url, anim_name)
-						changed = true
-				if changed:
+						url_changed = true
+					if new_fps != old_fps or new_frames != old_frames:
+						config_changed = true
+				if url_changed or config_changed:
 					agent_node.sprite_animations = incoming_anims
 					agent_node.set_animation_configs(incoming_anims)
 		else:
