@@ -23,8 +23,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-WS_MANAGER_PATH = "routers.town.get_town_agent_ws_manager"
-SERVICE_PATH = "routers.town.TownService"
+# `_send_to_daemon` was extracted to core.services.daemon_bridge
+# (sub-project #3 fourth slice, 2026-04-22). Patch the module-top bindings
+# there, not the routers.town re-export.
+WS_MANAGER_PATH = "core.services.daemon_bridge.get_town_agent_ws_manager"
+SERVICE_PATH = "core.services.daemon_bridge.TownService"
 MGMT_PATH = "core.services.management_api_client.ManagementApiClient"
 
 

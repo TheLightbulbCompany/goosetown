@@ -173,9 +173,12 @@ class TestApplyEventWithSleepGuard:
     @pytest.fixture
     def mocks(self):
         """Patch the helper's external dependencies at their source modules."""
+        # `_apply_event_with_sleep_guard` now lives in core.services.daemon_bridge
+        # (sub-project #3 fourth slice, 2026-04-22); patch where the name is
+        # looked up, not the routers.town re-export.
         patches = {
             "mgmt_class": patch("core.services.management_api_client.ManagementApiClient"),
-            "ws_mgr": patch("routers.town.get_town_agent_ws_manager"),
+            "ws_mgr": patch("core.services.daemon_bridge.get_town_agent_ws_manager"),
         }
         started = {name: p.start() for name, p in patches.items()}
         yield started

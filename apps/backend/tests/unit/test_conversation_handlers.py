@@ -36,10 +36,11 @@ MGMT_PATH = "core.services.management_api_client.ManagementApiClient"
 SERVICE_PATH = "core.services.conversation_service.TownService"
 GS_CLIENT_PATH = "core.services.conversation_service.get_game_server_client"
 WS_MANAGER_PATH = "core.services.conversation_service.get_town_agent_ws_manager"
-# `_apply_event_with_sleep_guard` is still defined in routers.town and
-# deferred-imported inside `_finalize_conversation`, so the patch source
-# remains at routers.town.
-APPLY_EVENT_PATH = "routers.town._apply_event_with_sleep_guard"
+# `_apply_event_with_sleep_guard` was extracted to core.services.daemon_bridge
+# and is now imported at module-top of conversation_service (sub-project #3
+# fourth slice, 2026-04-22). Patch the module-top binding in conversation_service,
+# not the re-export or the defining module.
+APPLY_EVENT_PATH = "core.services.conversation_service._apply_event_with_sleep_guard"
 
 
 # ---------------------------------------------------------------------------

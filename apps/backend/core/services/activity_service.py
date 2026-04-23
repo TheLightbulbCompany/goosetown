@@ -34,6 +34,7 @@ import logging
 from typing import Optional
 
 from core.services.activity_registry import apply_activity_effect, get_activity
+from core.services.daemon_bridge import _send_to_daemon
 from core.services.game_server_client import get_game_server_client
 from core.services.town_agent_ws import get_town_agent_ws_manager
 from core.services.town_mood_engine import parse_mood
@@ -486,10 +487,6 @@ def _clear_activity_and_notify(
 async def complete_activity_from_startup(agent_id: str, activity, elapsed: float) -> None:
     """Complete an activity that should have finished while the backend was down."""
 
-    # `_send_to_daemon` lives in routers.town (general daemon-messaging
-    # helper, not activity-specific). Deferred import avoids the cycle.
-    from routers.town import _send_to_daemon
-
     service = TownService()
     agent = service.get_town_agent_by_id(agent_id)
     if not agent:
@@ -532,9 +529,6 @@ async def complete_activity_from_startup(agent_id: str, activity, elapsed: float
 async def restart_activity_timer(agent_id: str, activity, remaining: float) -> None:
     """Restart an activity timer for the remaining duration after backend restart."""
     import asyncio
-
-    # `_send_to_daemon` deferred-imported to avoid the routers.town cycle.
-    from routers.town import _send_to_daemon
 
     await asyncio.sleep(remaining)
 
