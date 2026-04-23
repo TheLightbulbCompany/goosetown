@@ -57,9 +57,9 @@ async def _reconnect_active_agents() -> None:
     daemonConnectionId fields so incoming WebSocket messages from surviving
     API Gateway connections are recognized.
     """
+    from core.services.daemon_bridge import _make_agent_event_callback
     from core.services.town_agent_ws import get_town_agent_ws_manager
     from core.services.town_service import TownService
-    from routers.town import _make_agent_event_callback
 
     gs_client = get_game_server_client()
     ws_manager = get_town_agent_ws_manager()
@@ -149,7 +149,7 @@ async def _reconnect_active_agents() -> None:
                 char_id,
             )
 
-            from routers.town import resume_sprite_generation
+            from core.services.sprite_pipeline import resume_sprite_generation
 
             asyncio.create_task(resume_sprite_generation(agent_id, char_id, appearance, display_name, sprite_status))
             sprite_resumed += 1
@@ -185,7 +185,7 @@ async def _reconnect_active_agents() -> None:
                 agent_id,
                 -remaining,
             )
-            from routers.town import complete_activity_from_startup
+            from core.services.activity_service import complete_activity_from_startup
 
             asyncio.create_task(complete_activity_from_startup(agent_id, activity, elapsed))
         else:
@@ -195,7 +195,7 @@ async def _reconnect_active_agents() -> None:
                 agent_id,
                 remaining,
             )
-            from routers.town import restart_activity_timer
+            from core.services.activity_service import restart_activity_timer
 
             asyncio.create_task(restart_activity_timer(agent_id, activity, remaining))
 
