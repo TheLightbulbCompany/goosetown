@@ -275,10 +275,17 @@ The pipeline picks up the push automatically (GitHub Actions trigger on `main`).
 
 ### Step 3 — Monitor the pipeline
 
-Pipeline stages: `Dev` (auto) → `ApproveProduction` (manual gate, approver: `prez2307`) → `Prod`.
+Pipeline stages: `Dev` (auto) → `Prod` (auto).
 
-Dev deploys automatically. Watch the GitHub Actions run. If you need to skip prod:
-- Do not approve the `ApproveProduction` gate. The gate expires after the configured timeout and the pipeline pauses — dev stays reverted, prod stays on the previous version.
+The manual approval gate was removed on 2026-04-19 (see the comment in
+`apps/infra/lib/app.ts:107`). Prod auto-deploys as soon as every dev
+stack is green. If you need to stop a bad commit from reaching prod,
+the only tool is to revert on `main` before dev finishes — or cancel
+the in-flight GitHub Actions run manually.
+
+GitHub environment protection rules on the `Production` environment
+are also empty (verified via `gh api /repos/.../environments`); no
+reviewer gate lives there either.
 
 ### Step 4 — Emergency prod-only rollback (last resort)
 
