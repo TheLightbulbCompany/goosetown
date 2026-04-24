@@ -1716,30 +1716,59 @@ class TownDaemon:
             # declaring timeout — the daemon may have received the updated
             # location via agent_state (every ~2s) even when the discrete
             # arrived event was dropped upstream.
+            #
+            # POLL LOOP: instead of one 120s wait followed by a single
+            # state check, poll the cached state every 0.5s throughout the
+            # wait. If the location matches the requested destination, we
+            # return immediately — important for callers like
+            # ``goosetown_cli.py`` tests where dropping the arrived event
+            # would otherwise force a false 120s timeout followed by a
+            # fallback-recovered "arrived". Hard cap stays at 120s.
             if payload.get("action") == "move":
                 self._arrived_event.clear()
                 requested_dest = payload.get("destination", "")
-                try:
-                    await asyncio.wait_for(self._arrived_event.wait(), timeout=120.0)
-                    return {
-                        "status": "arrived",
-                        "location": self.state.get("agent", {}).get("location"),
-                    }
-                except asyncio.TimeoutError:
-                    cached_loc = self.state.get("agent", {}).get("location", "")
-                    if cached_loc and requested_dest and cached_loc == requested_dest:
-                        # State caught up even though the discrete signal didn't.
+                loop = asyncio.get_event_loop()
+                deadline = loop.time() + 120.0
+                poll_interval = 0.5
+                while loop.time() < deadline:
+                    try:
+                        # Wait up to one poll interval for the discrete
+                        # event. If it fires, we're done.
+                        await asyncio.wait_for(
+                            self._arrived_event.wait(),
+                            timeout=min(poll_interval, deadline - loop.time()),
+                        )
                         return {
                             "status": "arrived",
-                            "location": cached_loc,
-                            "note": "recovered via state cache (arrived signal missed)",
+                            "location": self.state.get("agent", {}).get("location"),
                         }
+                    except asyncio.TimeoutError:
+                        # Discrete event didn't fire this tick. If the
+                        # cached state (updated by agent_state broadcasts
+                        # every ~2s) already shows us at the destination,
+                        # treat that as arrival.
+                        cached_loc = self.state.get("agent", {}).get("location", "")
+                        if cached_loc and requested_dest and cached_loc == requested_dest:
+                            return {
+                                "status": "arrived",
+                                "location": cached_loc,
+                                "note": "arrived via state poll",
+                            }
+                # Full 120s elapsed with no arrived signal and no matching
+                # cached state. Last-chance check + real timeout.
+                cached_loc = self.state.get("agent", {}).get("location", "")
+                if cached_loc and requested_dest and cached_loc == requested_dest:
                     return {
-                        "status": "timeout",
-                        "action": "move",
-                        "message": "Did not arrive within 120s",
-                        "last_known_location": cached_loc,
+                        "status": "arrived",
+                        "location": cached_loc,
+                        "note": "recovered via final state cache check",
                     }
+                return {
+                    "status": "timeout",
+                    "action": "move",
+                    "message": "Did not arrive within 120s",
+                    "last_known_location": cached_loc,
+                }
             # Clear pending messages after agent responds
             if payload.get("action") in ("chat", "say"):
                 self.state["pending_messages"] = []
