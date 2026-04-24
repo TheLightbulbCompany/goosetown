@@ -13,9 +13,11 @@ The two external helpers used by these handlers:
   at construction time; deferred import keeps import-time side effects
   out of module-load.
 
-``_facing_toward`` (pure function, only ever used by ``_handle_chat``) is
-moved in alongside the handlers. ``_MAX_CONVERSATION_TURNS`` constant
-comes along as its natural home.
+``_MAX_CONVERSATION_TURNS`` constant comes along as its natural home.
+The facing calculation that used to live here moved to the game server
+in ``agent_controller.gd`` as part of the ``layout_conversation``
+command — the server computes both the positioning and the resulting
+facing as a single unit so they can't drift apart.
 """
 
 from __future__ import annotations
@@ -28,18 +30,6 @@ from core.services.town_agent_ws import get_town_agent_ws_manager
 from core.services.town_service import TownService
 
 logger = logging.getLogger(__name__)
-
-
-def _facing_toward(from_state: dict, to_state: dict) -> str:
-    """Calculate which direction 'from' should face to look at 'to'."""
-    from_pos = from_state.get("position", {})
-    to_pos = to_state.get("position", {})
-    dx = to_pos.get("x", 0) - from_pos.get("x", 0)
-    dy = to_pos.get("y", 0) - from_pos.get("y", 0)
-    if abs(dx) > abs(dy):
-        return "east" if dx > 0 else "west"
-    else:
-        return "south" if dy > 0 else "north"
 
 
 _MAX_CONVERSATION_TURNS = 20
@@ -211,16 +201,19 @@ async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
     except Exception:
         pass  # Speech bubble is cosmetic, don't fail the conversation
 
-    # Face agents toward each other and start talking animation
+    # Lay out the 2-agent conversation: axis-align + face each other. The
+    # game server's `layout_conversation` command computes target positions
+    # (on whichever axis currently has greater separation, 2 tiles apart
+    # centered on the midpoint), walks each agent there via NavigationAgent2D,
+    # and sets forward-looking facing toward the target centroid. Replaces
+    # the earlier pair of `set_facing` commands — positioning + facing come
+    # from one source of truth so they can't drift.
     try:
         gs_client = get_game_server_client()
-        initiator_state = gs_client.get_cached_agent_state(initiator_id)
-        target_state = gs_client.get_cached_agent_state(target_id)
-        if initiator_state and target_state:
-            init_facing = _facing_toward(initiator_state, target_state)
-            target_facing = _facing_toward(target_state, initiator_state)
-            await gs_client.send_command(initiator_id, {"cmd": "set_facing", "direction": init_facing})
-            await gs_client.send_command(target_id, {"cmd": "set_facing", "direction": target_facing})
+        await gs_client.send_command(
+            initiator_id,
+            {"cmd": "layout_conversation", "agent_ids": [initiator_id, target_id]},
+        )
         await gs_client.send_command(initiator_id, {"cmd": "set_activity", "activity": "talking"})
     except Exception:
         pass  # Cosmetic, don't fail conversation
@@ -422,6 +415,24 @@ async def _handle_join_conversation(connection_id: str, body: dict, agent_conn) 
         )
     except Exception as exc:
         logger.warning("Failed to send join act_ok to %s: %s", joiner_id, exc)
+
+    # Re-lay-out the whole group now that a new participant joined. The game
+    # server's ``layout_conversation`` handler reshuffles everyone onto a
+    # circle around the group centroid and points them inward — otherwise a
+    # joiner would stand wherever they happened to be and nobody would turn
+    # to acknowledge them.
+    try:
+        gs_client = get_game_server_client()
+        await gs_client.send_command(
+            joiner_id,
+            {"cmd": "layout_conversation", "agent_ids": participants},
+        )
+        # Joiner enters the talking animation immediately so their first say
+        # doesn't show a flash of idle; existing participants are already
+        # talking from the initial chat.
+        await gs_client.send_command(joiner_id, {"cmd": "set_activity", "activity": "talking"})
+    except Exception:
+        pass  # Cosmetic, don't fail the join
 
     logger.info("Agent %s joined conversation %s (%d participants)", joiner_id, conv_id, len(participants))
 

@@ -1030,7 +1030,6 @@ from core.services.context_transition_service import (  # noqa: E402, F401
 from core.services.conversation_service import (  # noqa: E402, F401
     _MAX_CONVERSATION_TURNS,
     _build_log_summary,
-    _facing_toward,
     _finalize_conversation,
     _handle_chat,
     _handle_end_conversation,

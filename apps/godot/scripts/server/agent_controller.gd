@@ -15,6 +15,10 @@ const STATE_INTERVAL: float = 2.0
 const TILE_SIZE: float = 32.0
 ## Random offset range (pixels) around location markers so agents don't stack
 const DESTINATION_JITTER: float = 24.0
+## Distance between 2-agent conversation partners after a layout (2 tiles)
+const CONVERSATION_SPACING: float = 64.0
+## Radius for 3+-agent conversation circle around centroid (1.5 tiles)
+const CONVERSATION_CIRCLE_RADIUS: float = 48.0
 
 ## Emitted when the controller needs to send data to a specific peer.
 ## game_server.gd connects this to protocol.send_to.
@@ -204,6 +208,9 @@ func handle_command(peer_id: int, data: Dictionary) -> void:
 		"set_conversation_group":
 			var ids: Array = data.get("agent_ids", [])
 			face_agents_toward_centroid(ids)
+		"layout_conversation":
+			var ids: Array = data.get("agent_ids", [])
+			layout_conversation(ids)
 		"update_agent_sprites":
 			var agent_node: CharacterBody2D = _agents[peer_id]
 			var new_anims: Dictionary = data.get("sprite_animations", {})
@@ -245,6 +252,133 @@ func face_agents_toward_centroid(agent_ids: Array) -> void:
 			agent_node.facing = "east" if delta.x > 0 else "west"
 		else:
 			agent_node.facing = "south" if delta.y > 0 else "north"
+
+
+static func _compute_layout_targets(
+	agent_ids: Array, id_to_pos: Dictionary
+) -> Dictionary:
+	## Pure helper for computing per-agent conversation target positions.
+	##
+	## 2-agent case: axis-align on whichever axis currently has greater
+	## separation, placing the pair ``CONVERSATION_SPACING`` apart centered
+	## on their midpoint. This minimizes the distance each agent walks.
+	##
+	## 3+-agent case: evenly distribute on a circle of
+	## ``CONVERSATION_CIRCLE_RADIUS`` around the centroid, first agent at
+	## top (12 o'clock) and going clockwise.
+	##
+	## Static + pure so Godot unit tests can exercise the geometry without
+	## spawning a full controller scene tree.
+	##
+	## Args:
+	##   agent_ids: List of agent id strings in layout order.
+	##   id_to_pos: Dict {agent_id: Vector2 current position}.
+	## Returns:
+	##   Dict {agent_id: Vector2 target position}, or {} if < 2 agents
+	##   resolved.
+	var valid_ids: Array = []
+	for aid in agent_ids:
+		if id_to_pos.has(aid):
+			valid_ids.append(aid)
+	if valid_ids.size() < 2:
+		return {}
+
+	var centroid: Vector2 = Vector2.ZERO
+	for aid in valid_ids:
+		centroid += id_to_pos[aid]
+	centroid /= valid_ids.size()
+
+	var targets: Dictionary = {}
+	if valid_ids.size() == 2:
+		var a_id: String = str(valid_ids[0])
+		var b_id: String = str(valid_ids[1])
+		var delta: Vector2 = id_to_pos[b_id] - id_to_pos[a_id]
+		var half: float = CONVERSATION_SPACING / 2.0
+		if abs(delta.x) >= abs(delta.y):
+			var a_left: bool = id_to_pos[a_id].x <= id_to_pos[b_id].x
+			targets[a_id] = centroid + Vector2(-half if a_left else half, 0.0)
+			targets[b_id] = centroid + Vector2(half if a_left else -half, 0.0)
+		else:
+			var a_top: bool = id_to_pos[a_id].y <= id_to_pos[b_id].y
+			targets[a_id] = centroid + Vector2(0.0, -half if a_top else half)
+			targets[b_id] = centroid + Vector2(0.0, half if a_top else -half)
+	else:
+		var n: int = valid_ids.size()
+		for i in range(n):
+			var angle: float = (TAU * float(i)) / float(n) - TAU / 4.0
+			targets[valid_ids[i]] = (
+				centroid + Vector2(cos(angle), sin(angle)) * CONVERSATION_CIRCLE_RADIUS
+			)
+	return targets
+
+
+static func _facing_from_delta(delta: Vector2) -> String:
+	## Pure direction helper: "east"/"west" or "south"/"north" from a delta.
+	if abs(delta.x) > abs(delta.y):
+		return "east" if delta.x > 0 else "west"
+	return "south" if delta.y > 0 else "north"
+
+
+func layout_conversation(agent_ids: Array) -> void:
+	## Arrange a conversation group: move each agent to a layout position and
+	## face them toward the post-move centroid. Uses NavigationAgent2D so the
+	## move is a short walk, not a teleport; navmesh clamping keeps targets
+	## inside walkable area even when the ideal spot hits a building edge.
+	##
+	## Facing is computed from the TARGET centroid, not the current one —
+	## agent_manager.gd's world_state sync only applies facing when an agent
+	## is not moving, so the stored facing kicks in once they arrive.
+	##
+	## Safe to call from ``_handle_chat`` (2 agents) or
+	## ``_handle_join_conversation`` (N agents) — the layout rule branches on
+	## group size. Silently no-ops if fewer than 2 of the requested ids are
+	## actually spawned (e.g. one daemon disconnected mid-chat).
+	if agent_ids.size() < 2:
+		return
+
+	var id_to_node: Dictionary = {}
+	var id_to_pos: Dictionary = {}
+	for aid in agent_ids:
+		if _id_to_peer.has(aid):
+			var peer: int = _id_to_peer[aid]
+			if _agents.has(peer):
+				id_to_node[aid] = _agents[peer]
+				id_to_pos[aid] = _agents[peer].global_position
+	if id_to_node.size() < 2:
+		return
+
+	var targets: Dictionary = _compute_layout_targets(id_to_node.keys(), id_to_pos)
+	if targets.is_empty():
+		return
+
+	# Clamp each target to the navmesh so agents don't path toward a corner
+	# they can't stand on.
+	var any_node: CharacterBody2D = id_to_node.values()[0]
+	var map_rid: RID = any_node.nav_agent.get_navigation_map()
+	for aid in targets:
+		targets[aid] = NavigationServer2D.map_get_closest_point(map_rid, targets[aid])
+
+	# Start each agent walking toward their target.
+	for aid in id_to_node:
+		if not targets.has(aid):
+			continue
+		var node: CharacterBody2D = id_to_node[aid]
+		node.set_navigation_target(targets[aid])
+		var peer: int = _id_to_peer[aid]
+		_arrived_at.erase(peer)
+
+	# Forward-looking facing: toward centroid of TARGET positions. Stored on
+	# each agent_node so it's broadcast via world_state; viewer applies when
+	# the agent finishes moving (is_moving=false).
+	var target_centroid: Vector2 = Vector2.ZERO
+	for aid in targets:
+		target_centroid += targets[aid]
+	target_centroid /= targets.size()
+	for aid in id_to_node:
+		if not targets.has(aid):
+			continue
+		var node: CharacterBody2D = id_to_node[aid]
+		node.facing = _facing_from_delta(target_centroid - targets[aid])
 
 
 func get_world_state_for_viewer() -> Dictionary:
