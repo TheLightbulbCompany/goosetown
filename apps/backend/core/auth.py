@@ -3,6 +3,7 @@
 Ported from Isol8 backend -- validates Clerk-issued JWTs using JWKS endpoint.
 """
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -26,6 +27,14 @@ JWKS_CACHE_TTL = timedelta(hours=1)
 # that a compromised/rotated key doesn't stay trusted for days.
 JWKS_STALE_GRACE = timedelta(minutes=5)
 
+# Serialises concurrent refreshes. Without this, a burst of requests that
+# all arrive just after the cache expires each kick off their own Clerk
+# fetch — N parallel HTTP calls for what should be one shared network
+# round-trip, plus N racing writes to ``_jwks_cache``. The lock is acquired
+# only on the cache-miss path; the fast path (cache hit) still returns
+# without touching the lock.
+_jwks_refresh_lock: asyncio.Lock = asyncio.Lock()
+
 
 async def _get_cached_jwks(jwks_url: str) -> dict:
     """Fetch JWKS with TTL-based caching to avoid hitting Clerk on every request.
@@ -33,42 +42,53 @@ async def _get_cached_jwks(jwks_url: str) -> dict:
     If Clerk is unreachable, fall back to the last cached JWKS — but only
     within ``JWKS_STALE_GRACE``. Beyond that, raise so the outage surfaces
     as 5xx rather than silently trusting stale keys forever.
+
+    Concurrent callers that hit the cache-miss path are serialised through
+    ``_jwks_refresh_lock`` — only the first one fetches; the rest wait for
+    that fetch to complete, re-check the cache under the lock, and reuse
+    the newly-populated result.
     """
     now = datetime.now(timezone.utc)
 
-    # Return cached data if still valid
+    # Fast path — cache hit, no lock needed.
     if _jwks_cache["data"] and _jwks_cache["expires_at"] and now < _jwks_cache["expires_at"]:
         return _jwks_cache["data"]
 
-    # Fetch fresh JWKS
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(jwks_url, timeout=10.0)
-            response.raise_for_status()
-            jwks = response.json()
+    # Slow path — serialise refreshes. Under the lock, re-check whether
+    # another task already populated the cache while we were waiting, so
+    # only the first arrival actually hits Clerk.
+    async with _jwks_refresh_lock:
+        now = datetime.now(timezone.utc)
+        if _jwks_cache["data"] and _jwks_cache["expires_at"] and now < _jwks_cache["expires_at"]:
+            return _jwks_cache["data"]
 
-        # Update cache
-        _jwks_cache["data"] = jwks
-        _jwks_cache["expires_at"] = now + JWKS_CACHE_TTL
-        logger.info("JWKS cache refreshed")
-        return jwks
-    except httpx.HTTPError as e:
-        cached = _jwks_cache["data"]
-        expires_at = _jwks_cache["expires_at"]
-        if cached and expires_at and now - expires_at <= JWKS_STALE_GRACE:
-            stale_by = now - expires_at
-            logger.warning(
-                "JWKS fetch failed, serving stale cache (stale by %ss): %s",
-                int(stale_by.total_seconds()),
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(jwks_url, timeout=10.0)
+                response.raise_for_status()
+                jwks = response.json()
+
+            _jwks_cache["data"] = jwks
+            _jwks_cache["expires_at"] = now + JWKS_CACHE_TTL
+            logger.info("JWKS cache refreshed")
+            return jwks
+        except httpx.HTTPError as e:
+            cached = _jwks_cache["data"]
+            expires_at = _jwks_cache["expires_at"]
+            if cached and expires_at and now - expires_at <= JWKS_STALE_GRACE:
+                stale_by = now - expires_at
+                logger.warning(
+                    "JWKS fetch failed, serving stale cache (stale by %ss): %s",
+                    int(stale_by.total_seconds()),
+                    e,
+                )
+                return cached
+            logger.error(
+                "JWKS fetch failed and no recent cached data (grace %s): %s",
+                JWKS_STALE_GRACE,
                 e,
             )
-            return cached
-        logger.error(
-            "JWKS fetch failed and no recent cached data (grace %s): %s",
-            JWKS_STALE_GRACE,
-            e,
-        )
-        raise
+            raise
 
 
 @dataclass
