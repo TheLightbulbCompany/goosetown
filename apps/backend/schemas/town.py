@@ -72,8 +72,17 @@ class TownConversationResponse(BaseModel):
     """Public conversation log."""
 
     id: str
+    # Legacy 2-participant projection, kept for backward compatibility
+    # with any external consumer still reading ``participant_a`` /
+    # ``participant_b`` directly. New callers should prefer the
+    # ``participants`` list, which supports 3+ agent group chats.
     participant_a: str
     participant_b: str
+    # Full participant display-name list in join order. For a 2-agent
+    # chat this is ``[participant_a, participant_b]``; for a group
+    # conversation joined via ``join_conversation`` it includes every
+    # agent that's been part of the chat.
+    participants: List[str] = []
     location: Optional[str] = None
     started_at: Optional[str] = None
     ended_at: Optional[str] = None

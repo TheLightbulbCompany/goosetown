@@ -661,18 +661,46 @@ async def get_conversations(limit: int = 20):
     service = TownService()
     convos = service.get_recent_conversations(limit=limit)
 
+    # Cache display-name lookups across the loop so a 20-conversation page
+    # with heavy overlap between participants only hits DynamoDB once per
+    # unique agent id.
+    display_name_cache: dict[str, str] = {}
+
+    def _lookup_display(agent_id: str) -> str:
+        if not agent_id:
+            return "Unknown"
+        if agent_id in display_name_cache:
+            return display_name_cache[agent_id]
+        agent = service.get_town_agent_by_id(agent_id)
+        name = agent.get("displayName", "Unknown") if agent else "Unknown"
+        display_name_cache[agent_id] = name
+        return name
+
     responses = []
     for c in convos:
-        agent_a = service.get_town_agent_by_id(c.get("participantAId", ""))
-        agent_b = service.get_town_agent_by_id(c.get("participantBId", ""))
+        # Prefer the full ``participants`` list from the DDB record (N-agent
+        # group chats); fall back to the legacy ``participantAId`` /
+        # ``participantBId`` pair for older conversation rows.
+        participant_ids: list[str] = c.get("participants") or []
+        if not participant_ids:
+            legacy_a = c.get("participantAId", "")
+            legacy_b = c.get("participantBId", "")
+            participant_ids = [pid for pid in (legacy_a, legacy_b) if pid]
+
+        participant_names = [_lookup_display(pid) for pid in participant_ids]
+
+        # Legacy 2-participant projection for back-compat.
+        a_name = participant_names[0] if participant_names else "Unknown"
+        b_name = participant_names[1] if len(participant_names) > 1 else "Unknown"
 
         public_log = c.get("publicLog") or []
 
         responses.append(
             TownConversationResponse(
                 id=c.get("id", ""),
-                participant_a=agent_a.get("displayName", "Unknown") if agent_a else "Unknown",
-                participant_b=agent_b.get("displayName", "Unknown") if agent_b else "Unknown",
+                participant_a=a_name,
+                participant_b=b_name,
+                participants=participant_names,
                 location=c.get("location"),
                 started_at=c.get("startedAt"),
                 ended_at=c.get("endedAt"),

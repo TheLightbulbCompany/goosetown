@@ -145,4 +145,76 @@ describe('ConversationsLog', () => {
     );
     expect(screen.getByText(/no messages yet/i)).toBeInTheDocument();
   });
+
+  // ---------------------------------------------------------------------
+  // Participant rendering — group conversations (3+)
+  // ---------------------------------------------------------------------
+
+  it('renders all 3 participants in the modal header for a 3-agent conversation', async () => {
+    mockedUse.mockReturnValue({
+      conversations: [
+        makeConv({
+          participants: ['Jim', 'Pam', 'Dwight'],
+          participant_a: 'Jim',
+          participant_b: 'Pam',
+        }),
+      ],
+      loading: false,
+      error: null,
+    });
+    render(<ConversationsLog />);
+    // Row shows "Jim, Pam, +1" when list is length 3 (>2 but ≤3, style
+    // "row" collapses only when > 3).
+    const rowButton = screen.getByRole('button', { name: /Jim, Pam & Dwight|Jim/i });
+    await userEvent.click(rowButton);
+    // Modal header renders the full "Jim, Pam & Dwight" form.
+    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent('Jim, Pam & Dwight');
+  });
+
+  it('falls back to participant_a & participant_b when participants array is absent', () => {
+    mockedUse.mockReturnValue({
+      conversations: [makeConv({ participants: undefined })],
+      loading: false,
+      error: null,
+    });
+    render(<ConversationsLog />);
+    expect(screen.getByRole('button', { name: /Rachel & Ross/i })).toBeInTheDocument();
+  });
+
+  it('collapses 4+ participants in row view to "First, Second, +N" form', () => {
+    mockedUse.mockReturnValue({
+      conversations: [
+        makeConv({
+          participants: ['Jim', 'Pam', 'Dwight', 'Michael', 'Kevin'],
+          participant_a: 'Jim',
+          participant_b: 'Pam',
+        }),
+      ],
+      loading: false,
+      error: null,
+    });
+    render(<ConversationsLog />);
+    // Row collapses: "Jim, Pam, +3"
+    expect(screen.getByRole('button', { name: /Jim, Pam, \+3/i })).toBeInTheDocument();
+  });
+
+  it('modal shows all participants even when row view collapsed them', async () => {
+    mockedUse.mockReturnValue({
+      conversations: [
+        makeConv({
+          participants: ['Jim', 'Pam', 'Dwight', 'Michael'],
+          participant_a: 'Jim',
+          participant_b: 'Pam',
+        }),
+      ],
+      loading: false,
+      error: null,
+    });
+    render(<ConversationsLog />);
+    await userEvent.click(screen.getByRole('button'));
+    // Full form in the modal header: "Jim, Pam, Dwight & Michael"
+    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent(
+      'Jim, Pam, Dwight & Michael',
+    );
+  });
 });

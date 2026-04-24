@@ -19,8 +19,16 @@ export interface ConversationTurn {
 
 export interface Conversation {
   id: string;
+  // Legacy 2-participant projection. ``participants`` (below) is the
+  // canonical list — use it when rendering. These two fields are kept
+  // for backward compatibility with any code that hasn't migrated yet.
   participant_a: string;
   participant_b: string;
+  // Full list of participant display names in join order. Always
+  // populated by the backend; includes every agent that was part of
+  // the conversation (including those who joined via
+  // ``join_conversation``).
+  participants?: string[];
   location: string | null;
   started_at: string | null;
   ended_at: string | null;
