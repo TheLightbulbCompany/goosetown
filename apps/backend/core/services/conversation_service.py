@@ -22,6 +22,7 @@ facing as a single unit so they can't drift apart.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from core.services.daemon_bridge import _apply_event_with_sleep_guard
@@ -33,6 +34,83 @@ logger = logging.getLogger(__name__)
 
 
 _MAX_CONVERSATION_TURNS = 20
+
+# Auto-end a conversation after this many seconds of silence (no new ``say``
+# turn from any participant, no ``join_conversation`` from a new joiner).
+# 60s is long enough to feel like a natural pause between turns but short
+# enough that abandoned conversations don't trap agents in an idle "talking"
+# state for minutes. The timer resets on every ``chat`` / ``say`` /
+# ``join_conversation`` and is cancelled on ``end_conversation`` or any
+# turn-limit auto-end. See ``_schedule_inactivity_timeout``.
+_INACTIVITY_TIMEOUT_SEC: float = 60.0
+
+# conv_id → asyncio.Task that will call ``_finalize_conversation`` after
+# ``_INACTIVITY_TIMEOUT_SEC`` of silence. In-memory only — a backend
+# restart drops pending timers (acceptable: the existing MAX_CONVERSATION_TURNS
+# cap and manual ``town_act end`` still bound conversation lifetime, and the
+# idle agents will naturally drop their "talking" activity on next restart
+# reconnect).
+_inactivity_tasks: dict[str, asyncio.Task] = {}
+
+
+async def _inactivity_timeout(conv_id: str) -> None:
+    """Background coroutine: wait the silence window, then auto-end the conv.
+
+    Cancelled (and replaced) on every new turn or join, so it only fires
+    when a conversation has genuinely gone quiet.
+    """
+    from core.services.management_api_client import ManagementApiClient
+
+    try:
+        await asyncio.sleep(_INACTIVITY_TIMEOUT_SEC)
+    except asyncio.CancelledError:
+        return
+    finally:
+        # Clear the registry entry in the SAME task that owns it, whether
+        # we timed out or were cancelled. Matches the pattern in
+        # ``agent_connect_service._delayed_sleep``.
+        _inactivity_tasks.pop(conv_id, None)
+
+    service = TownService()
+    conv = service.get_conversation_by_id(conv_id)
+    if not conv or conv.get("status") != "active":
+        # Already ended by another path (end_conversation, turn limit,
+        # server restart recovery). Nothing to do.
+        return
+
+    logger.info(
+        "Conversation %s silent for %.0fs — auto-ending (inactivity)",
+        conv_id,
+        _INACTIVITY_TIMEOUT_SEC,
+    )
+    mgmt = ManagementApiClient()
+    ws_manager = get_town_agent_ws_manager()
+    await _finalize_conversation(conv_id, service, mgmt, ws_manager, auto_ended=True, end_reason_override="inactivity")
+
+
+def _schedule_inactivity_timeout(conv_id: str) -> None:
+    """Schedule (or reset) the silence-auto-end timer for a conversation.
+
+    Called on ``chat`` / ``say`` / ``join_conversation`` — any "activity"
+    signal that proves the conversation is still ongoing. Cancels any
+    previous timer for the same ``conv_id`` so the window is always
+    measured from the most recent activity.
+    """
+    existing = _inactivity_tasks.get(conv_id)
+    if existing and not existing.done():
+        existing.cancel()
+    _inactivity_tasks[conv_id] = asyncio.create_task(_inactivity_timeout(conv_id))
+
+
+def _cancel_inactivity_timeout(conv_id: str) -> None:
+    """Cancel a pending silence-auto-end timer. Idempotent.
+
+    Called when a conversation ends explicitly (via ``end_conversation``
+    or a turn-limit-driven auto-end) so we don't double-finalize.
+    """
+    task = _inactivity_tasks.pop(conv_id, None)
+    if task and not task.done():
+        task.cancel()
 
 
 async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
@@ -226,6 +304,11 @@ async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
         location,
     )
 
+    # Start the silence timer. Reset on every ``say`` / ``join_conversation``;
+    # if it fires, ``_inactivity_timeout`` calls ``_finalize_conversation``
+    # with ``end_reason="inactivity"``.
+    _schedule_inactivity_timeout(conv_id)
+
 
 async def _handle_say(connection_id: str, body: dict, agent_conn) -> None:
     """Handle a ``say`` action — append a message to an active conversation.
@@ -342,6 +425,12 @@ async def _handle_say(connection_id: str, body: dict, agent_conn) -> None:
     if turn_count >= _MAX_CONVERSATION_TURNS:
         logger.info("Conversation %s reached turn limit (%d), auto-ending", conv_id, _MAX_CONVERSATION_TURNS)
         await _finalize_conversation(conv_id, service, mgmt, ws_manager, auto_ended=True)
+        return
+
+    # A new turn is activity — reset the silence timer. Do this AFTER the
+    # turn-limit auto-end so we don't schedule a timer on a just-finalized
+    # conversation.
+    _schedule_inactivity_timeout(conv_id)
 
 
 async def _handle_join_conversation(connection_id: str, body: dict, agent_conn) -> None:
@@ -435,6 +524,10 @@ async def _handle_join_conversation(connection_id: str, body: dict, agent_conn) 
         pass  # Cosmetic, don't fail the join
 
     logger.info("Agent %s joined conversation %s (%d participants)", joiner_id, conv_id, len(participants))
+
+    # Joining is activity — reset the silence timer so the conversation
+    # gets another full window to produce a turn before auto-ending.
+    _schedule_inactivity_timeout(conv_id)
 
 
 async def _handle_end_conversation(connection_id: str, body: dict, agent_conn) -> None:
@@ -549,8 +642,14 @@ async def _finalize_conversation(
         mgmt: ``ManagementApiClient`` instance.
         ws_manager: Active WebSocket manager.
         auto_ended: Whether the conversation ended by hitting the turn limit
-            (``True``) or by explicit agent request (``False``).
+            or the silence timeout (``True``) or by explicit agent request
+            (``False``).
     """
+    # Cancel any pending silence-auto-end timer for this conv. Idempotent —
+    # if the silence-timer path itself is finalising, the task has already
+    # self-removed from ``_inactivity_tasks`` in its ``finally`` block.
+    _cancel_inactivity_timeout(conv_id)
+
     conv = service.end_conversation(conv_id)
     if not conv:
         logger.warning("end_conversation returned None for conv_id %s", conv_id)
