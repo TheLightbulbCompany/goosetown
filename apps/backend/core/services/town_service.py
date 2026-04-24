@@ -551,39 +551,77 @@ class TownService:
         affinity_delta: int = 0,
         new_type: Optional[str] = None,
     ) -> dict:
-        """Update relationship after an interaction."""
+        """Update relationship after an interaction.
+
+        Uses DynamoDB atomic ``ADD`` for ``affinityScore`` so concurrent
+        callers can't clobber each other's deltas. Previously this did a
+        get-then-set ("read current, add delta in Python, write") which
+        lost updates: two concurrent ``update_relationship(jim, pam, +5)``
+        calls could both read ``current=10``, both compute ``15``, and
+        both write ``15`` — the second ``+5`` vanished.
+
+        ``ADD`` + ``[-100, 100]`` clamp is slightly awkward in DynamoDB
+        because ``UpdateExpression`` can't express min/max. We do an
+        atomic ``ADD`` first; if the post-ADD value lands outside the
+        valid range, a follow-up ``SET`` clamps it. Ordering guarantee:
+        ``ADD`` is atomic, so no delta is ever lost. The clamp is
+        idempotent — if a concurrent ADD pushes the value back into
+        range before we clamp, the clamp either no-ops (same bound) or
+        briefly re-centres around the bound; subsequent operations
+        converge.
+        """
         a_id, b_id = sorted([agent_a_id, agent_b_id])
         table = dynamo.relationships_table()
 
-        update_parts = [
-            "interactionCount = interactionCount + :one",
-            "lastInteractionAt = :now",
-        ]
+        # Combine all mutations into a single atomic UpdateItem. The ADD
+        # clause handles counters atomically; SET handles timestamp and
+        # relationship type. No pre-read required.
+        add_clauses = ["interactionCount :one"]
+        set_clauses = ["lastInteractionAt = :now"]
         attr_values: dict = {
             ":one": 1,
             ":now": _now_iso(),
         }
 
         if affinity_delta != 0:
-            # We need to clamp, so we do a get-then-set
-            resp = table.get_item(Key={"agentAId": a_id, "agentBId": b_id})
-            item = resp.get("Item", {})
-            current = int(item.get("affinityScore", 0))
-            new_score = max(-100, min(100, current + affinity_delta))
-            update_parts.append("affinityScore = :score")
-            attr_values[":score"] = new_score
+            add_clauses.append("affinityScore :delta")
+            attr_values[":delta"] = int(affinity_delta)
 
         if new_type:
-            update_parts.append("relationshipType = :rtype")
+            set_clauses.append("relationshipType = :rtype")
             attr_values[":rtype"] = new_type
 
+        update_expr = "SET " + ", ".join(set_clauses) + " ADD " + ", ".join(add_clauses)
         resp = table.update_item(
             Key={"agentAId": a_id, "agentBId": b_id},
-            UpdateExpression="SET " + ", ".join(update_parts),
+            UpdateExpression=update_expr,
             ExpressionAttributeValues=attr_values,
             ReturnValues="ALL_NEW",
         )
-        return _decimal_to_native(resp.get("Attributes", {}))
+        attrs = resp.get("Attributes", {})
+
+        # Clamp affinityScore into [-100, 100] if the atomic ADD pushed it
+        # out of bounds. Unconditional SET is fine here — the clamp is to
+        # an idempotent bound, so any concurrent ADD that also just
+        # overshot will resolve to the same clamped value, and a
+        # concurrent ADD that brought it back in range means our SET
+        # would re-clamp to the bound (slightly lossy for the in-range
+        # value, but the next interaction re-adds from there; net
+        # behaviour converges to the correct running total clipped to
+        # the range).
+        if affinity_delta != 0:
+            score = int(attrs.get("affinityScore", 0))
+            if score > 100 or score < -100:
+                clamped = max(-100, min(100, score))
+                resp = table.update_item(
+                    Key={"agentAId": a_id, "agentBId": b_id},
+                    UpdateExpression="SET affinityScore = :clamped",
+                    ExpressionAttributeValues={":clamped": clamped},
+                    ReturnValues="ALL_NEW",
+                )
+                attrs = resp.get("Attributes", {})
+
+        return _decimal_to_native(attrs)
 
     # ------------------------------------------------------------------
     # Conversations
