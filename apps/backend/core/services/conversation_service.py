@@ -85,9 +85,7 @@ async def _inactivity_timeout(conv_id: str) -> None:
     )
     mgmt = ManagementApiClient()
     ws_manager = get_town_agent_ws_manager()
-    await _finalize_conversation(
-        conv_id, service, mgmt, ws_manager, auto_ended=True, end_reason_override="inactivity"
-    )
+    await _finalize_conversation(conv_id, service, mgmt, ws_manager, auto_ended=True, end_reason_override="inactivity")
 
 
 def _schedule_inactivity_timeout(conv_id: str) -> None:
