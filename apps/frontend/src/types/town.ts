@@ -20,7 +20,13 @@ export interface TownWorld {
   nextId: number;
   players: TownPlayer[];
   agents: TownAgent[];
-  conversations: any[];
+  // Legacy field from the AI Town schema. The backend always returns
+  // ``[]`` here; active conversations live at ``GET /town/conversations``
+  // which has its own ``ConversationTurn`` / ``TownConversationResponse``
+  // types. Kept as ``unknown[]`` rather than ``any[]`` so accidental
+  // consumers are forced to type-narrow instead of silently accepting
+  // anything.
+  conversations: unknown[];
 }
 
 export interface TownEngine {

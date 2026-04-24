@@ -3,8 +3,9 @@ import { toast } from 'react-toastify';
 export async function toastOnError<T>(promise: Promise<T>): Promise<T> {
   try {
     return await promise;
-  } catch (error: any) {
-    toast.error(error.message);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    toast.error(message);
     throw error;
   }
 }

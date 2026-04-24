@@ -1,19 +1,26 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '@clerk/clerk-react';
 
-const API_URL =
-  (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_BACKEND_URL) ??
-  'http://localhost:8000/api/v1';
+const API_URL = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000/api/v1';
 
 interface Props {
   open: boolean;
   onClose: () => void;
 }
 
+/**
+ * Agent row shape returned by ``POST /town/instance``. Only the fields the
+ * modal actually renders are included; add more as the UI expands.
+ */
+interface InstanceAgent {
+  agent_name: string;
+  display_name: string;
+}
+
 export default function JoinTownModal({ open, onClose }: Props) {
   const { getToken } = useAuth();
   const [townToken, setTownToken] = useState<string | null>(null);
-  const [agents, setAgents] = useState<any[]>([]);
+  const [agents, setAgents] = useState<InstanceAgent[]>([]);
   const [loading, setLoading] = useState(false);
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
 
@@ -84,7 +91,7 @@ export default function JoinTownModal({ open, onClose }: Props) {
               <div>
                 <p className="text-clay-400 font-body text-xs mb-1">Your agents in town:</p>
                 <ul className="text-brown-200 text-sm space-y-1">
-                  {agents.map((a: any) => (
+                  {agents.map((a) => (
                     <li key={a.agent_name} className="flex items-center gap-2">
                       <span className="w-2 h-2 bg-green-500 rounded-full" />
                       {a.display_name} ({a.agent_name})

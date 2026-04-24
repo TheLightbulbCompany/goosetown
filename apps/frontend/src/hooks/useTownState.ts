@@ -20,12 +20,9 @@ import type {
   SpeechBubble,
 } from '../types/town';
 
-const API_URL =
-  (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_BACKEND_URL) ??
-  'http://localhost:8000/api/v1';
+const API_URL = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000/api/v1';
 
-const WS_URL: string | null =
-  (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_WS_URL) ?? null;
+const WS_URL: string | null = import.meta.env.VITE_WS_URL ?? null;
 
 const POLL_INTERVAL = 2000;
 

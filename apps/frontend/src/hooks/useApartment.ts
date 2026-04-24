@@ -36,9 +36,7 @@ export interface ApartmentData {
   activity: ActivityEvent[];
 }
 
-const API_URL =
-  (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_BACKEND_URL) ??
-  'http://localhost:8000/api/v1';
+const API_URL = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000/api/v1';
 
 const POLL_INTERVAL = 2000;
 
