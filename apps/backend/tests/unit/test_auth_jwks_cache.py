@@ -115,3 +115,54 @@ async def test_raises_when_no_cache_and_fetch_fails():
     with patch("core.auth.httpx.AsyncClient", return_value=mock_client):
         with pytest.raises(httpx.HTTPError):
             await auth._get_cached_jwks("https://issuer/.well-known/jwks.json")
+
+
+@pytest.mark.asyncio
+async def test_concurrent_cache_misses_coalesce_to_single_fetch():
+    """10 tasks all hit the cache-miss path at once; the refresh lock
+    should ensure only ONE hits Clerk. The rest wait, see the newly-
+    populated cache under the lock, and return the shared result.
+
+    Regression test for the JWKS-refresh-has-no-lock concurrency bug
+    (fixed by PR adding ``_jwks_refresh_lock``).
+    """
+    import asyncio
+
+    from core import auth
+
+    fake_jwks = {"keys": [{"kid": "shared"}]}
+    fetch_calls = 0
+    fetch_in_progress = asyncio.Event()
+    release_fetch = asyncio.Event()
+
+    async def _slow_get(url, timeout=None):
+        nonlocal fetch_calls
+        fetch_calls += 1
+        fetch_in_progress.set()
+        # Block until all concurrent callers are queued on the lock,
+        # then release this fetch to populate the cache.
+        await release_fetch.wait()
+        resp = AsyncMock()
+        resp.json = lambda: fake_jwks
+        resp.raise_for_status = lambda: None
+        return resp
+
+    mock_client = AsyncMock()
+    mock_client.get = _slow_get
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("core.auth.httpx.AsyncClient", return_value=mock_client):
+        # Fire 10 concurrent tasks — all start on cold cache.
+        tasks = [asyncio.create_task(auth._get_cached_jwks("https://issuer/.well-known/jwks.json")) for _ in range(10)]
+        # Wait for the first task to reach the HTTP call (it has the lock).
+        await fetch_in_progress.wait()
+        # Give the remaining 9 a chance to queue on the lock.
+        await asyncio.sleep(0)
+        # Now release the fetch — it populates the cache, drops the lock,
+        # and the queued tasks see the fresh cache instead of re-fetching.
+        release_fetch.set()
+        results = await asyncio.gather(*tasks)
+
+    assert fetch_calls == 1, f"expected 1 fetch, got {fetch_calls}"
+    assert all(r == fake_jwks for r in results)
