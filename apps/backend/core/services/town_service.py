@@ -18,6 +18,19 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _name_claim_id(user_id: str, agent_name: str) -> str:
+    """Build the synthetic primary-key value for an agent name-claim row.
+
+    Claim rows live in the same ``agents`` table but with a prefixed ``id``
+    so they're visually distinct and so ``attribute_not_exists(id)`` can
+    gate the first writer. They deliberately don't populate ``userId`` /
+    ``agentName`` / ``isActive`` / ``joinedAt``, so neither the
+    ``isActive-joinedAt-index`` nor ``userId-agentName-index`` GSI
+    includes them — invisible to every existing read path.
+    """
+    return f"name-claim#{user_id}#{agent_name}"
+
+
 def _decimal_to_native(obj):
     """Recursively convert Decimal values from DynamoDB to int/float."""
     if isinstance(obj, Decimal):
@@ -172,7 +185,30 @@ class TownService:
         personality_summary: Optional[str] = None,
         avatar_config: Optional[dict] = None,
     ) -> dict:
-        """Register an agent in GooseTown."""
+        """Register an agent in GooseTown.
+
+        TOCTOU protection: two concurrent registrations for the same
+        ``(user_id, agent_name)`` that both find no existing agent used
+        to each generate a fresh UUID and ``put_item`` successfully,
+        producing duplicate rows. Fixed by wrapping the create path in
+        ``TransactWriteItems`` with a synthetic "name claim" row keyed
+        by ``name-claim#{user_id}#{agent_name}``; the transaction either
+        puts both the claim and the agent, or fails entirely when the
+        claim already exists.
+
+        The claim row omits ``userId`` / ``agentName`` / ``isActive`` /
+        ``joinedAt`` so it stays invisible to every GSI — ``get_active_agents``
+        (``isActive-joinedAt-index``), ``get_active_agents_for_user``
+        (``userId-agentName-index`` + ``isActive`` filter), and
+        ``_get_town_agent`` (same GSI, filter-free) never surface it.
+        The row only exists to gate the ``put_item`` condition.
+
+        On the race path — both requests reach the transaction, one
+        wins, the other's claim put fails with
+        ``ConditionalCheckFailedException`` — we re-read via
+        ``_get_town_agent`` and return the winner's agent row. The race
+        becomes invisible to the loser's caller.
+        """
         existing = self._get_town_agent(user_id, agent_name)
         if existing:
             if existing.get("isActive") != "true":
@@ -227,8 +263,59 @@ class TownService:
             "lastConversationAt": None,
         }
 
+        claim_id = _name_claim_id(user_id, agent_name)
+        claim_item = {
+            "id": claim_id,
+            "kind": "name_claim",
+            "agentId": agent_id,
+            "claimedAt": now,
+        }
+
         table = dynamo.agents_table()
-        table.put_item(Item=item)
+        client = table.meta.client
+        try:
+            client.transact_write_items(
+                TransactItems=[
+                    {
+                        "Put": {
+                            "TableName": table.name,
+                            "Item": claim_item,
+                            "ConditionExpression": "attribute_not_exists(id)",
+                        }
+                    },
+                    {
+                        "Put": {
+                            "TableName": table.name,
+                            "Item": item,
+                        }
+                    },
+                ]
+            )
+        except client.exceptions.TransactionCanceledException as exc:
+            # One of the puts failed — almost certainly the claim's
+            # condition (another registration for the same name won the
+            # race). Re-read; if the winner's row is now visible, return
+            # it so the race is invisible to this caller.
+            reasons = getattr(exc, "response", {}).get("CancellationReasons", []) or []
+            claim_conflict = any(r.get("Code") == "ConditionalCheckFailed" for r in reasons)
+            if claim_conflict:
+                winner = self._get_town_agent(user_id, agent_name)
+                if winner is not None:
+                    logger.info(
+                        "Agent '%s' for user '%s' already registered by concurrent request",
+                        agent_name,
+                        user_id,
+                    )
+                    return winner
+                # Claim exists but winner row isn't visible — extremely
+                # unlikely with TransactWriteItems (it's atomic) but we
+                # raise a specific error if it ever happens so operators
+                # can investigate instead of silently succeeding.
+                raise RuntimeError(
+                    f"Agent registration for '{agent_name}' under user '{user_id}' was "
+                    "claimed but the agent row is missing — orphan claim row detected"
+                ) from exc
+            raise
 
         logger.info("Agent '%s' opted into GooseTown as '%s'", agent_name, display_name)
         return _decimal_to_native(item)
