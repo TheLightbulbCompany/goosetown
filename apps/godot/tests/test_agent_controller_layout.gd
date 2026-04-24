@@ -157,3 +157,50 @@ func test_missing_position_keys_filtered_out() -> void:
 func test_empty_input_returns_empty() -> void:
 	var targets := AgentControllerScript._compute_layout_targets([], {})
 	assert_that(targets).is_empty()
+
+
+# ---------------------------------------------------------------------------
+# _targets_share_axis
+# ---------------------------------------------------------------------------
+
+
+func test_share_axis_true_when_xs_match() -> void:
+	## Vertical layout case — both targets share an x, differ on y.
+	var targets := {"a": Vector2(100, 200), "b": Vector2(100, 400)}
+	assert_that(AgentControllerScript._targets_share_axis(targets)).is_true()
+
+
+func test_share_axis_true_when_ys_match() -> void:
+	## Horizontal layout case — both targets share a y, differ on x.
+	var targets := {"a": Vector2(100, 300), "b": Vector2(400, 300)}
+	assert_that(AgentControllerScript._targets_share_axis(targets)).is_true()
+
+
+func test_share_axis_true_within_epsilon() -> void:
+	## 2px sub-pixel drift still counts as aligned. Default epsilon=2.0.
+	var targets := {"a": Vector2(100, 200), "b": Vector2(101, 400)}
+	assert_that(AgentControllerScript._targets_share_axis(targets)).is_true()
+
+
+func test_share_axis_false_when_clamp_drifted_both_axes() -> void:
+	## Simulates the post-navmesh-clamp failure mode: one target got
+	## pushed off the intended axis by a building clamp, so neither x nor
+	## y match anymore. Caller should fall back to "don't walk".
+	var targets := {"a": Vector2(100, 200), "b": Vector2(150, 250)}
+	assert_that(AgentControllerScript._targets_share_axis(targets)).is_false()
+
+
+func test_share_axis_false_for_non_two_agents() -> void:
+	## Alignment check only applies to the 2-agent case — 3+ agents use
+	## the circle layout, which has no shared axis. Returns false so
+	## callers know to skip the check in that branch.
+	var targets := {
+		"a": Vector2(100, 200),
+		"b": Vector2(100, 400),
+		"c": Vector2(100, 600),
+	}
+	assert_that(AgentControllerScript._targets_share_axis(targets)).is_false()
+
+
+func test_share_axis_false_on_empty() -> void:
+	assert_that(AgentControllerScript._targets_share_axis({})).is_false()

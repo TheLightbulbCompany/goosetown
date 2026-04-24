@@ -41,6 +41,26 @@ var _id_to_peer: Dictionary = {}
 ## ``_check_arrivals`` restores it the moment ``is_navigation_finished()``
 ## becomes true. Cleared on apply.
 var _pending_conv_facing: Dictionary = {}
+## peer_id → Dict{avoidance_enabled: bool, target_desired_distance: float}
+## captured on ``layout_conversation`` dispatch and restored in
+## ``_check_arrivals`` when the walk ends.
+##
+## Root cause this fixes: the default NavigationAgent2D config is
+## ``target_desired_distance = 16.0`` (nav "done" at 16px away) and
+## ``avoidance_enabled = true`` (RVO deflects agents laterally when their
+## radii would overlap). For a normal move to a plaza marker this is
+## correct — agents don't need pixel-perfect arrival and should avoid
+## colliding. But for a 2-agent conversation we need strict same-axis
+## alignment, and the RVO deflection + 16px tolerance mean both agents
+## end up off-axis, 7-14px short of target, symmetrically pushed apart
+## by RVO.
+##
+## ``layout_conversation`` tightens ``target_desired_distance → 2`` and
+## disables RVO avoidance per-agent for the duration of the conversation
+## walk. Bystanders' RVO is unaffected. Window is small (<1s for the
+## short walks involved) so there's negligible risk of agents walking
+## through third parties.
+var _pending_conv_nav_config: Dictionary = {}
 ## Marker2D nodes for named locations
 var _locations: Array[Marker2D] = []
 ## peer_id → location_id (dedup arrivals — only emit when changed)
@@ -183,6 +203,7 @@ func remove_agent(peer_id: int) -> void:
 	_agent_speech.erase(peer_id)
 	_speech_timers.erase(peer_id)
 	_pending_conv_facing.erase(peer_id)
+	_pending_conv_nav_config.erase(peer_id)
 
 	agent_node.queue_free()
 
@@ -331,6 +352,34 @@ static func _facing_from_delta(delta: Vector2) -> String:
 	return "south" if delta.y > 0 else "north"
 
 
+static func _targets_share_axis(targets: Dictionary, epsilon: float = 2.0) -> bool:
+	## Pure helper: does a 2-agent target dict still share an axis after
+	## navmesh clamping?
+	##
+	## ``_compute_layout_targets`` produces strictly axis-aligned targets for
+	## 2 agents (both share centroid x, or both share centroid y). But the
+	## subsequent ``NavigationServer2D.map_get_closest_point`` call in
+	## ``layout_conversation`` clamps each target independently to the nearest
+	## walkable point — and if the ideal target falls inside a building, the
+	## clamp can shift one agent's axis coord by several pixels while leaving
+	## the other's intact. We'd then dispatch a walk that CAN'T produce
+	## strict alignment, because the endpoints aren't aligned.
+	##
+	## Returns true if:
+	##   * Only 2 entries (alignment only matters for the 2-agent case —
+	##     the 3+ circle layout has no axis), and
+	##   * Either all x values or all y values are within ``epsilon`` of
+	##     each other.
+	## Returns false otherwise (including for 3+ agents — callers should
+	## skip this check in that branch).
+	if targets.size() != 2:
+		return false
+	var positions: Array = targets.values()
+	var dx: float = abs(positions[0].x - positions[1].x)
+	var dy: float = abs(positions[0].y - positions[1].y)
+	return dx <= epsilon or dy <= epsilon
+
+
 func layout_conversation(agent_ids: Array) -> void:
 	## Arrange a conversation group: move each agent to a layout position and
 	## face them toward the post-move centroid. Uses NavigationAgent2D so the
@@ -345,6 +394,17 @@ func layout_conversation(agent_ids: Array) -> void:
 	## ``_handle_join_conversation`` (N agents) — the layout rule branches on
 	## group size. Silently no-ops if fewer than 2 of the requested ids are
 	## actually spawned (e.g. one daemon disconnected mid-chat).
+	##
+	## For strict same-axis alignment in the 2-agent case:
+	##   1. If navmesh clamping broke axis alignment (one target landed off-
+	##      axis to avoid a building edge), skip the walk entirely and just
+	##      face each other from current positions. Better than walking into
+	##      a wall-adjacent off-axis spot.
+	##   2. During the walk, temporarily disable RVO avoidance and tighten
+	##      ``target_desired_distance`` on each participant so the nav_agent
+	##      actually arrives AT the target (not 16px short) and isn't pushed
+	##      laterally by RVO when the two approach each other head-on.
+	##      ``_check_arrivals`` restores the original nav config on finish.
 	if agent_ids.size() < 2:
 		return
 
@@ -370,31 +430,54 @@ func layout_conversation(agent_ids: Array) -> void:
 	for aid in targets:
 		targets[aid] = NavigationServer2D.map_get_closest_point(map_rid, targets[aid])
 
-	# Start each agent walking toward their target.
-	for aid in id_to_node:
-		if not targets.has(aid):
-			continue
-		var node: CharacterBody2D = id_to_node[aid]
-		node.set_navigation_target(targets[aid])
-		var peer: int = _id_to_peer[aid]
-		_arrived_at.erase(peer)
+	# Post-clamp alignment check for the 2-agent case only. If clamping split
+	# the pair off-axis (one target pushed by an adjacent building), fall
+	# back to "just face each other, don't move" — avoids walking agents
+	# into wall-adjacent positions at slightly-different-x.
+	var dispatch_walk: bool = true
+	if targets.size() == 2 and not _targets_share_axis(targets):
+		dispatch_walk = false
 
-	# Forward-looking facing: toward centroid of TARGET positions.
-	# We set ``agent_node.facing`` NOW (so the first world_state broadcast
-	# after dispatch carries the intended direction) AND stash it in
-	# ``_pending_conv_facing``. During the walk, agent.gd overwrites facing
-	# from velocity direction every physics tick, so by the time nav ends
-	# the intended facing is gone — ``_check_arrivals`` reads the pending
-	# entry and restores it.
 	var target_centroid: Vector2 = Vector2.ZERO
-	for aid in targets:
-		target_centroid += targets[aid]
-	target_centroid /= targets.size()
+	if dispatch_walk:
+		# Tighten nav config per-participant: ``target_desired_distance = 2``
+		# so nav stops AT the target (not 16px short), and
+		# ``avoidance_enabled = false`` so RVO doesn't deflect the pair
+		# laterally on approach. Originals stashed for restore on arrival.
+		for aid in id_to_node:
+			if not targets.has(aid):
+				continue
+			var node: CharacterBody2D = id_to_node[aid]
+			var peer: int = _id_to_peer[aid]
+			_pending_conv_nav_config[peer] = {
+				"avoidance_enabled": node.nav_agent.avoidance_enabled,
+				"target_desired_distance": node.nav_agent.target_desired_distance,
+			}
+			node.nav_agent.avoidance_enabled = false
+			node.nav_agent.target_desired_distance = 2.0
+			node.set_navigation_target(targets[aid])
+			_arrived_at.erase(peer)
+
+		# Forward-looking facing centroid: toward centroid of TARGET positions.
+		for aid in targets:
+			target_centroid += targets[aid]
+		target_centroid /= targets.size()
+	else:
+		# No walk — face each other from current positions. Centroid is the
+		# midpoint of current positions, facing computed from delta to that.
+		for aid in id_to_node:
+			target_centroid += id_to_pos[aid]
+		target_centroid /= id_to_node.size()
+
+	# Store intended facing and set it immediately. During a walk, agent.gd
+	# overwrites ``agent_node.facing`` from velocity direction every physics
+	# tick — ``_check_arrivals`` restores the stashed value on nav finish.
+	# For the no-walk fallback, the stash is still applied the next time
+	# ``_check_arrivals`` sees the agent as not-moving (which is now).
 	for aid in id_to_node:
-		if not targets.has(aid):
-			continue
 		var node: CharacterBody2D = id_to_node[aid]
-		var want_facing: String = _facing_from_delta(target_centroid - targets[aid])
+		var source_pos: Vector2 = targets.get(aid, id_to_pos[aid])
+		var want_facing: String = _facing_from_delta(target_centroid - source_pos)
 		node.facing = want_facing
 		var peer: int = _id_to_peer[aid]
 		_pending_conv_facing[peer] = want_facing
@@ -556,6 +639,17 @@ func _check_arrivals() -> void:
 		var stopped: bool = agent_node.velocity.length() < 1.0
 
 		if nav_finished and stopped:
+			# Restore nav config that was tightened for the conversation
+			# walk (target_desired_distance + avoidance_enabled). Do this
+			# BEFORE the facing restore so subsequent moves behave normally
+			# even if this tick emits a facing update.
+			if _pending_conv_nav_config.has(peer_id):
+				var cfg: Dictionary = _pending_conv_nav_config[peer_id]
+				agent_node.nav_agent.avoidance_enabled = cfg.get("avoidance_enabled", true)
+				agent_node.nav_agent.target_desired_distance = cfg.get(
+					"target_desired_distance", 16.0
+				)
+				_pending_conv_nav_config.erase(peer_id)
 			# Restore any pending conversation facing. The walk's velocity-
 			# based facing would otherwise leave the agent pointed in the
 			# direction of last motion instead of toward the person they're
