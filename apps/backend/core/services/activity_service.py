@@ -227,6 +227,17 @@ async def _generate_custom_animation(agent_id: str, character_id: str, animation
     pxl = PixelLabService()
     service = TownService()
 
+    # Set a visible "learning" status on the agent so the frontend's
+    # apartment card can render "Learning to cook…" instead of "Idle"
+    # while we wait 1-3 minutes for PixelLab to generate the sprite.
+    # Cleared in the ``finally`` block so both the success and failure
+    # paths leave the agent without a stale status string.
+    learning_status = f"Learning to {animation_name}…"
+    try:
+        service.update_agent_state(agent_id, status_message=learning_status)
+    except Exception:
+        logger.warning("Could not set learning status for agent %s", agent_id, exc_info=True)
+
     try:
         # Queue custom animation (one V2 job per direction)
         job_ids = await pxl.queue_custom_animation(
@@ -318,6 +329,12 @@ async def _generate_custom_animation(agent_id: str, character_id: str, animation
         logger.exception("Custom animation generation failed: %s for agent %s", animation_name, agent_id)
     finally:
         _custom_anim_in_progress.discard((agent_id, animation_name))
+        # Always clear the learning status so a crashed generation doesn't
+        # leave the agent stuck "Learning to cook…" forever.
+        try:
+            service.update_agent_state(agent_id, status_message=None)
+        except Exception:
+            logger.warning("Could not clear learning status for agent %s", agent_id, exc_info=True)
 
 
 async def _activity_timer(
