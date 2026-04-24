@@ -1,7 +1,9 @@
 """Unit tests for TownDaemon — welcome blurb and group conversations."""
 
+import asyncio
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -463,3 +465,83 @@ class TestEventDrivenThink:
         content = status_file.read_text()
         assert "Your turn" not in content
         assert "decide what to do next" not in content
+
+
+# ---------------------------------------------------------------------------
+# Move action — arrival detection via state-poll fallback
+# ---------------------------------------------------------------------------
+#
+# Regression tests for the dry-run finding that ``move`` returned
+# ``{"status": "timeout"}`` even when the agent had actually arrived.
+# Root cause: the handler waited up to 120s for the discrete ``arrived``
+# WebSocket event and only checked the cached state ONCE at timeout. If
+# the event was dropped but ``agent_state`` broadcasts (every ~2s)
+# already updated the cached location, callers sat through a full 120s
+# wait before the "recovered via state cache" fallback fired.
+#
+# Fix: poll the cached state every 0.5s throughout the wait — return as
+# soon as ``state.agent.location`` matches the requested destination.
+
+
+@pytest.fixture()
+async def connected_daemon(daemon):
+    """Return a daemon wired with a mock ``ws`` so ``act`` commands send."""
+    daemon.ws = AsyncMock()
+    # The move handler pulls ``_arrived_event`` from ``asyncio.Event()``;
+    # in real lifecycle that's created in ``run()``. Recreate it here so
+    # handle_tool_command doesn't NPE on ``.clear()``.
+    daemon._arrived_event = asyncio.Event()
+    # Use fast polling on the test to keep the suite quick; the poll
+    # interval is hardcoded to 0.5s in prod which is fine for the <2s
+    # tests we're writing.
+    yield daemon
+
+
+class TestMoveActionStatePoll:
+    @pytest.mark.asyncio
+    async def test_returns_arrived_when_cached_state_matches_without_event(self, connected_daemon):
+        """If ``_arrived_event`` never fires but ``state.agent.location``
+        reaches the requested destination, the handler should return
+        ``arrived`` WITHIN one poll interval — not wait the full 120s."""
+        # Seed the daemon's cached state AT the destination. In prod this
+        # would arrive via an ``agent_state`` broadcast; here we set it
+        # directly.
+        connected_daemon.state = {"agent": {"location": "cafe"}}
+
+        cmd = {"action": "act", "payload": {"action": "move", "destination": "cafe"}}
+        # Hard limit: should complete well under a second because the
+        # polling loop sees the matching cached state on its first tick.
+        result = await asyncio.wait_for(connected_daemon.handle_tool_command(cmd), timeout=3.0)
+
+        assert result["status"] == "arrived"
+        assert result["location"] == "cafe"
+        # The fallback should log which path it returned through.
+        assert "state poll" in result.get("note", "")
+
+    @pytest.mark.asyncio
+    async def test_event_fires_returns_arrived_immediately(self, connected_daemon):
+        """If the discrete arrived event fires during the wait, return
+        ``arrived`` via the event path — faster than waiting for the next
+        poll tick."""
+        connected_daemon.state = {"agent": {"location": "library"}}
+        cmd = {"action": "act", "payload": {"action": "move", "destination": "library"}}
+
+        async def _fire_event_soon():
+            await asyncio.sleep(0.05)
+            connected_daemon._arrived_event.set()
+
+        fire_task = asyncio.create_task(_fire_event_soon())
+        result = await asyncio.wait_for(connected_daemon.handle_tool_command(cmd), timeout=3.0)
+        await fire_task
+
+        assert result["status"] == "arrived"
+        assert result["location"] == "library"
+        # No "note" field on the event path — that's only for the poll
+        # fallback so callers can tell apart "discrete signal fired" from
+        # "signal missed but state caught up".
+        assert "note" not in result
+
+    # The 120s full-timeout path is unchanged behaviour (inlined constant
+    # makes it hard to fake out without adding indirection we don't need);
+    # the bug this PR fixes is the false-timeout on successful arrivals,
+    # covered by ``test_returns_arrived_when_cached_state_matches_without_event``.
