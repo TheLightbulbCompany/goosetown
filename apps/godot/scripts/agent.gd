@@ -252,18 +252,11 @@ func move_to(x: float, y: float, facing_json: String, speed: float) -> void:
 	_parse_facing(facing_json)
 
 
-const SPEECH_MAX_CHARS: int = 60
-
 func update_state(data: Dictionary) -> void:
 	var text: String = str(data.get("speechText", ""))
 	if text != "" and text != speech_text:
 		speech_text = text
-		# Truncate for the bubble — full text is available in the conversation log.
-		var display_text: String = text
-		if display_text.length() > SPEECH_MAX_CHARS:
-			display_text = display_text.substr(0, SPEECH_MAX_CHARS - 1) + "…"
-		speech_text_label.text = display_text
-		speech_text_label.clip_text = true
+		speech_text_label.text = text
 		_show_speech_bubble()
 		if nameplate:
 			nameplate.visible = false
