@@ -30,6 +30,17 @@ var _agents: Dictionary = {}
 var _peer_to_id: Dictionary = {}
 ## agent_id string → peer_id
 var _id_to_peer: Dictionary = {}
+## peer_id → facing to apply once the agent stops moving.
+## While an agent walks, ``agent.gd:_update_facing_from_velocity`` overwrites
+## ``agent_node.facing`` every physics tick with the direction of motion.
+## That means any facing we set *before* dispatching a move (e.g. during
+## ``layout_conversation`` — "face toward the post-move centroid") gets
+## clobbered by the walk itself, and when nav finishes the agent is left
+## facing whichever direction the last velocity happened to point.
+## To fix, ``layout_conversation`` stashes the intended facing here, and
+## ``_check_arrivals`` restores it the moment ``is_navigation_finished()``
+## becomes true. Cleared on apply.
+var _pending_conv_facing: Dictionary = {}
 ## Marker2D nodes for named locations
 var _locations: Array[Marker2D] = []
 ## peer_id → location_id (dedup arrivals — only emit when changed)
@@ -171,6 +182,7 @@ func remove_agent(peer_id: int) -> void:
 	_agent_activity.erase(peer_id)
 	_agent_speech.erase(peer_id)
 	_speech_timers.erase(peer_id)
+	_pending_conv_facing.erase(peer_id)
 
 	agent_node.queue_free()
 
@@ -367,9 +379,13 @@ func layout_conversation(agent_ids: Array) -> void:
 		var peer: int = _id_to_peer[aid]
 		_arrived_at.erase(peer)
 
-	# Forward-looking facing: toward centroid of TARGET positions. Stored on
-	# each agent_node so it's broadcast via world_state; viewer applies when
-	# the agent finishes moving (is_moving=false).
+	# Forward-looking facing: toward centroid of TARGET positions.
+	# We set ``agent_node.facing`` NOW (so the first world_state broadcast
+	# after dispatch carries the intended direction) AND stash it in
+	# ``_pending_conv_facing``. During the walk, agent.gd overwrites facing
+	# from velocity direction every physics tick, so by the time nav ends
+	# the intended facing is gone — ``_check_arrivals`` reads the pending
+	# entry and restores it.
 	var target_centroid: Vector2 = Vector2.ZERO
 	for aid in targets:
 		target_centroid += targets[aid]
@@ -378,7 +394,10 @@ func layout_conversation(agent_ids: Array) -> void:
 		if not targets.has(aid):
 			continue
 		var node: CharacterBody2D = id_to_node[aid]
-		node.facing = _facing_from_delta(target_centroid - targets[aid])
+		var want_facing: String = _facing_from_delta(target_centroid - targets[aid])
+		node.facing = want_facing
+		var peer: int = _id_to_peer[aid]
+		_pending_conv_facing[peer] = want_facing
 
 
 func get_world_state_for_viewer() -> Dictionary:
@@ -537,6 +556,14 @@ func _check_arrivals() -> void:
 		var stopped: bool = agent_node.velocity.length() < 1.0
 
 		if nav_finished and stopped:
+			# Restore any pending conversation facing. The walk's velocity-
+			# based facing would otherwise leave the agent pointed in the
+			# direction of last motion instead of toward the person they're
+			# talking to.
+			if _pending_conv_facing.has(peer_id):
+				agent_node.facing = _pending_conv_facing[peer_id]
+				_pending_conv_facing.erase(peer_id)
+
 			var current_loc: String = _get_agent_location(agent_node.global_position)
 			var prev_loc: String = _arrived_at.get(peer_id, "")
 
