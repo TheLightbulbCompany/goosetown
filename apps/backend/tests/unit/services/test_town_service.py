@@ -32,6 +32,126 @@ class TestOptIn:
         assert agent["isActive"] == "true"
         assert agent["displayName"] == "Agent A v2"
 
+    def test_opt_in_creates_name_claim_row(self, dynamodb_tables):
+        """The fresh-agent path writes BOTH the agent row and a
+        name-claim row atomically (TransactWriteItems). The claim row
+        has a synthetic PK ``name-claim#<user_id>#<agent_name>`` so
+        the next ``opt_in`` for the same pair can condition on it."""
+        from core import dynamo
+        from core.services.town_service import _name_claim_id
+
+        svc = TownService()
+        agent = svc.opt_in("user-1", "agent-a", "Agent A")
+
+        claim_id = _name_claim_id("user-1", "agent-a")
+        table = dynamo.agents_table()
+        claim_resp = table.get_item(Key={"id": claim_id})
+        claim = claim_resp.get("Item")
+
+        assert claim is not None, "name-claim row must be written alongside the agent"
+        assert claim["agentId"] == agent["id"]
+        assert claim["kind"] == "name_claim"
+
+    def test_claim_row_invisible_to_existing_reads(self, dynamodb_tables):
+        """The claim row omits ``userId`` / ``agentName`` / ``isActive``
+        / ``joinedAt`` so it stays out of every GSI. Verified via the
+        three read paths that former TOCTOU-era tests would've tripped
+        on if claim rows leaked into results."""
+        svc = TownService()
+        svc.opt_in("user-1", "agent-a", "Agent A")
+        svc.opt_in("user-1", "agent-b", "Agent B")
+
+        # userId-agentName-index — per-user query
+        per_user = svc.get_active_agents_for_user("user-1")
+        names = sorted(a["agentName"] for a in per_user)
+        assert names == ["agent-a", "agent-b"]
+
+        # isActive-joinedAt-index — global active agents
+        active = svc.get_active_agents()
+        assert sorted(a["agentName"] for a in active) == ["agent-a", "agent-b"]
+
+        # _get_town_agent — the internal single-agent lookup
+        lookup = svc._get_town_agent("user-1", "agent-a")
+        assert lookup is not None
+        assert lookup["agentName"] == "agent-a"
+        # NOT the claim row (which has no agentName, no displayName, etc)
+        assert "displayName" in lookup
+
+    def test_concurrent_registration_race_returns_winner(self, dynamodb_tables, monkeypatch):
+        """Race scenario: two concurrent opt_in calls for the same
+        ``(user_id, agent_name)`` both pass the initial
+        ``_get_town_agent`` check. The first hits ``TransactWriteItems``
+        and wins (writes claim + agent); the second's claim put fails
+        with ``ConditionalCheckFailed``. The loser re-reads
+        ``_get_town_agent``, finds the winner's agent, and returns it —
+        the race is invisible to the caller.
+
+        Simulated with a stub that makes the first ``_get_town_agent``
+        return None (initial check) and subsequent calls return the real
+        row — the effect of a winner committing between our check and
+        our transact call.
+        """
+        svc = TownService()
+        winner = svc.opt_in("user-1", "agent-a", "Winner")
+
+        # Simulate: a SECOND opt_in that happens to race. The initial
+        # check returned None (empty at the time) so it reaches the
+        # transact; by then the winner is visible.
+        call_count = {"n": 0}
+        real_get = svc._get_town_agent
+
+        def racing_get(user_id, agent_name):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return None  # initial check — winner hadn't committed yet
+            return real_get(user_id, agent_name)  # post-failure re-read
+
+        monkeypatch.setattr(svc, "_get_town_agent", racing_get)
+
+        # Must not raise, must return the WINNER's row (same id — no
+        # duplicate agent was written).
+        result = svc.opt_in("user-1", "agent-a", "Loser")
+        assert result["id"] == winner["id"]
+        assert result["displayName"] == "Winner"  # winner's values preserved
+
+    def test_orphan_claim_without_agent_raises_specific_error(self, dynamodb_tables):
+        """If a claim row exists but no matching agent does, opt_in
+        detects the orphan and raises a clear error rather than silently
+        succeeding or hanging."""
+        import pytest
+
+        from core import dynamo
+        from core.services.town_service import _name_claim_id
+
+        # Manually write a claim row with no agent.
+        table = dynamo.agents_table()
+        claim_id = _name_claim_id("user-1", "ghost")
+        table.put_item(
+            Item={
+                "id": claim_id,
+                "kind": "name_claim",
+                "agentId": "no-such-agent",
+                "claimedAt": "2026-04-24T00:00:00Z",
+            }
+        )
+
+        svc = TownService()
+        with pytest.raises(RuntimeError, match="orphan claim"):
+            svc.opt_in("user-1", "ghost", "Ghost")
+
+    def test_two_users_can_share_agent_name(self, dynamodb_tables):
+        """Name claim is keyed by ``(user_id, agent_name)``, not by
+        ``agent_name`` alone — two different users CAN both have an
+        agent called "jim". (This is existing behaviour, but the claim-
+        lock must not break it.)"""
+        svc = TownService()
+        jim_a = svc.opt_in("user-a", "jim", "Jim from A")
+        jim_b = svc.opt_in("user-b", "jim", "Jim from B")
+
+        assert jim_a["id"] != jim_b["id"]
+        assert jim_a["userId"] == "user-a"
+        assert jim_b["userId"] == "user-b"
+
 
 class TestOptOut:
     def test_opt_out_deactivates(self, dynamodb_tables):
