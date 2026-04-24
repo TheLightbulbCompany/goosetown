@@ -100,6 +100,25 @@ class TownService:
         )
         return [_decimal_to_native(item) for item in resp.get("Items", [])]
 
+    def get_active_agents_for_user(self, user_id: str) -> list[dict]:
+        """Get all active agents owned by a single user.
+
+        Queries the ``userId-agentName-index`` GSI directly instead of
+        doing a global ``isActive-joinedAt-index`` scan and filtering in
+        Python. The frontend polls ``/apartment`` every 2s per user —
+        each old scan returned every active agent in the system to then
+        throw away everyone except the requester's. Cost scales with
+        total town population × users online; the GSI query scales only
+        with agents-per-user.
+        """
+        table = dynamo.agents_table()
+        resp = table.query(
+            IndexName="userId-agentName-index",
+            KeyConditionExpression=Key("userId").eq(user_id),
+            FilterExpression=Attr("isActive").eq("true"),
+        )
+        return [_decimal_to_native(item) for item in resp.get("Items", [])]
+
     def get_town_state(self) -> list[dict]:
         """Get current state of all active agents with ready sprites.
 

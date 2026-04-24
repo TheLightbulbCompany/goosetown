@@ -539,10 +539,11 @@ async def get_apartment(
 ):
     """Get the user's apartment view -- their agents and recent activity."""
     service = TownService()
-    active_agents = service.get_active_agents()
-
-    # Filter to this user's agents
-    user_agents = [a for a in active_agents if a.get("userId") == auth.user_id]
+    # Query the userId-agentName GSI directly instead of scanning every
+    # active agent globally then filtering. /apartment polls every 2s per
+    # user, and the old scan-then-filter cost scaled with total town
+    # population × users online.
+    user_agents = service.get_active_agents_for_user(auth.user_id)
 
     agents = []
     for item in user_agents:
