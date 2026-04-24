@@ -977,3 +977,238 @@ class TestHandleEndConversation:
         assert ended_events[0]["reason"] == "ended_by_participant"
         # Relationship affinity bumped
         svc_mock.update_relationship.assert_called_once_with("agent-A", "agent-B", affinity_delta=5)
+
+
+# ---------------------------------------------------------------------------
+# Silence auto-end timer (``_schedule_inactivity_timeout`` +
+# ``_inactivity_timeout``). These tests verify that the silence window
+# tracks the "last activity" on a conversation and auto-finalises when
+# nobody has spoken for ``_INACTIVITY_TIMEOUT_SEC``.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=False)
+def _clear_inactivity_tasks():
+    """Reset the module-level inactivity task registry before and after."""
+    from core.services import conversation_service as cs
+
+    for t in list(cs._inactivity_tasks.values()):
+        t.cancel()
+    cs._inactivity_tasks.clear()
+    yield
+    for t in list(cs._inactivity_tasks.values()):
+        t.cancel()
+    cs._inactivity_tasks.clear()
+
+
+class TestInactivityTimeout:
+    """The silence-auto-end timer schedules on every chat/say/join, cancels
+    on end, and fires ``_finalize_conversation`` with reason ``inactivity``
+    when the window elapses with no new activity."""
+
+    @pytest.mark.asyncio
+    async def test_chat_schedules_timer(self, _clear_inactivity_tasks):
+        """A successful ``chat`` should leave an entry in
+        ``_inactivity_tasks`` keyed by the new conv_id."""
+        from core.services import conversation_service as cs
+        from routers.town import _handle_chat
+
+        sent: list = []
+        initiator = _make_agent(agent_id="agent-init", current_location="cafe")
+        target = _make_agent(agent_id="agent-2", display_name="M", current_location="cafe")
+        svc_mock = MagicMock()
+        svc_mock.get_town_agent_by_id.side_effect = [initiator, target]
+        svc_mock.create_active_conversation.return_value = {"id": "conv-new"}
+
+        target_conn = SimpleNamespace(agent_id="agent-2", connection_id="conn-target", agent_name="M")
+        ws_mock = _make_ws_manager_mock({"agent-2": target_conn})
+
+        with (
+            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(SERVICE_PATH, return_value=svc_mock),
+            patch(WS_MANAGER_PATH, return_value=ws_mock),
+            patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
+        ):
+            await _handle_chat(
+                "conn-abc",
+                {"target": "agent-2", "message": "hey"},
+                _make_agent_conn(),
+            )
+
+        assert "conv-new" in cs._inactivity_tasks
+        task = cs._inactivity_tasks["conv-new"]
+        assert not task.done(), "timer should be scheduled and running"
+
+    @pytest.mark.asyncio
+    async def test_say_replaces_timer(self, _clear_inactivity_tasks):
+        """Every ``say`` should cancel the previous timer and schedule a new
+        one so the silence window is measured from the most recent turn."""
+        from core.services import conversation_service as cs
+        from routers.town import _handle_say
+
+        sent: list = []
+        svc_mock = MagicMock()
+        svc_mock.get_conversation_by_id.return_value = {
+            "id": "conv-1",
+            "status": "active",
+            "participants": ["agent-A", "agent-B"],
+            "participantAId": "agent-A",
+            "participantBId": "agent-B",
+        }
+        svc_mock.append_message_to_conversation.return_value = {"turnCount": 3}
+        svc_mock.get_town_agent_by_id.return_value = _make_agent()
+
+        # Pre-seed a timer so we can verify it gets replaced, not stacked.
+        cs._schedule_inactivity_timeout("conv-1")
+        first_task = cs._inactivity_tasks["conv-1"]
+
+        with (
+            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(SERVICE_PATH, return_value=svc_mock),
+            patch(
+                WS_MANAGER_PATH,
+                return_value=_make_ws_manager_mock(
+                    {"agent-B": SimpleNamespace(agent_id="agent-B", connection_id="c-b")}
+                ),
+            ),
+            patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
+        ):
+            await _handle_say(
+                "conn-A",
+                {"conv_id": "conv-1", "message": "still here"},
+                _make_agent_conn(agent_id="agent-A"),
+            )
+
+        # The OLD task was cancelled and replaced by a fresh one.
+        import asyncio
+
+        await asyncio.sleep(0)  # let cancel propagate
+        assert first_task.cancelled() or first_task.done()
+        new_task = cs._inactivity_tasks["conv-1"]
+        assert new_task is not first_task
+        assert not new_task.done()
+
+    @pytest.mark.asyncio
+    async def test_end_conversation_cancels_timer(self, _clear_inactivity_tasks):
+        """Explicit ``end_conversation`` should cancel the silence timer so
+        the auto-end path doesn't fire after the agent has already left."""
+        from core.services import conversation_service as cs
+        from routers.town import _handle_end_conversation
+
+        sent: list = []
+        svc_mock = MagicMock()
+        svc_mock.get_conversation_by_id.return_value = {
+            "id": "conv-1",
+            "status": "active",
+            "participants": ["agent-A", "agent-B"],
+            "participantAId": "agent-A",
+            "participantBId": "agent-B",
+        }
+        svc_mock.leave_conversation.return_value = 1  # 1 remaining → triggers finalise
+        svc_mock.end_conversation.return_value = {
+            "id": "conv-1",
+            "participants": ["agent-A", "agent-B"],
+            "participantAId": "agent-A",
+            "participantBId": "agent-B",
+            "publicLog": [{"speaker": "A", "text": "hi"}],
+        }
+        svc_mock.get_town_agent_by_id.return_value = _make_agent()
+
+        b_conn = SimpleNamespace(agent_id="agent-B", connection_id="conn-B")
+        ws_mock = _make_ws_manager_mock({"agent-B": b_conn})
+
+        # Pre-seed a live timer.
+        cs._schedule_inactivity_timeout("conv-1")
+        scheduled_task = cs._inactivity_tasks["conv-1"]
+
+        with (
+            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(SERVICE_PATH, return_value=svc_mock),
+            patch(WS_MANAGER_PATH, return_value=ws_mock),
+            patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
+            patch(APPLY_EVENT_PATH),
+        ):
+            await _handle_end_conversation(
+                "conn-A",
+                {"conv_id": "conv-1"},
+                _make_agent_conn(agent_id="agent-A"),
+            )
+
+        assert "conv-1" not in cs._inactivity_tasks
+        # Give the cancelled coroutine a tick to notice cancellation
+        import asyncio
+
+        await asyncio.sleep(0)
+        assert scheduled_task.cancelled() or scheduled_task.done()
+
+    @pytest.mark.asyncio
+    async def test_timeout_fires_finalises_with_inactivity_reason(self, _clear_inactivity_tasks, monkeypatch):
+        """When the silence window elapses, the timer should call
+        ``_finalize_conversation`` with ``end_reason_override="inactivity"``."""
+        from core.services import conversation_service as cs
+
+        # Shrink the window so the test doesn't actually wait 60s.
+        monkeypatch.setattr(cs, "_INACTIVITY_TIMEOUT_SEC", 0.01)
+
+        finalize_calls: list = []
+
+        async def _fake_finalize(*args, **kwargs) -> None:
+            finalize_calls.append((args, kwargs))
+
+        monkeypatch.setattr(cs, "_finalize_conversation", _fake_finalize)
+
+        # get_conversation_by_id must report the conv as still active at
+        # fire-time so _inactivity_timeout proceeds to finalise.
+        svc_mock = MagicMock()
+        svc_mock.get_conversation_by_id.return_value = {
+            "id": "conv-1",
+            "status": "active",
+        }
+
+        with (
+            patch(SERVICE_PATH, return_value=svc_mock),
+            patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
+            patch(MGMT_PATH, return_value=_make_mgmt_mock([])),
+        ):
+            cs._schedule_inactivity_timeout("conv-1")
+            task = cs._inactivity_tasks["conv-1"]
+            await task
+
+        assert len(finalize_calls) == 1
+        _args, kwargs = finalize_calls[0]
+        assert kwargs.get("end_reason_override") == "inactivity"
+        assert kwargs.get("auto_ended") is True
+
+    @pytest.mark.asyncio
+    async def test_timeout_noop_if_conv_already_ended(self, _clear_inactivity_tasks, monkeypatch):
+        """If the conversation was finalised by another path (explicit end,
+        turn limit) before the timer fires, the timer should do nothing —
+        no second ``_finalize_conversation`` call."""
+        from core.services import conversation_service as cs
+
+        monkeypatch.setattr(cs, "_INACTIVITY_TIMEOUT_SEC", 0.01)
+
+        finalize_calls: list = []
+
+        async def _fake_finalize(*args, **kwargs) -> None:
+            finalize_calls.append((args, kwargs))
+
+        monkeypatch.setattr(cs, "_finalize_conversation", _fake_finalize)
+
+        svc_mock = MagicMock()
+        # Conversation already ended in DB by the time the timer fires.
+        svc_mock.get_conversation_by_id.return_value = {
+            "id": "conv-1",
+            "status": "ended",
+        }
+
+        with (
+            patch(SERVICE_PATH, return_value=svc_mock),
+            patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
+            patch(MGMT_PATH, return_value=_make_mgmt_mock([])),
+        ):
+            cs._schedule_inactivity_timeout("conv-1")
+            task = cs._inactivity_tasks["conv-1"]
+            await task
+
+        assert finalize_calls == [], "must not double-finalise an ended conv"
