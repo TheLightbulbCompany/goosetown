@@ -153,28 +153,66 @@ func spawn_agent(peer_id: int, data: Dictionary) -> void:
 
 ## Avoid two agents landing on the exact same tile when spawning / arriving.
 ## If another agent is already within ~1.5 tiles of the intended position,
-## offset the spawn point around a 6-slot circle so each gets a distinct
-## cell. Deterministic per-count so successive arrivals don't collide with
-## each other either.
+## walk a 6-slot circle around it and pick the first free slot. Falls back
+## to a peer-id-indexed slot when all 6 are taken so two agents arriving in
+## the same physics tick don't both pick the same fallback.
 ##
-## ``exclude_peer`` skips one agent from the collision count — used by
+## ``exclude_peer`` skips one agent from the collision check — used by
 ## arrival dedup so an already-placed agent doesn't think it's colliding
-## with itself when checked at its own position.
+## with itself when checked at its own position. Doubles as the seed for
+## the all-slots-full fallback.
+const _OFFSET_SLOTS: int = 6
+## Slot distance must be greater than ``_OCCUPIED_RADIUS_TILES`` — otherwise
+## a candidate slot would itself sit inside the radius of the occupant on
+## the original ``pos``, the slot-free scan would reject every slot, and
+## the helper would fall through to the seed-indexed fallback every time.
+const _OFFSET_DISTANCE_TILES: float = 1.6
+const _OCCUPIED_RADIUS_TILES: float = 1.5
+
+
 func _offset_if_occupied(pos: Vector2, exclude_peer: int = -1) -> Vector2:
-	var radius: float = TILE_SIZE * 1.5
-	var collisions: int = 0
+	var occupied: Array = []
 	for peer in _agents.keys():
 		if peer == exclude_peer:
 			continue
 		var other: CharacterBody2D = _agents[peer]
 		if other == null or not is_instance_valid(other):
 			continue
-		if other.global_position.distance_to(pos) < radius:
-			collisions += 1
-	if collisions == 0:
+		occupied.append(other.global_position)
+	return _pick_free_slot(pos, occupied, exclude_peer)
+
+
+## Pure helper for ``_offset_if_occupied`` — exposed as a static function so
+## unit tests can drive it without spinning up a scene tree. Returns ``pos``
+## unchanged when no agent in ``occupied`` is within
+## ``_OCCUPIED_RADIUS_TILES`` tiles; otherwise scans 6 slots evenly spaced
+## around ``pos`` and returns the first free one. ``fallback_seed`` chooses
+## the slot when all 6 are full, so simultaneous arrivals don't all collapse
+## to the same fallback.
+static func _pick_free_slot(
+	pos: Vector2,
+	occupied: Array,
+	fallback_seed: int = 0,
+) -> Vector2:
+	var radius: float = TILE_SIZE * _OCCUPIED_RADIUS_TILES
+	var distance: float = TILE_SIZE * _OFFSET_DISTANCE_TILES
+	if not _slot_is_occupied(pos, occupied, radius):
 		return pos
-	var angle: float = float(collisions) * TAU / 6.0
-	return pos + Vector2(cos(angle), sin(angle)) * TILE_SIZE * 1.2
+	for i in range(1, _OFFSET_SLOTS + 1):
+		var angle: float = float(i) * TAU / float(_OFFSET_SLOTS)
+		var candidate: Vector2 = pos + Vector2(cos(angle), sin(angle)) * distance
+		if not _slot_is_occupied(candidate, occupied, radius):
+			return candidate
+	var seed_idx: int = posmod(fallback_seed, _OFFSET_SLOTS)
+	var fallback_angle: float = float(seed_idx) * TAU / float(_OFFSET_SLOTS)
+	return pos + Vector2(cos(fallback_angle), sin(fallback_angle)) * distance
+
+
+static func _slot_is_occupied(pos: Vector2, occupied: Array, radius: float) -> bool:
+	for other_pos in occupied:
+		if (other_pos as Vector2).distance_to(pos) < radius:
+			return true
+	return false
 
 
 func remove_agent(peer_id: int) -> void:
