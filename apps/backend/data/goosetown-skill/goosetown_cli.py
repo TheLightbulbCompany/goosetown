@@ -1643,14 +1643,10 @@ class TownDaemon:
         # ``websockets`` >= 11 uses ``additional_headers``; older versions
         # used ``extra_headers``. Try the new name first.
         try:
-            self.ws = await websockets.connect(
-                url, additional_headers=[auth_header], **connect_kwargs
-            )
+            self.ws = await websockets.connect(url, additional_headers=[auth_header], **connect_kwargs)
         except TypeError:
             try:
-                self.ws = await websockets.connect(
-                    url, extra_headers=[auth_header], **connect_kwargs
-                )
+                self.ws = await websockets.connect(url, extra_headers=[auth_header], **connect_kwargs)
             except Exception as exc:
                 log.error("WebSocket connection failed: %s", exc)
                 raise
