@@ -186,6 +186,20 @@ React 18, TypeScript, Vite, Tailwind CSS, Clerk auth, React Router v6.
 - Tile size: 32px, sprite frame: 48×48, spritesheet: 288×192
 - Requires COOP/COEP headers for SharedArrayBuffer (configured in vercel.json + vite.config.ts)
 
+### Re-exporting the WebGL build (headless, no GUI)
+
+Don't open the Godot editor to re-export — shell out to the binary. The "Web" preset already exists in `apps/godot/export_presets.cfg`, and the export templates are installed locally. From the repo root:
+
+```bash
+/Applications/Godot.app/Contents/MacOS/Godot \
+  --headless \
+  --path apps/godot \
+  --export-release "Web" \
+  apps/frontend/public/godot/goosetown.html
+```
+
+This overwrites `goosetown.{html,js,wasm,pck}` in `apps/frontend/public/godot/`. Always commit the regenerated `.pck` alongside any `.gd` / `.tscn` changes — see the "Critical Rules" entry below ("Never push GDScript changes separately from the .pck export").
+
 ## Backend (`apps/backend/`)
 
 FastAPI, Python 3.12, uv, boto3, DynamoDB.
