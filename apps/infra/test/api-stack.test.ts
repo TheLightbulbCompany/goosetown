@@ -17,6 +17,8 @@ import { Template, Match } from "aws-cdk-lib/assertions";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
+import * as fs from "fs";
+import * as path from "path";
 import { ApiStack } from "../lib/stacks/api-stack";
 
 function buildTestApp(): { template: Template } {
@@ -148,5 +150,35 @@ describe("ApiStack — ManagementApiUrl CfnOutput (rollback safety)", () => {
     const outputs = template.findOutputs("ManagementApiUrl");
     const output = Object.values(outputs)[0] as any;
     expect(output.Export?.Name).toMatch(/goosetown-\w+-management-api-url/);
+  });
+});
+
+describe("ApiStack — authorizer token-source migration", () => {
+  // The authorizer Lambda code is defined inline in api-stack.ts. These
+  // tests are file-content regression guards for the migration that moved
+  // the daemon's town-token from a query string (?token=…) to an
+  // Authorization header. Tokens in URLs leak into proxy/access logs; the
+  // header keeps them out. Query-string fallback is retained for daemons
+  // running an older skill bundle.
+  const apiStackSource = fs.readFileSync(
+    path.join(__dirname, "..", "lib", "stacks", "api-stack.ts"),
+    "utf8"
+  );
+
+  test("authorizer extracts token from Authorization header", () => {
+    expect(apiStackSource).toMatch(/k\.lower\(\) == "authorization"/);
+    expect(apiStackSource).toMatch(/Bearer/);
+  });
+
+  test("authorizer keeps query-string fallback during rollout", () => {
+    expect(apiStackSource).toMatch(/queryStringParameters/);
+    // Should still grab token from query when header is absent.
+    expect(apiStackSource).toMatch(/qs\.get\("token"\)/);
+  });
+
+  test("authorizer no longer dumps the full event (which leaks tokens)", () => {
+    // Old pattern used to log the entire event — including queryStringParameters,
+    // including the token. Confirm that's gone.
+    expect(apiStackSource).not.toMatch(/Authorizer event: %s.*json\.dumps\(event/);
   });
 });
