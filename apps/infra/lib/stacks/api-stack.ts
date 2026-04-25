@@ -210,10 +210,29 @@ def _verify_clerk_jwt(token, clerk_issuer):
 
     return payload.get("sub")
 
+def _extract_token(event):
+    # Prefer "Authorization: Bearer <token>" header (kept out of access logs).
+    # Fall back to the legacy ?token= query param so daemons that still ship
+    # the older skill bundle keep working through the transition.
+    headers = event.get("headers") or {}
+    for k, v in headers.items():
+        if k.lower() == "authorization" and isinstance(v, str):
+            if v.lower().startswith("bearer "):
+                return v[7:].strip(), "header"
+            return v.strip(), "header"
+    qs = event.get("queryStringParameters") or {}
+    legacy_token = qs.get("token") or ""
+    if legacy_token:
+        return legacy_token, "query"
+    return "", "none"
+
 def handler(event, context):
-    logger.info("Authorizer event: %s", json.dumps(event, default=str))
-    token = event.get("queryStringParameters", {}).get("token", "")
     method_arn = event.get("methodArn", "")
+    # Don't log the full event — it contains the token in queryStringParameters
+    # or headers depending on the auth path. Log only the route + source.
+    route_key = event.get("requestContext", {}).get("routeKey", "")
+    token, source = _extract_token(event)
+    logger.info("Authorizer route=%s token_source=%s", route_key, source)
 
     if not token:
         logger.warning("No token provided")

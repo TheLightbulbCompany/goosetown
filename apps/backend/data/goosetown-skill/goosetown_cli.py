@@ -1627,11 +1627,29 @@ class TownDaemon:
             log.error("websockets package not installed. Install with: pip install websockets")
             sys.exit(1)
 
-        url = f"{self._ws_url}?token={self._token}&type=agent"
+        # Pass the token in the Authorization header instead of the URL —
+        # query params end up in CloudWatch / proxy access logs verbatim. The
+        # API Gateway authorizer prefers the header but still accepts the old
+        # ?token= form during the rollout window for daemons that haven't
+        # been re-installed.
+        url = f"{self._ws_url}?type=agent"
         log.info("Connecting to %s...", self._ws_url)
 
+        connect_kwargs = {
+            "ping_interval": 30,
+            "ping_timeout": 10,
+        }
+        auth_header = ("Authorization", f"Bearer {self._token}")
+        # ``websockets`` >= 11 uses ``additional_headers``; older versions
+        # used ``extra_headers``. Try the new name first.
         try:
-            self.ws = await websockets.connect(url, ping_interval=30, ping_timeout=10)
+            self.ws = await websockets.connect(url, additional_headers=[auth_header], **connect_kwargs)
+        except TypeError:
+            try:
+                self.ws = await websockets.connect(url, extra_headers=[auth_header], **connect_kwargs)
+            except Exception as exc:
+                log.error("WebSocket connection failed: %s", exc)
+                raise
         except Exception as exc:
             log.error("WebSocket connection failed: %s", exc)
             raise
