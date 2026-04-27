@@ -84,8 +84,8 @@ def _seed_agent(
 def _seed_conversation(
     dynamodb_tables,
     conv_id: str,
-    participant_a: str,
-    participant_b: str,
+    participant_a: str | None,
+    participant_b: str | None,
     location: str = "cafe",
     status: str = "ended",
     public_log: list | None = None,
@@ -94,11 +94,18 @@ def _seed_conversation(
     updated_at: str = "2026-04-17T00:05:00Z",
     participants: list | None = None,
 ):
+    """Seed a conversation row.
+
+    Pass ``participant_a=None`` / ``participant_b=None`` to omit the
+    legacy GSI-key fields entirely (DynamoDB stores items without GSI
+    keys; they just don't appear in GSI queries). Used by the
+    no-participants regression test to exercise the legacy fallback path
+    in ``GET /town/conversations`` that emits ``""`` instead of
+    ``"Unknown"`` for empty A/B slots.
+    """
     table = dynamodb_tables.Table("goosetown-conversations")
     item = {
         "id": conv_id,
-        "participantAId": participant_a,
-        "participantBId": participant_b,
         "location": location,
         "status": status,
         "startedAt": started_at,
@@ -107,6 +114,10 @@ def _seed_conversation(
         "turnCount": len(public_log or []),
         "publicLog": public_log or [],
     }
+    if participant_a is not None:
+        item["participantAId"] = participant_a
+    if participant_b is not None:
+        item["participantBId"] = participant_b
     if participants is not None:
         item["participants"] = participants
     table.put_item(Item=item)
@@ -241,16 +252,13 @@ class TestConversationsEndpoint:
         assert conv["participant_a"] == "Rachel"
         assert conv["participant_b"] == "Unknown"
 
-    def test_legacy_row_with_both_participants_missing_emits_empty_strings(self, client, dynamodb_tables):
-        """If a legacy row has neither a ``participants`` array nor any
-        resolvable A/B agent ids, the legacy fields must be empty strings
-        (NOT 'Unknown' placeholders). Rationale: the frontend fallback
-        ``[participant_a, participant_b].filter(Boolean)`` would treat
-        'Unknown' as a real participant and render 'Unknown & Unknown' in
-        the conversation row. Empty strings let the filter actually catch
-        the no-participants case.
+    def test_unresolvable_a_and_b_ids_resolve_to_unknown_per_participant(self, client, dynamodb_tables):
+        """Per-participant resolve path: when both A/B ids are present in
+        the row but neither agent record exists, ``_resolve`` legitimately
+        emits ``"Unknown"`` for each — useful information ("conversation
+        with someone whose record we lost") rather than hiding the
+        conversation. Distinct from the empty-A/B-slot case below.
         """
-        # Both ids unresolvable, no ``participants`` array at all.
         _seed_conversation(
             dynamodb_tables,
             "conv-1",
@@ -261,15 +269,43 @@ class TestConversationsEndpoint:
         resp = client.get("/api/v1/town/conversations")
         assert resp.status_code == 200
         conv = resp.json()["conversations"][0]
-        # Per-participant ``Unknown`` is still emitted in the canonical
-        # ``participants`` array because each id resolves to ``"Unknown"``
-        # via ``_resolve`` — that's expected and useful ("conversation
-        # with someone whose record we lost").
         assert conv["participants"] == ["Unknown", "Unknown"]
-        # But the legacy fields must NOT add additional ``"Unknown"``s on
-        # top — they get the slot from ``participants`` if any, or empty.
         assert conv["participant_a"] == "Unknown"
         assert conv["participant_b"] == "Unknown"
+
+    def test_legacy_row_with_no_participant_ids_emits_empty_strings(self, client, dynamodb_tables):
+        """Legacy fallback path: when the row has neither ``participants``
+        nor ``participantAId/Bid`` at all, the response's legacy fields
+        must be empty strings (NOT ``"Unknown"``). Rationale: the
+        frontend ``[participant_a, participant_b].filter(Boolean)``
+        legacy-fallback path would treat ``"Unknown"`` as a real
+        participant and render ``"Unknown & Unknown"`` in the
+        conversation row. Empty strings let the filter catch the
+        no-participants case as intended.
+
+        We bypass the GSI-key requirement on ``participantAId`` /
+        ``participantBId`` by omitting them from the row entirely
+        (DynamoDB stores GSI-key-absent items; they just don't appear
+        in queries on that GSI). This is the exact shape of a row that
+        could exist if a future migration / data-restoration path left
+        the legacy keys unset.
+        """
+        _seed_conversation(
+            dynamodb_tables,
+            "conv-1",
+            participant_a=None,  # GSI key omitted entirely
+            participant_b=None,
+        )
+
+        resp = client.get("/api/v1/town/conversations")
+        assert resp.status_code == 200
+        conv = resp.json()["conversations"][0]
+        # No participants resolvable anywhere — canonical array is empty.
+        assert conv["participants"] == []
+        # Legacy fields fall back to "" (the regression: they used to be
+        # "Unknown", which the frontend filter(Boolean) didn't catch).
+        assert conv["participant_a"] == ""
+        assert conv["participant_b"] == ""
 
     def test_returns_full_participants_list_for_group_chat(self, client, dynamodb_tables):
         """Group conversations (3+ participants) used to return only
