@@ -344,6 +344,18 @@ func _set_interp_target(target: Vector2) -> void:
 	_interp_start_ms = now_ms
 
 
+func has_loaded_sprite(animation_name: String) -> bool:
+	## Returns true when ``set_spritesheet`` has been called with a real
+	## texture for this animation. Used by ``agent_manager.gd`` to detect
+	## the case where a previous broadcast advertised a sprite URL but
+	## the JS-side fetch dropped (CORS hiccup, browser tab throttled,
+	## network blip) and the texture never made it into the agent — so
+	## the diff-by-URL retry condition wouldn't refire. With this hook
+	## the manager can re-issue the load whenever the texture is missing,
+	## regardless of whether the URL "changed."
+	return _spritesheets.has(animation_name)
+
+
 func set_spritesheet(tex: Texture2D, animation_name: String = "walk") -> void:
 	_spritesheets[animation_name] = tex
 	# Invalidate cached AtlasTextures for this animation so they are rebuilt

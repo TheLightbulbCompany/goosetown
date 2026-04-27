@@ -134,7 +134,12 @@ func _on_world_state(data: Dictionary) -> void:
 						old_url = str(current_anims[anim_name].get("url", ""))
 						old_fps = float(current_anims[anim_name].get("fps", 0))
 						old_frames = int(current_anims[anim_name].get("frameCount", 0))
-					if new_url != "" and new_url != old_url:
+					var url_unchanged_but_missing: bool = (
+						new_url == old_url
+						and new_url != ""
+						and not agent_node.has_loaded_sprite(anim_name)
+					)
+					if new_url != "" and (new_url != old_url or url_unchanged_but_missing):
 						agent_node.load_sprite(new_url, anim_name)
 						url_changed = true
 					if new_fps != old_fps or new_frames != old_frames:
