@@ -432,7 +432,7 @@ Agent({
 
 ## Production Roadmap
 
-**Current focus (as of 2026-04-26):** Phase 1–3 are essentially shipped. Active work is Phase 6 (scaling + security hardening) plus a small Phase 3 polish item (conversation thread click-through). Phase 4 (art) and Phase 5 (economy) are **deferred** until Phase 6 is complete. OASIS-style social-graph simulation was researched 2026-04-26 and parked as a separate later feature — see "Deferred / parked features" at the bottom of this section.
+**Current focus (as of 2026-04-27):** Phase 1–3 shipped. Phase 6 mostly shipped — the big scaling / security hardening batch landed across PRs #211–#215 (ALB logs, backend autoscale, S3 CORS lockdown, WAF on ALB + CloudFront, token expiry + daemon auth-failure, CI security scanning, post-deploy /health curls, per-stack rollback runbook). Remaining Phase 6 work is small post-deploy tuning (graduate WAF CommonRuleSet COUNT → BLOCK, triage Semgrep findings, enable S3 versioning, wire infra tests into CI). Phase 4 (art) and Phase 5 (economy) are still **deferred** but unblocking is closer. OASIS-style social-graph simulation was researched 2026-04-26 and parked as a separate later feature — see "Deferred / parked features" at the bottom of this section.
 
 ### Phase 1: Stability & Testing — ✅ Shipped (2 small items deferred)
 
@@ -474,20 +474,33 @@ All items below are working in dev as of 2026-04-25 (proven in the 2026-04-20 ag
 - [x] Conversation auto-ends on silence (`_INACTIVITY_TIMEOUT_SEC = 60.0`, PR #194)
 - [ ] **Polish item (active)**: when a user clicks a conversation row, the modal should show *all* participants for group conversations (currently the row collapses to "A & B" for the legacy 2-participant case). Tracked as task #25 / next PR.
 
-### Phase 6: Production Hardening — 🚧 Active focus
+### Phase 6: Production Hardening — ✅ Mostly shipped (small follow-ups remain)
+
+Big batch landed 2026-04-26 across PRs #211–#215:
 
 - [x] Observability — CloudWatch alarms on Fargate `RunningTaskCount<1` (game server + backend), NAT `ErrorPortAllocation`, both via `ObservabilityStack` (PR #167)
 - [x] CI test coverage as a quality gate (Phase 1)
 - [x] WS token migration to `Authorization` header — token no longer leaks via `?token=` query in CloudWatch (PR #208, 2026-04-25)
 - [x] HA backend in prod — `desiredCount: 2`, `minHealthyPercent: 100` so rolling updates have headroom (PR #167)
-- [ ] Token refresh lifecycle (frontend → Godot, daemon reconnect on auth failure)
-- [ ] ALB access logging
-- [ ] WAF on CloudFront and ALB
-- [ ] Restrict S3 CORS to known domains
-- [ ] Auto-scaling for Fargate services (game server is single-replica by design; backend is fixed at 2 in prod — needs target-tracking on CPU/request count)
-- [ ] Post-deployment health checks in CI/CD beyond the existing sprite-CORP curl smoke
-- [ ] Rollback documentation and procedures (`apps/infra/RUNBOOK.md` exists for compute-stack rollback; expand to all stacks)
-- [ ] Security scanning in CI (Bandit, Semgrep)
+- [x] **Token expiry + daemon auth-failure handling** (PR #214, 2026-04-26) — town tokens now stamp `iat` + `exp` (30-day TTL); legacy tokens without `exp` accepted with WARNING for migration window. Daemon distinguishes auth-failure close codes (1008/4401/4403/HTTP 401/403) from network failures and exits cleanly instead of retry-looping.
+- [x] **ALB access logging** (PR #211, 2026-04-26) — `goosetown-{env}-alb-logs` S3 bucket with 90-day lifecycle; `this.alb.logAccessLogs(...)` wired in `compute-stack.ts`.
+- [x] **WAF on CloudFront and ALB** (PR #212, 2026-04-26) — inline (not separate stack, to avoid cross-stack import brittleness). Rules: `AmazonIpReputationList` + `KnownBadInputs` BLOCK, `CommonRuleSet` COUNT (escalate after FP review), rate-based 2000 req / 5min / IP. Defends `/town/agent/register` PixelLab DoS vector.
+- [x] **Restrict S3 CORS to known domains** (PR #211) — sprite bucket + CloudFront response policy switched from `["*"]` to per-env explicit lists (frontend domain + localhost). No cross-env leakage.
+- [x] **Auto-scaling for backend Fargate** (PR #211) — prod 2→6, dev 1→3, target 60% CPU, 60s cooldowns. Game server stays single-replica by design (sharding not yet designed; multi-replica with shared in-memory state would corrupt the world).
+- [x] **Post-deployment health checks** (PR #213) — `curl --fail https://api-{env}.goosetown.isol8.co/health` after each Vercel deploy step; prod-side sprite-CORP curl symmetric to dev.
+- [x] **Per-stack rollback runbook** (PR #215, +463 lines) — `RUNBOOK.md` now covers Network/Database (DynamoDB PITR)/Auth (Secrets Manager versioning)/Dns/Storage/GameServer/Compute/Api stacks plus Vercel rollback. Cross-stack dependency map + Sev-1 30-min fast-revert SLA.
+- [x] **Security scanning in CI** (PR #213) — Bandit (`-lll`) + `pip-audit` in backend job; `pnpm audit --prod --audit-level=high` in frontend job; new `security-scan` job runs Semgrep (`p/python p/typescript p/owasp-top-ten`, COUNT-mode initially) + TruffleHog secret-scanning (replaced gitleaks-action which now requires a paid license).
+
+**Open follow-ups — small, mostly post-deploy review work:**
+
+- [ ] Promote `CommonRuleSet` from COUNT → BLOCK after a week of access-log review
+- [ ] Tune the WAF rate limit (2000 req / 5min / IP) once we have actual usage signal
+- [ ] Trivy / container scanning in CI — needs the Docker images, only built in deploy pipeline
+- [ ] Flip Semgrep `continue-on-error: false` once first PR's findings are triaged
+- [ ] 17 low-severity Bandit findings worth a separate sweep
+- [ ] **Sprite bucket has no S3 versioning** — `storage-stack.ts:36-50`. Surfaced during runbook write. Recovery story today is "PixelLab regenerates"; better to enable versioning.
+- [ ] Token refresh endpoint (`POST /town/agent/refresh-token`) — current path is user-driven re-mint via `POST /town/instance`; refresh endpoint is user-friendliness improvement, not a security gap.
+- [ ] **Wire infra tests into CI** — `apps/infra/test/*.ts` aren't run by `ci.yml` today, which is why the pre-existing `network-stack.test.ts` failure has been silent on main. New PR needed.
 - [ ] Multi-NAT across AZs — Known Issue, ~$32/month/env, deferred pending cost signal
 
 ### Phase 4: Art & Maps — ⏸ Deferred until Phase 6 complete
