@@ -210,11 +210,11 @@ async def _handle_agent_activity(connection_id: str, activity_name: str, agent_c
 
 
 async def _generate_custom_animation(agent_id: str, character_id: str, animation_name: str) -> None:
-    """Background task: generate a custom animation via animate-with-text-v2.
+    """Background task: generate a custom animation via animate-with-text-v3.
 
-    Uses the PixelLab V2 pro endpoint which takes the character's rotation
-    images and an action description. Generates one direction at a time,
-    collects frames, composites into a spritesheet, uploads to S3.
+    v3 takes one reference frame per direction + an action description and
+    returns a configurable number of frames (4-16). Generates one direction
+    at a time, collects frames, composites into a spritesheet, uploads to S3.
     """
     from core.config import settings
     from core.services.pixellab_service import ANIMATION_REGISTRY, CUSTOM_ANIMATIONS, PixelLabService
@@ -228,11 +228,12 @@ async def _generate_custom_animation(agent_id: str, character_id: str, animation
     service = TownService()
 
     try:
-        # Queue custom animation (one V2 job per direction)
+        # Queue custom animation (one v3 job per direction)
         job_ids = await pxl.queue_custom_animation(
             character_id=character_id,
             animation_name=animation_name,
             action_description=config["prompt"],
+            frame_count=int(config.get("frames", 8)),
         )
         if not job_ids:
             logger.warning("No job IDs returned for custom animation %s", animation_name)
