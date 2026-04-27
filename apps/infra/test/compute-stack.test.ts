@@ -349,6 +349,29 @@ describe("ComputeStack — ALB access logging", () => {
       }),
     });
   });
+
+  test("dev ALB log bucket uses Delete + autoDeleteObjects (so cdk destroy + redeploy works)", () => {
+    // Regression guard: a fixed-name bucket with RemovalPolicy.RETAIN was
+    // a foot-gun in dev — once the stack was destroyed, the next deploy
+    // failed with BucketAlreadyOwnedByYou because the bucket persisted in
+    // the account. Dev gets DESTROY + autoDeleteObjects so a clean
+    // redeploy works. Prod keeps RETAIN for forensic retention.
+    const { template } = buildTestApp("dev");
+    const buckets = template.findResources("AWS::S3::Bucket");
+    const albBucket = Object.values(buckets).find(
+      (b: any) => b?.Properties?.BucketName === "goosetown-dev-alb-logs"
+    ) as any;
+    expect(albBucket?.DeletionPolicy).toBe("Delete");
+  });
+
+  test("prod ALB log bucket retains (forensic retention)", () => {
+    const { template } = buildTestApp("prod");
+    const buckets = template.findResources("AWS::S3::Bucket");
+    const albBucket = Object.values(buckets).find(
+      (b: any) => b?.Properties?.BucketName === "goosetown-prod-alb-logs"
+    ) as any;
+    expect(albBucket?.DeletionPolicy).toBe("Retain");
+  });
 });
 
 // ---------------------------------------------------------------------------

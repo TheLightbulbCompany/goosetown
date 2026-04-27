@@ -186,6 +186,10 @@ export class ComputeStack extends cdk.Stack {
     // decisions / WAF tuning. Bucket is per-env, 90-day lifecycle so we
     // don't grow indefinitely. CDK auto-attaches the AWS-managed bucket
     // policy that grants the ELB account write access.
+    // Retention is per-env: prod RETAINs (forensics matter), dev DESTROYs
+    // so a `cdk destroy` + redeploy doesn't error with
+    // ``BucketAlreadyOwnedByYou`` on the fixed bucket name.
+    // ``autoDeleteObjects`` only fires when the policy is DESTROY.
     const albLogsBucket = new s3.Bucket(this, "AlbAccessLogsBucket", {
       bucketName: `goosetown-${env}-alb-logs`,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
@@ -199,7 +203,9 @@ export class ComputeStack extends cdk.Stack {
           noncurrentVersionExpiration: cdk.Duration.days(7),
         },
       ],
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      removalPolicy:
+        env === "prod" ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: env !== "prod",
     });
     this.alb.logAccessLogs(albLogsBucket, `alb-${env}`);
 

@@ -9,8 +9,13 @@ function formatLocation(loc: string | null): string {
 function getParticipants(conv: Conversation): string[] {
   // Prefer the canonical ``participants`` array. Fall back to the legacy
   // two-name pair only if the API didn't populate it (older response).
+  // Filter empty strings AND the literal "Unknown" placeholder — the
+  // backend stopped emitting "Unknown" in this slot but a future API drift
+  // shouldn't produce "Unknown & Unknown" in the row.
   if (conv.participants && conv.participants.length > 0) return conv.participants;
-  return [conv.participant_a, conv.participant_b].filter(Boolean);
+  return [conv.participant_a, conv.participant_b].filter(
+    (p): p is string => Boolean(p) && p !== 'Unknown',
+  );
 }
 
 function formatParticipants(

@@ -695,9 +695,16 @@ async def get_conversations(limit: int = 20):
         participant_names = [_resolve(pid) for pid in ordered_ids]
 
         # Legacy fields keep pointing at the first two participants for
-        # backward compatibility.
-        participant_a = participant_names[0] if participant_names else "Unknown"
-        participant_b = participant_names[1] if len(participant_names) > 1 else "Unknown"
+        # backward compatibility. Use "" (not "Unknown") when there's no
+        # participant in that slot at all — the frontend's
+        # ``[participant_a, participant_b].filter(Boolean)`` fallback path
+        # depends on this so a row with no resolvable participants doesn't
+        # render as "Unknown & Unknown". The per-participant "Unknown"
+        # placeholder emitted by ``_resolve`` for an agent whose record was
+        # deleted is still useful in the canonical ``participants`` array
+        # ("Rachel & Unknown" tells the user one participant's data is gone).
+        participant_a = participant_names[0] if participant_names else ""
+        participant_b = participant_names[1] if len(participant_names) > 1 else ""
 
         public_log = c.get("publicLog") or []
 
