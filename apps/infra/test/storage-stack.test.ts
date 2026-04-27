@@ -175,6 +175,33 @@ describe("StorageStack — CloudFront ResponseHeadersPolicy CORS", () => {
   });
 });
 
+describe("StorageStack — sprite bucket versioning", () => {
+  test("sprite bucket has versioning enabled", () => {
+    const template = buildTestApp("dev");
+    template.hasResourceProperties("AWS::S3::Bucket", {
+      BucketName: "goosetown-dev-sprites",
+      VersioningConfiguration: { Status: "Enabled" },
+    });
+  });
+
+  test("sprite bucket expires noncurrent versions after 30 days", () => {
+    const template = buildTestApp("dev");
+    template.hasResourceProperties("AWS::S3::Bucket", {
+      BucketName: "goosetown-dev-sprites",
+      LifecycleConfiguration: Match.objectLike({
+        Rules: Match.arrayWith([
+          Match.objectLike({
+            NoncurrentVersionExpiration: Match.objectLike({
+              NoncurrentDays: 30,
+            }),
+            Status: "Enabled",
+          }),
+        ]),
+      }),
+    });
+  });
+});
+
 describe("StorageStack — WAF (CLOUDFRONT scope, on the distribution)", () => {
   test("dev creates a CLOUDFRONT-scoped WebACL", () => {
     const template = buildTestApp("dev");
