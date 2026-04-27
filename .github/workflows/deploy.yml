@@ -1062,6 +1062,14 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      - name: Smoke-test backend /health (dev)
+        # ComputeStack just rolled — confirm the new task is actually serving
+        # before we mark the deploy green. --retry handles the brief warm-up
+        # window where the ALB target may not be healthy yet.
+        run: |
+          curl --fail --max-time 10 --retry 3 --retry-delay 5 \
+            https://api-dev.goosetown.isol8.co/health \
+            || (echo "Dev /health check failed"; exit 1)
       - name: Smoke-test sprite CORP header
         run: >-
           HEADERS=$(curl -sI
@@ -1583,3 +1591,21 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      - name: Smoke-test backend /health (prod)
+        # Mirror of the dev check. ComputeStack just rolled in prod —
+        # fail loud if the new task isn't actually serving traffic.
+        run: |
+          curl --fail --max-time 10 --retry 3 --retry-delay 5 \
+            https://api.goosetown.isol8.co/health \
+            || (echo "Prod /health check failed"; exit 1)
+      - name: Smoke-test sprite CORP header (prod)
+        # Mirror of the dev sprite-CORP smoke test against the prod CDN.
+        run: >-
+          HEADERS=$(curl -sI
+          "https://assets.goosetown.isol8.co/_corp-check.png")
+
+          echo "$HEADERS" | grep -qi "^cross-origin-resource-policy:
+          *cross-origin" || { echo "FAIL: CORP header missing or wrong on prod
+          sprite CDN"; echo "$HEADERS"; exit 1; }
+
+          echo "OK: prod sprite CDN has Cross-Origin-Resource-Policy: cross-origin"
