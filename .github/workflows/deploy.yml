@@ -965,6 +965,7 @@ jobs:
     needs:
       - Build-Synth
       - Assets-FileAsset11
+      - Assets-FileAsset8
       - Assets-DockerAsset2
       - dev-goosetown-dev-network-Deploy
       - dev-goosetown-dev-auth-Deploy
