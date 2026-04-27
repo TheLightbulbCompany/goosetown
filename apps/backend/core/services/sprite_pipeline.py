@@ -327,14 +327,26 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
                     },
                 )
         except Exception:
-            pass
+            # sprite_ready push is best-effort — daemon picks up the
+            # spriteUrl from /apartment polling within 2s anyway.
+            logger.debug(
+                "sprite_ready push to daemon failed for %s",
+                agent_id,
+                exc_info=True,
+            )
 
     except Exception:
         logger.exception("Sprite generation failed for agent %s", agent_id)
         try:
             TownService().update_agent_state(agent_id, sprite_status=None)
         except Exception:
-            pass
+            # If the cleanup status-clear also fails, the row will keep
+            # its stale phase but the next pipeline run will overwrite it.
+            logger.debug(
+                "Failed to clear sprite_status for %s after pipeline failure",
+                agent_id,
+                exc_info=True,
+            )
 
 
 async def resume_sprite_generation(

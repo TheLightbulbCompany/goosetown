@@ -312,7 +312,12 @@ async def _generate_custom_animation(agent_id: str, character_id: str, animation
                     },
                 )
         except Exception:
-            pass
+            logger.debug(
+                "sprites_updated push to daemon failed for %s — daemon will "
+                "pick up new animations on next world_update",
+                agent_id,
+                exc_info=True,
+            )
 
     except Exception:
         logger.exception("Custom animation generation failed: %s for agent %s", animation_name, agent_id)
@@ -376,7 +381,11 @@ async def _activity_timer(
             try:
                 await gs_client.send_command(agent_id, {"cmd": "set_activity", "activity": ""})
             except Exception:
-                pass
+                logger.debug(
+                    "Failed to clear activity on game server after navigation timeout for %s",
+                    agent_id,
+                    exc_info=True,
+                )
             return
         except Exception as exc:
             logger.warning("Navigation error for agent %s activity %s: %s", agent_id, activity.name, exc)
@@ -384,7 +393,11 @@ async def _activity_timer(
             try:
                 await gs_client.send_command(agent_id, {"cmd": "set_activity", "activity": ""})
             except Exception:
-                pass
+                logger.debug(
+                    "Failed to clear activity on game server after navigation error for %s",
+                    agent_id,
+                    exc_info=True,
+                )
             return
 
     # --- Run the activity timer ---
@@ -506,7 +519,12 @@ async def complete_activity_from_startup(agent_id: str, activity, elapsed: float
     try:
         await gs_client.send_command(agent_id, {"cmd": "set_activity", "activity": ""})
     except Exception:
-        pass
+        logger.debug(
+            "Failed to clear activity on game server after overdue %s for %s",
+            activity.name,
+            agent_id,
+            exc_info=True,
+        )
 
     # Notify daemon
     event_name = "activity_interrupted" if interrupted else "activity_complete"
@@ -553,7 +571,12 @@ async def restart_activity_timer(agent_id: str, activity, remaining: float) -> N
     try:
         await gs_client.send_command(agent_id, {"cmd": "set_activity", "activity": ""})
     except Exception:
-        pass
+        logger.debug(
+            "Failed to clear activity on game server after restart-completion of %s for %s",
+            activity.name,
+            agent_id,
+            exc_info=True,
+        )
 
     # Notify daemon
     event_name = "activity_interrupted" if interrupted else "activity_complete"

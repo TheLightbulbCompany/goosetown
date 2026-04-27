@@ -84,7 +84,8 @@ class ViewerRelay:
             try:
                 await self._ws.close()
             except Exception:
-                pass
+                # WS might already be closed by the time we shutdown — fine.
+                logger.debug("ViewerRelay socket failed to close cleanly", exc_info=True)
         logger.info("ViewerRelay stopped")
 
     async def _connect(self) -> None:

@@ -277,7 +277,15 @@ async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
         gs_client = get_game_server_client()
         await gs_client.send_command(initiator_id, {"cmd": "set_speech", "text": opening_message})
     except Exception:
-        pass  # Speech bubble is cosmetic, don't fail the conversation
+        # Speech bubble is cosmetic, don't fail the conversation. Log at
+        # debug so we can still see when the game server connection is
+        # flaky in production.
+        logger.debug(
+            "Speech-bubble push failed for %s on conversation %s",
+            initiator_id,
+            conv_id,
+            exc_info=True,
+        )
 
     # Lay out the 2-agent conversation: axis-align + face each other. The
     # game server's `layout_conversation` command computes target positions
@@ -294,7 +302,13 @@ async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
         )
         await gs_client.send_command(initiator_id, {"cmd": "set_activity", "activity": "talking"})
     except Exception:
-        pass  # Cosmetic, don't fail conversation
+        # Layout / talking-activity is cosmetic — agent can still chat.
+        logger.debug(
+            "layout_conversation/set_activity failed for %s on conversation %s",
+            initiator_id,
+            conv_id,
+            exc_info=True,
+        )
 
     logger.info(
         "Conversation %s started between %s and %s at %s",
@@ -410,14 +424,26 @@ async def _handle_say(connection_id: str, body: dict, agent_conn) -> None:
         gs_client = get_game_server_client()
         await gs_client.send_command(speaker_id, {"cmd": "set_speech", "text": message})
     except Exception:
-        pass  # Speech bubble is cosmetic, don't fail the conversation
+        # Speech bubble is cosmetic, don't fail the conversation.
+        logger.debug(
+            "Speech-bubble push failed for %s on conversation %s turn %d",
+            speaker_id,
+            conv_id,
+            turn_count,
+            exc_info=True,
+        )
 
     # Set talking activity on the speaker
     try:
         gs_client = get_game_server_client()
         await gs_client.send_command(speaker_id, {"cmd": "set_activity", "activity": "talking"})
     except Exception:
-        pass
+        logger.debug(
+            "set_activity 'talking' failed for %s on conversation %s",
+            speaker_id,
+            conv_id,
+            exc_info=True,
+        )
 
     logger.info("Conversation %s turn %d: %s said %d chars", conv_id, turn_count, speaker_id, len(message))
 
@@ -521,7 +547,13 @@ async def _handle_join_conversation(connection_id: str, body: dict, agent_conn) 
         # talking from the initial chat.
         await gs_client.send_command(joiner_id, {"cmd": "set_activity", "activity": "talking"})
     except Exception:
-        pass  # Cosmetic, don't fail the join
+        # Cosmetic — don't fail the join.
+        logger.debug(
+            "layout_conversation/set_activity failed for joiner %s on conversation %s",
+            joiner_id,
+            conv_id,
+            exc_info=True,
+        )
 
     logger.info("Agent %s joined conversation %s (%d participants)", joiner_id, conv_id, len(participants))
 
@@ -616,7 +648,14 @@ async def _handle_end_conversation(connection_id: str, body: dict, agent_conn) -
             {"event": "act_ok", "action": "end_conversation", "conv_id": conv_id},
         )
     except Exception:
-        pass
+        # Ack failed — leaver's connection is probably already gone.
+        # Conversation state is still consistent (participant removed).
+        logger.debug(
+            "Failed to ack end_conversation to %s on %s",
+            connection_id,
+            conv_id,
+            exc_info=True,
+        )
 
     # If fewer than 2 remain, finalize the conversation entirely
     if remaining < 2:
@@ -703,7 +742,14 @@ async def _finalize_conversation(
             await gs_client.send_command(agent_id, {"cmd": "set_activity", "activity": ""})
             await gs_client.send_command(agent_id, {"cmd": "set_speech", "text": ""})
         except Exception:
-            pass
+            # Cosmetic cleanup — viewer will reconcile from world_state
+            # broadcast within ~2s anyway. Keep finalisation moving.
+            logger.debug(
+                "Failed to clear activity/speech for %s on conversation %s finalise",
+                agent_id,
+                conv_id,
+                exc_info=True,
+            )
 
     # Notify all connected participants
     public_log = conv.get("publicLog") or []

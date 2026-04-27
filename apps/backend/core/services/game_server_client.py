@@ -86,7 +86,13 @@ class GameServerClient:
             try:
                 await existing_ws.close()
             except Exception:
-                pass
+                # Existing socket might already be torn down. Either way,
+                # we're about to open a fresh one — log at debug.
+                logger.debug(
+                    "Existing game-server WS for %s failed to close cleanly",
+                    agent_id,
+                    exc_info=True,
+                )
             logger.info("Closed existing game server connection for agent %s", agent_id)
 
         ws = await websockets.connect(self._base_url, open_timeout=10)
