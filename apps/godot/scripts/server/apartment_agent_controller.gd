@@ -7,7 +7,7 @@ extends Node
 
 const AgentScene: PackedScene = preload("res://scenes/agent.tscn")
 const TILE_SIZE: float = 32.0
-const DESTINATION_JITTER: float = 12.0  # Smaller jitter for indoor space
+const DESTINATION_JITTER: float = 6.0  # Reduced from 12 -- apartment furniture gaps are tight
 ## Seconds between periodic agent_state broadcasts
 const STATE_INTERVAL: float = 2.0
 
