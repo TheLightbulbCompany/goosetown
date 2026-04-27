@@ -309,3 +309,466 @@ aws cloudformation continue-update-rollback \
 ### ManagementApiUrl export rollback note
 
 `api-stack.ts` still exports `goosetown-{env}-management-api-url` (marked TODO for removal in sub-project-3). If you need to roll back `compute-stack` to a revision that uses `Fn.importValue` for this key, the export is present and the rollback is safe. Remove the export only after at least one full deploy cycle where `compute-stack` no longer imports it.
+
+---
+
+## 7. Fast-Revert SLA (no approval gate)
+
+The manual approval gate between dev and prod was removed on 2026-04-19 (`apps/infra/lib/app.ts:107`). The pipeline now reads:
+
+```
+Synth → DeployDev (8 stacks + Vercel dev) → DeployProd (8 stacks + Vercel prod)
+```
+
+There is no "wait for human" step between dev and prod. **A bad commit landing on `main` will hit prod ~15-25 minutes after dev finishes**, depending on stack drift size.
+
+### SLA target
+
+**Sev-1 (prod down or data risk): rollback initiated within 30 min of detection.**
+
+The only ways to stop a bad commit from reaching prod once detected:
+
+1. **Pre-flight kill** (cheapest): cancel the in-flight GitHub Actions run via `gh run cancel <run-id>` before `DeployProd` starts. Works only if you catch it during dev deploy.
+2. **Revert-and-push** (default): `git revert <bad-sha> && git push origin main`. The revert flows through the same pipeline. Total time: ~25-40 min including dev → prod.
+3. **Direct CFN rollback** (last resort): `aws cloudformation update-stack` with the previous template, OR `aws cloudformation cancel-update-stack` if mid-deploy. Use when the pipeline itself is broken (e.g., synth fails on the revert).
+
+Per-stack rollback procedures in sections 9-17 below assume option 2 or 3.
+
+### What "detection" means
+
+- CloudWatch alarm fires (paged via SNS subscription) — section 1.
+- User reports prod broken (Slack #incidents).
+- Smoke test in pipeline catches it (rare — most issues are runtime).
+
+If you don't have evidence the prod deploy is broken yet but suspect it will be, **err toward revert**. A revert commit is cheap; an outage that lands on prod is not.
+
+---
+
+## 8. Cross-Stack Dependency Map
+
+Useful before rolling back: knowing which stacks read from which lets you predict blast radius. Source: `apps/infra/lib/goosetown-stage.ts`.
+
+```
+ObservabilityStack ────┐
+                       ├──► (alarmTopic SNS) ──► NetworkStack
+                       │                   ├──► GameServerStack
+                       │                   └──► ComputeStack
+                       │
+NetworkStack ──────────┴──► (vpc) ──► GameServerStack
+                                  ├──► ComputeStack
+                                  └──► ApiStack (disconnect + default Lambdas)
+
+DatabaseStack ──► (5 tables) ──► ComputeStack (read/write)
+                              └──► ApiStack (connections table only)
+
+AuthStack ────► (4 secrets) ──► ComputeStack (env injection)
+                            └──► ApiStack (authorizer reads clerk_issuer + town_token_secret)
+
+DnsStack ─────► (cert + hostedZone) ──► StorageStack
+                                    ├──► ComputeStack (ALB HTTPS)
+                                    └──► ApiStack (ws-{env} custom domain)
+
+StorageStack ──► (spriteBucket) ──► ComputeStack (S3 read/write IAM grant)
+
+GameServerStack ──► (serviceUrl + sg) ──► ComputeStack (env var + SG ingress)
+
+ComputeStack ──► (fargateTaskRole) ──► ApiStack (grants ManageConnections IAM)
+```
+
+### Inverted dependencies (rare but real)
+
+- ApiStack depends on ComputeStack via `fargateTaskRole` — but the reverse used to exist via `Fn.importValue("management-api-url")`. That import was replaced with an inline custom-domain string on 2026-04-20 (sub-project #2). The export is still present in ApiStack for one rollback cycle (see section 6's "ManagementApiUrl export rollback note"). **There is currently no Compute → Api stack reference**.
+
+### Blast radius rules of thumb
+
+| If you roll back... | These break/restart |
+|---|---|
+| NetworkStack | Every stack with a Fargate task or VPC Lambda restarts (Compute, GameServer, Api disconnect/default). ~5 min downtime. |
+| DatabaseStack | Compute backend will fail on the next request that hits the rolled-back GSI/table. Connections Lambda fails on every WS connect. |
+| AuthStack | Compute backend's secret env vars stale until task restart. ApiStack authorizer caches secrets in-memory — also stale. |
+| DnsStack | Cert ARN doesn't change unless re-issued. Pure record changes propagate per record TTL. |
+| StorageStack | Sprite bucket stays. CloudFront cache change can take up to 24h to fully purge without explicit invalidation. |
+| GameServerStack | All connected agents drop. Backend's `GAME_SERVER_URL` resolves via Cloud Map and re-resolves on next connect. |
+| ComputeStack | Backend ALB targets churn. WebSocket connections (handled by ApiStack Lambdas, not backend) keep working briefly but `/ws-message` POSTs fail. |
+| ApiStack | All WebSocket clients drop. New connects fail until authorizer redeploys. Backend itself unaffected — REST polling continues. |
+
+---
+
+## 9. NetworkStack Rollback
+
+**Contains:** VPC, 2 AZs (us-east-1a, us-east-1b), 1 NAT gateway, 4 subnets (2 public + 2 private-with-egress), a NAT port-exhaustion alarm. The VPC ID is exported as `goosetown-{env}-vpc-id`.
+
+### Typical failure modes
+
+NetworkStack rarely changes — VPC topology is stable. The dangerous failure modes are **CDK drift on subnet CIDRs** (causes new private subnets, redistributes Fargate tasks across AZs and triggers brief task replacement) and **NAT replacement** (causes route-table churn and ~30s of egress outage as routes update). The single-NAT-across-2-AZs design is intentional (`network-stack.ts:18`, issue #165): if NAT's AZ has a service event, all private-subnet egress dies until you manually add a second NAT.
+
+The NAT port-exhaustion alarm (section 4) is the canonical warning that NetworkStack-related egress is degraded. NetworkStack itself doesn't typically need rollback — but if a CDK change accidentally widened/changed CIDRs, you must roll back fast or downstream stacks will get re-placed Fargate tasks.
+
+### Rollback procedure
+
+1. **Confirm the diff is actually in NetworkStack.** `aws cloudformation describe-stack-events --stack-name goosetown-prod-network --max-items 30 --profile isol8-admin` — look for `UPDATE_IN_PROGRESS` on `AWS::EC2::Subnet`, `AWS::EC2::NatGateway`, `AWS::EC2::RouteTable`. Subnet replacement is the high-risk signal.
+2. **If still updating, cancel:** `aws cloudformation cancel-update-stack --stack-name goosetown-prod-network --profile isol8-admin`. This rolls back the in-flight change. AZ outage scenarios cannot be cancelled this way — only CDK-driven changes.
+3. **If already updated, revert via pipeline:** `git revert <network-stack-commit> && git push origin main`. Wait for dev → prod.
+4. **If a NAT was replaced and route tables are wrong:** check `aws ec2 describe-route-tables --filter "Name=vpc-id,Values=$(aws cloudformation describe-stacks --stack-name goosetown-prod-network --query "Stacks[0].Outputs[?OutputKey=='VpcId'].OutputValue" --output text --profile isol8-admin)" --profile isol8-admin`. Each private route table should have a `0.0.0.0/0` route pointing at a NAT gateway. Missing route = stack rollback hung; intervene per `continue-update-rollback` in section 6.
+
+**What if this fails?** A wedged NetworkStack rollback usually means an ENI is stuck attached to a Fargate task. Stop the affected ECS service (`aws ecs update-service --desired-count 0`), wait for ENIs to detach, then `continue-update-rollback`. Bring the service back to `desiredCount: 1` (or 2 for prod backend) afterward.
+
+---
+
+## 10. DatabaseStack Rollback
+
+**Contains:** 5 DynamoDB tables (`goosetown-{env}-agents`, `-instances`, `-relationships`, `-conversations`, `-connections`) with GSIs. PITR enabled in prod only. `removalPolicy: RETAIN` in prod, `DESTROY` in dev.
+
+### Typical failure modes
+
+- A schema migration drops a GSI that the backend still depends on → `ResourceNotFoundException` on the next query that hits it.
+- A bad write loop corrupts data (e.g., the relationship-affinity RMW race in known issues) → incorrect agent state.
+- Accidental `DELETE` on a CDK resource → in dev the table is gone; in prod `RETAIN` keeps the table but CDK loses track of it.
+
+DynamoDB itself does not have versioning. The recovery primitive is **Point-In-Time Recovery (PITR)**, which is enabled on prod tables and disabled on dev. PITR can restore any table to any second within the last 35 days, **into a new table name** — you cannot restore in-place.
+
+### Rollback procedure (PITR restore on prod)
+
+Rough RTO: 10-30 min for a single table (DynamoDB restores asynchronously and table size matters). RPO: ≤ 1 second (PITR resolution).
+
+1. **Identify the target restore time.** UTC seconds. If the bad write started at 14:23 UTC, restore to 14:22:00.
+2. **Restore to a new table name:**
+   ```bash
+   aws dynamodb restore-table-to-point-in-time \
+     --source-table-name goosetown-prod-agents \
+     --target-table-name goosetown-prod-agents-restore-20260424 \
+     --restore-date-time 2026-04-24T14:22:00 \
+     --profile isol8-admin
+   ```
+3. **Wait for the new table to reach `ACTIVE`:**
+   ```bash
+   aws dynamodb describe-table \
+     --table-name goosetown-prod-agents-restore-20260424 \
+     --query "Table.TableStatus" --profile isol8-admin
+   ```
+4. **Recreate GSIs.** PITR restore does **not** automatically restore GSIs. For the agents table you must add `userId-agentName-index`, `instanceId-index`, and `isActive-joinedAt-index` after the table is `ACTIVE`. Easiest path: write the GSI specs from `database-stack.ts:38-56` into a `aws dynamodb update-table` call. Each GSI takes 5-15 min to backfill.
+5. **Atomic table swap via app config.** The backend reads tables via `DYNAMODB_TABLE_PREFIX` env var (`goosetown-prod`). To swap, you must rename the restored table to the canonical name. DynamoDB has no rename — so the swap is:
+   - Stop writes (`aws ecs update-service --service goosetown-prod-backend --desired-count 0`).
+   - `aws dynamodb delete-table --table-name goosetown-prod-agents` (requires PITR to be off — turn it off first if needed).
+   - **Wait** for delete to finish (~1-2 min).
+   - Use `restore-table-from-backup` (or manual data copy via `dynamodb export-table-to-point-in-time` + `import-table`) to recreate `goosetown-prod-agents` with the restored data.
+   - Restart backend (`aws ecs update-service --service goosetown-prod-backend --desired-count 2`).
+6. **Verify:** spot-check a few items via `aws dynamodb get-item` and the running backend's `/apartment` endpoint.
+
+Per-table notes: the `connections` table is throwaway state (rebuilt on every WebSocket connect). Don't bother restoring it — just recreate it empty. Same for `conversations` if you're willing to lose recent conversation logs.
+
+**What if this fails?** Don't lose the restored table — keep `goosetown-prod-agents-restore-20260424` around with PITR off until the new canonical table is verified. If the swap dance breaks halfway, point the backend at the `-restore-` table by changing `DYNAMODB_TABLE_PREFIX` env var on the Fargate task definition (gives you the rest of the day to do a clean swap).
+
+---
+
+## 11. AuthStack Rollback
+
+**Contains:** 4 Secrets Manager secrets — `goosetown/{env}/clerk_issuer`, `goosetown/{env}/clerk_secret_key`, `goosetown/{env}/town_token_secret`, `goosetown/{env}/pixellab_api_key`. The `town_token_secret` is auto-generated; the other 3 are populated manually post-deploy.
+
+### Typical failure modes
+
+- A rotation Lambda (if/when one is added) failed mid-flight and `AWSCURRENT` points to a half-written value.
+- The `clerk_issuer` URL was changed (e.g., switched Clerk environment) and in-flight Clerk JWTs are now signed by an issuer the cache doesn't know.
+- Someone updated the wrong secret (e.g., put the prod Clerk key in the dev secret) so the backend rejects valid cross-env tokens.
+- `town_token_secret` was rotated — every existing town token (already issued to running agents) becomes invalid; all daemons fail auth on next reconnect.
+
+When a Clerk JWT verification fails, the authorizer Lambda denies the connection (`api-stack.ts:262`) — users can't sign in, agents can't connect. If `town_token_secret` is wrong, agents fail but Clerk users are fine.
+
+### Rollback procedure
+
+Secrets Manager keeps every prior value. Each `PutSecretValue` creates a new version with `AWSCURRENT` staging label; the previous version gets `AWSPREVIOUS`. Rollback = swap labels.
+
+1. **List versions:**
+   ```bash
+   aws secretsmanager list-secret-version-ids \
+     --secret-id goosetown/prod/clerk_issuer \
+     --include-deprecated \
+     --profile isol8-admin
+   ```
+2. **Promote `AWSPREVIOUS` to `AWSCURRENT`:**
+   ```bash
+   aws secretsmanager update-secret-version-stage \
+     --secret-id goosetown/prod/clerk_issuer \
+     --version-stage AWSCURRENT \
+     --move-to-version-id <previous-version-id> \
+     --remove-from-version-id <bad-current-version-id> \
+     --profile isol8-admin
+   ```
+3. **Force backend task restart so it re-reads the env-injected secret:**
+   ```bash
+   aws ecs update-service --cluster goosetown-prod \
+     --service goosetown-prod-backend \
+     --force-new-deployment --profile isol8-admin
+   ```
+   The container only re-reads secrets at task start (ECS injects secrets via env vars, not Secrets Manager SDK) — no restart, no rollback.
+4. **For ApiStack authorizer Lambda:** the JWKS / secrets cache is in-process (`_cache` dict at `api-stack.ts:71`). Rolling back the secret won't flush warm Lambda execution contexts. To force flush, `aws lambda update-function-configuration --function-name goosetown-prod-ws-authorizer --environment Variables='{...same values...}'` triggers a config change and new cold starts.
+
+### Special case: town_token_secret rotation
+
+The `town_token_secret` HMACs every agent registration token. Rotating it invalidates **every running agent's token**. You cannot roll this back without losing agent connections — you can only re-issue new tokens via the `/town/instance` endpoint and have users repaste them into their daemons. Treat town_token_secret rotation as a planned-downtime event.
+
+**What if this fails?** If the secret is corrupted (e.g., partial JSON, wrong format), Secrets Manager won't reject the put — but the backend will throw on container start. Roll forward: `aws secretsmanager put-secret-value` with the known-good value (you'll need it from a password manager since Secrets Manager is the source of truth). If you don't have the value, you must re-enter it from Clerk dashboard / PixelLab dashboard.
+
+---
+
+## 12. DnsStack Rollback
+
+**Contains:** A `route53.HostedZone.fromLookup` reference to the existing `isol8.co` zone (the zone itself is not managed by this stack), plus an ACM cert for `*.goosetown.isol8.co` with `goosetown.isol8.co` as a SAN. The cert validates via DNS records that CDK writes into the zone. Cert ARN is exported as `goosetown-{env}-certificate-arn`.
+
+### Typical failure modes
+
+Route53 records have **no built-in versioning**. If a CDK change accidentally points `dev.goosetown.isol8.co` at a wrong CloudFront distribution, you must revert the CDK template — or hand-edit the record back via `change-resource-record-sets`. ACM cert renewals are handled automatically by AWS; rollback is generally not needed.
+
+Note: most of the actual A-records that resolve `*.goosetown.isol8.co` are **created by other stacks**, not DnsStack:
+- `assets-{env}.goosetown.isol8.co` — StorageStack (`storage-stack.ts:124`)
+- `api-{env}.goosetown.isol8.co` — ComputeStack (`compute-stack.ts:329`)
+- `ws-{env}.goosetown.isol8.co` — ApiStack (`api-stack.ts:588`)
+- `goosetown.isol8.co` / `dev.goosetown.isol8.co` — Vercel (set via `vercel alias` in CI)
+
+So a DNS issue on `api-dev.goosetown.isol8.co` is an **ALB DNS record** owned by ComputeStack, not DnsStack. Roll back the right stack.
+
+### Rollback procedure (CDK-driven record change)
+
+1. **Identify the record.** `aws route53 list-resource-record-sets --hosted-zone-id $(aws route53 list-hosted-zones-by-name --dns-name isol8.co --query "HostedZones[0].Id" --output text --profile isol8-admin) --query "ResourceRecordSets[?contains(Name, 'goosetown')]" --profile isol8-admin`.
+2. **Revert via pipeline:** `git revert <bad-sha> && git push origin main`. Route53 propagation: 60s for new resolvers (TTL is typically 300s on alias records).
+3. **Manual emergency edit** (only if the pipeline path is broken or you need <60s recovery):
+   ```bash
+   aws route53 change-resource-record-sets \
+     --hosted-zone-id <zone-id> \
+     --change-batch '{
+       "Changes": [{
+         "Action": "UPSERT",
+         "ResourceRecordSet": {
+           "Name": "api-prod.goosetown.isol8.co",
+           "Type": "A",
+           "AliasTarget": {
+             "HostedZoneId": "<alb-zone-id>",
+             "DNSName": "<previous-alb-dns>",
+             "EvaluateTargetHealth": false
+           }
+         }
+       }]
+     }' --profile isol8-admin
+   ```
+   You need the previous record value from `aws cloudformation describe-stacks` history or your last-known-good captured in incident notes. **Keep a copy of all current alias targets in your incident channel before making changes** — there's no undo.
+
+### Cert rollback
+
+If a cert change broke ACM validation (rare — the cert is wildcard-fixed), the previous cert is still valid until its expiry; no immediate action needed. ACM never deletes cert versions automatically. To swap back to a previous cert ARN, `git revert` the CDK change — every consumer of `dns.certificate` (ALB, CloudFront, API Gateway custom domain) will pick up the change on its next deploy.
+
+**What if this fails?** Route53 propagation is fast on Route53-internal aliases but **24h+ on records cached by external DNS resolvers**. If a customer reports stale resolution, instruct them to flush their resolver cache; you cannot force this from AWS.
+
+---
+
+## 13. StorageStack Rollback
+
+**Contains:** S3 bucket `goosetown-{env}-sprites`, CloudFront distribution at `assets-{env}.goosetown.isol8.co` with OAC, ResponseHeadersPolicy injecting CORS + CORP at the edge, an A-record for the CloudFront distribution. **Versioning is OFF on the sprite bucket** — this is a known gap.
+
+### Typical failure modes
+
+- A CloudFront cache key/policy change serves stale CORS-less responses (the exact failure mode from Pam's sprite cache, see `storage-stack.ts:69`).
+- A sprite was accidentally deleted from the bucket. Without bucket versioning, you cannot recover the bytes — but PixelLab can regenerate.
+- A CORS policy change locked out the frontend.
+- CloudFront cache poisoning: a malformed sprite gets cached for `max-age=31536000` (1 year).
+
+### Rollback procedure
+
+#### CloudFront policy change rollback
+
+1. **Roll back via pipeline** (`git revert`). The new ResponseHeadersPolicy gets attached to the distribution on deploy.
+2. **Force cache invalidation** (won't change the policy, but flushes the stale-cached responses):
+   ```bash
+   DIST_ID=$(aws cloudformation describe-stacks --stack-name goosetown-prod-storage --query "Stacks[0].Outputs[?OutputKey=='DistributionId'].OutputValue" --output text --profile isol8-admin)
+   aws cloudfront create-invalidation \
+     --distribution-id "$DIST_ID" \
+     --paths "/*" \
+     --profile isol8-admin
+   ```
+   Invalidation completes in 5-15 min. Cost: $0.005/path after the first 1000/month — `/*` counts as one path.
+
+#### Accidentally deleted sprite (no versioning fallback)
+
+Versioning is OFF (`storage-stack.ts:36-50` does not set `versioned: true`). For each lost sprite:
+
+1. **Find the agent ID** that owned the sprite path (`sprites/{agent_id}/walk.png`).
+2. **Re-trigger sprite generation** by clearing the sprite-ready flag in DynamoDB:
+   ```bash
+   aws dynamodb update-item \
+     --table-name goosetown-prod-agents \
+     --key '{"id":{"S":"<agent-id>"}}' \
+     --update-expression "SET spriteReady = :false REMOVE spriteUrl" \
+     --expression-attribute-values '{":false":{"BOOL":false}}' \
+     --profile isol8-admin
+   ```
+3. **Trigger the sprite pipeline.** The cleanest way is to have the agent re-register, but that loses identity. Alternative: call the backend's resume-sprite-generation path. There's an internal `resume_sprite_generation` in `core/services/sprite_pipeline.py` that walks `spriteReady=false` agents — it runs at backend startup. Force a backend deploy:
+   ```bash
+   aws ecs update-service --cluster goosetown-prod --service goosetown-prod-backend --force-new-deployment --profile isol8-admin
+   ```
+4. **Verify** the sprite reappears in S3 (`aws s3 ls s3://goosetown-prod-sprites/sprites/<agent-id>/`) and the CDN URL on the agent record updates.
+
+#### CloudFront cache poisoning
+
+Same invalidation procedure as the first sub-section. If a specific path is poisoned: `--paths "/sprites/<agent-id>/*"` is cheaper and more targeted.
+
+**What if this fails?** Bucket-level rollback (e.g., cross-region replication target or backup) doesn't exist for this stack. The mitigation is "PixelLab can regenerate everything" — at the cost of API quota and 60-90s per agent.
+
+---
+
+## 14. GameServerStack Rollback (image rollback)
+
+**Contains:** ECS Fargate Godot headless task on a dedicated cluster (Container Insights enabled), Cloud Map service `gameserver.goosetown-{env}.local`, log group `/ecs/goosetown-{env}-gameserver`, the task-missing alarm (section 1). Single replica (`desiredCount: 1`).
+
+Section 2 already covers restart. This section covers **rolling back a bad game server image** (e.g., a deploy that introduced a navigation-breaking change in `agent_controller.gd`).
+
+### Typical failure modes
+
+- A bad GDScript change passes synth + dev smoke but breaks prod (e.g., agents spawn outside navmesh, instant crashes on certain proximity events).
+- The `.pck` was not committed alongside `.gd` changes (see "Critical Rules" — agents will run old logic with new state, undefined behavior).
+- The Godot binary itself segfaults on a specific input (rare).
+
+### Rollback procedure
+
+The CDK pipeline pushes the Docker image to ECR via `DockerImageAsset`. The image tag is content-addressed (SHA hash). To roll back to a previous tag, you must override the task definition's image URI manually — the pipeline will not "pick up" an older image automatically.
+
+1. **Find the previous good image tag.** ECR keeps a history:
+   ```bash
+   aws ecr list-images \
+     --repository-name $(aws ecr describe-repositories --query "repositories[?contains(repositoryName, 'gameserver')].repositoryName" --output text --profile isol8-admin) \
+     --filter tagStatus=TAGGED \
+     --query "imageIds[*].imageTag" \
+     --output table --profile isol8-admin
+   ```
+   The CDK asset hash is the tag; correlate with git SHA via the asset manifest in the pipeline artifact.
+2. **Register a new task definition revision** pointing at the old image:
+   ```bash
+   # Get current task def
+   aws ecs describe-task-definition \
+     --task-definition $(aws ecs describe-services --cluster goosetown-prod --services <gs-service> --query "services[0].taskDefinition" --output text --profile isol8-admin) \
+     --query "taskDefinition" --profile isol8-admin > /tmp/td.json
+   # Edit /tmp/td.json: set containerDefinitions[0].image to the previous URI; remove fields like taskDefinitionArn, status, revision, requiresAttributes, registeredAt, registeredBy
+   aws ecs register-task-definition --cli-input-json file:///tmp/td.json --profile isol8-admin
+   ```
+3. **Force-deploy:** the next `update-service --force-new-deployment` picks up the latest revision automatically. To explicitly point at the rolled-back revision:
+   ```bash
+   aws ecs update-service \
+     --cluster <gs-cluster> \
+     --service <gs-service> \
+     --task-definition goosetown-prod-gameserver:<prev-revision> \
+     --profile isol8-admin
+   ```
+4. **All agent connections drop.** The backend's `game_server_client.py` will reconnect within 5 attempts. Agents dropped from the game server respawn at plaza on next connect.
+
+After verifying the rolled-back image is healthy in prod, **also revert the bad commit on `main`** so the next pipeline run doesn't re-deploy the broken image.
+
+**What if this fails?** ECS circuit breaker (`circuitBreaker: { rollback: true }` on the service) auto-rolls back if 5 health checks fail. If circuit breaker engages, you'll see `ROLLBACK_COMPLETED` in service events — no manual action. If it doesn't engage (e.g., the health check passes but agents fail logically), you need the manual procedure above.
+
+---
+
+## 15. ComputeStack Rollback (notes)
+
+ComputeStack rollback for backend ALB / Fargate tasks is covered by sections 3 (task missing) and 6 (emergency revert). One clarification:
+
+**ComputeStack does not own CloudFront.** A common mistake during incident response is grepping for "cloudfront" in `compute-stack.ts` and finding nothing — that's correct. The CloudFront distribution that fronts sprites lives in **StorageStack** (`storage-stack.ts:104`). The ALB (which ComputeStack owns) is fronted directly via Route53; there is no CloudFront in front of the API.
+
+If the failure shape is "frontend can't load `assets-{env}.goosetown.isol8.co/sprites/...`", it's StorageStack (section 13). If it's "frontend can't load `api-{env}.goosetown.isol8.co/...`", it's ComputeStack (section 3).
+
+The Compute access logs bucket (`goosetown-{env}-alb-logs`) is `RemovalPolicy.RETAIN` and `enforceSSL: true`. Rollbacks of the access-logging config will not delete logs — they'll just stop writing new ones until the rollback completes.
+
+---
+
+## 16. ApiStack Rollback (authorizer + Lambdas)
+
+**Contains:** WebSocket API Gateway V2 (`goosetown-{env}-ws`), Lambda authorizer + connect + disconnect + default-route Lambdas (all Python 3.12, inline code at `api-stack.ts:54-288`), custom domain `ws-{env}.goosetown.isol8.co`. The disconnect + default-route Lambdas run inside the VPC private subnets (so they can reach the backend ALB internally — though the ALB is internet-facing, this is for future-proofing); the authorizer + connect Lambdas are not VPC-attached.
+
+Section 5 covers authorizer Lambda **timeout** issues. This section covers **rolling back a bad authorizer deploy** — e.g., a code change to the inline JWT verification logic that incorrectly denies valid tokens.
+
+### Typical failure modes
+
+- Inline Lambda code change breaks JWT verification → all WebSocket connects denied → frontend can't load town, agents can't connect.
+- Authorizer's `urllib.request.urlopen(jwks_url, timeout=5)` change accidentally raised the timeout → cold starts go past 15s → hits Lambda timeout on cold start → see section 5.
+- A new route was added with the wrong integration → `$default` route silently swallows messages.
+
+### Rollback procedure
+
+The pipeline rebuilds + redeploys all 4 Lambdas as part of every `goosetown-{env}-api` stack deploy. A revert through the pipeline is the canonical path.
+
+1. **Pipeline revert:** `git revert <bad-sha> && git push origin main`. Total time: ~25-40 min (full pipeline).
+2. **Emergency manual override (prod-down only).** If you need to restore in <5 min:
+   ```bash
+   # Pull the previous good Lambda code from a known-good git commit
+   git checkout <last-known-good-sha> -- apps/infra/lib/stacks/api-stack.ts
+   # Extract the inline code block (between the lambda_.Code.fromInline backticks)
+   # and save to /tmp/authorizer.py + a zip:
+   cd /tmp && zip authorizer.zip index.py  # rename your extract to index.py
+   # Force-update the function code:
+   aws lambda update-function-code \
+     --function-name goosetown-prod-ws-authorizer \
+     --zip-file fileb:///tmp/authorizer.zip \
+     --profile isol8-admin
+   # Restore the workspace:
+   git checkout HEAD -- apps/infra/lib/stacks/api-stack.ts
+   ```
+   This bypasses CDK. **The next pipeline deploy will overwrite your manual change** — you must `git revert` the bad commit before the next pipeline run, or your manual fix will get clobbered.
+3. **Verify:** `aws logs tail /aws/lambda/goosetown-prod-ws-authorizer --follow --profile isol8-admin`, then have someone connect to the WS endpoint and watch for `Allow` decisions.
+
+### Connect / Disconnect / Default-route Lambdas
+
+Same procedure — these Lambda function names are `goosetown-{env}-ws-connect`, `goosetown-{env}-ws-disconnect`, `goosetown-{env}-ws-default`. The default-route Lambda forwards to `http://api-{env}.goosetown.isol8.co/api/v1/town/ws-message` — if rolled back, also confirm the backend at that URL is healthy.
+
+### WS API Gateway routes / authorizer wiring
+
+The `$connect` route wires to the authorizer via L1 CFN constructs (`api-stack.ts:513-543`). A bad `routeKey` or `authorizerType` change here means **every connect attempt fails immediately** — there's no Lambda involved in the failure. Symptoms: API Gateway access logs show `403` on `$connect` with no authorizer-Lambda invocations. Rollback path is identical (pipeline revert).
+
+**What if this fails?** Authorizer Lambdas can be re-pointed manually if the IAM trust is intact. If you see `AccessDeniedException` on the manual `update-function-code` call, the Fargate task role's IAM was rolled with the bad commit — revert via pipeline is the only path.
+
+---
+
+## 17. Vercel Rollback
+
+The frontend is deployed to Vercel by the same GitHub deploy pipeline that deploys CDK stacks (`apps/infra/lib/app.ts:56,118`). Each deploy:
+1. Runs `vercel build` → `vercel deploy --prebuilt` → produces a unique deployment URL.
+2. Aliases the deployment URL to `dev.goosetown.isol8.co` (or `goosetown.isol8.co` for prod) via `vercel alias`.
+
+Vercel keeps every prior deployment indefinitely (well — within the project's retention policy). Rollback is **alias-based**: re-point the canonical domain at an older deployment.
+
+### Default rollback path: revert + push
+
+The cheapest, most-traceable rollback. `git revert <bad-sha> && git push origin main` triggers the full pipeline including a fresh Vercel deploy. Total time: ~25-40 min.
+
+### Faster: re-alias to a prior deployment
+
+If you need <5 min recovery:
+
+1. **List recent deployments:**
+   ```bash
+   vercel ls goosetown --token=$VERCEL_TOKEN
+   ```
+   (You'll need `VERCEL_TOKEN` from the GitHub secrets vault, or your own Vercel personal token with project access.)
+2. **Find the previous good deployment URL** — typically the second entry in the list (the one before the bad current alias).
+3. **Re-alias:**
+   ```bash
+   # Prod
+   vercel alias <prev-deploy-url> goosetown.isol8.co --token=$VERCEL_TOKEN
+   # Dev
+   vercel alias <prev-deploy-url> dev.goosetown.isol8.co --token=$VERCEL_TOKEN
+   ```
+   Alias change is near-instant; users hit the new alias on their next page load.
+4. **Verify:** `curl -I https://goosetown.isol8.co | grep -i 'x-vercel-id'` — the deployment ID in the header should now match the prior good one.
+
+### Full rollback (via Vercel CLI)
+
+`vercel rollback` exists but is less precise — it rolls back the **production deployment** to the immediately-prior deployment. Use it when you don't know the deployment URL but trust the previous one was good:
+
+```bash
+vercel rollback --token=$VERCEL_TOKEN
+```
+
+This sets the canonical domain alias to the immediately-prior production deployment. Equivalent to `vercel alias` with auto-discovery of the previous URL.
+
+### Coordinating with backend rollback
+
+Frontend and backend deploy in parallel from the same `main` push. If the bad commit broke both, **don't roll back only one** — you'll get version-skew between the frontend bundle expecting a v2 API and a backend serving v1 (or vice versa). Either:
+1. Revert the commit (rolls back both).
+2. Manually re-alias Vercel **and** force-deploy the previous backend image (section 14 procedure, but for `goosetown-{env}-backend` instead of game server).
+
+**What if this fails?** Vercel's domain DNS itself is managed by Vercel — `goosetown.isol8.co` is a CNAME (or alias) into Vercel that's set in Route53. If you accidentally delete the Vercel project, the DNS record is intact but resolves to nothing. To recover: `vercel link` from a fresh checkout, redeploy, and the alias re-attaches. Don't change the Route53 record.
