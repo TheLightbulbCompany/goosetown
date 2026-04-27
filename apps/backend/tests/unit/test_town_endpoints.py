@@ -92,22 +92,24 @@ def _seed_conversation(
     started_at: str = "2026-04-17T00:00:00Z",
     ended_at: str = "2026-04-17T00:05:00Z",
     updated_at: str = "2026-04-17T00:05:00Z",
+    participants: list | None = None,
 ):
     table = dynamodb_tables.Table("goosetown-conversations")
-    table.put_item(
-        Item={
-            "id": conv_id,
-            "participantAId": participant_a,
-            "participantBId": participant_b,
-            "location": location,
-            "status": status,
-            "startedAt": started_at,
-            "endedAt": ended_at,
-            "updatedAt": updated_at,
-            "turnCount": len(public_log or []),
-            "publicLog": public_log or [],
-        }
-    )
+    item = {
+        "id": conv_id,
+        "participantAId": participant_a,
+        "participantBId": participant_b,
+        "location": location,
+        "status": status,
+        "startedAt": started_at,
+        "endedAt": ended_at,
+        "updatedAt": updated_at,
+        "turnCount": len(public_log or []),
+        "publicLog": public_log or [],
+    }
+    if participants is not None:
+        item["participants"] = participants
+    table.put_item(Item=item)
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +240,85 @@ class TestConversationsEndpoint:
         conv = resp.json()["conversations"][0]
         assert conv["participant_a"] == "Rachel"
         assert conv["participant_b"] == "Unknown"
+
+    def test_returns_full_participants_list_for_group_chat(
+        self, client, dynamodb_tables
+    ):
+        """Group conversations (3+ participants) used to return only
+        participantAId/participantBId, hiding the third+ speaker even when
+        their turns appeared in the public log. The endpoint must surface
+        the canonical ``participants`` list resolved to display names.
+        """
+        _seed_agent(dynamodb_tables, "agent-a", display_name="Rachel")
+        _seed_agent(dynamodb_tables, "agent-b", display_name="Ross")
+        _seed_agent(dynamodb_tables, "agent-c", display_name="Phoebe")
+        _seed_conversation(
+            dynamodb_tables,
+            "conv-1",
+            participant_a="agent-a",
+            participant_b="agent-b",
+            participants=["agent-a", "agent-b", "agent-c"],
+            public_log=[
+                {"speaker": "Rachel", "text": "hey"},
+                {"speaker": "Ross", "text": "hi"},
+                {"speaker": "Phoebe", "text": "joining you both"},
+            ],
+        )
+
+        resp = client.get("/api/v1/town/conversations")
+        assert resp.status_code == 200
+        conv = resp.json()["conversations"][0]
+        # New canonical field: every participant in join order, resolved
+        # to display names.
+        assert conv["participants"] == ["Rachel", "Ross", "Phoebe"]
+        # Legacy fields still point at the first two so old clients work.
+        assert conv["participant_a"] == "Rachel"
+        assert conv["participant_b"] == "Ross"
+
+    def test_falls_back_to_a_b_when_participants_missing(self, client, dynamodb_tables):
+        """Legacy 2-party rows (no ``participants`` column) must still
+        produce a sensible ``participants`` list in the response so the UI
+        doesn't have to special-case them.
+        """
+        _seed_agent(dynamodb_tables, "agent-a", display_name="Rachel")
+        _seed_agent(dynamodb_tables, "agent-b", display_name="Ross")
+        _seed_conversation(
+            dynamodb_tables,
+            "conv-1",
+            participant_a="agent-a",
+            participant_b="agent-b",
+            # participants intentionally omitted — simulates pre-migration row
+        )
+
+        resp = client.get("/api/v1/town/conversations")
+        assert resp.status_code == 200
+        conv = resp.json()["conversations"][0]
+        assert conv["participants"] == ["Rachel", "Ross"]
+        assert conv["participant_a"] == "Rachel"
+        assert conv["participant_b"] == "Ross"
+
+    def test_dedupes_participants_resolves_each_id_once(
+        self, client, dynamodb_tables
+    ):
+        """``participants`` should not contain duplicates — caller could
+        accidentally include the same id twice (once in legacy A/B, once in
+        the explicit list). Backend dedupes before resolving.
+        """
+        _seed_agent(dynamodb_tables, "agent-a", display_name="Rachel")
+        _seed_agent(dynamodb_tables, "agent-b", display_name="Ross")
+        _seed_conversation(
+            dynamodb_tables,
+            "conv-1",
+            participant_a="agent-a",
+            participant_b="agent-b",
+            # Caller redundantly listed agent-a twice in the list.
+            participants=["agent-a", "agent-b", "agent-a"],
+        )
+
+        resp = client.get("/api/v1/town/conversations")
+        assert resp.status_code == 200
+        conv = resp.json()["conversations"][0]
+        assert conv["participants"] == ["Rachel", "Ross"]
 
 
 # ---------------------------------------------------------------------------

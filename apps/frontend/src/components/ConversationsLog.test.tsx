@@ -145,4 +145,86 @@ describe('ConversationsLog', () => {
     );
     expect(screen.getByText(/no messages yet/i)).toBeInTheDocument();
   });
+
+  // ─── Multi-participant ─────────────────────────────────────────────────
+  // Previously only participant_a & participant_b were shown in row + modal,
+  // so a 3+-person conversation looked identical to a 2-person one even
+  // though the public_log had turns from a third speaker. Use the canonical
+  // ``participants`` list end-to-end.
+
+  it('row shows all 3 participants joined when participants has 3 entries', () => {
+    mockedUse.mockReturnValue({
+      conversations: [
+        makeConv({
+          participants: ['Rachel', 'Ross', 'Phoebe'],
+          turn_count: 4,
+        }),
+      ],
+      loading: false,
+      error: null,
+    });
+    render(<ConversationsLog />);
+    // Row uses the "A, B & C" form for exactly 3 people.
+    expect(
+      screen.getByRole('button', { name: /Rachel, Ross & Phoebe/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('row collapses to "A, B +N" for groups of 4+', () => {
+    mockedUse.mockReturnValue({
+      conversations: [
+        makeConv({
+          participants: ['Rachel', 'Ross', 'Phoebe', 'Joey', 'Monica'],
+          turn_count: 8,
+        }),
+      ],
+      loading: false,
+      error: null,
+    });
+    render(<ConversationsLog />);
+    // Row shows "Rachel, Ross +3" — space-constrained shorthand.
+    expect(
+      screen.getByRole('button', { name: /Rachel, Ross \+3/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('modal header shows ALL participants spelled out for 4+ groups', async () => {
+    mockedUse.mockReturnValue({
+      conversations: [
+        makeConv({
+          participants: ['Rachel', 'Ross', 'Phoebe', 'Joey'],
+          turn_count: 6,
+        }),
+      ],
+      loading: false,
+      error: null,
+    });
+    render(<ConversationsLog />);
+    const row = screen.getByRole('button', { name: /Rachel, Ross \+2/i });
+    await userEvent.click(row);
+    // Modal header should NOT use the +N collapse — every name visible.
+    expect(
+      screen.getByRole('heading', { name: /Rachel, Ross, Phoebe & Joey/i }),
+    ).toBeInTheDocument();
+    // Subtitle includes the participant count badge.
+    expect(screen.getByText(/4 people/)).toBeInTheDocument();
+  });
+
+  it('falls back to participant_a/participant_b when participants is missing (legacy API)', () => {
+    mockedUse.mockReturnValue({
+      conversations: [
+        makeConv({
+          participants: undefined,
+          participant_a: 'Rachel',
+          participant_b: 'Ross',
+        }),
+      ],
+      loading: false,
+      error: null,
+    });
+    render(<ConversationsLog />);
+    expect(
+      screen.getByRole('button', { name: /Rachel & Ross/i }),
+    ).toBeInTheDocument();
+  });
 });

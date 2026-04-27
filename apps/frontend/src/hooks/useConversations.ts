@@ -21,6 +21,12 @@ export interface Conversation {
   id: string;
   participant_a: string;
   participant_b: string;
+  /**
+   * Canonical list of participants (display names, deduped, in join order).
+   * Optional for compatibility with older API responses; UI should prefer
+   * this field over participant_a/participant_b when present.
+   */
+  participants?: string[];
   location: string | null;
   started_at: string | null;
   ended_at: string | null;

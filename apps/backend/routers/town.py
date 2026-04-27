@@ -661,18 +661,52 @@ async def get_conversations(limit: int = 20):
     service = TownService()
     convos = service.get_recent_conversations(limit=limit)
 
+    # Cache display-name lookups across conversations — group chats often share
+    # participants, so resolving each id repeatedly per row is wasteful.
+    display_name_cache: dict[str, str] = {}
+
+    def _resolve(agent_id: str) -> str:
+        if not agent_id:
+            return "Unknown"
+        if agent_id not in display_name_cache:
+            agent = service.get_town_agent_by_id(agent_id)
+            display_name_cache[agent_id] = agent.get("displayName", "Unknown") if agent else "Unknown"
+        return display_name_cache[agent_id]
+
     responses = []
     for c in convos:
-        agent_a = service.get_town_agent_by_id(c.get("participantAId", ""))
-        agent_b = service.get_town_agent_by_id(c.get("participantBId", ""))
+        # ``participants`` is the canonical list (populated for all new
+        # conversations + group chats). Older 2-party rows may only have
+        # ``participantAId``/``participantBId`` — fall back to those.
+        raw_participants: list[str] = c.get("participants") or []
+        if not raw_participants:
+            raw_participants = [
+                c.get("participantAId", ""),
+                c.get("participantBId", ""),
+            ]
+        # Drop empties + dedupe while preserving order.
+        seen: set[str] = set()
+        ordered_ids: list[str] = []
+        for pid in raw_participants:
+            if pid and pid not in seen:
+                seen.add(pid)
+                ordered_ids.append(pid)
+
+        participant_names = [_resolve(pid) for pid in ordered_ids]
+
+        # Legacy fields keep pointing at the first two participants for
+        # backward compatibility.
+        participant_a = participant_names[0] if participant_names else "Unknown"
+        participant_b = participant_names[1] if len(participant_names) > 1 else "Unknown"
 
         public_log = c.get("publicLog") or []
 
         responses.append(
             TownConversationResponse(
                 id=c.get("id", ""),
-                participant_a=agent_a.get("displayName", "Unknown") if agent_a else "Unknown",
-                participant_b=agent_b.get("displayName", "Unknown") if agent_b else "Unknown",
+                participant_a=participant_a,
+                participant_b=participant_b,
+                participants=participant_names,
                 location=c.get("location"),
                 started_at=c.get("startedAt"),
                 ended_at=c.get("endedAt"),

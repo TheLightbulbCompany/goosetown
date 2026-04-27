@@ -6,13 +6,39 @@ function formatLocation(loc: string | null): string {
   return loc.replace(/_/g, ' ');
 }
 
+function getParticipants(conv: Conversation): string[] {
+  // Prefer the canonical ``participants`` array. Fall back to the legacy
+  // two-name pair only if the API didn't populate it (older response).
+  if (conv.participants && conv.participants.length > 0) return conv.participants;
+  return [conv.participant_a, conv.participant_b].filter(Boolean);
+}
+
+function formatParticipants(
+  participants: string[],
+  style: 'row' | 'full',
+): string {
+  if (participants.length === 0) return 'Unknown';
+  if (participants.length === 1) return participants[0];
+  if (participants.length === 2) return `${participants[0]} & ${participants[1]}`;
+  if (style === 'row' && participants.length > 3) {
+    // Row is space-constrained — show first two then "+N".
+    return `${participants[0]}, ${participants[1]} +${participants.length - 2}`;
+  }
+  // Full mode (modal header) and 3-participant rows show everyone joined
+  // by commas with "&" before the last one.
+  const head = participants.slice(0, -1).join(', ');
+  const tail = participants[participants.length - 1];
+  return `${head} & ${tail}`;
+}
+
 function ConversationModal({ conv, onClose }: { conv: Conversation; onClose: () => void }) {
   const isActive = conv.ended_at == null;
   const turns = conv.public_log ?? [];
+  const participants = getParticipants(conv);
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4"
       onClick={onClose}
     >
       <div
@@ -21,11 +47,14 @@ function ConversationModal({ conv, onClose }: { conv: Conversation; onClose: () 
       >
         <div className="flex items-start justify-between gap-3 p-4 border-b border-clay-700">
           <div className="min-w-0 flex-1">
-            <h2 className="font-display text-brown-100 tracking-wider text-lg truncate">
-              {conv.participant_a} &amp; {conv.participant_b}
+            <h2 className="font-display text-brown-100 tracking-wider text-lg break-words">
+              {formatParticipants(participants, 'full')}
             </h2>
             <p className="font-body text-xs text-clay-400 mt-1">
               at {formatLocation(conv.location)} · {conv.turn_count} turns{' '}
+              {participants.length > 2 ? (
+                <span className="text-clay-500 ml-1">· {participants.length} people</span>
+              ) : null}
               {isActive ? (
                 <span className="text-green-400 ml-1">● live</span>
               ) : null}
@@ -39,7 +68,7 @@ function ConversationModal({ conv, onClose }: { conv: Conversation; onClose: () 
             Close
           </button>
         </div>
-        <div className="flex-1 overflow-y-auto p-4 space-y-2">
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-2">
           {turns.length === 0 ? (
             <div className="text-clay-500 font-body italic">(no messages yet)</div>
           ) : (
@@ -60,6 +89,7 @@ function ConversationRow({ conv, onClick }: { conv: Conversation; onClick: () =>
   const isActive = conv.ended_at == null;
   const turns = conv.public_log ?? [];
   const preview = turns[turns.length - 1];
+  const participants = getParticipants(conv);
 
   return (
     <button
@@ -69,7 +99,7 @@ function ConversationRow({ conv, onClick }: { conv: Conversation; onClick: () =>
     >
       <div className="flex items-center justify-between gap-2">
         <span className="font-display text-brown-200 tracking-wider truncate">
-          {conv.participant_a} &amp; {conv.participant_b}
+          {formatParticipants(participants, 'row')}
         </span>
         {isActive ? (
           <span className="text-[10px] font-body text-green-400 shrink-0">● live</span>
@@ -109,7 +139,7 @@ export default function ConversationsLog() {
       {!loading && conversations.length === 0 && !error && (
         <p className="text-clay-500 text-xs font-body italic">No chats yet.</p>
       )}
-      <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-2 max-h-[40vh] overflow-y-auto pr-1">
         {conversations.map((c) => (
           <ConversationRow key={c.id} conv={c} onClick={() => setOpenId(c.id)} />
         ))}
