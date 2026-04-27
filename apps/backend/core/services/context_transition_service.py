@@ -232,7 +232,15 @@ async def _handle_context_transition(
                     },
                 )
             except Exception:
-                pass
+                # One stale viewer connection shouldn't stop notifying the
+                # rest. Logging at debug since this is expected when a
+                # viewer's WS dies between the snapshot and the send.
+                logger.debug(
+                    "Failed to notify viewer %s of context change for %s",
+                    viewer_conn_id,
+                    agent_id,
+                    exc_info=True,
+                )
     except Exception as exc:
         logger.debug("Failed to notify viewers of context change: %s", exc)
 
