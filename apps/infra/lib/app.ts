@@ -32,12 +32,7 @@ const pipeline = new GitHubWorkflow(app, "goosetown-pipeline", {
     commands: [
       "cd apps/infra",
       "pnpm install --frozen-lockfile",
-      // ``pnpm run synth`` = cdk synth + patch-deploy-yml.sh. The patch pins
-      // ``aws-cloudformation-github-deploy@v2`` (floating) to v2.1.0 because
-      // v2.2.0 (2026-04-27) added event polling that calls
-      // ``cloudformation:DescribeEvents`` — a permission the cdk bootstrap
-      // deploy role does not grant — failing NO_CHANGES stacks.
-      "pnpm run synth",
+      "npx cdk synth",
     ],
     primaryOutputDirectory: "apps/infra/cdk.out",
   }),
