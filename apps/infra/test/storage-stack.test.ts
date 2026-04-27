@@ -174,3 +174,61 @@ describe("StorageStack — CloudFront ResponseHeadersPolicy CORS", () => {
     );
   });
 });
+
+describe("StorageStack — WAF (CLOUDFRONT scope, on the distribution)", () => {
+  test("dev creates a CLOUDFRONT-scoped WebACL", () => {
+    const template = buildTestApp("dev");
+    template.hasResourceProperties("AWS::WAFv2::WebACL", {
+      Name: "goosetown-dev-cdn-waf",
+      Scope: "CLOUDFRONT",
+      DefaultAction: { Allow: {} },
+    });
+  });
+
+  test("prod creates a CLOUDFRONT-scoped WebACL", () => {
+    const template = buildTestApp("prod");
+    template.hasResourceProperties("AWS::WAFv2::WebACL", {
+      Name: "goosetown-prod-cdn-waf",
+      Scope: "CLOUDFRONT",
+    });
+  });
+
+  test("CDN WebACL has same 4 rules as ALB WebACL", () => {
+    const template = buildTestApp("dev");
+    template.hasResourceProperties("AWS::WAFv2::WebACL", {
+      Name: "goosetown-dev-cdn-waf",
+      Rules: Match.arrayWith([
+        Match.objectLike({
+          Name: "AWSManagedRulesAmazonIpReputationList",
+        }),
+        Match.objectLike({
+          Name: "AWSManagedRulesKnownBadInputsRuleSet",
+        }),
+        Match.objectLike({
+          Name: "AWSManagedRulesCommonRuleSet",
+          OverrideAction: { Count: {} },
+        }),
+        Match.objectLike({
+          Name: "RateLimit2000Per5Min",
+          Action: { Block: {} },
+        }),
+      ]),
+    });
+  });
+
+  test("Distribution has webAclId set to the CDN WebACL ARN", () => {
+    const template = buildTestApp("dev");
+    // CloudFormation encodes the property as ``WebACLId``. CDK passes the
+    // ARN of the CLOUDFRONT-scoped ACL via ``webAclId`` on the distribution.
+    const dists = template.findResources("AWS::CloudFront::Distribution");
+    const dist = Object.values(dists)[0] as any;
+    const webAclId = dist?.Properties?.DistributionConfig?.WebACLId;
+    expect(webAclId).toBeDefined();
+    // It's a CFN intrinsic resolving to the WebACL's ARN — assert the
+    // shape rather than the exact resolved string (which depends on
+    // logical-id hashing).
+    const json = JSON.stringify(webAclId);
+    expect(json).toContain("CdnWebAcl");
+    expect(json).toContain("Arn");
+  });
+});

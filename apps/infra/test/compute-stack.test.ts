@@ -396,3 +396,68 @@ describe("ComputeStack — backend autoscaling", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 6: WAF on the ALB
+// ---------------------------------------------------------------------------
+
+describe("ComputeStack — WAF (regional, on ALB)", () => {
+  test("creates a regional WebACL", () => {
+    const { template } = buildTestApp("dev");
+    template.hasResourceProperties("AWS::WAFv2::WebACL", {
+      Name: "goosetown-dev-alb-waf",
+      Scope: "REGIONAL",
+      DefaultAction: { Allow: {} },
+    });
+  });
+
+  test("WebACL is associated with the ALB", () => {
+    const { template } = buildTestApp("dev");
+    template.resourceCountIs("AWS::WAFv2::WebACLAssociation", 1);
+  });
+
+  test("WebACL includes IP reputation, known-bad-inputs, common rules, and rate-limit", () => {
+    const { template } = buildTestApp("dev");
+    template.hasResourceProperties("AWS::WAFv2::WebACL", {
+      Name: "goosetown-dev-alb-waf",
+      Rules: Match.arrayWith([
+        Match.objectLike({
+          Name: "AWSManagedRulesAmazonIpReputationList",
+          OverrideAction: { None: {} },
+        }),
+        Match.objectLike({
+          Name: "AWSManagedRulesKnownBadInputsRuleSet",
+          OverrideAction: { None: {} },
+        }),
+        Match.objectLike({
+          // Common ruleset starts in COUNT (override) so we can review FP
+          // rate before escalating to BLOCK. Regression-guard: don't drop
+          // this override accidentally.
+          Name: "AWSManagedRulesCommonRuleSet",
+          OverrideAction: { Count: {} },
+        }),
+        Match.objectLike({
+          Name: "RateLimit2000Per5Min",
+          Action: { Block: {} },
+          Statement: Match.objectLike({
+            RateBasedStatement: Match.objectLike({
+              Limit: 2000,
+              AggregateKeyType: "IP",
+            }),
+          }),
+        }),
+      ]),
+    });
+  });
+
+  test("CloudWatch metrics + sampled requests enabled (visibility)", () => {
+    const { template } = buildTestApp("dev");
+    template.hasResourceProperties("AWS::WAFv2::WebACL", {
+      Name: "goosetown-dev-alb-waf",
+      VisibilityConfig: Match.objectLike({
+        CloudWatchMetricsEnabled: true,
+        SampledRequestsEnabled: true,
+      }),
+    });
+  });
+});
