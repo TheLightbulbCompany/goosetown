@@ -139,10 +139,9 @@ jobs:
           # Gitleaks needs full history to scan all commits in a PR.
           fetch-depth: 0
       - name: Semgrep (SAST — Python + TypeScript + OWASP Top 10)
-        # First runs always have noise; surface findings without failing the
-        # build. Tighten to publishToken / SARIF upload once the baseline is
-        # triaged.
-        continue-on-error: true
+        # Baseline triage: 0 findings from 551 rules across the codebase as
+        # of 2026-04-27 (PR #218 run). Now failing the build on any new
+        # finding so a regression doesn't quietly land.
         uses: returntocorp/semgrep-action@v1
         with:
           config: >-
