@@ -432,7 +432,9 @@ Agent({
 
 ## Production Roadmap
 
-### Phase 1: Stability & Testing (make it work end-to-end)
+**Current focus (as of 2026-04-26):** Phase 1–3 are essentially shipped. Active work is Phase 6 (scaling + security hardening) plus a small Phase 3 polish item (conversation thread click-through). Phase 4 (art) and Phase 5 (economy) are **deferred** until Phase 6 is complete. OASIS-style social-graph simulation was researched 2026-04-26 and parked as a separate later feature — see "Deferred / parked features" at the bottom of this section.
+
+### Phase 1: Stability & Testing — ✅ Shipped (2 small items deferred)
 
 - [x] Fix WebSocket message type mismatch (`useTownState.ts` handles both events)
 - [x] Fix facing direction encoding (`agent.gd:_parse_facing` handles both)
@@ -442,40 +444,63 @@ Agent({
 - [x] Add max retries to game server reconnect loop (5 attempts)
 - [x] Energy-exhaustion enforcement (server-initiated sleep + soft-gate)
 - [x] Sprite CORP / cache-bust / post-deploy curl regression guard
-- [ ] Add pagination to relationship scan (still O(n*m))
 - [x] Cap JWKS stale-cache age (`JWKS_STALE_GRACE = 5 min` in `core/auth.py`)
 - [x] Surface PixelLab job-poll failures (`pixellab_service.py:_poll_jobs` logs WARNING per failed poll)
-- [ ] Test full agent lifecycle end-to-end in CI (skipped for Clerk-creds reasons)
-- [x] Frontend + backend + E2E test coverage in CI (283 backend / 40 frontend / 25 Godot / 3 smoke)
+- [x] Frontend + backend + E2E test coverage in CI (283 backend / 40 frontend / 51 Godot / 3 smoke)
 - [x] Address code-review findings (2026-04-19): sub-project #1 (security hardening at trust boundaries, PRs #155–#161), sub-project #2 (CDK deploy-order + resilience, PRs #166/#167), sub-project #3 (backend service-layer decomposition). `routers/town.py` went 3076 → 1039 lines (−66%) across six extracted services: `sprite_pipeline`, `conversation_service`, `activity_service`, `daemon_bridge`, `agent_connect_service`, `context_transition_service`. No `from routers.town` imports under `core/services` or in `main.py` startup path. Plus hot-path perf fix (#181).
-- [ ] Code-review findings not yet started: concurrency correctness (TOCTOU + RMW + JWKS lock), frontend type hygiene, test coverage floor — see Known Issues
+- [x] Concurrency correctness — TOCTOU on agent registration (PR #202, atomic `TransactWriteItems` + claim row), JWKS refresh lock (PR #195, double-checked `asyncio.Lock`), conversation auto-end on silence (PR #194, 60s inactivity timer). RMW on relationship affinity is the remaining open item — see Known Issues.
+- [x] Frontend type hygiene — eliminated all `any` casts in production code (PR #200) plus `vite-env.d.ts` typed `ImportMetaEnv`.
+- [ ] Add pagination to relationship scan (still O(n*m)) — Known Issue, low traffic for now
+- [ ] Test full agent lifecycle end-to-end in CI — deferred for Clerk-creds reasons
 
-### Phase 2: Apartment System (make agents have a home)
+### Phase 2: Apartment System — Mostly shipped (one blocker)
 
-- [ ] Build Godot apartment map scene (12×8 tiles, 4 rooms from `apartment_constants.py`)
-- [ ] Add apartment to game server (separate scene, agent context transitions)
-- [ ] Wire up `/apartment` frontend route with Godot apartment WebGL
-- [ ] Implement exit spot (apartment → town) and residence (town → apartment) transitions
-- [ ] Per-user apartment instances (agents share an apartment)
+- [x] Build Godot apartment map scene (`apps/godot/maps/apartment/ApartmentMap.tscn`, 12×8 tiles, 4 rooms)
+- [x] Add apartment to game server (`apartment_manager.gd`, `apartment_agent_controller.gd` server-side, dual-map game server)
+- [x] Backend `/apartment` endpoint + `useApartment` hook + `ApartmentCard` UI
+- [x] Implement exit spot (apartment → town) and residence (town → apartment) context transitions (`context_transition_service.py`, PR #186)
+- [x] Per-user apartment instances (agents share an apartment per user)
+- [ ] **Blocker**: apartment navmesh inside SubViewport — agents in apartment scene can't pathfind. See `project_apartment_debug.md`. Needs Godot-specialist time once Phase 6 is closing out.
 
-### Phase 3: Agent Conversations (make agents talk)
+### Phase 3: Agent Conversations — ✅ Functionally shipped
 
-- [ ] Wire up conversation infrastructure (DynamoDB table exists, endpoints exist)
-- [ ] Implement `chat`/`say`/`end` commands in game server protocol
-- [ ] Render chat bubbles in Godot (SpeechBubble label exists in agent.tscn)
-- [ ] Push conversation events to daemon → TOWN_STATUS.md action menu
-- [ ] Store conversation logs, show in frontend
+All items below are working in dev as of 2026-04-25 (proven in the 2026-04-20 agent-team dry run + subsequent polish PRs).
 
-### Phase 4: Art & Maps (make it look good)
+- [x] Wire up conversation infrastructure (DynamoDB table, public/agent/internal endpoints)
+- [x] Implement `chat`/`say`/`end` commands in game server protocol (`conversation_service.py`, PR #180)
+- [x] Render chat bubbles in Godot — wraps long text, font 9, `autowrap_mode = WORD_SMART` (PR #205)
+- [x] Push conversation events to daemon → TOWN_STATUS.md action menu (`daemon_bridge.py`, PR #184; cached `current_conversation_id` in `AgentConnection` per PR #181)
+- [x] Store conversation logs, show in frontend — `ConversationsLog.tsx` polls `/town/conversations`, modal shows per-turn public log (PR #204)
+- [x] Conversation auto-ends on silence (`_INACTIVITY_TIMEOUT_SEC = 60.0`, PR #194)
+- [ ] **Polish item (active)**: when a user clicks a conversation row, the modal should show *all* participants for group conversations (currently the row collapses to "A & B" for the legacy 2-participant case). Tracked as task #25 / next PR.
 
+### Phase 6: Production Hardening — 🚧 Active focus
+
+- [x] Observability — CloudWatch alarms on Fargate `RunningTaskCount<1` (game server + backend), NAT `ErrorPortAllocation`, both via `ObservabilityStack` (PR #167)
+- [x] CI test coverage as a quality gate (Phase 1)
+- [x] WS token migration to `Authorization` header — token no longer leaks via `?token=` query in CloudWatch (PR #208, 2026-04-25)
+- [x] HA backend in prod — `desiredCount: 2`, `minHealthyPercent: 100` so rolling updates have headroom (PR #167)
+- [ ] Token refresh lifecycle (frontend → Godot, daemon reconnect on auth failure)
+- [ ] ALB access logging
+- [ ] WAF on CloudFront and ALB
+- [ ] Restrict S3 CORS to known domains
+- [ ] Auto-scaling for Fargate services (game server is single-replica by design; backend is fixed at 2 in prod — needs target-tracking on CPU/request count)
+- [ ] Post-deployment health checks in CI/CD beyond the existing sprite-CORP curl smoke
+- [ ] Rollback documentation and procedures (`apps/infra/RUNBOOK.md` exists for compute-stack rollback; expand to all stacks)
+- [ ] Security scanning in CI (Bandit, Semgrep)
+- [ ] Multi-NAT across AZs — Known Issue, ~$32/month/env, deferred pending cost signal
+
+### Phase 4: Art & Maps — ⏸ Deferred until Phase 6 complete
+
+- [x] Day/night cycle shader (shipped, not previously checked off)
+- [x] Activities system (`activity_service.py`, PR #182) — agents can read/order/exercise/etc. with mood/energy effects, learning status during PixelLab custom-animation generation (PR #203)
 - [ ] Use PixelLab tile generation API for custom map tiles
 - [ ] Build new locations: marketplace, park, workshop, tavern
-- [ ] Add building interiors (enter/exit transitions)
+- [ ] Add building interiors (enter/exit transitions beyond apartment)
 - [ ] Animate agent idle states (not just walk)
-- [ ] Add day/night cycle shader
 - [ ] Polish: particle effects, ambient animations, water, trees
 
-### Phase 5: Economy (make agents trade)
+### Phase 5: Economy — ⏸ Deferred until Phase 6 complete
 
 Inspired by [Emporion](https://github.com/garydevenay/emporion) — a peer-to-peer agent economy protocol where agents find work, negotiate contracts, submit proof, and get paid autonomously. Key Emporion concepts to adapt:
 
@@ -494,16 +519,12 @@ Implementation:
 - [ ] Economic metrics dashboard for viewers
 - [ ] Price discovery: supply/demand dynamics emerge from agent decisions
 
-### Phase 6: Production Hardening
+### Deferred / parked features
 
-- [ ] Token refresh lifecycle (frontend → Godot, daemon reconnect on auth failure)
-- [ ] ALB access logging
-- [ ] WAF on CloudFront and ALB
-- [ ] Restrict S3 CORS to known domains
-- [ ] Auto-scaling for Fargate services
-- [ ] Post-deployment health checks in CI/CD
-- [ ] Rollback documentation and procedures
-- [ ] Security scanning in CI (Bandit, Semgrep)
+- **OASIS-style social-graph simulation** — researched 2026-04-26. Two-option scope:
+  - Full feature (Approach B from research): add a town bulletin board / feed + OASIS-as-sidecar (Python 3.11 separate Fargate task) that simulates how the feed unfolds. ~5–7 weeks. Targets content-moderation foresight and personality-design feedback.
+  - Thin internal QA tool (recommended): 1–2 week sidecar that runs OASIS against current agent personalities for moderation rehearsal before any user-facing feed launches.
+  - **Why parked:** market evidence (NN/g empirical pushback on Synthetic Users, sycophancy of RLHF-trained LLMs, Inworld's pivot away from games) suggests the validity of social-graph predictions is genuinely contested. Most defensible re-evaluation point is alongside Phase 5 economy — "predict your agent's marketplace strategy" has a real buyer (the agent owner). Don't take OASIS as a backend dep; run as sidecar in its own Python 3.11 environment if/when we ship it.
 
 ## Agent Activities & Gameplay Design
 
