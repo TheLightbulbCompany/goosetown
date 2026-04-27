@@ -129,8 +129,13 @@ jobs:
             p/python
             p/typescript
             p/owasp-top-ten
-      - name: Gitleaks (secret scanning)
-        # Failing build is correct here — secrets in a PR diff are never OK.
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: TruffleHog (secret scanning)
+        # gitleaks-action@v2 now requires a paid license for free OSS use; we
+        # use TruffleHog instead — same coverage class, no license gate.
+        # Failing build is correct here: secrets in a PR diff are never OK.
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.pull_request.base.sha || 'HEAD~1' }}
+          head: HEAD
+          extra_args: --only-verified
