@@ -82,7 +82,12 @@ def _b64url_decode(s):
     return base64.urlsafe_b64decode(s)
 
 def _verify_town_token(token, secret):
-    """Verify HMAC-signed town token. Returns payload dict or None."""
+    """Verify HMAC-signed town token. Returns payload dict or None.
+
+    Tokens with an ``exp`` in the past are rejected. Tokens missing ``exp``
+    are accepted for backward compatibility (logged at WARNING) — must stay
+    in sync with backend ``core/town_token.py:verify_town_token``.
+    """
     parts = token.split(".")
     if len(parts) != 2:
         return None
@@ -98,9 +103,19 @@ def _verify_town_token(token, secret):
         payload = json.loads(_b64url_decode(payload_b64))
         if "uid" not in payload or "iid" not in payload:
             return None
-        return payload
     except Exception:
         return None
+    exp = payload.get("exp")
+    if exp is None:
+        logger.warning("legacy town token used, no exp (uid=%s iid=%s)", payload.get("uid"), payload.get("iid"))
+    else:
+        import time as _time
+        try:
+            if int(exp) < int(_time.time()):
+                return None
+        except (TypeError, ValueError):
+            return None
+    return payload
 
 def _b64url_to_int(s):
     """Decode a base64url-encoded big-endian unsigned integer."""
