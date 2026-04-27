@@ -84,9 +84,9 @@ def _b64url_decode(s):
 def _verify_town_token(token, secret):
     """Verify HMAC-signed town token. Returns payload dict or None.
 
-    Tokens with an ``exp`` in the past are rejected. Tokens missing ``exp``
+    Tokens with an \`\`exp\`\` in the past are rejected. Tokens missing \`\`exp\`\`
     are accepted for backward compatibility (logged at WARNING) — must stay
-    in sync with backend ``core/town_token.py:verify_town_token``.
+    in sync with backend \`\`core/town_token.py:verify_town_token\`\`.
     """
     parts = token.split(".")
     if len(parts) != 2:

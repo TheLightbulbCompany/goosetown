@@ -9,7 +9,7 @@
  */
 
 import * as cdk from "aws-cdk-lib";
-import { Template, Match } from "aws-cdk-lib/assertions";
+import { Template } from "aws-cdk-lib/assertions";
 import * as sns from "aws-cdk-lib/aws-sns";
 import { NetworkStack } from "../lib/stacks/network-stack";
 
@@ -86,8 +86,20 @@ describe("NetworkStack — NAT port-allocation alarm", () => {
   });
 
   test("alarm has an SNS action wired", () => {
-    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      AlarmActions: Match.arrayWith([Match.anyValue()]),
-    });
+    // Match.anyValue() cannot be nested inside Match.arrayWith() (CDK
+    // assertions API restriction). Drop down to findResources and assert
+    // shape directly: AlarmActions is a non-empty array with at least one
+    // entry pointing at the wired SNS topic.
+    const alarms = template.findResources("AWS::CloudWatch::Alarm");
+    const natAlarm = Object.values(alarms).find(
+      (r) =>
+        (r as { Properties: { MetricName?: string } }).Properties
+          .MetricName === "ErrorPortAllocation",
+    ) as { Properties: { AlarmActions?: unknown[] } } | undefined;
+
+    expect(natAlarm).toBeDefined();
+    expect(natAlarm!.Properties.AlarmActions).toBeDefined();
+    expect(Array.isArray(natAlarm!.Properties.AlarmActions)).toBe(true);
+    expect(natAlarm!.Properties.AlarmActions!.length).toBeGreaterThan(0);
   });
 });
