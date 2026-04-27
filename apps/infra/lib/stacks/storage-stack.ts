@@ -33,13 +33,32 @@ export class StorageStack extends cdk.Stack {
         ? ["https://goosetown.isol8.co", "http://localhost:5173"]
         : ["https://dev.goosetown.isol8.co", "http://localhost:5173"];
 
-    // S3 bucket for sprites
+    // S3 bucket for sprites.
+    //
+    // ``versioned: true`` gives us object-level recovery for accidental
+    // deletes/overwrites. Sprite objects are tiny (~5–15 KB PNG) and there
+    // are at most ~1 per agent + a handful of animation variants, so the
+    // versioning storage cost is negligible. NOTE: this is *prospective*
+    // recovery — only writes after the change deploys get version history;
+    // existing objects do not pick up versions retroactively.
+    //
+    // ``noncurrentVersionExpiration: 30 days`` keeps the version pile from
+    // growing forever. Any accidental delete that goes unnoticed for a
+    // month probably wasn't worth recovering, and PixelLab can regenerate
+    // sprites if it ever comes to that.
     this.spriteBucket = new s3.Bucket(this, "SpriteBucket", {
       bucketName: `goosetown-${env}-sprites`,
       removalPolicy:
         env === "prod" ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: env !== "prod",
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      versioned: true,
+      lifecycleRules: [
+        {
+          id: "expire-noncurrent-sprite-versions",
+          noncurrentVersionExpiration: cdk.Duration.days(30),
+        },
+      ],
       cors: [
         {
           allowedMethods: [s3.HttpMethods.GET, s3.HttpMethods.HEAD],
