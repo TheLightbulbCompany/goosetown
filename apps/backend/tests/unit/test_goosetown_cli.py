@@ -11,7 +11,12 @@ import pytest
 _SKILL_DIR = Path(__file__).parents[2] / "data" / "goosetown-skill"
 sys.path.insert(0, str(_SKILL_DIR))
 
-from goosetown_cli import _WELCOME_BLURB, TownDaemon  # noqa: E402
+from goosetown_cli import (  # noqa: E402
+    _WELCOME_BLURB,
+    AuthFailure,
+    TownDaemon,
+    _is_auth_failure,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -545,3 +550,85 @@ class TestMoveActionStatePoll:
     # makes it hard to fake out without adding indirection we don't need);
     # the bug this PR fixes is the false-timeout on successful arrivals,
     # covered by ``test_returns_arrived_when_cached_state_matches_without_event``.
+
+
+# ---------------------------------------------------------------------------
+# Auth-failure classification — keeps the daemon from churning on a
+# revoked/expired token forever. Network-level closes still bubble to the
+# generic retry path.
+# ---------------------------------------------------------------------------
+
+
+class _FakeStatus:
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+
+
+class _FakeInvalidStatus(Exception):
+    """Mimics websockets.exceptions.InvalidStatus (>= v14)."""
+
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"server rejected WebSocket connection: HTTP {status_code}")
+        self.response = _FakeStatus(status_code)
+
+
+class _FakeInvalidStatusCode(Exception):
+    """Mimics websockets.exceptions.InvalidStatusCode (< v14)."""
+
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"server rejected WebSocket connection: HTTP {status_code}")
+        self.status_code = status_code
+
+
+class _FakeRcvd:
+    def __init__(self, code: int) -> None:
+        self.code = code
+
+
+class _FakeConnectionClosed(Exception):
+    """Mimics websockets.exceptions.ConnectionClosed."""
+
+    def __init__(self, code: int, *, via_rcvd: bool = False) -> None:
+        super().__init__(f"connection closed with code {code}")
+        if via_rcvd:
+            self.rcvd = _FakeRcvd(code)
+        else:
+            self.code = code
+
+
+class TestIsAuthFailure:
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_handshake_http_rejection_is_auth_failure(self, status):
+        assert _is_auth_failure(_FakeInvalidStatus(status))
+        assert _is_auth_failure(_FakeInvalidStatusCode(status))
+
+    @pytest.mark.parametrize("status", [400, 404, 500, 502, 503])
+    def test_other_http_statuses_are_network_failures(self, status):
+        assert not _is_auth_failure(_FakeInvalidStatus(status))
+        assert not _is_auth_failure(_FakeInvalidStatusCode(status))
+
+    @pytest.mark.parametrize("code", [1008, 4401, 4403])
+    def test_auth_close_codes_are_auth_failure(self, code):
+        assert _is_auth_failure(_FakeConnectionClosed(code))
+        assert _is_auth_failure(_FakeConnectionClosed(code, via_rcvd=True))
+
+    @pytest.mark.parametrize("code", [1000, 1001, 1006, 1011, 4000])
+    def test_network_close_codes_are_not_auth_failure(self, code):
+        assert not _is_auth_failure(_FakeConnectionClosed(code))
+
+    def test_plain_exception_is_not_auth_failure(self):
+        assert not _is_auth_failure(ConnectionError("network blip"))
+        assert not _is_auth_failure(TimeoutError("inactivity"))
+        assert not _is_auth_failure(RuntimeError("???"))
+
+
+class TestAuthFailureSurface:
+    """Smoke-test that the AuthFailure type is exported and is a proper Exception."""
+
+    def test_auth_failure_is_exception(self):
+        assert issubclass(AuthFailure, Exception)
+        # The message is preserved so run_forever can log it verbatim.
+        try:
+            raise AuthFailure("expired")
+        except AuthFailure as exc:
+            assert str(exc) == "expired"

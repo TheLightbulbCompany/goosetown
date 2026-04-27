@@ -1,19 +1,30 @@
 """HMAC-signed town tokens for GooseTown agent WebSocket auth.
 
 Format: <payload_b64url>.<signature_b64url>
-Payload: JSON {"uid": user_id, "iid": instance_id}
+Payload: JSON {"uid": user_id, "iid": instance_id, "iat": issued_at, "exp": expires_at}
 
 The shared secret (TOWN_TOKEN_SECRET) is used by both:
 - Backend: to generate tokens during opt-in / instance creation
 - Lambda authorizer: to verify tokens on WebSocket $connect
+
+New tokens carry a 30-day ``exp`` claim. Legacy tokens without ``exp`` still
+verify successfully (logged at WARNING) so we can roll out gradually; the
+fail-closed flip will land once the in-the-wild population has rotated.
 """
 
 import base64
 import hashlib
 import hmac
 import json
+import logging
+import time
 
 from core.config import settings
+
+logger = logging.getLogger(__name__)
+
+# 30 days in seconds. New tokens expire this far past their ``iat``.
+TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
 
 
 def _get_town_token_secret() -> str:
@@ -38,9 +49,24 @@ def _b64url_decode(s: str) -> bytes:
     return base64.urlsafe_b64decode(s)
 
 
-def sign_town_token(user_id: str, instance_id: str) -> str:
-    """Create an HMAC-signed town token."""
-    payload = json.dumps({"uid": user_id, "iid": instance_id}, separators=(",", ":"))
+def sign_town_token(
+    user_id: str,
+    instance_id: str,
+    *,
+    issued_at: int | None = None,
+    ttl_seconds: int = TOKEN_TTL_SECONDS,
+) -> str:
+    """Create an HMAC-signed town token with a 30-day expiry.
+
+    ``issued_at`` and ``ttl_seconds`` are exposed for testability — callers in
+    production should leave them as defaults.
+    """
+    iat = int(issued_at if issued_at is not None else time.time())
+    exp = iat + ttl_seconds
+    payload = json.dumps(
+        {"uid": user_id, "iid": instance_id, "iat": iat, "exp": exp},
+        separators=(",", ":"),
+    )
     payload_b64 = _b64url_encode(payload.encode())
     secret = _get_town_token_secret()
     sig = hmac.new(secret.encode(), payload_b64.encode(), hashlib.sha256).digest()
@@ -51,7 +77,13 @@ def sign_town_token(user_id: str, instance_id: str) -> str:
 def verify_town_token(token: str) -> dict | None:
     """Verify an HMAC-signed town token.
 
-    Returns the payload dict {"uid": ..., "iid": ...} if valid, None otherwise.
+    Returns the payload dict (``uid``, ``iid``, plus optional ``iat``/``exp``)
+    if valid, ``None`` otherwise.
+
+    Tokens with an ``exp`` in the past are rejected. Tokens missing ``exp``
+    entirely are accepted for backward compatibility but logged at WARNING so
+    we can monitor the legacy population shrinking before flipping to
+    fail-closed.
     """
     parts = token.split(".")
     if len(parts) != 2:
@@ -72,6 +104,22 @@ def verify_town_token(token: str) -> dict | None:
         payload = json.loads(_b64url_decode(payload_b64))
         if "uid" not in payload or "iid" not in payload:
             return None
-        return payload
     except Exception:
         return None
+
+    exp = payload.get("exp")
+    if exp is None:
+        logger.warning(
+            "legacy token used, no exp (uid=%s iid=%s)",
+            payload.get("uid"),
+            payload.get("iid"),
+        )
+    else:
+        try:
+            if int(exp) < int(time.time()):
+                return None
+        except (TypeError, ValueError):
+            # Malformed exp claim — treat as invalid.
+            return None
+
+    return payload

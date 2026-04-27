@@ -40,6 +40,56 @@ from pathlib import Path
 DEFAULT_API_URL = "https://api-dev.goosetown.isol8.co/api/v1"
 DEFAULT_WS_URL = "wss://ws-dev.goosetown.isol8.co"
 
+
+# ---------------------------------------------------------------------------
+# Auth-failure handling
+# ---------------------------------------------------------------------------
+#
+# When the API Gateway authorizer rejects a town token (expired, revoked, bad
+# signature) the WebSocket handshake comes back with HTTP 401/403 — the
+# ``websockets`` library raises ``InvalidStatusCode`` / ``InvalidStatus``. If
+# the close happens after the handshake (e.g. server kicks us off mid-session
+# for policy reasons) we get a ``ConnectionClosed`` with code 1008 (policy
+# violation) or a 4xxx app-level code. We surface both as ``AuthFailure`` so
+# the reconnect loop can stop retrying instead of churning indefinitely on
+# a token the server will never accept.
+
+
+class AuthFailure(Exception):
+    """Raised when the WebSocket peer rejects us for auth reasons."""
+
+
+def _is_auth_failure(exc: BaseException) -> bool:
+    """Return True if ``exc`` indicates an auth-level rejection."""
+    # HTTP-level rejection during the WS handshake. ``websockets`` exposes
+    # this as ``InvalidStatusCode`` (<14) or ``InvalidStatus`` (>=14); both
+    # carry ``status_code`` / ``response.status_code``.
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        response = getattr(exc, "response", None)
+        if response is not None:
+            status = getattr(response, "status_code", None)
+    if status in (401, 403):
+        return True
+
+    # Frame-level close after the handshake. ``code`` is set on
+    # ``ConnectionClosed``; older versions stash it on ``rcvd``.
+    code = getattr(exc, "code", None)
+    if code is None:
+        rcvd = getattr(exc, "rcvd", None)
+        if rcvd is not None:
+            code = getattr(rcvd, "code", None)
+    if code is None:
+        return False
+    # 1008 = policy violation (the conventional auth-rejection close).
+    # 4401 / 4403 mirror HTTP semantics if the server picks an app code.
+    if code == 1008 or code in (4401, 4403):
+        return True
+    # Anything else (1006 abnormal, 1011 server error, 1001 going away, etc.)
+    # is a network/server-side failure we should keep retrying.
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Activity catalogue — mirrors backend activity_registry.py.
 # Keep in sync with core/services/activity_registry.py.
@@ -1648,9 +1698,13 @@ class TownDaemon:
             try:
                 self.ws = await websockets.connect(url, extra_headers=[auth_header], **connect_kwargs)
             except Exception as exc:
+                if _is_auth_failure(exc):
+                    raise AuthFailure(str(exc)) from exc
                 log.error("WebSocket connection failed: %s", exc)
                 raise
         except Exception as exc:
+            if _is_auth_failure(exc):
+                raise AuthFailure(str(exc)) from exc
             log.error("WebSocket connection failed: %s", exc)
             raise
 
@@ -1702,6 +1756,11 @@ class TownDaemon:
                 except json.JSONDecodeError:
                     log.warning("Invalid JSON from server: %s", str(raw)[:100])
         except Exception as exc:
+            if _is_auth_failure(exc):
+                # Surface to run_forever so it can stop retrying. Network-level
+                # closes (1006/1011/inactivity timeout) keep falling through to
+                # the generic warning + retry path below.
+                raise AuthFailure(str(exc)) from exc
             log.warning("WebSocket disconnected: %s", exc)
             # Don't set self.running = False — let run_forever retry
 
@@ -1986,6 +2045,13 @@ def _daemon_main() -> None:
                 log.warning("Daemon run() exited, reconnecting in %ds", backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60)
+            except AuthFailure as exc:
+                log.error(
+                    "Auth failed (token expired or revoked): %s — re-register with `town_register <new_token>`",
+                    exc,
+                )
+                daemon.running = False
+                break
             except Exception as exc:
                 log.error("Daemon crashed: %s, restarting in %ds", exc, backoff)
                 await asyncio.sleep(backoff)
