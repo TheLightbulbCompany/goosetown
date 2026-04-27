@@ -95,6 +95,17 @@ var _interp_target: Vector2 = Vector2.ZERO
 var _interp_start_ms: int = 0
 ## Nominal time to traverse between two broadcasts. Matches game server broadcast cadence.
 const INTERP_DURATION_MS: int = 2000
+## Threshold (in pixels) for a journey to count as "walking" in viewer mode.
+## See ``_physics_process``'s _viewer_interp branch — anything below this is
+## treated as a same-tile micro-adjustment (idle), anything above triggers the
+## walk animation. 4 px ≈ 1/8 of a tile, well below any real walk distance.
+const MIN_WALK_INTERP_DIST: float = 4.0
+## How long a viewer-side interp can sit without a fresh broadcast before we
+## stop trying to lerp and snap to the latest target. Was ``INTERP_DURATION_MS * 2``
+## (4 s) which fired on every minor network jitter — agents teleported visibly.
+## 30 s gives normal network jitter ~15× headroom while still catching the real
+## case (browser tab backgrounded, render loop frozen, broadcasts queue up).
+const STALE_INTERP_THRESHOLD_MS: int = 30000
 ## Cached AtlasTexture instances keyed by "animation/facing" to avoid per-frame allocations
 var _atlas_cache: Dictionary = {}
 
@@ -136,8 +147,16 @@ func _physics_process(delta: float) -> void:
 		var new_pos: Vector2 = _interp_prev.lerp(_interp_target, t)
 		var delta_vec: Vector2 = new_pos - global_position
 		global_position = new_pos
-		# _is_moving is "still traveling toward latest broadcast target"
-		_is_moving = t < 1.0 and delta_vec.length() > 0.5
+		# _is_moving = "still traveling toward latest broadcast target".
+		# Key off the *total* interpolation distance, not the per-tick delta.
+		# At normal walking speeds (~30-60 px/sec over a 2 s broadcast window)
+		# the per-tick delta lands at ~0.5-1.0 px, which used to false-fail
+		# the threshold and freeze the walk-cycle on frame 0 mid-walk. The
+		# interp distance, however, captures the journey size — if there's
+		# meaningful motion to cover and we haven't completed it, we're
+		# walking, regardless of how slow each tick is.
+		var interp_dist: float = (_interp_target - _interp_prev).length()
+		_is_moving = t < 1.0 and interp_dist > MIN_WALK_INTERP_DIST
 		# Update facing from motion direction
 		if _is_moving:
 			if abs(delta_vec.x) > abs(delta_vec.y):
@@ -310,11 +329,11 @@ func _set_interp_target(target: Vector2) -> void:
 	## refocused the lerp "plays back" the accumulated backlog, walking
 	## agents in a straight line through buildings to their current spot.
 	##
-	## If more than ~2x the normal interp window has elapsed since the last
+	## If more than ``STALE_INTERP_THRESHOLD_MS`` has elapsed since the last
 	## target, treat this as a wake-from-background and snap instantly
 	## instead of lerping across who-knows-how-many minutes of stale state.
 	var now_ms: int = Time.get_ticks_msec()
-	var stale: bool = _viewer_interp and (now_ms - _interp_start_ms) > (INTERP_DURATION_MS * 2)
+	var stale: bool = _viewer_interp and (now_ms - _interp_start_ms) > STALE_INTERP_THRESHOLD_MS
 	_viewer_interp = true
 	if stale:
 		global_position = target

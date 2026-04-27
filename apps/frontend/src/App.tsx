@@ -87,17 +87,12 @@ export default function App() {
 
   const { isSignedIn } = useAuth();
 
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail;
-      const target = detail.scene === 'apartment' ? '/apartment' : '/';
-      if (location.pathname !== target) {
-        navigate(target);
-      }
-    };
-    window.addEventListener('goosetown_scene_changed', handler);
-    return () => window.removeEventListener('goosetown_scene_changed', handler);
-  }, [location.pathname, navigate]);
+  // Previously listened for ``goosetown_scene_changed`` (dispatched by
+  // useTownState on every ``agent_context_changed`` WS broadcast) and
+  // auto-navigated the route to match. That made every viewer's URL
+  // flip from /town to /apartment whenever any agent (theirs or another
+  // user's) crossed the boundary. The dispatch is gone; route changes
+  // are user-driven via React Router only.
 
   // View in Town focus handler — when ?focus=<name> is present on /, pan the
   // camera to that agent. Retries for a few seconds to handle the case where
