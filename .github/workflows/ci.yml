@@ -21,6 +21,13 @@ jobs:
           uv run ruff check .
           uv run ruff format --check .
         working-directory: apps/backend
+      - name: Bandit (high-severity SAST)
+        # -lll = report only HIGH severity. Tighten to -ll later once baseline is clean.
+        run: uv run bandit -r core routers main.py -lll
+        working-directory: apps/backend
+      - name: pip-audit (dependency CVE scan)
+        run: uv run pip-audit --strict
+        working-directory: apps/backend
       - name: Test
         run: uv run pytest tests/ -v
         working-directory: apps/backend
@@ -44,6 +51,10 @@ jobs:
         run: pnpm --filter @goosetown/frontend run typecheck
       - name: Test
         run: pnpm --filter @goosetown/frontend run test
+      - name: pnpm audit (production deps, high severity)
+        # --prod skips dev-only deps which often have known issues that don't
+        # ship to users. --audit-level=high fails only on high/critical CVEs.
+        run: pnpm --filter @goosetown/frontend audit --prod --audit-level=high
 
   godot-test:
     name: Godot Unit Tests
@@ -93,3 +104,33 @@ jobs:
           name: playwright-report
           path: apps/frontend/playwright-report/
           retention-days: 7
+
+  security-scan:
+    name: Security Scan (Semgrep + Gitleaks)
+    runs-on: ubuntu-latest
+    # PR-only: running on main-bound merges would block retroactively on baseline
+    # findings. Once we triage the first run we can flip to fail-on-finding.
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Gitleaks needs full history to scan all commits in a PR.
+          fetch-depth: 0
+      - name: Semgrep (SAST — Python + TypeScript + OWASP Top 10)
+        # First runs always have noise; surface findings without failing the
+        # build. Tighten to publishToken / SARIF upload once the baseline is
+        # triaged.
+        continue-on-error: true
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/python
+            p/typescript
+            p/owasp-top-ten
+      - name: Gitleaks (secret scanning)
+        # Failing build is correct here — secrets in a PR diff are never OK.
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
