@@ -20,9 +20,7 @@ PIXELLAB_API_URL = "https://api.pixellab.ai/v2"
 
 # Appended to every custom-animation prompt. animate-with-text-v3 has no loop
 # flag in the API, so loop intent has to live in the prompt itself.
-_LOOP_SUFFIX = (
-    "Looping animation cycle: the final frame returns to the same posture and pose as the first frame."
-)
+_LOOP_SUFFIX = "Looping animation cycle: the final frame returns to the same posture and pose as the first frame."
 
 ANIMATION_REGISTRY: dict[str, dict] = {
     # Templates (1 gen/direction, auto all directions)
