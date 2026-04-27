@@ -11,7 +11,8 @@
     "test": "jest",
     "lint": "tsc --noEmit",
     "cdk": "cdk",
-    "synth": "cdk synth",
+    "synth": "cdk synth && ./scripts/patch-deploy-yml.sh",
+    "synth:raw": "cdk synth",
     "diff": "cdk diff",
     "deploy": "cdk deploy --all"
   },

@@ -84,15 +84,20 @@ jobs:
         # change ships without the regen, and every subsequent deploy fails
         # at Synthesize with: "Please commit the updated workflow file..."
         # We hit that exact failure twice on 2026-04-27 (PR #223 and #225).
-        # ``cdk synth`` runs synth-only (no assets, no deploy) and rewrites
-        # the workflow as a side-effect. ``git diff --exit-code`` then fails
-        # the job if the file is dirty — surfacing the regen requirement at
+        # ``pnpm run synth`` runs ``cdk synth`` (no assets, no deploy) THEN
+        # ``patch-deploy-yml.sh`` to pin the floating
+        # ``aws-cloudformation-github-deploy@v2`` action — the floating tag
+        # advanced to v2.2.0 on 2026-04-27 18:05 UTC and started calling
+        # ``cloudformation:DescribeEvents`` (a permission the cdk-bootstrap
+        # deploy role does NOT grant), failing every NO_CHANGES stack on the
+        # very next deploy run. ``git diff --exit-code`` then fails the job
+        # if the file is dirty — surfacing the regen-or-pin requirement at
         # PR review time instead of after merge.
         run: |
-          npx cdk synth --quiet > /dev/null 2>&1
+          npm run --silent synth > /dev/null 2>&1
           if ! git diff --exit-code -- ../../.github/workflows/deploy.yml; then
             echo "::error::deploy.yml is out of sync with the CDK pipeline definition."
-            echo "::error::Run ``cd apps/infra && npx cdk synth`` locally and commit the resulting deploy.yml."
+            echo "::error::Run ``cd apps/infra && npm run synth`` locally and commit the resulting deploy.yml."
             exit 1
           fi
         working-directory: apps/infra
