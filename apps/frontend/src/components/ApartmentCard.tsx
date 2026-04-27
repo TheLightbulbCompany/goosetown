@@ -2,7 +2,18 @@ import { Link } from 'react-router-dom';
 import clsx from 'clsx';
 import type { ApartmentAgent } from '../hooks/useApartment';
 
-function statusLabel(activity: string | null): string {
+// A ``status_message`` like "Learning to cook…" is set by the backend's
+// ``_generate_custom_animation`` task while the agent is waiting on a
+// PixelLab custom-animation build (1-3 min per animation). Detecting it
+// here lets the card show a distinct "Learning" indicator rather than
+// the default grey-dot / Idle fallback that would otherwise leave the
+// viewer wondering why the agent is standing still.
+function isLearning(statusMessage: string | null): boolean {
+  return !!statusMessage && statusMessage.startsWith('Learning');
+}
+
+function statusLabel(activity: string | null, statusMessage: string | null): string {
+  if (isLearning(statusMessage)) return 'Learning';
   if (!activity) return 'Idle';
   switch (activity) {
     case 'sleeping':
@@ -20,7 +31,8 @@ function statusLabel(activity: string | null): string {
   }
 }
 
-function statusColor(activity: string | null): string {
+function statusColor(activity: string | null, statusMessage: string | null): string {
+  if (isLearning(statusMessage)) return 'bg-purple-500';
   switch (activity) {
     case 'sleeping':
       return 'bg-clay-500';
@@ -81,9 +93,14 @@ export default function ApartmentCard({ agent }: { agent: ApartmentAgent }) {
         </div>
         {/* Status indicator */}
         <div className="flex items-center gap-1.5">
-          <span className={clsx('w-2 h-2 rounded-full', statusColor(agent.current_activity))} />
+          <span
+            className={clsx(
+              'w-2 h-2 rounded-full',
+              statusColor(agent.current_activity, agent.status_message),
+            )}
+          />
           <span className="font-body text-xs text-clay-100">
-            {statusLabel(agent.current_activity)}
+            {statusLabel(agent.current_activity, agent.status_message)}
           </span>
         </div>
       </div>
@@ -100,8 +117,13 @@ export default function ApartmentCard({ agent }: { agent: ApartmentAgent }) {
         </div>
       )}
 
-      {/* Status message */}
-      {agent.status_message && (
+      {/* Status message — rendered as agent speech (quoted) by default.
+          Learning messages are system-set, not agent-spoken, so they render
+          without quotes and with a distinct tone. */}
+      {agent.status_message && isLearning(agent.status_message) && (
+        <p className="font-body text-xs text-purple-300">{agent.status_message}</p>
+      )}
+      {agent.status_message && !isLearning(agent.status_message) && (
         <p className="font-body text-xs text-clay-100 italic">"{agent.status_message}"</p>
       )}
 
