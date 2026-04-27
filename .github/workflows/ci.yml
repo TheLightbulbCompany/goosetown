@@ -54,7 +54,10 @@ jobs:
       - name: pnpm audit (production deps, high severity)
         # --prod skips dev-only deps which often have known issues that don't
         # ship to users. --audit-level=high fails only on high/critical CVEs.
-        run: pnpm --filter @goosetown/frontend audit --prod --audit-level=high
+        # NB: ``pnpm audit`` doesn't support ``--recursive``, which ``--filter``
+        # implicitly injects. Use working-directory + plain audit instead.
+        working-directory: apps/frontend
+        run: pnpm audit --prod --audit-level=high
 
   godot-test:
     name: Godot Unit Tests
