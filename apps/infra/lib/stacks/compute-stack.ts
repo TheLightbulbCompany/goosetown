@@ -15,6 +15,7 @@ import * as route53Targets from "aws-cdk-lib/aws-route53-targets";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as cw_actions from "aws-cdk-lib/aws-cloudwatch-actions";
+import * as wafv2 from "aws-cdk-lib/aws-wafv2";
 import { Construct } from "constructs";
 import { DatabaseTables } from "./database-stack";
 import { AuthSecrets } from "./auth-stack";
@@ -279,6 +280,102 @@ export class ComputeStack extends cdk.Stack {
       targetUtilizationPercent: 60,
       scaleInCooldown: cdk.Duration.seconds(60),
       scaleOutCooldown: cdk.Duration.seconds(60),
+    });
+
+    // ─── WAF (regional, attached to ALB) ──────────────────────────────────
+    // Three managed rule groups + one rate-based rule. The primary attack
+    // we're defending against is /town/agent/register triggering PixelLab
+    // sprite generation — that's a direct billing vector. Rate-based
+    // (2000 req / 5 min / IP) blocks the volumetric abuse path; managed
+    // rule groups catch generic exploit attempts. IP-reputation and
+    // KnownBadInputs default to BLOCK because they have very low FP rates;
+    // CommonRuleSet starts in COUNT so we can review false positives in
+    // ALB access logs before escalating it to BLOCK in a follow-up.
+    const albWaf = new wafv2.CfnWebACL(this, "AlbWebAcl", {
+      name: `goosetown-${env}-alb-waf`,
+      scope: "REGIONAL",
+      defaultAction: { allow: {} },
+      visibilityConfig: {
+        cloudWatchMetricsEnabled: true,
+        metricName: `goosetown-${env}-alb-waf`,
+        sampledRequestsEnabled: true,
+      },
+      rules: [
+        {
+          name: "AWSManagedRulesAmazonIpReputationList",
+          priority: 0,
+          overrideAction: { none: {} },
+          statement: {
+            managedRuleGroupStatement: {
+              vendorName: "AWS",
+              name: "AWSManagedRulesAmazonIpReputationList",
+            },
+          },
+          visibilityConfig: {
+            cloudWatchMetricsEnabled: true,
+            metricName: "ip-reputation",
+            sampledRequestsEnabled: true,
+          },
+        },
+        {
+          name: "AWSManagedRulesKnownBadInputsRuleSet",
+          priority: 1,
+          overrideAction: { none: {} },
+          statement: {
+            managedRuleGroupStatement: {
+              vendorName: "AWS",
+              name: "AWSManagedRulesKnownBadInputsRuleSet",
+            },
+          },
+          visibilityConfig: {
+            cloudWatchMetricsEnabled: true,
+            metricName: "known-bad-inputs",
+            sampledRequestsEnabled: true,
+          },
+        },
+        {
+          name: "AWSManagedRulesCommonRuleSet",
+          priority: 2,
+          // ``count: {}`` overrides every rule in the group to count-only
+          // — so we get telemetry but don't break legitimate requests
+          // until we've reviewed the false-positive rate. Flip to
+          // ``none: {}`` after the first week of access-log review.
+          overrideAction: { count: {} },
+          statement: {
+            managedRuleGroupStatement: {
+              vendorName: "AWS",
+              name: "AWSManagedRulesCommonRuleSet",
+            },
+          },
+          visibilityConfig: {
+            cloudWatchMetricsEnabled: true,
+            metricName: "common-rules",
+            sampledRequestsEnabled: true,
+          },
+        },
+        {
+          name: "RateLimit2000Per5Min",
+          priority: 3,
+          action: { block: {} },
+          statement: {
+            rateBasedStatement: {
+              limit: 2000,
+              aggregateKeyType: "IP",
+              evaluationWindowSec: 300,
+            },
+          },
+          visibilityConfig: {
+            cloudWatchMetricsEnabled: true,
+            metricName: "rate-limit",
+            sampledRequestsEnabled: true,
+          },
+        },
+      ],
+    });
+
+    new wafv2.CfnWebACLAssociation(this, "AlbWebAclAssociation", {
+      resourceArn: this.alb.loadBalancerArn,
+      webAclArn: albWaf.attrArn,
     });
 
     // CloudWatch alarm: fire if fewer healthy targets are registered with the
