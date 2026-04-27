@@ -241,9 +241,7 @@ class TestConversationsEndpoint:
         assert conv["participant_a"] == "Rachel"
         assert conv["participant_b"] == "Unknown"
 
-    def test_returns_full_participants_list_for_group_chat(
-        self, client, dynamodb_tables
-    ):
+    def test_returns_full_participants_list_for_group_chat(self, client, dynamodb_tables):
         """Group conversations (3+ participants) used to return only
         participantAId/participantBId, hiding the third+ speaker even when
         their turns appeared in the public log. The endpoint must surface
@@ -297,9 +295,7 @@ class TestConversationsEndpoint:
         assert conv["participant_a"] == "Rachel"
         assert conv["participant_b"] == "Ross"
 
-    def test_dedupes_participants_resolves_each_id_once(
-        self, client, dynamodb_tables
-    ):
+    def test_dedupes_participants_resolves_each_id_once(self, client, dynamodb_tables):
         """``participants`` should not contain duplicates — caller could
         accidentally include the same id twice (once in legacy A/B, once in
         the explicit list). Backend dedupes before resolving.
