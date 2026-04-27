@@ -164,20 +164,19 @@ export function useTownState(getToken?: () => Promise<string | null>, userId?: s
             return;
           }
 
-          // Agent switched context (town <-> apartment) — tell Godot to switch scene
+          // Agent switched context (town <-> apartment). Just log it — DO NOT
+          // touch Godot's scene or React's route. The WS broadcast goes to
+          // every viewer, so reacting to it would force every viewer's
+          // camera to reset to player_spawn and their URL to flip every
+          // time any agent (theirs or someone else's) crossed the
+          // apartment/town boundary. Scene + route are user-driven via
+          // ``GodotCanvas`` watching the ``scene`` prop and React Router
+          // controlling the ``/`` vs ``/apartment`` paths. The cross-context
+          // visibility filter is already done in ``agent_manager.gd`` via
+          // the per-viewer context filter on world_state, so the agents
+          // appear/disappear correctly without a scene swap.
           if (msg.event === 'agent_context_changed') {
             console.log('[GooseTown] Context changed:', msg.context, 'for agent', msg.agent_id);
-            try {
-              const w = window as unknown as Record<string, unknown>;
-              const bridge = w._godotBridge as { switchScene?: (name: string) => void } | undefined;
-              if (bridge?.switchScene) {
-                const newScene = msg.context === 'apartment' ? 'apartment' : 'town';
-                bridge.switchScene(newScene);
-                window.dispatchEvent(new CustomEvent('goosetown_scene_changed', {
-                  detail: { scene: newScene },
-                }));
-              }
-            } catch { /* Godot not loaded yet */ }
             return;
           }
 
