@@ -772,3 +772,32 @@ Frontend and backend deploy in parallel from the same `main` push. If the bad co
 2. Manually re-alias Vercel **and** force-deploy the previous backend image (section 14 procedure, but for `goosetown-{env}-backend` instead of game server).
 
 **What if this fails?** Vercel's domain DNS itself is managed by Vercel — `goosetown.isol8.co` is a CNAME (or alias) into Vercel that's set in Route53. If you accidentally delete the Vercel project, the DNS record is intact but resolves to nothing. To recover: `vercel link` from a fresh checkout, redeploy, and the alias re-attaches. Don't change the Route53 record.
+
+---
+
+## 18. CDK Bootstrap Deploy Role — `cloudformation:DescribeEvents`
+
+The `cdk-hnb659fds-deploy-role-877352799272-us-east-1` role assumed by `aws-actions/aws-cloudformation-github-deploy@v2` (used by `cdk-pipelines-github` 0.4.135+) requires `cloudformation:DescribeEvents` to satisfy the action's stack-event polling thread. The standard `cdk bootstrap` template does **not** include this action — it only grants `cloudformation:DescribeStackEvents` (a different, older API).
+
+Without this permission, every `NO_CHANGES` stack deploy fails: the polling thread cannot read events, retries five times, escalates to fatal, and the action exits 1 even though the stack was already up-to-date. Symptom: `Deploy {stack} failed` with `User ... not authorized to perform: cloudformation:DescribeEvents` in the failed job's log.
+
+Applied 2026-04-27 via direct AWS CLI patch to the inline `default` policy on the role (added `cloudformation:DescribeEvents` to the existing `CliPermissions` Sid). To re-apply (e.g. after a future `cdk bootstrap` rerun overwrites the policy):
+
+```bash
+aws iam get-role-policy \
+  --role-name cdk-hnb659fds-deploy-role-877352799272-us-east-1 \
+  --policy-name default \
+  --profile isol8-admin --region us-east-1 \
+  --query 'PolicyDocument' > /tmp/policy.json
+
+jq '(.Statement[] | select(.Sid=="CliPermissions") | .Action) += ["cloudformation:DescribeEvents"]' \
+  /tmp/policy.json > /tmp/policy-patched.json
+
+aws iam put-role-policy \
+  --role-name cdk-hnb659fds-deploy-role-877352799272-us-east-1 \
+  --policy-name default \
+  --policy-document file:///tmp/policy-patched.json \
+  --profile isol8-admin --region us-east-1
+```
+
+`cdk bootstrap` is idempotent on the inline policy — running it later will reset the policy to the standard template, removing this addition. If you re-bootstrap, re-run the patch above. (Long-term, file an upstream issue with `aws-cdk` to add this permission to the standard bootstrap template.)
