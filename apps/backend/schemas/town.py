@@ -69,11 +69,19 @@ class ConversationTurn(BaseModel):
 
 
 class TownConversationResponse(BaseModel):
-    """Public conversation log."""
+    """Public conversation log.
+
+    ``participants`` is the source of truth for who's in the conversation —
+    populated from the conversation row's ``participants`` list and
+    resolved to display names. ``participant_a`` / ``participant_b`` are
+    kept for backward compatibility with clients that haven't migrated to
+    reading ``participants``.
+    """
 
     id: str
     participant_a: str
     participant_b: str
+    participants: List[str] = []
     location: Optional[str] = None
     started_at: Optional[str] = None
     ended_at: Optional[str] = None
