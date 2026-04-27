@@ -298,3 +298,101 @@ describe("ComputeStack — WS_MANAGEMENT_API_URL env var is a literal string", (
     expect(templateJson).toContain("ws.goosetown.isol8.co");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 6: ALB access logging
+// ---------------------------------------------------------------------------
+
+describe("ComputeStack — ALB access logging", () => {
+  test("dev creates an ALB access logs bucket", () => {
+    const { template } = buildTestApp("dev");
+    template.hasResourceProperties("AWS::S3::Bucket", {
+      BucketName: "goosetown-dev-alb-logs",
+    });
+  });
+
+  test("prod creates an ALB access logs bucket", () => {
+    const { template } = buildTestApp("prod");
+    template.hasResourceProperties("AWS::S3::Bucket", {
+      BucketName: "goosetown-prod-alb-logs",
+    });
+  });
+
+  test("ALB has access logging enabled", () => {
+    const { template } = buildTestApp("dev");
+    // CDK encodes the ELB access-log opt-in as
+    // ``LoadBalancerAttributes`` entries with key ``access_logs.s3.enabled``.
+    template.hasResourceProperties(
+      "AWS::ElasticLoadBalancingV2::LoadBalancer",
+      {
+        LoadBalancerAttributes: Match.arrayWith([
+          Match.objectLike({
+            Key: "access_logs.s3.enabled",
+            Value: "true",
+          }),
+        ]),
+      }
+    );
+  });
+
+  test("ALB log bucket has 90-day expiry lifecycle rule", () => {
+    const { template } = buildTestApp("dev");
+    template.hasResourceProperties("AWS::S3::Bucket", {
+      BucketName: "goosetown-dev-alb-logs",
+      LifecycleConfiguration: Match.objectLike({
+        Rules: Match.arrayWith([
+          Match.objectLike({
+            ExpirationInDays: 90,
+            Status: "Enabled",
+          }),
+        ]),
+      }),
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 6: backend autoscaling
+// ---------------------------------------------------------------------------
+
+describe("ComputeStack — backend autoscaling", () => {
+  test("dev scales 1→3 tasks", () => {
+    const { template } = buildTestApp("dev");
+    template.hasResourceProperties(
+      "AWS::ApplicationAutoScaling::ScalableTarget",
+      {
+        MinCapacity: 1,
+        MaxCapacity: 3,
+        ScalableDimension: "ecs:service:DesiredCount",
+      }
+    );
+  });
+
+  test("prod scales 2→6 tasks", () => {
+    const { template } = buildTestApp("prod");
+    template.hasResourceProperties(
+      "AWS::ApplicationAutoScaling::ScalableTarget",
+      {
+        MinCapacity: 2,
+        MaxCapacity: 6,
+        ScalableDimension: "ecs:service:DesiredCount",
+      }
+    );
+  });
+
+  test("scaling target uses 60% CPU utilization", () => {
+    const { template } = buildTestApp("prod");
+    template.hasResourceProperties(
+      "AWS::ApplicationAutoScaling::ScalingPolicy",
+      {
+        PolicyType: "TargetTrackingScaling",
+        TargetTrackingScalingPolicyConfiguration: Match.objectLike({
+          TargetValue: 60,
+          PredefinedMetricSpecification: Match.objectLike({
+            PredefinedMetricType: "ECSServiceAverageCPUUtilization",
+          }),
+        }),
+      }
+    );
+  });
+});

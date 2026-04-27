@@ -22,6 +22,16 @@ export class StorageStack extends cdk.Stack {
 
     const env = props.environment;
 
+    // Allowed origins for sprite fetches. Frontends + local dev only — no
+    // wildcard. Anyone hot-linking sprites from outside this list gets a
+    // CORS error at the edge. Per-env so dev frontend isn't allowed against
+    // prod bucket and vice versa; localhost stays in the list everywhere
+    // because the frontend dev server uses it for both envs.
+    const allowedOrigins =
+      env === "prod"
+        ? ["https://goosetown.isol8.co", "http://localhost:5173"]
+        : ["https://dev.goosetown.isol8.co", "http://localhost:5173"];
+
     // S3 bucket for sprites
     this.spriteBucket = new s3.Bucket(this, "SpriteBucket", {
       bucketName: `goosetown-${env}-sprites`,
@@ -32,7 +42,7 @@ export class StorageStack extends cdk.Stack {
       cors: [
         {
           allowedMethods: [s3.HttpMethods.GET, s3.HttpMethods.HEAD],
-          allowedOrigins: ["*"],
+          allowedOrigins,
           allowedHeaders: ["*"],
           maxAge: 86400,
         },
@@ -70,7 +80,7 @@ export class StorageStack extends cdk.Stack {
         responseHeadersPolicyName: `goosetown-${env}-sprite-headers`,
         comment: "CORS + CORP for COEP:require-corp embedding",
         corsBehavior: {
-          accessControlAllowOrigins: ["*"],
+          accessControlAllowOrigins: allowedOrigins,
           accessControlAllowMethods: ["GET", "HEAD"],
           accessControlAllowHeaders: ["*"],
           accessControlAllowCredentials: false,

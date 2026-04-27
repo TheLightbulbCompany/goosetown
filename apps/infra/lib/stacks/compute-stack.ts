@@ -181,6 +181,27 @@ export class ComputeStack extends cdk.Stack {
       idleTimeout: cdk.Duration.seconds(300),
     });
 
+    // Access logging — needed for forensics on auth probes / rate-limit
+    // decisions / WAF tuning. Bucket is per-env, 90-day lifecycle so we
+    // don't grow indefinitely. CDK auto-attaches the AWS-managed bucket
+    // policy that grants the ELB account write access.
+    const albLogsBucket = new s3.Bucket(this, "AlbAccessLogsBucket", {
+      bucketName: `goosetown-${env}-alb-logs`,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
+      lifecycleRules: [
+        {
+          id: "expire-old-logs",
+          enabled: true,
+          expiration: cdk.Duration.days(90),
+          noncurrentVersionExpiration: cdk.Duration.days(7),
+        },
+      ],
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+    this.alb.logAccessLogs(albLogsBucket, `alb-${env}`);
+
     // Target group with sticky sessions for WebSocket support
     const targetGroup = new elbv2.ApplicationTargetGroup(this, "TargetGroup", {
       targetGroupName: `goosetown-${env}-tg`,
@@ -242,6 +263,23 @@ export class ComputeStack extends cdk.Stack {
     });
 
     this.service.attachToApplicationTargetGroup(targetGroup);
+
+    // Auto-scaling on CPU. Prod gets 2-6 tasks (2 baseline for HA, 6 ceiling
+    // protects budget on a runaway scrape); dev gets 1-3 (1 baseline so a
+    // bad health check can recover via rolling update, 3 ceiling so a
+    // misconfigured load test in dev can't accidentally autoscale to prod
+    // levels). Target 60% CPU — leaves headroom for sprite-pipeline bursts
+    // before sustained breach forces scale-out. Game server stays single-
+    // replica until sharding is designed (see gameserver-stack.ts).
+    const scaling = this.service.autoScaleTaskCount({
+      minCapacity: isProd ? 2 : 1,
+      maxCapacity: isProd ? 6 : 3,
+    });
+    scaling.scaleOnCpuUtilization("CpuScaling", {
+      targetUtilizationPercent: 60,
+      scaleInCooldown: cdk.Duration.seconds(60),
+      scaleOutCooldown: cdk.Duration.seconds(60),
+    });
 
     // CloudWatch alarm: fire if fewer healthy targets are registered with the
     // ALB than desired for 5+ minutes. We use HealthyHostCount (AWS/ApplicationELB
