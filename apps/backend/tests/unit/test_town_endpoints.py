@@ -241,6 +241,36 @@ class TestConversationsEndpoint:
         assert conv["participant_a"] == "Rachel"
         assert conv["participant_b"] == "Unknown"
 
+    def test_legacy_row_with_both_participants_missing_emits_empty_strings(self, client, dynamodb_tables):
+        """If a legacy row has neither a ``participants`` array nor any
+        resolvable A/B agent ids, the legacy fields must be empty strings
+        (NOT 'Unknown' placeholders). Rationale: the frontend fallback
+        ``[participant_a, participant_b].filter(Boolean)`` would treat
+        'Unknown' as a real participant and render 'Unknown & Unknown' in
+        the conversation row. Empty strings let the filter actually catch
+        the no-participants case.
+        """
+        # Both ids unresolvable, no ``participants`` array at all.
+        _seed_conversation(
+            dynamodb_tables,
+            "conv-1",
+            participant_a="missing-1",
+            participant_b="missing-2",
+        )
+
+        resp = client.get("/api/v1/town/conversations")
+        assert resp.status_code == 200
+        conv = resp.json()["conversations"][0]
+        # Per-participant ``Unknown`` is still emitted in the canonical
+        # ``participants`` array because each id resolves to ``"Unknown"``
+        # via ``_resolve`` — that's expected and useful ("conversation
+        # with someone whose record we lost").
+        assert conv["participants"] == ["Unknown", "Unknown"]
+        # But the legacy fields must NOT add additional ``"Unknown"``s on
+        # top — they get the slot from ``participants`` if any, or empty.
+        assert conv["participant_a"] == "Unknown"
+        assert conv["participant_b"] == "Unknown"
+
     def test_returns_full_participants_list_for_group_chat(self, client, dynamodb_tables):
         """Group conversations (3+ participants) used to return only
         participantAId/participantBId, hiding the third+ speaker even when
