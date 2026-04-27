@@ -15,8 +15,13 @@ PIXELLAB_API_URL = "https://api.pixellab.ai/v2"
 # ---------------------------------------------------------------------------
 # Animation registry — single source of truth for all animation assets.
 # Template animations are generated at registration (~5 min).
-# Custom animations are generated lazily on first activity use (~8 min each).
+# Custom animations are generated lazily on first activity use (~30-180s on v3).
 # ---------------------------------------------------------------------------
+
+# Appended to every custom-animation prompt. animate-with-text-v3 has no loop
+# flag in the API, so loop intent has to live in the prompt itself.
+_LOOP_SUFFIX = "Looping animation cycle: the final frame returns to the same posture and pose as the first frame."
+
 ANIMATION_REGISTRY: dict[str, dict] = {
     # Templates (1 gen/direction, auto all directions)
     "walk": {"type": "template", "template_id": "walk", "fps": 8.0, "auto_generate": True},
@@ -27,130 +32,128 @@ ANIMATION_REGISTRY: dict[str, dict] = {
     "pick_up": {"type": "template", "template_id": "picking-up", "fps": 6.0, "auto_generate": False},
     # Custom V3 (generated lazily on first use)
     # Prompts describe the full movement sequence for PixelLab frame generation.
+    # Each custom prompt ends with the LOOP_SUFFIX so the final frame matches
+    # the first — animate-with-text-v3 has no looping flag in the API, so the
+    # loop intent has to live in the action description.
     "sitting": {
         "type": "custom",
         "auto_generate": False,
-        "frames": 8,
-        "fps": 1.0,
+        "frames": 12,
+        "fps": 4.0,
         "prompt": (
-            "Sitting down relaxed on a low surface, hands resting on knees, "
-            "gently shifting weight side to side, head tilting slightly, "
-            "occasionally looking around before settling back into a calm posture"
+            "Sitting upright on a low surface with hands on knees, gently "
+            "shifting weight side to side, head turning slowly to look around, "
+            "then settling back to relaxed posture. " + _LOOP_SUFFIX
         ),
     },
     "reading": {
         "type": "custom",
         "auto_generate": False,
-        "frames": 8,
-        "fps": 1.0,
+        "frames": 12,
+        "fps": 4.0,
         "prompt": (
-            "Sitting cross-legged holding an open book, eyes scanning the pages, "
-            "one hand reaching to turn a page then returning, head nodding "
-            "slightly while reading, ears or hair shifting with small movements"
+            "Sitting cross-legged holding an open book in both hands, head "
+            "moving slowly down the page, one hand lifting to turn a page "
+            "then returning, eyes refocused on text. " + _LOOP_SUFFIX
         ),
     },
     "writing": {
         "type": "custom",
         "auto_generate": False,
-        "frames": 8,
-        "fps": 2.0,
+        "frames": 12,
+        "fps": 6.0,
         "prompt": (
-            "Sitting at a surface writing in a notebook, hand moving steadily "
-            "across the page in short strokes, pausing briefly to think with "
-            "pen raised, then resuming writing with focused posture"
+            "Sitting at a desk leaning over a notebook, writing hand moving "
+            "in short rhythmic strokes, pausing briefly with pen lifted, "
+            "then resuming the writing motion. " + _LOOP_SUFFIX
         ),
     },
     "working": {
         "type": "custom",
         "auto_generate": False,
-        "frames": 8,
-        "fps": 2.0,
+        "frames": 12,
+        "fps": 6.0,
         "prompt": (
-            "Sitting hunched forward over a laptop, fingers tapping rapidly on "
-            "the keyboard, occasionally leaning back to think then leaning "
-            "forward again, shoulders shifting with typing rhythm"
+            "Sitting forward at a laptop with hands typing, fingers tapping "
+            "the keyboard in steady rhythm, leaning back briefly to think, "
+            "then leaning forward to keep typing. " + _LOOP_SUFFIX
         ),
     },
     "performing": {
         "type": "custom",
         "auto_generate": False,
-        "frames": 8,
-        "fps": 6.0,
+        "frames": 12,
+        "fps": 8.0,
         "prompt": (
-            "Standing with arms raised expressively, swaying body side to side, "
-            "one arm sweeping outward then the other, weight shifting between "
-            "feet, head tilting back with energy then forward to engage"
+            "Standing with both arms raised wide, swaying body side to side "
+            "in rhythm, one arm sweeping outward then the other, head tilting "
+            "back then forward, energetic. " + _LOOP_SUFFIX
         ),
     },
     "exercising": {
         "type": "custom",
         "auto_generate": False,
-        "frames": 8,
-        "fps": 8.0,
+        "frames": 16,
+        "fps": 12.0,
         "prompt": (
-            "Doing jumping jacks with full body motion, arms swinging up "
-            "overhead then back down to sides, legs spreading apart and "
-            "together, body bouncing with each rep, energetic and rhythmic"
+            "Doing jumping jacks: arms swing up overhead and back to sides, "
+            "legs spread out then together, body bounces with each repetition, "
+            "ending hands at sides ready to repeat. " + _LOOP_SUFFIX
         ),
     },
     "gaming": {
         "type": "custom",
         "auto_generate": False,
-        "frames": 8,
+        "frames": 12,
         "fps": 6.0,
         "prompt": (
-            "Sitting leaning forward excitedly, hands moving pieces on a board, "
-            "reacting with a small fist pump, then studying the board intently "
-            "with hand on chin before reaching to make the next move"
+            "Sitting forward over a tabletop game, one hand moving a piece "
+            "with care, then leaning back with hand on chin to think, "
+            "leaning in again to make a move. " + _LOOP_SUFFIX
         ),
     },
     "gardening": {
         "type": "custom",
         "auto_generate": False,
-        "frames": 8,
-        "fps": 4.0,
+        "frames": 12,
+        "fps": 5.0,
         "prompt": (
-            "Crouching down close to the ground, gently patting soil around a "
-            "small plant with both hands, reaching to pull a weed, then "
-            "carefully watering with a small motion, brushing dirt off hands"
+            "Crouching beside a small plant, patting soil with both hands, "
+            "reaching to pull a weed, then gently watering, ending crouched "
+            "ready to start again. " + _LOOP_SUFFIX
         ),
     },
     "cooking": {
         "type": "custom",
         "auto_generate": False,
-        "frames": 8,
+        "frames": 12,
         "fps": 6.0,
         "prompt": (
-            "Standing at a counter stirring a pot with one hand in circular "
-            "motions, other hand reaching to add an ingredient, leaning in "
-            "to smell the food, then returning to stir with steady rhythm"
+            "Standing at a counter stirring a pot in circular motion, other "
+            "hand reaching to add an ingredient, leaning forward to smell, "
+            "then returning to steady stirring. " + _LOOP_SUFFIX
         ),
     },
     "sleeping": {
         "type": "custom",
         "auto_generate": False,
         "frames": 8,
-        "fps": 0.5,
+        "fps": 1.0,
         "prompt": (
-            "Lying down on side in a curled sleeping position, chest slowly "
-            "rising and falling with deep breaths, small subtle shifts in "
-            "posture, completely relaxed with eyes closed, peaceful and still"
+            "Lying curled on side with eyes closed, chest slowly rising and "
+            "falling with deep breaths, small shift of arm or shoulder, "
+            "settling back into peaceful stillness. " + _LOOP_SUFFIX
         ),
     },
     "talking": {
         "type": "custom",
         "auto_generate": True,
         "frames": 8,
-        # Talking cadence: PixelLab's custom animation endpoint frequently
-        # delivers fewer frames than requested (observed 4 instead of 8).
-        # At 6 fps a 4-frame loop is 0.67s — way too fast for a natural
-        # speaking gesture. 3 fps produces a ~1.3s loop which reads as a
-        # measured talking cadence even if only 4 frames arrive.
-        "fps": 3.0,
+        "fps": 4.0,
         "prompt": (
-            "Standing upright gesturing while speaking, one hand raised making "
-            "a point then lowering, head nodding along, weight shifting between "
-            "feet, other hand occasionally joining in an open palm gesture"
+            "Standing upright with one hand raised gesturing, then lowering "
+            "as head nods, other hand opening palm-up briefly, weight shifting "
+            "subtly, ending in a settled speaking posture. " + _LOOP_SUFFIX
         ),
     },
 }
@@ -635,25 +638,20 @@ class PixelLabService:
         character_id: str,
         animation_name: str,
         action_description: str,
+        frame_count: int = 8,
         directions: list[str] | None = None,
     ) -> list[str]:
-        """Queue a custom animation using animate-with-text-v2 (pro).
+        """Queue a custom animation using animate-with-text-v3.
 
         For each direction, fetches the character's rotation image and
-        sends it to /animate-with-text-v2 with the action description.
-        Returns list of background job IDs.
+        sends it to /animate-with-text-v3 as ``first_frame`` with the action
+        description. v3 takes a single reference frame, returns a configurable
+        ``frame_count`` (4-16, default 8), and infers view/direction from the
+        reference image — much simpler payload than v2 plus smoother motion.
+        Returns list of background job IDs in direction order.
         """
         if directions is None:
             directions = ["south", "west", "east", "north"]
-
-        # Get character info for image size
-        try:
-            char_data = await self.get_character(character_id)
-            image_size = char_data.get("size", {"width": 96, "height": 96})
-            view = char_data.get("view", "low top-down")
-        except Exception:
-            logger.exception("Failed to get character %s for custom animation", character_id)
-            return []
 
         job_ids: list[str] = []
         for direction in directions:
@@ -662,28 +660,24 @@ class PixelLabService:
                 logger.warning("Skipping %s direction for custom animation %s", direction, animation_name)
                 continue
 
-            ref_image, ref_w, ref_h = rotation
+            ref_image, _ref_w, _ref_h = rotation
             body = {
-                "reference_image": {"base64": ref_image},
-                "reference_image_size": {"width": ref_w, "height": ref_h},
+                "first_frame": {"base64": ref_image},
                 "action": action_description,
-                "image_size": {"width": image_size["width"], "height": image_size["height"]},
-                "direction": direction,
-                "view": view,
-                "no_background": True,
+                "frame_count": frame_count,
             }
 
             async with httpx.AsyncClient() as client:
                 try:
                     resp = await client.post(
-                        f"{PIXELLAB_API_URL}/animate-with-text-v2",
+                        f"{PIXELLAB_API_URL}/animate-with-text-v3",
                         headers={"Authorization": f"Bearer {self.api_key}"},
                         json=body,
                         timeout=60.0,
                     )
                     if resp.status_code not in (200, 202):
                         logger.error(
-                            "PixelLab animate-with-text-v2 %s/%s %s: %s",
+                            "PixelLab animate-with-text-v3 %s/%s %s: %s",
                             animation_name,
                             direction,
                             resp.status_code,
@@ -695,11 +689,12 @@ class PixelLabService:
                     if job_id:
                         job_ids.append(job_id)
                         logger.info(
-                            "Custom animation %s/%s queued for %s: job %s",
+                            "Custom animation %s/%s queued for %s: job %s (frames=%d)",
                             animation_name,
                             direction,
                             character_id,
                             job_id,
+                            frame_count,
                         )
                 except Exception:
                     logger.exception(
