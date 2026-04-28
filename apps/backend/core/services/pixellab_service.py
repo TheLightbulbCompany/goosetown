@@ -624,11 +624,16 @@ class PixelLabService:
                 resp.raise_for_status()
                 import base64
 
+                # Raw base64 only — PixelLab's Base64Image model expects the
+                # base64 string without a ``data:image/png;base64,`` prefix.
+                # Including the prefix made every animate-with-text-v2/v3 call
+                # silently fall back to generation without our reference image,
+                # which produced a gray background and inconsistent character.
                 b64 = base64.b64encode(resp.content).decode()
                 size = char_data.get("size", {})
                 w = size.get("width", 96)
                 h = size.get("height", 96)
-                return f"data:image/png;base64,{b64}", w, h
+                return b64, w, h
         except Exception:
             logger.exception("Failed to fetch %s rotation for character %s", direction, character_id)
             return None
@@ -661,8 +666,12 @@ class PixelLabService:
                 continue
 
             ref_image, _ref_w, _ref_h = rotation
+            # Full PixelLab Base64Image shape: ``{type, base64, format}``.
+            # Without the ``type``/``format`` fields the model deserializer
+            # silently dropped our reference image and generated from prompt
+            # alone — yielding a gray background and a drifting character.
             body = {
-                "first_frame": {"base64": ref_image},
+                "first_frame": {"type": "base64", "base64": ref_image, "format": "png"},
                 "action": action_description,
                 "frame_count": frame_count,
             }
