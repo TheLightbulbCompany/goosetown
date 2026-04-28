@@ -1013,9 +1013,18 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
             await _handle_end_conversation(request.connectionId, body, agent_conn)
         elif action == "join_conversation":
             await _handle_join_conversation(request.connectionId, body, agent_conn)
-        elif action != "idle":
-            # Treat any unrecognised action as an activity name
-            await _handle_agent_activity(request.connectionId, action, agent_conn)
+        elif action == "activity":
+            # ``{action: "activity", activity_id: <name>}`` is the validator-
+            # enforced shape (``core/ws_models.py``). The activity name comes
+            # from ``activity_id`` — using ``action`` would always look up the
+            # literal string "activity" and fail.
+            activity_name = body.get("activity_id", "")
+            if activity_name:
+                await _handle_agent_activity(request.connectionId, activity_name, agent_conn)
+        # ``idle`` and ``context_transition`` fall through with no extra work:
+        # ``idle`` exists only to bypass the energy-exhaustion gate, and
+        # ``context_transition`` is handled inside the ``move`` branch when the
+        # destination implies a context change.
         return {"statusCode": 200}
 
     # Legacy: forward raw commands
