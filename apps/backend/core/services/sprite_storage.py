@@ -5,7 +5,7 @@ import logging
 from typing import Optional
 
 import boto3
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from core.config import settings
 
@@ -19,6 +19,30 @@ SHEET_HEIGHT = 4 * FRAME_SIZE  # 384
 
 # Row index for each direction in the output spritesheet
 DIRECTION_ROWS = {"south": 0, "west": 1, "east": 2, "north": 3}
+
+
+def _strip_gray_background(img: Image.Image) -> Image.Image:
+    """Convert PixelLab's solid gray frame background to transparent.
+
+    ``animate-with-text-v3`` returns frames with a uniform ``(128, 128, 128)``
+    gray fill behind the character. v2 had a ``no_background`` flag that
+    avoided this; v3 does not (verified against the OpenAPI spec). Without
+    stripping, ``_crop_and_resize`` sees a fully opaque image, ``getbbox()``
+    returns the whole canvas, and the character renders as a gray box in
+    the viewer.
+
+    Uses 4-corner flood-fill instead of a global pixel sweep so any
+    incidental ``(128, 128, 128)`` pixels INSIDE the character (rare in
+    pixel art with a limited palette, but possible in shading) are
+    preserved.
+    """
+    img = img.convert("RGBA")
+    w, h = img.size
+    for corner in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)]:
+        r, g, b, _ = img.getpixel(corner)
+        if (r, g, b) == (128, 128, 128):
+            ImageDraw.floodfill(img, corner, (0, 0, 0, 0), thresh=10)
+    return img
 
 
 def _crop_and_resize(img: Image.Image, target_size: int) -> Image.Image:
@@ -87,6 +111,7 @@ def composite_v2_animation(
         for frame_idx, frame_bytes in enumerate(frames[:frame_count]):
             try:
                 frame_img = Image.open(io.BytesIO(frame_bytes)).convert("RGBA")
+                frame_img = _strip_gray_background(frame_img)
                 frame_img = _crop_and_resize(frame_img, FRAME_SIZE)
                 sheet.paste(frame_img, (frame_idx * FRAME_SIZE, row_index * FRAME_SIZE))
             except Exception as e:
