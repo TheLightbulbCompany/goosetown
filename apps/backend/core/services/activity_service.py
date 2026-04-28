@@ -307,6 +307,19 @@ async def _generate_custom_animation(agent_id: str, character_id: str, animation
         service.update_agent_state(agent_id, sprite_animations=existing)
         logger.info("Custom animation %s ready for agent %s", animation_name, agent_id)
 
+        # Push the full sprite_animations dict to the game server so the
+        # next world_state broadcast carries the new URL. Without this the
+        # game server's per-peer ``sprite_animations`` cache is frozen at
+        # whatever it was when the agent first connected (typically just
+        # walk + idle + talking), so viewers never load the new spritesheet
+        # even though it's on S3 and in DynamoDB. ``sprite_pipeline.py``
+        # does the same thing after its initial bake — this mirrors that.
+        try:
+            gs_client = get_game_server_client()
+            await gs_client.update_agent_sprites(agent_id, existing)
+        except Exception:
+            logger.exception("Failed to push sprite update to game server for %s", agent_id)
+
         # Push sprites_updated to daemon and viewers
         try:
             from core.services.management_api_client import ManagementApiClient
