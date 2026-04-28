@@ -743,7 +743,13 @@ def cmd_act(args: argparse.Namespace) -> None:
             _die("Usage: act say <conv_id> <message>")
         payload = {"action": "say", "conv_id": rest[0], "message": " ".join(rest[1:])}
     elif action == "idle":
-        payload = {"action": "idle", "activity": rest[0] if rest else "idle"}
+        # Backend contract: an activity is dispatched as
+        # ``{action: "activity", activity_id: <name>}``. Bare ``act idle``
+        # (no activity) is the energy-gate bypass and stays as-is.
+        if rest:
+            payload = {"action": "activity", "activity_id": rest[0]}
+        else:
+            payload = {"action": "idle"}
     elif action == "end":
         if not rest:
             _die("Usage: act end <conv_id>")
@@ -753,7 +759,7 @@ def cmd_act(args: argparse.Namespace) -> None:
             _die("Usage: act join_conversation <conv_id>")
         payload = {"action": "join_conversation", "conv_id": rest[0]}
     elif action in _VALID_ACTIVITIES:
-        payload = {"action": action}
+        payload = {"action": "activity", "activity_id": action}
     else:
         _VALID_COMMANDS = ["move", "chat", "say", "idle", "end", "join_conversation"]
         _die(
