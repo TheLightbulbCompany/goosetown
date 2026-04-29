@@ -50,11 +50,20 @@ func _on_world_state(data: Dictionary) -> void:
 			if not agent_data is Dictionary:
 				continue
 			var ctx: String = str(agent_data.get("context", "town"))
-			# In town: show all town-context agents
-			# In apartment: show only own agents (matching userId)
+			# Drop agents that aren't in the scene we're currently rendering.
 			if ctx != current_context:
 				continue
-			if current_context == "apartment" and my_user_id != "":
+			# Per-scene "filter_by_owner" flag from the registry: when true
+			# (apartment), drop agents owned by other users so each viewer
+			# only sees their own apartment occupants. Shared interiors
+			# (town, library) leave filter_by_owner=false so everyone sees
+			# everyone.
+			var registry: Dictionary = JsBridge.SCENE_REGISTRY
+			var filter_by_owner: bool = (
+				registry.has(current_context)
+				and registry[current_context].get("filter_by_owner", false)
+			)
+			if filter_by_owner and my_user_id != "":
 				var agent_user: String = str(agent_data.get("userId", ""))
 				if agent_user != my_user_id:
 					continue

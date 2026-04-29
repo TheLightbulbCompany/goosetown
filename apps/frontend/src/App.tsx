@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Routes, Route, useLocation, useNavigate } from 'react-router-dom';
 import { SignedIn, SignedOut, UserButton, useAuth } from '@clerk/clerk-react';
 import { ToastContainer, toast } from 'react-toastify';
@@ -11,8 +11,8 @@ import LoginButton from './components/buttons/LoginButton.tsx';
 import MusicButton from './components/buttons/MusicButton.tsx';
 import JoinTownModal from './components/JoinTownModal.tsx';
 import { useApartment } from './hooks/useApartment.ts';
-import Town from './pages/Town.tsx';
-import Apartment from './pages/Apartment.tsx';
+import { SCENES, sceneForPath } from './scenes.ts';
+import InteriorRoute from './components/InteriorRoute.tsx';
 import SignInPage from './pages/SignIn.tsx';
 import SignUpPage from './pages/SignUp.tsx';
 
@@ -132,9 +132,10 @@ export default function App() {
     };
   }, [location.pathname, location.search]);
 
-  // Only switch to apartment if authenticated AND on apartment route
-  const scene: 'town' | 'apartment' =
-    location.pathname === '/apartment' && isSignedIn ? 'apartment' : 'town';
+  const scene = useMemo(
+    () => sceneForPath(location.pathname, !!isSignedIn),
+    [location.pathname, isSignedIn],
+  );
 
   return (
     <main className="relative flex flex-col h-screen w-screen overflow-hidden bg-clay-900 font-body">
@@ -149,8 +150,9 @@ export default function App() {
 
           {/* Route-specific overlays (if any) render on top */}
           <Routes>
-            <Route path="/" element={<Town />} />
-            <Route path="/apartment" element={<Apartment />} />
+            {SCENES.map(s => (
+              <Route key={s.id} path={s.route} element={<InteriorRoute scene={s} />} />
+            ))}
             <Route path="/sign-in/*" element={<SignInPage />} />
             <Route path="/sign-up/*" element={<SignUpPage />} />
           </Routes>
