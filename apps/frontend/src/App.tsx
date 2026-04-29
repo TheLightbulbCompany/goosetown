@@ -145,8 +145,7 @@ export default function App() {
         <GameLayout sidebar={<AgentsSidebar onJoinClick={() => setJoinModalOpen(true)} />}>
           {/* Persistent Godot canvas — never unmounts, switches scenes via JS bridge */}
           <div className="absolute inset-0">
-            {/* scene cast: GodotCanvas prop widens to string in T5 */}
-            <GodotCanvas scene={scene as 'town' | 'apartment'} />
+            <GodotCanvas scene={scene} />
           </div>
 
           {/* Route-specific overlays (if any) render on top */}

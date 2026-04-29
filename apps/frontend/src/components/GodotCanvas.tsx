@@ -4,7 +4,7 @@
  * Loads the Godot engine script, initializes the game on a <canvas> element,
  * and handles resize/cleanup lifecycle.
  *
- * Accepts a `scene` prop to switch between town and apartment maps via the
+ * Accepts a `scene` prop (any id registered in `SCENES`) to switch maps via the
  * JsBridge autoload's `switchScene` callback. The engine is loaded once and
  * persists across scene switches — only the Godot scene tree changes.
  */
@@ -106,7 +106,8 @@ declare global {
 
 interface GodotCanvasProps {
   className?: string;
-  scene?: 'town' | 'apartment';
+  /** Scene id from the SCENES registry. Validated by sceneForPath() upstream. */
+  scene?: string;
 }
 
 export default function GodotCanvas({ className, scene = 'town' }: GodotCanvasProps) {
