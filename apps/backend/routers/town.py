@@ -992,12 +992,24 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
                 dest_context = _context_for_location(destination)
                 current_context = agent_conn.location_context
                 if dest_context is not None and dest_context != current_context:
-                    transition_dest = "exit" if current_context == "apartment" else "residence"
+                    # Pick the right transition trigger based on (source, dest).
+                    # Both apartment and library exit to town via "exit".
+                    # Town enters apartment via "residence" and library via "library".
+                    if current_context in ("apartment", "library"):
+                        transition_dest = "exit"
+                    elif dest_context == "library":
+                        transition_dest = "library"
+                    else:  # dest_context == "apartment"
+                        transition_dest = "residence"
                     transitioned = await _handle_context_transition(request.connectionId, transition_dest, agent_conn)
                     if not transitioned:
                         return {"statusCode": 200}
                     # _handle_context_transition updates the ws_manager in-place,
                     # so agent_conn.location_context now reflects the new context.
+                    # NOTE: cross-interior moves (e.g. apartment → library spot)
+                    # only do a single step here; the agent ends up in town and
+                    # the forwarded move command may fail. Two-step moves are
+                    # not yet supported and the agent must issue them manually.
                 try:
                     await gs_client.send_command(
                         agent_conn.agent_id,

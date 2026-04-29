@@ -346,7 +346,10 @@ class TestHandleContextTransitionToTown:
 
         assert len(sent_messages) == 1
         assert sent_messages[0]["event"] == "move_rejected"
-        assert sent_messages[0]["reason"] == "not_in_apartment"
+        # Reason is "not_in_interior" — generalized after library context was
+        # added (an "exit" command from town no longer specifically means
+        # "leave apartment"; could be either interior).
+        assert sent_messages[0]["reason"] == "not_in_interior"
 
     @pytest.mark.asyncio
     async def test_transition_sends_context_changed(self):

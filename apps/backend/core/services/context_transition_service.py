@@ -1,18 +1,22 @@
-"""Town ↔ apartment context transitions.
+"""Town ↔ apartment ↔ library context transitions.
 
 Two kinds of movement exist in GooseTown:
 
-* **Intra-context moves** — within town or within the apartment. The
-  game server's NavigationAgent2D pathfinds between markers.
-* **Cross-context transitions** — town → apartment (``residence`` door)
-  or apartment → town (``exit`` door). These are expensive: the agent
-  has to be removed from one map's physics/navmesh and spawned into the
+* **Intra-context moves** — within town, within the apartment, or
+  within the library. The game server's NavigationAgent2D pathfinds
+  between markers.
+* **Cross-context transitions** — town → apartment (``residence`` door),
+  apartment → town (``exit`` door), town → library (``library`` door),
+  or library → town (``exit`` door). These are expensive: the agent has
+  to be removed from one map's physics/navmesh and spawned into the
   other atomically, DynamoDB has to flip the ``locationContext``, and
   the ws manager's in-memory cache has to match. This module owns the
   whole protocol.
 
 Extracted from ``routers/town.py`` as sub-project #3's sixth slice
-(2026-04-23). Three pieces live here:
+(2026-04-23). Library context added 2026-04-29.
+
+Three pieces live here:
 
 * Module constants ``_TRANSITION_MAP`` and ``_TOWN_LOCATIONS`` — the
   metadata move handlers consult to decide whether a cross-context
@@ -44,19 +48,34 @@ from core.services.town_service import TownService
 logger = logging.getLogger(__name__)
 
 
-# Destination → expected source context and resulting (dest_context, dest_location)
-_TRANSITION_MAP: dict[str, tuple[str, str, str]] = {
-    # destination: (required_source_context, dest_context, dest_location)
-    "residence": ("town", "apartment", "exit"),
-    "exit": ("apartment", "town", "residence"),
+# Cross-context transition table.
+# Keyed by (source_context, destination_marker). The destination marker is
+# the Marker2D name on the source map that triggers the transition. The
+# resulting dest_location is the marker name in the destination map where
+# the agent will spawn.
+#
+# Note that "exit" is overloaded — it's the apartment-exit AND the
+# library-exit marker. Using (source, marker) as the key disambiguates.
+_TRANSITION_TABLE: dict[tuple[str, str], tuple[str, str]] = {
+    # (source_context, destination_marker): (dest_context, dest_location)
+    ("town", "residence"): ("apartment", "exit"),
+    ("apartment", "exit"): ("town", "residence"),
+    ("town", "library"): ("library", "spawn"),
+    ("library", "exit"): ("town", "library"),
 }
 
-# Which context each known destination belongs to. Used by the move handler
-# to decide whether a cross-context transition needs to happen before the
-# agent can navigate to a given location.
+# Backward-compatible flat lookup: destination marker name → True.
+# Used by router code to quickly check "is this a transition trigger?"
+# without knowing the source context. Source-context disambiguation
+# happens inside ``_handle_context_transition``.
+_TRANSITION_MAP: frozenset[str] = frozenset({marker for (_src, marker) in _TRANSITION_TABLE.keys()})
+
+# Town-map markers that are NOT cross-context transition triggers — i.e.,
+# regular intra-town navigation targets. Used by the move handler to decide
+# whether a cross-context transition needs to happen before the agent can
+# navigate to a given location.
 _TOWN_LOCATIONS: set[str] = {
     "plaza",
-    "library",
     "cafe",
     "activity_center",
     "bank",
@@ -66,9 +85,26 @@ _TOWN_LOCATIONS: set[str] = {
 
 
 def _context_for_location(location: str) -> str | None:
-    """Return ``"town"`` or ``"apartment"`` for a known destination, else ``None``."""
+    """Return the context (``"town"``, ``"apartment"``, ``"library"``) a destination lives in.
+
+    Used by the move handler to decide whether a cross-context transition
+    is needed. ``None`` is returned for unknown destinations.
+
+    Note: ``"exit"`` and ``"bookshelf"`` are ambiguous (they exist in both
+    apartment and library). This function returns the most common
+    interpretation; callers that need disambiguation by source context
+    should use ``_TRANSITION_TABLE`` directly.
+    """
     if location in _TOWN_LOCATIONS:
         return "town"
+    # Library spots first (more specific names like reading_chair_1 won't
+    # collide with apartment).
+    try:
+        from core.services.activity_registry import LIBRARY_SPOT_NAMES
+    except Exception:
+        LIBRARY_SPOT_NAMES = frozenset()
+    if location in LIBRARY_SPOT_NAMES:
+        return "library"
     try:
         from core.apartment_constants import APARTMENT_ROOMS
     except Exception:
@@ -128,13 +164,24 @@ async def _handle_context_transition(
         _reject("agent_not_found")
         return False
 
-    # --- Validate context: reject if already in the destination context ---
-    required_source, dest_context, dest_location = _TRANSITION_MAP[destination]
+    # --- Validate context: lookup the (source, destination) transition ---
     current_context = agent.get("locationContext", "town")
-    if current_context != required_source:
-        reason = "already_in_apartment" if destination == "residence" else "not_in_apartment"
+    key = (current_context, destination)
+    if key not in _TRANSITION_TABLE:
+        # The agent is in a context where this destination doesn't trigger
+        # a transition — e.g., trying to "move residence" while already in
+        # the apartment, or "move library" while already in the library.
+        if destination == "residence":
+            reason = "already_in_apartment"
+        elif destination == "library":
+            reason = "already_in_library"
+        elif destination == "exit":
+            reason = "not_in_interior"
+        else:
+            reason = f"cannot_transition_{current_context}_to_{destination}"
         _reject(reason)
         return False
+    dest_context, dest_location = _TRANSITION_TABLE[key]
 
     # --- Validate not busy ---
     if agent.get("currentActivity"):
