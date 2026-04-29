@@ -200,7 +200,7 @@ func _on_update_world_state(args: Array) -> void:
 
 
 ## Handles scene switch requests from React.
-## Valid scene names: "town", "apartment".
+## Valid scene names come from SCENE_REGISTRY (currently town/apartment/library).
 ## After the switch, dispatches a "godot_scene_changed" CustomEvent to React
 ## with {scene: name} so the React side can confirm the transition completed.
 ## Awaits one frame after change_scene_to_packed so the new scene tree is live

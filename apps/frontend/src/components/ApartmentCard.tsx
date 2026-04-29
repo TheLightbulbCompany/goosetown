@@ -106,11 +106,17 @@ export default function ApartmentCard({ agent }: { agent: ApartmentAgent }) {
         </div>
       </div>
 
-      {/* Location */}
+      {/* Location — town locations (plaza, library, cafe) get a "Town - " prefix
+          because their names overlap with interior scene ids; interiors use
+          specific spot names (bed, reading_armchair) that read unambiguously. */}
       {agent.current_location && (
         <div className="font-body text-xs text-clay-300">
           Location: <span className="text-brown-200">
-            {agent.location_context === 'town' ? 'Town - ' : ''}{agent.current_location}
+            {(() => {
+              const def = sceneById(agent.location_context ?? '');
+              return def?.id === 'town' ? `${def.displayName} - ` : '';
+            })()}
+            {agent.current_location}
           </span>
           {agent.current_spot && agent.current_spot !== agent.current_location && (
             <span className="text-clay-400 ml-1">({agent.current_spot})</span>
