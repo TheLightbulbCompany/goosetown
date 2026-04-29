@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import clsx from 'clsx';
 import type { ApartmentAgent } from '../hooks/useApartment';
+import { sceneById } from '../scenes';
 
 // A ``status_message`` like "Learning to cook…" is set by the backend's
 // ``_generate_custom_animation`` task while the agent is waiting on a
@@ -147,17 +148,24 @@ export default function ApartmentCard({ agent }: { agent: ApartmentAgent }) {
         </div>
       </div>
 
-      {/* Action: view in town */}
-      {agent.location_context === 'town' && (
-        <div className="flex justify-end mt-1">
-          <Link
-            to={`/?focus=${encodeURIComponent(agent.display_name)}`}
-            className="font-body text-xs text-clay-300 hover:text-brown-200 transition-colors"
-          >
-            View in town &rarr;
-          </Link>
-        </div>
-      )}
+      {/* Action: view in <scene> — town pans the camera, interior routes just navigate. */}
+      {(() => {
+        const def = sceneById(agent.location_context ?? '');
+        if (!def || def.showInNav === 'never') return null;
+        const href = def.id === 'town'
+          ? `/?focus=${encodeURIComponent(agent.display_name)}`
+          : def.route;
+        return (
+          <div className="flex justify-end mt-1">
+            <Link
+              to={href}
+              className="font-body text-xs text-clay-300 hover:text-brown-200 transition-colors"
+            >
+              View in {def.displayName.toLowerCase()} &rarr;
+            </Link>
+          </div>
+        );
+      })()}
     </div>
   );
 }
