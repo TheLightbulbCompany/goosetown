@@ -12,9 +12,19 @@ signal set_camera_requested(x: float, y: float, zoom: float)
 signal switch_scene_requested(scene_name: String)
 signal world_state_received(data: Dictionary)
 
-## Load map scenes on demand to avoid blocking editor startup.
-var TOWN_SCENE: PackedScene = null
-var APARTMENT_SCENE: PackedScene = null
+## Scene registry — single source of truth for scene id → asset path.
+## Coupled by id with the frontend's ``apps/frontend/src/scenes.ts``.
+## Adding a new interior: add a row in BOTH files (ids must match).
+const SCENE_REGISTRY: Dictionary = {
+	"town":      { "path": "res://maps/isol88/Isol88Map.tscn",      "filter_by_owner": false },
+	"apartment": { "path": "res://maps/apartment/ApartmentMap.tscn", "filter_by_owner": true  },
+	"library":   { "path": "res://maps/library/LibraryMap.tscn",     "filter_by_owner": false },
+}
+
+## Lazy-loaded PackedScene cache, keyed by ``SCENE_REGISTRY[id].path``.
+## Populated on first ``switchScene`` call to a given scene to avoid
+## blocking editor startup with a load() of every map.
+var _loaded_scenes: Dictionary = {}
 
 ## Tracks which scene is currently active for agent filtering.
 var current_scene: String = "town"
@@ -206,21 +216,14 @@ func _on_switch_scene(args: Array) -> void:
 	print("[JsBridge] Scene switch requested: %s" % scene_name)
 	switch_scene_requested.emit(scene_name)
 
-	# Lazy-load scenes on first switch to avoid blocking editor startup
-	if TOWN_SCENE == null:
-		TOWN_SCENE = load("res://maps/isol88/Isol88Map.tscn")
-	if APARTMENT_SCENE == null:
-		APARTMENT_SCENE = load("res://maps/apartment/ApartmentMap.tscn")
+	if not SCENE_REGISTRY.has(scene_name):
+		push_error("JsBridge._on_switch_scene: unknown scene '%s'" % scene_name)
+		return
 
-	var target_scene: PackedScene
-	match scene_name:
-		"town":
-			target_scene = TOWN_SCENE
-		"apartment":
-			target_scene = APARTMENT_SCENE
-		_:
-			push_error("JsBridge._on_switch_scene: unknown scene '%s'" % scene_name)
-			return
+	var path: String = SCENE_REGISTRY[scene_name]["path"]
+	if not _loaded_scenes.has(path):
+		_loaded_scenes[path] = load(path)
+	var target_scene: PackedScene = _loaded_scenes[path]
 
 	# Update current_scene before the switch so AgentManager filters immediately
 	current_scene = scene_name
