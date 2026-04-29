@@ -68,7 +68,7 @@ class GameServerClient:
             display_name: Human-readable agent name.
             sprite_url: CDN URL for the agent's spritesheet.
             location: Starting location marker name.
-            context: Location context ("town" or "apartment").
+            context: Location context — "town", "apartment", or "library".
             user_id: Clerk user ID owning this agent.
             sprite_animations: Animation metadata keyed by animation name.
             on_event: Async callback fired on every game server event for this agent.

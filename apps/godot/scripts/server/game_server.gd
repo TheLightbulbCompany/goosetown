@@ -12,6 +12,7 @@ const VIEWER_STATE_INTERVAL: float = 2.0
 var _protocol: ServerProtocol = null
 var _controller: AgentController = null
 var _apartment_manager: ApartmentManager = null
+var _library_manager: LibraryManager = null
 var _viewer_peers: Array[int] = []
 var _viewer_timer: float = 0.0
 
@@ -51,6 +52,14 @@ func _ready() -> void:
 
 	print("GameServer: apartment manager ready")
 
+	# Create the library manager (one shared SubViewport for all users).
+	_library_manager = LibraryManager.new()
+	_library_manager.name = "LibraryManager"
+	_library_manager.send_to_peer.connect(_on_send_to_peer)
+	add_child(_library_manager)
+
+	print("GameServer: library manager ready")
+
 	# Create and start the server protocol.
 	_protocol = ServerProtocol.new()
 	_protocol.name = "ServerProtocol"
@@ -82,14 +91,16 @@ func _process(delta: float) -> void:
 # ---------------------------------------------------------------------------
 
 func _broadcast_world_state() -> void:
-	# Combine town agents and apartment agents into one world_state message.
+	# Combine town, apartment, and library agents into one world_state message.
 	var town_state: Dictionary = _controller.get_world_state_for_viewer()
 	var town_agents: Array = town_state.get("agents", [])
 	var apartment_agents: Array = _apartment_manager.get_all_agent_states()
+	var library_agents: Array = _library_manager.get_all_agent_states()
 
 	var all_agents: Array = []
 	all_agents.append_array(town_agents)
 	all_agents.append_array(apartment_agents)
+	all_agents.append_array(library_agents)
 
 	var data: Dictionary = {
 		"event": "world_state",
@@ -127,6 +138,14 @@ func _on_client_connected(peer_id: int, data: Dictionary) -> void:
 			print("GameServer: agent connected to apartment (peer %d, user %s)" % [
 				peer_id, user_id.substr(0, 8),
 			])
+		elif context == "library":
+			# Library is shared — user_id is stored per-agent for viewer
+			# attribution but not required for spawn.
+			_library_manager.spawn_agent(peer_id, data)
+			_library_manager.handle_command(peer_id, {"cmd": "get_locations"})
+			print("GameServer: agent connected to library (peer %d, user %s)" % [
+				peer_id, user_id.substr(0, 8) if user_id != "" else "<anon>",
+			])
 		else:
 			# Default: town context
 			_controller.spawn_agent(peer_id, data)
@@ -146,6 +165,9 @@ func _on_client_disconnected(peer_id: int) -> void:
 	elif _apartment_manager.has_peer(peer_id):
 		_apartment_manager.remove_agent(peer_id)
 		print("GameServer: apartment agent disconnected (peer %d)" % peer_id)
+	elif _library_manager.has_peer(peer_id):
+		_library_manager.remove_agent(peer_id)
+		print("GameServer: library agent disconnected (peer %d)" % peer_id)
 	elif _controller.has_peer(peer_id):
 		_controller.remove_agent(peer_id)
 		print("GameServer: town agent disconnected (peer %d)" % peer_id)
@@ -164,6 +186,8 @@ func _on_command_received(peer_id: int, data: Dictionary) -> void:
 	# Route to the controller that owns this peer
 	if _apartment_manager.has_peer(peer_id):
 		_apartment_manager.handle_command(peer_id, data)
+	elif _library_manager.has_peer(peer_id):
+		_library_manager.handle_command(peer_id, data)
 	else:
 		_controller.handle_command(peer_id, data)
 
@@ -177,8 +201,20 @@ func _handle_transition(peer_id: int, data: Dictionary) -> void:
 
 	if target == "apartment":
 		_transition_to_apartment(peer_id, data)
+	elif target == "library":
+		_transition_to_library(peer_id, data)
 	elif target == "town":
-		_transition_to_town(peer_id, data)
+		# Source could be apartment or library — dispatch on current location.
+		if _apartment_manager.has_peer(peer_id):
+			_transition_to_town(peer_id, data)
+		elif _library_manager.has_peer(peer_id):
+			_transition_library_to_town(peer_id, data)
+		else:
+			_protocol.send_to(peer_id, {
+				"event": "command_error",
+				"error": "Not in any interior context",
+				"cmd": "transition",
+			})
 	else:
 		_protocol.send_to(peer_id, {
 			"event": "command_error",
@@ -287,6 +323,97 @@ func _transition_to_town(peer_id: int, data: Dictionary) -> void:
 		"location": "residence",
 	})
 	print("GameServer: peer %d transitioned apartment -> town" % peer_id)
+
+
+func _transition_to_library(peer_id: int, data: Dictionary) -> void:
+	# Must be in town currently
+	if _library_manager.has_peer(peer_id):
+		_protocol.send_to(peer_id, {
+			"event": "command_error",
+			"error": "Already in library",
+			"cmd": "transition",
+		})
+		return
+
+	# Capture agent data from town before removing
+	var agent_data: Dictionary = _controller.get_agent_data(peer_id)
+	if agent_data.is_empty():
+		_protocol.send_to(peer_id, {
+			"event": "command_error",
+			"error": "No agent found in town for this peer",
+			"cmd": "transition",
+		})
+		return
+
+	var user_id: String = str(data.get("user_id", ""))
+	if user_id == "":
+		user_id = _controller.get_user_id(peer_id)
+	# user_id is optional for library (shared interior); store for attribution.
+	agent_data["user_id"] = user_id
+
+	# Remove from town
+	_controller.remove_agent(peer_id)
+
+	# Spawn in library at the spawn marker (entry point)
+	agent_data["location"] = "spawn"
+	_library_manager.spawn_agent(peer_id, agent_data)
+	_library_manager.handle_command(peer_id, {"cmd": "get_locations"})
+
+	_protocol.send_to(peer_id, {
+		"event": "transitioned",
+		"from": "town",
+		"to": "library",
+		"location": "spawn",
+	})
+	print("GameServer: peer %d transitioned town -> library" % peer_id)
+
+
+func _transition_library_to_town(peer_id: int, data: Dictionary) -> void:
+	# Must be in library currently
+	if not _library_manager.has_peer(peer_id):
+		_protocol.send_to(peer_id, {
+			"event": "command_error",
+			"error": "Not in library",
+			"cmd": "transition",
+		})
+		return
+
+	var lib_controller: LibraryAgentController = _library_manager.get_controller()
+	if lib_controller == null:
+		_protocol.send_to(peer_id, {
+			"event": "command_error",
+			"error": "Library not initialized",
+			"cmd": "transition",
+		})
+		return
+
+	var agent_data: Dictionary = lib_controller.get_agent_data(peer_id)
+	if agent_data.is_empty():
+		_protocol.send_to(peer_id, {
+			"event": "command_error",
+			"error": "No agent found in library for this peer",
+			"cmd": "transition",
+		})
+		return
+
+	var user_id: String = str(agent_data.get("user_id", ""))
+
+	# Remove from library
+	_library_manager.remove_agent(peer_id)
+
+	# Spawn back in town at the library marker (entry/exit point on town map)
+	agent_data["location"] = "library"
+	_controller.spawn_agent(peer_id, agent_data)
+	_controller.set_user_id(peer_id, user_id)
+	_controller.handle_command(peer_id, {"cmd": "get_locations"})
+
+	_protocol.send_to(peer_id, {
+		"event": "transitioned",
+		"from": "library",
+		"to": "town",
+		"location": "library",
+	})
+	print("GameServer: peer %d transitioned library -> town" % peer_id)
 
 
 func _on_send_to_peer(peer_id: int, data: Dictionary) -> void:

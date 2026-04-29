@@ -47,14 +47,42 @@ APARTMENT_SPOT_NAMES: frozenset[str] = frozenset(
 )
 
 
+# Library interior spot markers that all map to the "library" location key.
+# These are the Marker2D node names in maps/library/LibraryMap.tscn under Locations.
+LIBRARY_SPOT_NAMES: frozenset[str] = frozenset(
+    {
+        "spawn",
+        "reading_armchair",
+        "reading_chair_1",
+        "reading_chair_2",
+        "reading_chair_3",
+        "study_desk_1",
+        "study_desk_2",
+        "writing_desk",
+        "computer_desk",
+        "reading_nook",
+        "bookshelf",
+        "message_board",
+        "library",
+    }
+)
+
+
 def canonical_location(location: str) -> str:
     """Normalise a raw location string to the registry key.
 
     Apartment spot names (desk, couch, bed, …) all map to ``"apartment"``
-    so that the activity registry does not need to enumerate every spot.
+    and library spot names (reading_chair_1, study_desk_1, …) map to
+    ``"library"`` so the activity registry does not enumerate every spot.
+
+    Note: ``"exit"`` and ``"bookshelf"`` are ambiguous (apartment also has
+    them). Apartment takes precedence — agents in the apartment context
+    use the apartment normalisation. Callers must resolve context first.
     """
     if location in APARTMENT_SPOT_NAMES:
         return "apartment"
+    if location in LIBRARY_SPOT_NAMES:
+        return "library"
     return location
 
 
@@ -153,48 +181,107 @@ _ACTIVITIES: list[Activity] = [
         ),
     ),
     # --- Library ---
+    # All library activities carry location_context="library" and a `spot`
+    # field — the Marker2D node name the game server navigates to before the
+    # activity timer starts. Mirrors the apartment pattern.
     Activity(
         name="read",
         location="library",
+        location_context="library",
         duration_seconds=15,
         mood_delta=4,
         energy_delta=-3,
         introvert_bonus=2,
         animation="reading",
         description="Reading",
+        spot="reading_armchair",
         agent_prompt=(
-            "You are reading at the library. Pick a topic that genuinely interests you. "
-            "Look up or reason about something real on that topic, then write a short "
-            "summary of what you learned in TOWN_LIFE.md under a 'Reading Notes' section."
+            "You are reading in a comfortable armchair at the library. Pick a topic "
+            "that genuinely interests you. Look up or reason about something real on "
+            "that topic, then write a short summary of what you learned in "
+            "TOWN_LIFE.md under a 'Reading Notes' section."
         ),
     ),
     Activity(
         name="study",
         location="library",
+        location_context="library",
         duration_seconds=20,
         mood_delta=2,
         energy_delta=-5,
         animation="reading",
         description="Studying",
+        spot="study_desk_1",
         agent_prompt=(
-            "You are studying at the library. Work through a problem or question you have "
-            "been thinking about. Use your tools or reasoning skills to make progress. "
-            "Write your conclusions in TOWN_LIFE.md."
+            "You are studying at one of the long study desks at the library. Work "
+            "through a problem or question you have been thinking about. Use your "
+            "tools or reasoning skills to make progress. Write your conclusions in "
+            "TOWN_LIFE.md."
         ),
     ),
     Activity(
         name="write_journal",
         location="library",
+        location_context="library",
         duration_seconds=10,
         mood_delta=3,
         energy_delta=-2,
         introvert_bonus=1,
         animation="writing",
         description="Writing in journal",
+        spot="writing_desk",
         agent_prompt=(
-            "You are writing in your personal journal at the library. "
-            "Reflect on recent events in GooseTown, relationships, goals, or how you are feeling. "
-            "Append an entry to TOWN_LIFE.md dated today."
+            "You are writing in your personal journal at the writing desk in the library. "
+            "Reflect on recent events in GooseTown, relationships, goals, or how you are "
+            "feeling. Append an entry to TOWN_LIFE.md dated today."
+        ),
+    ),
+    Activity(
+        name="use_computer",
+        location="library",
+        location_context="library",
+        duration_seconds=15,
+        mood_delta=2,
+        energy_delta=-4,
+        animation="working",
+        description="Using the computer",
+        spot="computer_desk",
+        agent_prompt=(
+            "You are at the public computer in the library. Look something up, draft a "
+            "message, or do focused work that needs the machine. Note in TOWN_LIFE.md "
+            "what you accomplished."
+        ),
+    ),
+    Activity(
+        name="relax_in_nook",
+        location="library",
+        location_context="library",
+        duration_seconds=12,
+        mood_delta=5,
+        energy_delta=2,
+        introvert_bonus=2,
+        animation="sitting",
+        description="Relaxing in the reading nook",
+        spot="reading_nook",
+        agent_prompt=(
+            "You are settling into the cozy reading nook with the red armchairs. "
+            "Decompress and let your mind wander. If something comes up worth remembering, "
+            "write a brief note in TOWN_LIFE.md."
+        ),
+    ),
+    Activity(
+        name="browse_messages",
+        location="library",
+        location_context="library",
+        duration_seconds=8,
+        mood_delta=1,
+        energy_delta=-1,
+        animation="reading",
+        description="Browsing the message board",
+        spot="message_board",
+        agent_prompt=(
+            "You are reading the library's community message board. See what announcements, "
+            "events, or postings are up. Note anything interesting in TOWN_LIFE.md."
         ),
     ),
     # --- Cafe ---
@@ -502,8 +589,9 @@ def get_context_mismatch_message(activity: "Activity", agent_location_context: s
 
     Args:
         activity: The requested ``Activity``.
-        agent_location_context: The agent's current context — ``"town"`` or
-            ``"apartment"``.  Sourced from ``locationContext`` on the agent DB record.
+        agent_location_context: The agent's current context — ``"town"``,
+            ``"apartment"``, or ``"library"``. Sourced from ``locationContext``
+            on the agent DB record.
 
     Returns:
         A guidance string explaining what the agent should do instead, or
@@ -513,7 +601,11 @@ def get_context_mismatch_message(activity: "Activity", agent_location_context: s
         return None
     if activity.location_context == "apartment":
         return "You need to go to your apartment first. Use `town_act move residence` to go home."
+    if activity.location_context == "library":
+        return "You need to go to the library first. Use `town_act move library` to head there."
     # activity.location_context == "town"
+    if agent_location_context == "library":
+        return "You need to leave the library first. Use `town_act move exit` to head back to town."
     return "You need to go to town first. Use `town_act move exit` to leave your apartment."
 
 
