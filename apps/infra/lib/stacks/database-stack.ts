@@ -131,7 +131,7 @@ export class DatabaseStack extends cdk.Stack {
       pointInTimeRecoverySpecification: {
         pointInTimeRecoveryEnabled: env === "prod",
       },
-      removalPolicy: env === "prod" ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+      removalPolicy,
     });
     ownerChats.addGlobalSecondaryIndex({
       indexName: "agentId-createdAt-index",
