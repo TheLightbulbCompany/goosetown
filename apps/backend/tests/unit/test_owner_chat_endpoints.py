@@ -68,7 +68,7 @@ def test_post_owner_message_succeeds_for_owner():
             p_send.assert_called_once()
             send_args = p_send.call_args
             assert send_args.args[0] == "agent-1"
-            assert send_args.args[1]["type"] == "owner_message"
+            assert send_args.args[1]["event"] == "owner_message"
             assert send_args.args[1]["text"] == "hello"
             assert send_args.args[1]["message_id"] == "msg-1"
     finally:
