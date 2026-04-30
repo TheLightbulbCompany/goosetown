@@ -672,16 +672,24 @@ def _push_to_owner_viewers(*, user_id: str, payload: dict) -> None:
     from core import dynamo
     from core.services.management_api_client import ManagementApiClient
 
-    try:
-        resp = dynamo.connections_table().scan(
-            FilterExpression="userId = :uid AND connectionType = :ct",
-            ExpressionAttributeValues={":uid": user_id, ":ct": "viewer"},
-        )
-    except Exception as exc:
-        logger.warning("push_to_owner_viewers: scan failed: %s", exc)
-        return
+    table = dynamo.connections_table()
+    scan_kwargs: dict = {
+        "FilterExpression": "userId = :uid AND connectionType = :ct",
+        "ExpressionAttributeValues": {":uid": user_id, ":ct": "viewer"},
+    }
+    items: list[dict] = []
+    while True:
+        try:
+            resp = table.scan(**scan_kwargs)
+        except Exception as exc:
+            logger.warning("push_to_owner_viewers: scan failed: %s", exc)
+            return
+        items.extend(resp.get("Items", []))
+        last_key = resp.get("LastEvaluatedKey")
+        if not last_key:
+            break
+        scan_kwargs["ExclusiveStartKey"] = last_key
 
-    items = resp.get("Items", [])
     if not items:
         return
 
