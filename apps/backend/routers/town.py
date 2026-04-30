@@ -585,6 +585,32 @@ async def post_owner_message(
     return {"id": msg["id"], "createdAt": msg["createdAt"]}
 
 
+@router.get("/agent/{agent_id}/owner-chat")
+async def get_owner_chat(
+    agent_id: str,
+    limit: int = 50,
+    before: int | None = None,
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Return the owner's chat history with the agent, oldest first.
+
+    Auth: Clerk JWT. Rejects 403 if ``agent.userId != auth.user_id``.
+    ``before`` (Unix ms) pages backward — return messages with
+    ``createdAt < before``. ``limit`` is capped at 200.
+    """
+    service = OwnerChatService()
+    try:
+        history = service.fetch_history(
+            agent_id=agent_id,
+            owner_id=auth.user_id,
+            limit=min(limit, 200),
+            before_ms=before,
+        )
+    except OwnershipError:
+        raise HTTPException(status_code=403, detail="not your agent")
+    return {"messages": history}
+
+
 # ===========================================================================
 # Isol8-native endpoints (authenticated)
 # ===========================================================================
