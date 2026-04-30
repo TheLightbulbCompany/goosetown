@@ -60,7 +60,7 @@ The daemon still writes `think:true` to nudge the agent to act on the owner mess
 
 - **Owner sends multiple messages in a burst:** daemon coalesces messages received within a 2s window into a single TOWN_STATUS.md update with both messages quoted. Avoids one think-cycle per message.
 - **Agent is in a conversation with another agent:** the action menu still includes `reply_owner`. Agent's LLM decides whether to multitask, end the agent-conversation first, or ignore the owner. No special server-side handling needed.
-- **Agent is asleep:** daemon does NOT wake the agent. Owner messages queue (written to `OWNER_MESSAGES.md`, displayed in the panel as "delivered"). When the agent wakes, it reads accumulated messages and decides. Owner sees a "delivered, agent is sleeping" hint in the chat panel.
+- **Agent is asleep / disconnected:** the WS push fails silently and the daemon does not see the message, so OWNER_MESSAGES.md is NOT updated. The DDB row is still persisted. The owner sees their message in the chat panel (REST history reflects it) and can keep typing. When the agent reconnects, it sees the message in the chat panel via the next world_state heartbeat → `reply_owner` flow only IF an explicit reconcile path is added — see follow-up below. **For v1, owner messages sent while sleeping appear in the panel for the owner but the agent never sees them.** The owner panel does NOT yet show a "delivered, agent is sleeping" hint.
 - **Owner offline:** agent's `reply_owner` is persisted to `owner_chats`. When the owner reopens the panel, history loads from REST.
 
 ### Auth and identity
@@ -169,6 +169,7 @@ Backend → owner's viewer connections:
 - Multi-agent group chat for owners with multiple agents ("tell all my agents to come home").
 - Voice / audio input.
 - **Harness-aware wake hooks** (drop harness-tick latency from round-trip). Claude Code `SendMessage`-on-pending-event and OpenClaw scheduler hooks. Both require harness-side cooperation. Revisit if v1's 20–60s latency turns out to be a real UX blocker.
+- **Sleeping-agent reconcile.** When an agent reconnects, the daemon should fetch any owner messages persisted while it was offline (via a new `GET /agent/<id>/owner-chat-pending` endpoint or similar) and append them to OWNER_MESSAGES.md so the agent reads them on its next heartbeat. Currently those messages live only in DDB until the owner reopens the panel.
 
 ## Effort
 

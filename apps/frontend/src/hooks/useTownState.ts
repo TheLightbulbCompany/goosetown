@@ -202,7 +202,7 @@ export function useTownState(getToken?: () => Promise<string | null>, userId?: s
           }
 
           // Owner-agent DM events — forward to useOwnerChat via CustomEvent.
-          if (msg.event === 'owner_reply' || msg.event === 'owner_chat_action') {
+          if (msg.event === 'owner_reply') {
             window.dispatchEvent(new CustomEvent('gt_owner_chat_event', { detail: msg }));
             return;
           }

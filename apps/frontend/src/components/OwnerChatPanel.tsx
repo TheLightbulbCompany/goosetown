@@ -70,9 +70,7 @@ export default function OwnerChatPanel({ agentId, agentName, onClose }: OwnerCha
               'font-body text-sm rounded p-2 max-w-[280px] break-words',
               m.direction === 'owner_to_agent'
                 ? 'bg-brown-700 text-brown-100 ml-auto'
-                : m.text.startsWith('→ ')
-                  ? 'bg-clay-800 text-clay-300 italic'
-                  : 'bg-clay-700 text-brown-200',
+                : 'bg-clay-700 text-brown-200',
             )}
           >
             {m.text}

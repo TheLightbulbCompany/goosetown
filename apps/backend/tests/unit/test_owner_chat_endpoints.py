@@ -1,6 +1,7 @@
 import time
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from main import app
@@ -311,3 +312,57 @@ def test_handle_reply_owner_drops_empty_text():
         )
         p_persist.assert_not_called()
         p_push.assert_not_called()
+
+
+def test_reply_owner_passes_ws_validator():
+    """The full ws-message body for reply_owner validates without 422.
+
+    Regression for the validator-vs-dispatcher mismatch caught in final review:
+    the AgentAction Literal must include 'reply_owner' or every reply gets
+    422'd before reaching _handle_reply_owner_action.
+    """
+    from pydantic import TypeAdapter
+
+    from core.ws_models import WsMessage
+
+    adapter = TypeAdapter(WsMessage)
+    body = {
+        "type": "town_agent_act",
+        "action": "reply_owner",
+        "text": "OK heading there",
+    }
+    # Should not raise.
+    parsed = adapter.validate_python(body)
+    assert parsed is not None
+
+
+def test_reply_owner_with_ref_message_id_passes_ws_validator():
+    """reply_owner with optional ref_message_id also validates."""
+    from pydantic import TypeAdapter
+
+    from core.ws_models import WsMessage
+
+    adapter = TypeAdapter(WsMessage)
+    body = {
+        "type": "town_agent_act",
+        "action": "reply_owner",
+        "text": "Sure, heading to the library now.",
+        "ref_message_id": "msg-abc-123",
+    }
+    parsed = adapter.validate_python(body)
+    assert parsed is not None
+
+
+def test_reply_owner_without_text_fails_ws_validator():
+    """reply_owner missing text is correctly rejected by the validator."""
+    from pydantic import TypeAdapter, ValidationError
+
+    from core.ws_models import WsMessage
+
+    adapter = TypeAdapter(WsMessage)
+    body = {
+        "type": "town_agent_act",
+        "action": "reply_owner",
+    }
+    with pytest.raises(ValidationError):
+        adapter.validate_python(body)

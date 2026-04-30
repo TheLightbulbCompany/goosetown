@@ -82,7 +82,6 @@ export function useOwnerChat({ agentId, getToken }: UseOwnerChatArgs): UseOwnerC
         text?: string;
         message_id?: string;
         timestamp?: number;
-        summary?: string;
       };
       if (detail.agent_id !== agentId) return;
 
@@ -95,16 +94,6 @@ export function useOwnerChat({ agentId, getToken }: UseOwnerChatArgs): UseOwnerC
         };
         setMessages((prev) => [...prev, reply]);
         setPending(false);
-      } else if (detail.event === 'owner_chat_action') {
-        // Inline action breadcrumb — same shape as a message but the panel
-        // styles it differently (italic, leading "→").
-        const breadcrumb: OwnerChatMessage = {
-          id: `breadcrumb-${Date.now()}`,
-          direction: 'agent_to_owner',
-          text: `→ ${detail.summary ?? 'agent acted'}`,
-          createdAt: detail.timestamp ?? Date.now(),
-        };
-        setMessages((prev) => [...prev, breadcrumb]);
       }
     };
     window.addEventListener('gt_owner_chat_event', handler);
