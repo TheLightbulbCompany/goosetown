@@ -651,6 +651,25 @@ async def get_viewer_token(
     return {"token": token}
 
 
+@router.get("/anonymous-viewer-token")
+async def get_anonymous_viewer_token():
+    """Mint a short-lived viewer token for unauthenticated WebSocket access.
+
+    No auth required. Token is HMAC-signed via the same TOWN_TOKEN_SECRET
+    as registered agents and signed-in viewers. The Lambda authorizer
+    accepts it transparently. Anonymous viewers can subscribe to
+    world_state but cannot register, act, or send chat — those endpoints
+    enforce a real user_id (Clerk subject) at the router layer.
+    """
+    from core.town_token import sign_town_token
+
+    # 30-min TTL: short enough that leaked tokens have minimal blast radius,
+    # long enough for a casual viewing session before the WS hook needs to
+    # refetch on reconnect.
+    token = sign_town_token("anonymous", "anonymous-viewer", ttl_seconds=1800)
+    return {"token": token}
+
+
 @router.get("/conversations", response_model=TownConversationsListResponse)
 async def get_conversations(limit: int = 20):
     """Get recent public conversations.
