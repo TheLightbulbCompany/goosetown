@@ -201,6 +201,12 @@ export function useTownState(getToken?: () => Promise<string | null>, userId?: s
             return;
           }
 
+          // Owner-agent DM events — forward to useOwnerChat via CustomEvent.
+          if (msg.event === 'owner_reply' || msg.event === 'owner_chat_action') {
+            window.dispatchEvent(new CustomEvent('gt_owner_chat_event', { detail: msg }));
+            return;
+          }
+
           // Legacy backend town_state message
           const legacyMsg = msg as TownWsMessage;
           if (legacyMsg.type === 'town_state' && legacyMsg.worldState && legacyMsg.gameDescriptions) {
