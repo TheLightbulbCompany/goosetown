@@ -15,10 +15,16 @@ signal world_state_received(data: Dictionary)
 ## Scene registry — single source of truth for scene id → asset path.
 ## Coupled by id with the frontend's ``apps/frontend/src/scenes.ts``.
 ## Adding a new interior: add a row in BOTH files (ids must match).
+## ``agent_scale`` is a Node2D scale multiplier applied to every agent
+## that renders inside a scene. Library is bigger than the apartment in
+## world units so its fit-zoom is lower (~1.8× vs ~3.4×); without this
+## scale, 48px agent sprites render at half-size in the library and feel
+## tiny next to the bookshelves. Apply 1.5× there to bring agent
+## visibility roughly in line with apartment/town. Town/apartment use 1.0.
 const SCENE_REGISTRY: Dictionary = {
-	"town":      { "path": "res://maps/isol88/Isol88Map.tscn",      "filter_by_owner": false },
-	"apartment": { "path": "res://maps/apartment/ApartmentMap.tscn", "filter_by_owner": true  },
-	"library":   { "path": "res://maps/library/LibraryMap.tscn",     "filter_by_owner": false },
+	"town":      { "path": "res://maps/isol88/Isol88Map.tscn",      "filter_by_owner": false, "agent_scale": 1.0 },
+	"apartment": { "path": "res://maps/apartment/ApartmentMap.tscn", "filter_by_owner": true,  "agent_scale": 1.0 },
+	"library":   { "path": "res://maps/library/LibraryMap.tscn",     "filter_by_owner": false, "agent_scale": 1.5 },
 }
 
 ## Lazy-loaded PackedScene cache, keyed by ``SCENE_REGISTRY[id].path``.
