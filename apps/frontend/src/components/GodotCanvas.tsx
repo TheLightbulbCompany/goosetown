@@ -154,10 +154,14 @@ export default function GodotCanvas({ className, scene = 'town' }: GodotCanvasPr
           throw new Error('Godot Engine not available after script load');
         }
 
-        // Initialize canvas size
+        // Initialize canvas size — DPR-aware so HiDPI displays render
+        // at the parent's CSS size, not at the window's pixel size.
         const rect = container.getBoundingClientRect();
-        canvas.width = rect.width;
-        canvas.height = rect.height;
+        const dpr0 = window.devicePixelRatio || 1;
+        canvas.style.width = `${rect.width}px`;
+        canvas.style.height = `${rect.height}px`;
+        canvas.width = Math.round(rect.width * dpr0);
+        canvas.height = Math.round(rect.height * dpr0);
 
         // Create and start the engine
         const engine = new window.Engine({
@@ -197,14 +201,23 @@ export default function GodotCanvas({ className, scene = 'town' }: GodotCanvasPr
 
     void loadEngine();
 
-    // Resize observer to keep canvas matching container
+    // Resize observer to keep canvas matching container.
+    //
+    // The Godot WebGL engine's startGame() sets ``canvas.width`` and
+    // ``canvas.style.width`` to window-derived values, which makes the
+    // canvas overflow its sidebar-constrained parent. Own the sizing
+    // here: set CSS dims to the parent's content rect, and backing-store
+    // dims to that times the device pixel ratio so HiDPI rendering
+    // stays sharp without overflow.
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const { width, height } = entry.contentRect;
-        if (canvas) {
-          canvas.width = width;
-          canvas.height = height;
-        }
+        if (!canvas) continue;
+        const dpr = window.devicePixelRatio || 1;
+        canvas.style.width = `${width}px`;
+        canvas.style.height = `${height}px`;
+        canvas.width = Math.round(width * dpr);
+        canvas.height = Math.round(height * dpr);
       }
     });
     observer.observe(container);
