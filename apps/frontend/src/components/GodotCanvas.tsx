@@ -86,7 +86,17 @@ interface GodotEngine {
 }
 
 interface GodotEngineConstructor {
-  new (config: { executable: string; canvas: HTMLCanvasElement; args?: string[] }): GodotEngine;
+  new (config: {
+    executable: string;
+    canvas: HTMLCanvasElement;
+    args?: string[];
+    /**
+     * 0 = none (we own the sizing), 1 = project (use the project's window size),
+     * 2 = adaptive (resize to browser window — the default; fights our parent
+     * container and overflows on layouts with sidebars).
+     */
+    canvasResizePolicy?: 0 | 1 | 2;
+  }): GodotEngine;
   isWebGLAvailable: (majorVersion?: number) => boolean;
 }
 
@@ -163,10 +173,15 @@ export default function GodotCanvas({ className, scene = 'town' }: GodotCanvasPr
         canvas.width = Math.round(rect.width * dpr0);
         canvas.height = Math.round(rect.height * dpr0);
 
-        // Create and start the engine
+        // Create and start the engine. canvasResizePolicy: 0 disables
+        // Godot's built-in canvas-resize logic, which by default sets
+        // canvas.style.{width,height} to window dimensions and overflows
+        // our sidebar-constrained parent. The ResizeObserver below owns
+        // the canvas sizing instead.
         const engine = new window.Engine({
           executable: '/godot/goosetown',
           canvas,
+          canvasResizePolicy: 0,
         });
 
         // World state is forwarded to Godot via JS bridge from useTownState's WebSocket.
