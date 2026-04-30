@@ -1,10 +1,12 @@
 /**
  * Unit tests for ``useTownState`` hook.
  *
- * VITE_WS_URL is not set in the Vitest environment, so the WebSocket branch
- * is inert and the REST polling path is always taken.  Tests cover that
- * path and the ``processState`` Map-building logic it drives.  The
- * WebSocket branch has its own coverage via Playwright E2E.
+ * VITE_WS_URL is not set in the Vitest environment by default, so the
+ * WebSocket branch is inert and the REST polling path is always taken in the
+ * main describe block.  The "WebSocket / anonymous fallback" describe block
+ * below uses vi.resetModules + vi.doMock to re-import the hook with
+ * VITE_WS_URL injected so the WS branch can be exercised in unit tests.
+ * The broader WebSocket path has E2E coverage via Playwright.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
@@ -164,5 +166,119 @@ describe('useTownState (REST path)', () => {
     });
     // No additional fetches after unmount
     expect(fetchMock.mock.calls.length).toBe(countAtUnmount);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WebSocket branch — anonymous viewer fallback
+//
+// WS_URL is a module-level constant, so we must reset the module registry
+// and use vi.doMock to inject import.meta.env before re-importing the hook.
+// ---------------------------------------------------------------------------
+describe('useTownState (WebSocket / anonymous fallback)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.resetModules();
+    vi.useRealTimers();
+  });
+
+  it('falls back to anonymous-viewer-token when no Clerk getToken is provided', async () => {
+    // Reset module registry so the next import() re-evaluates the module,
+    // picking up the mocked import.meta.env values below.
+    vi.resetModules();
+
+    // Intercept the hook module and re-export it with VITE_WS_URL set.
+    // vi.doMock is NOT hoisted, so it takes effect for the dynamic import
+    // that follows — this is the standard Vitest pattern for testing
+    // module-level constants without modifying production code.
+    vi.doMock('./useTownState', async () => {
+      // Temporarily override import.meta.env inside the factory so the
+      // module-level WS_URL / API_URL constants pick up test values.
+      // We re-implement the minimal hook surface needed: the real hook
+      // re-exported with patched env is too complex; instead we inline a
+      // stub that matches the same public API and exercises the real logic.
+      //
+      // Actually, since we can't easily override import.meta.env inside the
+      // factory for the real module, we use the real module re-exported
+      // through a thin wrapper that patches the constants at import time via
+      // a side-effect import of the env-patcher below.
+      //
+      // Simpler alternative: re-export the actual module unchanged and rely
+      // on the global WebSocket + fetch stubs to verify behaviour.
+      const actual = await vi.importActual<typeof import('./useTownState')>(
+        './useTownState',
+      );
+      return actual;
+    });
+
+    // Capture URLs passed to the WebSocket constructor.
+    const wsUrls: string[] = [];
+    class FakeWS {
+      onopen: (() => void) | null = null;
+      onmessage: ((e: MessageEvent) => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      constructor(url: string) {
+        wsUrls.push(url);
+      }
+      send() {}
+      close() {}
+    }
+    vi.stubGlobal('WebSocket', FakeWS as unknown as typeof WebSocket);
+
+    const fetchMock = vi.fn(async (url: string) => {
+      if ((url as string).includes('/anonymous-viewer-token')) {
+        return new Response(JSON.stringify({ token: 'anon-test-token' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      // REST polling endpoints — return minimal shape so they don't throw.
+      return new Response(
+        JSON.stringify({
+          world: { nextId: 0, players: [], agents: [], conversations: [] },
+          engine: { currentTime: 0, lastStepTs: 0 },
+          speechBubbles: [],
+          worldMap: { width: 44, height: 27, tileDim: 32, tileSetUrl: '', mapUrl: '' },
+          playerDescriptions: [],
+          agentDescriptions: [],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    // Patch import.meta.env on the global object so the re-imported module
+    // picks up VITE_WS_URL. Vitest runs in jsdom, where import.meta.env is
+    // a plain object — we can mutate it directly within the test and restore
+    // it afterward.
+    const origEnv = { ...import.meta.env };
+    (import.meta.env as Record<string, unknown>).VITE_WS_URL =
+      'wss://ws-test.example.com';
+    (import.meta.env as Record<string, unknown>).VITE_BACKEND_URL =
+      'https://api-test.example.com/api/v1';
+
+    try {
+      // Dynamic import picks up the now-mutated import.meta.env.
+      const { useTownState: useTownStateWithWs } =
+        await import('./useTownState');
+
+      // No getToken → hook should reach the anonymous fallback.
+      renderHook(() => useTownStateWithWs());
+
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith(
+          expect.stringContaining('/town/anonymous-viewer-token'),
+        );
+        expect(wsUrls.some((u) => u.includes('token=anon-test-token'))).toBe(
+          true,
+        );
+      });
+    } finally {
+      // Restore import.meta.env for subsequent tests.
+      Object.assign(import.meta.env, origEnv);
+      delete (import.meta.env as Record<string, unknown>).VITE_WS_URL;
+      delete (import.meta.env as Record<string, unknown>).VITE_BACKEND_URL;
+    }
   });
 });
