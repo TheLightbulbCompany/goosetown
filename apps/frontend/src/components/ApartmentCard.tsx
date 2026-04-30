@@ -63,7 +63,12 @@ function moodEmoji(mood: string | null): string {
   }
 }
 
-export default function ApartmentCard({ agent }: { agent: ApartmentAgent }) {
+interface ApartmentCardProps {
+  agent: ApartmentAgent;
+  onChatClick?: (agentId: string, agentName: string) => void;
+}
+
+export default function ApartmentCard({ agent, onChatClick }: ApartmentCardProps) {
   const energyPercent = Math.max(0, Math.min(100, agent.energy));
 
   return (
@@ -154,21 +159,34 @@ export default function ApartmentCard({ agent }: { agent: ApartmentAgent }) {
         </div>
       </div>
 
-      {/* Action: view in <scene> — town pans the camera, interior routes just navigate. */}
+      {/* Action row: Chat button + view in <scene> link — both right-aligned. */}
       {(() => {
         const def = sceneById(agent.location_context ?? '');
-        if (!def || def.showInNav === 'never') return null;
-        const href = def.id === 'town'
-          ? `/?focus=${encodeURIComponent(agent.display_name)}`
-          : def.route;
+        const showViewLink = def && def.showInNav !== 'never';
+        const href = showViewLink
+          ? def.id === 'town'
+            ? `/?focus=${encodeURIComponent(agent.display_name)}`
+            : def.route
+          : null;
+        if (!onChatClick && !showViewLink) return null;
         return (
-          <div className="flex justify-end mt-1">
-            <Link
-              to={href}
-              className="font-body text-xs text-clay-300 hover:text-brown-200 transition-colors"
-            >
-              View in {def.displayName.toLowerCase()} &rarr;
-            </Link>
+          <div className="flex justify-end items-center gap-3 mt-1">
+            {onChatClick && (
+              <button
+                onClick={() => onChatClick(agent.agent_id, agent.display_name)}
+                className="font-body text-xs text-clay-300 hover:text-brown-200 transition-colors"
+              >
+                Chat &rarr;
+              </button>
+            )}
+            {showViewLink && href && (
+              <Link
+                to={href}
+                className="font-body text-xs text-clay-300 hover:text-brown-200 transition-colors"
+              >
+                View in {def.displayName.toLowerCase()} &rarr;
+              </Link>
+            )}
           </div>
         );
       })()}
