@@ -566,7 +566,11 @@ async def post_owner_message(
     except OwnershipError:
         raise HTTPException(status_code=403, detail="not your agent")
     except RateLimitError:
-        raise HTTPException(status_code=429, detail="too many messages — wait a moment")
+        raise HTTPException(
+            status_code=429,
+            detail="too many messages — wait a moment",
+            headers={"Retry-After": "2"},
+        )
 
     _send_to_daemon(
         agent_id,

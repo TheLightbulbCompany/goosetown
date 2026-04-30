@@ -114,6 +114,7 @@ def test_post_owner_message_returns_429_when_rate_limited():
                 headers=_auth_headers(),
             )
             assert r.status_code == 429
+            assert r.headers["retry-after"] == "2"
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 
