@@ -572,10 +572,14 @@ async def post_owner_message(
             headers={"Retry-After": "2"},
         )
 
+    # Daemon's dispatcher reads ``data["event"]`` — see every other
+    # backend→daemon payload in core/services/conversation_service.py.
+    # The original draft used ``"type":`` which the daemon silently
+    # ignored, so owner messages never reached the agent.
     _send_to_daemon(
         agent_id,
         {
-            "type": "owner_message",
+            "event": "owner_message",
             "text": msg["text"],
             "message_id": msg["id"],
             "timestamp": msg["createdAt"],

@@ -1804,12 +1804,19 @@ class TownDaemon:
             log.error("websockets package not installed. Install with: pip install websockets")
             sys.exit(1)
 
-        # Pass the token in the Authorization header instead of the URL —
-        # query params end up in CloudWatch / proxy access logs verbatim. The
-        # API Gateway authorizer prefers the header but still accepts the old
-        # ?token= form during the rollout window for daemons that haven't
-        # been re-installed.
-        url = f"{self._ws_url}?type=agent"
+        # The WebSocket API Gateway authorizer is configured with
+        # ``identitySource: route.request.querystring.token`` — meaning
+        # API Gateway 401s the request *before invoking the authorizer
+        # Lambda* if ``?token=`` is missing, regardless of headers.
+        # PR #208 ("WS token migration to Authorization header") updated
+        # the daemon and the Lambda code but never widened the CDK
+        # ``identitySource``, so header-only requests are silently rejected.
+        # Until the IdentitySource is fixed (or split into two authorizers
+        # so headers can carry tokens privately), the daemon must include
+        # ``?token=`` in the URL so API Gateway lets the request through.
+        # We *also* keep the Authorization header so once the gate is
+        # widened the daemon benefits from log-redaction automatically.
+        url = f"{self._ws_url}?type=agent&token={self._token}"
         log.info("Connecting to %s...", self._ws_url)
 
         connect_kwargs = {
