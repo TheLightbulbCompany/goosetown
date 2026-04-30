@@ -13,17 +13,26 @@ const ROOM_RIGHT := 858
 const ROOM_BOTTOM := 474
 const TILE_SIZE := 32
 
+# Manual camera nudge applied on top of the room-centered position.
+# Negative X = shift the visible content LEFT (reveals more left-wall area,
+# crops the right-empty-floor area). Negative Y = shift UP. Tuned 2026-04-30
+# after PR #245 (canvasResizePolicy: 0) shrank the effective canvas from
+# 1728 CSS to 1408 CSS — the previous hand-tuning was for the wider canvas
+# and now leaves the bottom-right corner visibly empty.
+const CAMERA_OFFSET_X := -40
+const CAMERA_OFFSET_Y := -20
+
 @onready var camera: Camera2D = $Camera2D
 @onready var locations: Node2D = $Locations
 
 
 func _ready() -> void:
-	# Center camera on the actual room center
+	# Center camera on the actual room center, then apply manual nudge.
 	var room_w: float = float(ROOM_RIGHT - ROOM_LEFT)
 	var room_h: float = float(ROOM_BOTTOM - ROOM_TOP)
 	camera.position = Vector2(
-		float(ROOM_LEFT) + room_w / 2.0,
-		float(ROOM_TOP) + room_h / 2.0
+		float(ROOM_LEFT) + room_w / 2.0 + CAMERA_OFFSET_X,
+		float(ROOM_TOP) + room_h / 2.0 + CAMERA_OFFSET_Y
 	)
 
 	# Calculate zoom to fit the entire room in the viewport.
