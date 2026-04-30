@@ -63,7 +63,12 @@ func _on_world_state(data: Dictionary) -> void:
 				registry.has(current_context)
 				and registry[current_context].get("filter_by_owner", false)
 			)
-			if filter_by_owner and my_user_id != "":
+			if filter_by_owner:
+				# Defense-in-depth: anonymous viewers (empty user_id) see no agents in
+				# owner-filtered scenes, even if they somehow reach the scene without
+				# going through the auth-gated route.
+				if my_user_id == "":
+					continue
 				var agent_user: String = str(agent_data.get("userId", ""))
 				if agent_user != my_user_id:
 					continue
