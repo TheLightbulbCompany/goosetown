@@ -4,8 +4,9 @@
  * VITE_WS_URL is not set in the Vitest environment by default, so the
  * WebSocket branch is inert and the REST polling path is always taken in the
  * main describe block.  The "WebSocket / anonymous fallback" describe block
- * below uses vi.resetModules + vi.doMock to re-import the hook with
- * VITE_WS_URL injected so the WS branch can be exercised in unit tests.
+ * below uses vi.resetModules + a dynamic import() after mutating
+ * import.meta.env to re-import the hook with VITE_WS_URL set so the WS
+ * branch can be exercised in unit tests.
  * The broader WebSocket path has E2E coverage via Playwright.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -172,8 +173,9 @@ describe('useTownState (REST path)', () => {
 // ---------------------------------------------------------------------------
 // WebSocket branch — anonymous viewer fallback
 //
-// WS_URL is a module-level constant, so we must reset the module registry
-// and use vi.doMock to inject import.meta.env before re-importing the hook.
+// WS_URL is a module-level constant evaluated at import time, so we must
+// reset the module registry, mutate import.meta.env, then dynamically
+// import() the hook to pick up the new values.
 // ---------------------------------------------------------------------------
 describe('useTownState (WebSocket / anonymous fallback)', () => {
   afterEach(() => {
@@ -182,34 +184,19 @@ describe('useTownState (WebSocket / anonymous fallback)', () => {
     vi.useRealTimers();
   });
 
-  it('falls back to anonymous-viewer-token when no Clerk getToken is provided', async () => {
+  /**
+   * Shared helper: set up the FakeWS + fetchMock stubs used by both anonymous
+   * fallback tests, then tear them down in a `finally` block that fully
+   * restores import.meta.env (clear all keys, re-apply original snapshot).
+   */
+  async function runAnonymousFallbackTest(
+    buildHookCall: (
+      useTownStateWithWs: typeof import('./useTownState').useTownState,
+    ) => void,
+  ) {
     // Reset module registry so the next import() re-evaluates the module,
     // picking up the mocked import.meta.env values below.
     vi.resetModules();
-
-    // Intercept the hook module and re-export it with VITE_WS_URL set.
-    // vi.doMock is NOT hoisted, so it takes effect for the dynamic import
-    // that follows — this is the standard Vitest pattern for testing
-    // module-level constants without modifying production code.
-    vi.doMock('./useTownState', async () => {
-      // Temporarily override import.meta.env inside the factory so the
-      // module-level WS_URL / API_URL constants pick up test values.
-      // We re-implement the minimal hook surface needed: the real hook
-      // re-exported with patched env is too complex; instead we inline a
-      // stub that matches the same public API and exercises the real logic.
-      //
-      // Actually, since we can't easily override import.meta.env inside the
-      // factory for the real module, we use the real module re-exported
-      // through a thin wrapper that patches the constants at import time via
-      // a side-effect import of the env-patcher below.
-      //
-      // Simpler alternative: re-export the actual module unchanged and rely
-      // on the global WebSocket + fetch stubs to verify behaviour.
-      const actual = await vi.importActual<typeof import('./useTownState')>(
-        './useTownState',
-      );
-      return actual;
-    });
 
     // Capture URLs passed to the WebSocket constructor.
     const wsUrls: string[] = [];
@@ -263,8 +250,7 @@ describe('useTownState (WebSocket / anonymous fallback)', () => {
       const { useTownState: useTownStateWithWs } =
         await import('./useTownState');
 
-      // No getToken → hook should reach the anonymous fallback.
-      renderHook(() => useTownStateWithWs());
+      buildHookCall(useTownStateWithWs);
 
       await waitFor(() => {
         expect(fetchMock).toHaveBeenCalledWith(
@@ -275,10 +261,30 @@ describe('useTownState (WebSocket / anonymous fallback)', () => {
         );
       });
     } finally {
-      // Restore import.meta.env for subsequent tests.
+      // Restore import.meta.env exactly: clear all keys first, then re-apply
+      // the original snapshot. This prevents unconditional deletes of keys
+      // that may have been present in the original (e.g., from CI config).
+      for (const k of Object.keys(import.meta.env)) {
+        delete (import.meta.env as Record<string, unknown>)[k];
+      }
       Object.assign(import.meta.env, origEnv);
-      delete (import.meta.env as Record<string, unknown>).VITE_WS_URL;
-      delete (import.meta.env as Record<string, unknown>).VITE_BACKEND_URL;
     }
+  }
+
+  it('falls back to anonymous-viewer-token when no Clerk getToken is provided', async () => {
+    await runAnonymousFallbackTest((useTownStateWithWs) => {
+      // No getToken → hook should reach the anonymous fallback.
+      renderHook(() => useTownStateWithWs());
+    });
+  });
+
+  it('falls back to anonymous-viewer-token when Clerk getToken returns null (session expired)', async () => {
+    await runAnonymousFallbackTest((useTownStateWithWs) => {
+      // getToken is provided (Clerk is wired) but returns null — the
+      // production scenario when the user's session has expired or they have
+      // signed out mid-session. The hook must still reach the anonymous
+      // fallback rather than hanging with no token.
+      renderHook(() => useTownStateWithWs(async () => null));
+    });
   });
 });

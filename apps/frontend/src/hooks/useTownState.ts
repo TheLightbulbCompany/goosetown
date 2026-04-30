@@ -91,7 +91,8 @@ export function useTownState(getToken?: () => Promise<string | null>, userId?: s
             const body: { token?: string } = await r.json();
             token = body.token ?? null;
           }
-        } catch {
+        } catch (err) {
+          console.warn('[GooseTown] anonymous-viewer-token fetch failed:', err);
           /* retry on next reconnect */
         }
       }
