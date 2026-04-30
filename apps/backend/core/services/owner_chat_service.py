@@ -26,6 +26,7 @@ from core import dynamo
 from core.services.town_service import TownService
 
 _RATE_LIMIT_WINDOW_MS = 2_000
+_VALID_DIRECTIONS = frozenset({"owner_to_agent", "agent_to_owner"})
 
 
 class OwnershipError(Exception):
@@ -55,11 +56,15 @@ class OwnerChatService:
         """Persist a single message. Validates ownership and (for owner→agent)
         rate-limits to 1 message per 2s per pair.
 
+        Raises ValueError if direction is not a known value.
         Raises OwnershipError if owner_id != agent.userId.
         Raises RateLimitError if the rate limit is exceeded.
 
         Returns the persisted record (dict).
         """
+        if direction not in _VALID_DIRECTIONS:
+            raise ValueError(f"invalid direction: {direction!r}")
+
         agent = _get_agent(agent_id)
         if not agent or agent.get("userId") != owner_id:
             raise OwnershipError(f"agent {agent_id} not owned by {owner_id}")
@@ -130,7 +135,6 @@ class OwnerChatService:
                 ":dir": "owner_to_agent",
                 ":owner": owner_id,
             },
-            Limit=1,
         )
         if resp.get("Items"):
             raise RateLimitError(f"rate limit: 1 message per {_RATE_LIMIT_WINDOW_MS}ms per (owner, agent)")

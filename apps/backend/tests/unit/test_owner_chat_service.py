@@ -170,3 +170,21 @@ def test_fetch_history_rejects_non_owner(mock_dynamo, monkeypatch):
     svc = OwnerChatService()
     with pytest.raises(OwnershipError):
         svc.fetch_history(agent_id="agent-1", owner_id="user-1", limit=50)
+
+
+def test_persist_message_rejects_invalid_direction(mock_dynamo, monkeypatch):
+    """ValueError when direction is not one of the two valid values."""
+    monkeypatch.setattr(
+        "core.services.owner_chat_service._get_agent",
+        lambda aid: {"id": "agent-1", "userId": "user-1"},
+    )
+    svc = OwnerChatService()
+    with pytest.raises(ValueError, match="invalid direction"):
+        svc.persist_message(
+            agent_id="agent-1",
+            owner_id="user-1",
+            direction="agent_to__owner",  # typo
+            text="oops",
+        )
+    # Should not have written anything.
+    mock_dynamo.put_item.assert_not_called()
