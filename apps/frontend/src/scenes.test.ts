@@ -12,10 +12,10 @@ describe('SCENES registry', () => {
     expect(new Set(routes).size).toBe(routes.length);
   });
 
-  it('library and apartment require auth, town does not', () => {
+  it('apartment requires auth; town and library do not', () => {
     expect(sceneById('town')?.requireAuth).toBe(false);
     expect(sceneById('apartment')?.requireAuth).toBe(true);
-    expect(sceneById('library')?.requireAuth).toBe(true);
+    expect(sceneById('library')?.requireAuth).toBe(false);
   });
 });
 
@@ -30,9 +30,13 @@ describe('sceneForPath', () => {
     expect(sceneForPath('/apartment', true)).toBe('apartment');
   });
 
-  it('falls back to "town" when path requires auth but user is signed out', () => {
-    expect(sceneForPath('/library', false)).toBe('town');
+  it('falls back to "town" when /apartment requested while signed out', () => {
     expect(sceneForPath('/apartment', false)).toBe('town');
+  });
+
+  it('returns "library" when /library requested while signed out', () => {
+    // Library is public — signed-out users see the same library.
+    expect(sceneForPath('/library', false)).toBe('library');
   });
 
   it('falls back to "town" for unknown paths', () => {
