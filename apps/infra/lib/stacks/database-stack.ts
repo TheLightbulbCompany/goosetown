@@ -12,6 +12,7 @@ export interface DatabaseTables {
   relationships: dynamodb.Table;
   conversations: dynamodb.Table;
   connections: dynamodb.Table;
+  ownerChats: dynamodb.Table;
 }
 
 export class DatabaseStack extends cdk.Stack {
@@ -122,7 +123,23 @@ export class DatabaseStack extends cdk.Stack {
       removalPolicy,
     });
 
-    this.tables = { agents, instances, relationships, conversations, connections };
+    // Owner chats table (private owner ↔ agent DMs)
+    const ownerChats = new dynamodb.Table(this, "OwnerChatsTable", {
+      tableName: `goosetown-${env}-owner-chats`,
+      partitionKey: { name: "id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      pointInTimeRecoverySpecification: {
+        pointInTimeRecoveryEnabled: env === "prod",
+      },
+      removalPolicy: env === "prod" ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+    });
+    ownerChats.addGlobalSecondaryIndex({
+      indexName: "agentId-createdAt-index",
+      partitionKey: { name: "agentId", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "createdAt", type: dynamodb.AttributeType.NUMBER },
+    });
+
+    this.tables = { agents, instances, relationships, conversations, connections, ownerChats };
 
     // Outputs
     new cdk.CfnOutput(this, "AgentsTableName", {
