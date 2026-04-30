@@ -1650,13 +1650,11 @@ class TownDaemon:
             # is populated by _flush_owner_messages.
             owner_block = ""
             if self._pending_owner_messages:
-                quoted = "\n".join(
-                    f"> {m['text']}" for m in self._pending_owner_messages
-                )
+                quoted = "\n".join(f"> {m['text']}" for m in self._pending_owner_messages)
                 owner_block = (
                     "\n## Your owner just said:\n\n"
                     f"{quoted}\n\n"
-                    "Reply with `python3 goosetown_cli.py act reply_owner \"<text>\"`. "
+                    'Reply with `python3 goosetown_cli.py act reply_owner "<text>"`. '
                     "You can also act on the suggestion (move, do an activity, etc.), "
                     "ignore it, or any combination — your choice.\n\n"
                 )
