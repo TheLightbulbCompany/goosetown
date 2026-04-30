@@ -603,7 +603,7 @@ async def get_owner_chat(
         history = service.fetch_history(
             agent_id=agent_id,
             owner_id=auth.user_id,
-            limit=min(limit, 200),
+            limit=max(1, min(limit, 200)),
             before_ms=before,
         )
     except OwnershipError:
