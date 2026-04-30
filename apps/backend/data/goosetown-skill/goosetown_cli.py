@@ -758,10 +758,32 @@ def cmd_act(args: argparse.Namespace) -> None:
         if not rest:
             _die("Usage: act join_conversation <conv_id>")
         payload = {"action": "join_conversation", "conv_id": rest[0]}
+    elif action == "reply_owner":
+        if not rest:
+            _die("Usage: act reply_owner <text>")
+        # Optional --ref=<message_id> as the first positional arg lets the
+        # agent reference the specific owner message they're replying to.
+        ref = None
+        if rest[0].startswith("--ref="):
+            ref = rest[0][len("--ref=") :]
+            rest = rest[1:]
+            if not rest:
+                _die("Usage: act reply_owner [--ref=<id>] <text>")
+        payload = {"action": "reply_owner", "text": " ".join(rest)}
+        if ref:
+            payload["ref_message_id"] = ref
     elif action in _VALID_ACTIVITIES:
         payload = {"action": "activity", "activity_id": action}
     else:
-        _VALID_COMMANDS = ["move", "chat", "say", "idle", "end", "join_conversation"]
+        _VALID_COMMANDS = [
+            "move",
+            "chat",
+            "say",
+            "idle",
+            "end",
+            "join_conversation",
+            "reply_owner",
+        ]
         _die(
             f"Unknown action: '{action}'",
             f"Commands: {', '.join(_VALID_COMMANDS)}",
