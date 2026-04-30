@@ -11,6 +11,7 @@ import time
 
 from fastapi.testclient import TestClient
 
+from core.config import settings
 from core.town_token import verify_town_token
 
 
@@ -29,7 +30,7 @@ def test_anonymous_viewer_token_endpoint_returns_token():
 
 def test_anonymous_viewer_token_verifies_with_sentinel_payload(monkeypatch):
     """The minted token verifies and carries the anonymous sentinel uid/iid."""
-    monkeypatch.setenv("TOWN_TOKEN_SECRET", "test-secret-for-unit-tests")
+    monkeypatch.setattr(settings, "TOWN_TOKEN_SECRET", "test-secret-for-unit-tests")
     from main import app
 
     client = TestClient(app)
@@ -43,7 +44,7 @@ def test_anonymous_viewer_token_verifies_with_sentinel_payload(monkeypatch):
 
 def test_anonymous_viewer_token_has_short_ttl(monkeypatch):
     """Anonymous tokens expire ~30 minutes after issue (not the 30-day default)."""
-    monkeypatch.setenv("TOWN_TOKEN_SECRET", "test-secret-for-unit-tests")
+    monkeypatch.setattr(settings, "TOWN_TOKEN_SECRET", "test-secret-for-unit-tests")
     from main import app
 
     client = TestClient(app)
