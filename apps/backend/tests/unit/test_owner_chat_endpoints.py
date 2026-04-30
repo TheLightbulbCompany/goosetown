@@ -245,3 +245,69 @@ def test_get_owner_chat_passes_before_param():
             assert kwargs["limit"] == 10
     finally:
         app.dependency_overrides.pop(get_current_user, None)
+
+
+def test_handle_reply_owner_persists_and_pushes_to_owner_viewers():
+    """_handle_reply_owner_action persists agent's reply with direction
+    'agent_to_owner' and pushes an owner_reply event to all of the owner's
+    viewer connections via _push_to_owner_viewers."""
+    from routers.town import _handle_reply_owner_action
+
+    persisted = {
+        "id": "msg-2",
+        "agentId": "agent-1",
+        "ownerId": "user-1",
+        "direction": "agent_to_owner",
+        "text": "OK heading there",
+        "createdAt": 12345,
+    }
+    with (
+        patch(
+            "routers.town.OwnerChatService.persist_message",
+            return_value=persisted,
+        ) as p_persist,
+        patch(
+            "routers.town._push_to_owner_viewers",
+        ) as p_push,
+    ):
+        _handle_reply_owner_action(
+            agent_id="agent-1",
+            owner_id="user-1",
+            text="OK heading there",
+            ref_message_id=None,
+        )
+        # Persisted with direction='agent_to_owner'.
+        p_persist.assert_called_once()
+        kwargs = p_persist.call_args.kwargs
+        assert kwargs["agent_id"] == "agent-1"
+        assert kwargs["owner_id"] == "user-1"
+        assert kwargs["direction"] == "agent_to_owner"
+        assert kwargs["text"] == "OK heading there"
+        # Pushed to owner.
+        p_push.assert_called_once()
+        push_kwargs = p_push.call_args.kwargs
+        assert push_kwargs["user_id"] == "user-1"
+        payload = push_kwargs["payload"]
+        assert payload["event"] == "owner_reply"
+        assert payload["agent_id"] == "agent-1"
+        assert payload["text"] == "OK heading there"
+        assert payload["message_id"] == "msg-2"
+        assert payload["timestamp"] == 12345
+
+
+def test_handle_reply_owner_drops_empty_text():
+    """Empty / whitespace text is silently dropped — no persist, no push."""
+    from routers.town import _handle_reply_owner_action
+
+    with (
+        patch("routers.town.OwnerChatService.persist_message") as p_persist,
+        patch("routers.town._push_to_owner_viewers") as p_push,
+    ):
+        _handle_reply_owner_action(
+            agent_id="agent-1",
+            owner_id="user-1",
+            text="   ",
+            ref_message_id=None,
+        )
+        p_persist.assert_not_called()
+        p_push.assert_not_called()

@@ -611,6 +611,95 @@ async def get_owner_chat(
     return {"messages": history}
 
 
+def _handle_reply_owner_action(
+    *,
+    agent_id: str,
+    owner_id: str,
+    text: str,
+    ref_message_id: str | None,
+) -> None:
+    """Persist an agent's owner-reply and push it to the owner's viewer connections.
+
+    Called from the WS ``town_agent_act`` dispatcher when a daemon emits
+    ``{action: "reply_owner", text, ref_message_id?}``. The agent's owner_id is
+    derived from the authenticated WS connection's ``AgentConnection.user_id``,
+    not from the message body — daemons can't spoof another user's reply.
+    """
+    if not text or not text.strip():
+        logger.warning("reply_owner: empty text from agent %s — dropping", agent_id)
+        return
+
+    service = OwnerChatService()
+    try:
+        msg = service.persist_message(
+            agent_id=agent_id,
+            owner_id=owner_id,
+            direction="agent_to_owner",
+            text=text,
+        )
+    except OwnershipError:
+        # Should never happen: ws connection is authenticated per-agent and
+        # owner_id comes from the AgentConnection. Log and drop.
+        logger.error(
+            "reply_owner: ownership mismatch agent=%s owner=%s",
+            agent_id,
+            owner_id,
+        )
+        return
+
+    _push_to_owner_viewers(
+        user_id=owner_id,
+        payload={
+            "event": "owner_reply",
+            "agent_id": agent_id,
+            "text": msg["text"],
+            "message_id": msg["id"],
+            "timestamp": msg["createdAt"],
+            "ref_message_id": ref_message_id,
+        },
+    )
+
+
+def _push_to_owner_viewers(*, user_id: str, payload: dict) -> None:
+    """Push a payload to every viewer connection associated with ``user_id``.
+
+    Looks up the user's viewer connections in the ``connections`` table and
+    sends each one through the API Gateway Management API. No-op if the user
+    has no active viewer connections (their reply will be fetched via REST
+    history when they reopen the panel). Per-connection failures are logged
+    but do not abort the broadcast.
+    """
+    from core import dynamo
+    from core.services.management_api_client import ManagementApiClient
+
+    try:
+        resp = dynamo.connections_table().scan(
+            FilterExpression="userId = :uid AND connectionType = :ct",
+            ExpressionAttributeValues={":uid": user_id, ":ct": "viewer"},
+        )
+    except Exception as exc:
+        logger.warning("push_to_owner_viewers: scan failed: %s", exc)
+        return
+
+    items = resp.get("Items", [])
+    if not items:
+        return
+
+    client = ManagementApiClient()
+    for item in items:
+        connection_id = item.get("connectionId")
+        if not connection_id:
+            continue
+        try:
+            client.send_message(connection_id, payload)
+        except Exception as exc:
+            logger.warning(
+                "push_to_owner_viewers: failed cid=%s: %s",
+                connection_id,
+                exc,
+            )
+
+
 # ===========================================================================
 # Isol8-native endpoints (authenticated)
 # ===========================================================================
@@ -1135,6 +1224,15 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
             activity_name = body.get("activity_id", "")
             if activity_name:
                 await _handle_agent_activity(request.connectionId, activity_name, agent_conn)
+        elif action == "reply_owner":
+            text = body.get("text", "")
+            ref_message_id = body.get("ref_message_id")
+            _handle_reply_owner_action(
+                agent_id=agent_conn.agent_id,
+                owner_id=agent_conn.user_id,
+                text=text,
+                ref_message_id=ref_message_id,
+            )
         # ``idle`` and ``context_transition`` fall through with no extra work:
         # ``idle`` exists only to bypass the energy-exhaustion gate, and
         # ``context_transition`` is handled inside the ``move`` branch when the
