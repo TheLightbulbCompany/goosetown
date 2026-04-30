@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import ApartmentCard from './ApartmentCard';
 import type { ApartmentAgent } from '../hooks/useApartment';
@@ -126,5 +126,18 @@ describe('ApartmentCard', () => {
     renderCard(makeAgent({ location_context: 'apartment', current_location: 'bed' }));
     const link = screen.getByText(/View in apartment/i);
     expect(link.closest('a')?.getAttribute('href')).toBe('/apartment');
+  });
+
+  it('renders a Chat button when onChatClick is provided', () => {
+    const onChatClick = vi.fn();
+    const agent = makeAgent({ agent_id: 'agent-1', display_name: 'Dwight' });
+    render(
+      <MemoryRouter>
+        <ApartmentCard agent={agent} onChatClick={onChatClick} />
+      </MemoryRouter>,
+    );
+    const btn = screen.getByText(/^Chat/i);
+    fireEvent.click(btn);
+    expect(onChatClick).toHaveBeenCalledWith('agent-1', 'Dwight');
   });
 });

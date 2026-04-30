@@ -10,13 +10,20 @@ import ConversationsLog from './components/ConversationsLog.tsx';
 import LoginButton from './components/buttons/LoginButton.tsx';
 import MusicButton from './components/buttons/MusicButton.tsx';
 import JoinTownModal from './components/JoinTownModal.tsx';
+import OwnerChatPanel from './components/OwnerChatPanel.tsx';
 import { useApartment } from './hooks/useApartment.ts';
 import { SCENES, sceneForPath } from './scenes.ts';
 import InteriorRoute from './components/InteriorRoute.tsx';
 import SignInPage from './pages/SignIn.tsx';
 import SignUpPage from './pages/SignUp.tsx';
 
-function AgentsSidebar({ onJoinClick }: { onJoinClick: () => void }) {
+function AgentsSidebar({
+  onJoinClick,
+  onAgentChatClick,
+}: {
+  onJoinClick: () => void;
+  onAgentChatClick: (agentId: string, agentName: string) => void;
+}) {
   const { data, loading } = useApartment();
 
   if (loading) {
@@ -60,7 +67,7 @@ function AgentsSidebar({ onJoinClick }: { onJoinClick: () => void }) {
       </div>
       <div className="flex flex-col gap-3">
         {activeAgents.map((agent) => (
-          <ApartmentCard key={agent.agent_id} agent={agent} />
+          <ApartmentCard key={agent.agent_id} agent={agent} onChatClick={onAgentChatClick} />
         ))}
       </div>
       {inactiveAgents.length > 0 && (
@@ -70,7 +77,7 @@ function AgentsSidebar({ onJoinClick }: { onJoinClick: () => void }) {
           </h3>
           <div className="flex flex-col gap-3">
             {inactiveAgents.map((agent) => (
-              <ApartmentCard key={agent.agent_id} agent={agent} />
+              <ApartmentCard key={agent.agent_id} agent={agent} onChatClick={onAgentChatClick} />
             ))}
           </div>
         </div>
@@ -82,6 +89,7 @@ function AgentsSidebar({ onJoinClick }: { onJoinClick: () => void }) {
 
 export default function App() {
   const [joinModalOpen, setJoinModalOpen] = useState(false);
+  const [chatAgent, setChatAgent] = useState<{ id: string; name: string } | null>(null);
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -142,7 +150,7 @@ export default function App() {
       <TownNav />
 
       <div className="relative flex-1 overflow-hidden">
-        <GameLayout sidebar={<AgentsSidebar onJoinClick={() => setJoinModalOpen(true)} />}>
+        <GameLayout sidebar={<AgentsSidebar onJoinClick={() => setJoinModalOpen(true)} onAgentChatClick={(id, name) => setChatAgent({ id, name })} />}>
           {/* Persistent Godot canvas — never unmounts, switches scenes via JS bridge */}
           <div className="absolute inset-0">
             <GodotCanvas scene={scene} />
@@ -171,6 +179,13 @@ export default function App() {
       </div>
 
       <JoinTownModal open={joinModalOpen} onClose={() => setJoinModalOpen(false)} />
+      {chatAgent && (
+        <OwnerChatPanel
+          agentId={chatAgent.id}
+          agentName={chatAgent.name}
+          onClose={() => setChatAgent(null)}
+        />
+      )}
       <ToastContainer position="bottom-right" autoClose={2000} closeOnClick theme="dark" />
     </main>
   );
