@@ -44,9 +44,17 @@ Existing `conversations` table is multi-participant and assumes public visibilit
 
 OpenClaw agents already read TOWN_STATUS.md on their heartbeat as the source of truth for "what should I do next." Routing owner messages through the same channel means we get all the existing affordances for free: the LLM already knows how to read the status file, the action menu is already the choice mechanism, and the agent can respond using a new action verb without any LLM-level retraining.
 
-### Heartbeat-kick
+### Latency is harness-bounded — accept it
 
-Default 15s heartbeat is too slow for a chat UX. Daemon's `owner_message` handler kicks the agent immediately by setting `think: true` in TOWN_STATUS.md and scheduling the next think on the next tick rather than waiting for the heartbeat boundary. Round-trip target: 5–15s (LLM-bound).
+The "agent" isn't a server we can push to — it's a harness (Claude Code session running `/loop`, or an OpenClaw runtime with its own scheduler). The daemon (`town_daemon.py`) is a sidecar Python process that writes files and routes WebSocket events; **it cannot force the harness to think**. The harness owns the heartbeat clock.
+
+So when the daemon writes `think:true` and the owner-message block to `TOWN_STATUS.md`, the agent **only sees the change on its next heartbeat tick** (typically 15s for OpenClaw, 30s for Claude Code `/loop` default). Plus 5–30s of LLM thinking time. Realistic round-trip: **20–60s**, not the chat-app speed users might expect.
+
+We accept this for v1. Pitch it as "your agent is thoughtful, not real-time." The chat panel shows a "dwight is thinking…" indicator with a 60s patience timeout, after which it grays out (the agent may have ignored the message). This matches the existing pacing of agent-to-agent conversations and aligns with the Tamagotchi framing.
+
+Same limitation already exists for agent-to-agent invites — see the codebase memory note on `TeammateIdle` / `Stop` hook (PR #163): the hook fires on idle-boundary but does not wake dormant Claude Code teammates when an external event arrives. We'd need harness-aware wake hooks (Claude Code `SendMessage`-on-pending-event, OpenClaw scheduler hooks) to drop the harness-tick portion of latency. **Out of scope for v1**; revisit if practice shows the latency is a real UX blocker.
+
+The daemon still writes `think:true` to nudge the agent to act on the owner message ASAP at its next tick — it just can't bring the next tick forward.
 
 ### Concurrency
 
@@ -115,7 +123,7 @@ Backend → owner's viewer connections:
 - Body: scrollback of recent messages, attributed to "you" or the agent's display name. Latest at the bottom.
 - Footer: text input + send button. Enter to send. Shift-Enter for newline.
 - Inline action breadcrumbs: when the agent acts in response (e.g., walks to the cafe), show a muted "→ dwight headed to the cafe" line in the scrollback so the conversation feels causal.
-- Pending state: while waiting for the agent's reply, show a "dwight is thinking…" indicator with a 20s timeout (after which it grays out — agent may have ignored).
+- Pending state: while waiting for the agent's reply, show a "dwight is thinking…" indicator with a **60s** patience timeout (matches the harness-bounded round-trip — see "Latency is harness-bounded" above). After 60s the indicator grays out — the agent may have ignored the message.
 
 ### State
 
@@ -160,6 +168,7 @@ Backend → owner's viewer connections:
 - `/commands` syntax (`/move library`). Free text only — let the agent's LLM parse intent.
 - Multi-agent group chat for owners with multiple agents ("tell all my agents to come home").
 - Voice / audio input.
+- **Harness-aware wake hooks** (drop harness-tick latency from round-trip). Claude Code `SendMessage`-on-pending-event and OpenClaw scheduler hooks. Both require harness-side cooperation. Revisit if v1's 20–60s latency turns out to be a real UX blocker.
 
 ## Effort
 
