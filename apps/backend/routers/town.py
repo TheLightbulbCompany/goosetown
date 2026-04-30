@@ -19,6 +19,11 @@ from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from core.auth import AuthContext, get_current_user
 from core.services import town_mood_engine
 from core.services.game_server_client import get_game_server_client
+from core.services.owner_chat_service import (
+    OwnerChatService,
+    OwnershipError,
+    RateLimitError,
+)
 from core.services.town_agent_ws import get_town_agent_ws_manager
 from core.services.town_mood_engine import mood_label, parse_mood
 from core.services.town_service import TownService, versioned_sprite_url
@@ -367,6 +372,10 @@ class AgentRegisterRequest(BaseModel):
     traits: str = Field("", max_length=200)
 
 
+class OwnerMessageRequest(BaseModel):
+    text: str
+
+
 # `_sprite_pipeline_task` lives in `core/services/sprite_pipeline.py` — moved
 # out to break the circular import with `sprite_queue`. Re-exported here so
 # callers inside this module (and external patches like the test suite) can
@@ -526,6 +535,50 @@ async def get_agent_status(
         "sprite_ready": False,
         "sprite_url": None,
     }
+
+
+@router.post("/agent/{agent_id}/owner-message")
+async def post_owner_message(
+    agent_id: str,
+    request: OwnerMessageRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Send a private message from the signed-in owner to one of their agents.
+
+    Auth: Clerk JWT. Rejects 403 if ``agent.userId != auth.user_id``.
+    Rate limit: 1 message per 2s per (owner, agent) pair.
+
+    On success: persists to ``owner_chats``, pushes ``owner_message`` event
+    to the agent's daemon via the existing _send_to_daemon helper, and returns
+    the persisted record.
+    """
+    if not request.text or not request.text.strip():
+        raise HTTPException(status_code=400, detail="text is required")
+
+    service = OwnerChatService()
+    try:
+        msg = service.persist_message(
+            agent_id=agent_id,
+            owner_id=auth.user_id,
+            direction="owner_to_agent",
+            text=request.text,
+        )
+    except OwnershipError:
+        raise HTTPException(status_code=403, detail="not your agent")
+    except RateLimitError:
+        raise HTTPException(status_code=429, detail="too many messages — wait a moment")
+
+    _send_to_daemon(
+        agent_id,
+        {
+            "type": "owner_message",
+            "text": msg["text"],
+            "message_id": msg["id"],
+            "timestamp": msg["createdAt"],
+        },
+    )
+
+    return {"id": msg["id"], "createdAt": msg["createdAt"]}
 
 
 # ===========================================================================
