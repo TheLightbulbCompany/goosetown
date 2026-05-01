@@ -46,7 +46,7 @@ def test_ensure_websockets_pip_installs_if_missing(monkeypatch):
 
 def test_ensure_websockets_exits_on_pip_failure(monkeypatch, capsys):
     """When pip install fails, the daemon exits with code 2 and a clear message."""
-    import subprocess
+    import subprocess  # nosec B404: imported to use CalledProcessError as a test fixture exception type
 
     import pytest as _pytest
     from goosetown_cli import _ensure_websockets

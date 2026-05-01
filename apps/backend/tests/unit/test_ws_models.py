@@ -17,12 +17,12 @@ _adapter: TypeAdapter[WsMessage] = TypeAdapter(WsMessage)
 
 class TestTownAgentConnect:
     def test_accepts_minimal_valid_payload(self) -> None:
-        msg = _adapter.validate_python({"type": "town_agent_connect", "token": "abc"})
+        msg = _adapter.validate_python({"type": "town_agent_connect", "token": "abc"})  # nosec B105: test token literal, not a credential
         assert msg.type == "town_agent_connect"
-        assert msg.token == "abc"
+        assert msg.token == "abc"  # nosec B105: test assertion on token field value, not a secret
 
     def test_accepts_with_agent_name(self) -> None:
-        msg = _adapter.validate_python({"type": "town_agent_connect", "token": "abc", "agent_name": "Goose"})
+        msg = _adapter.validate_python({"type": "town_agent_connect", "token": "abc", "agent_name": "Goose"})  # nosec B105: test token literal, not a credential
         assert msg.agent_name == "Goose"
 
     def test_rejects_missing_token(self) -> None:

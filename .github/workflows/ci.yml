@@ -21,9 +21,11 @@ jobs:
           uv run ruff check .
           uv run ruff format --check .
         working-directory: apps/backend
-      - name: Bandit (high-severity SAST)
-        # -lll = report only HIGH severity. Tighten to -ll later once baseline is clean.
-        run: uv run bandit -r core routers main.py -lll
+      - name: Bandit (SAST — all severities)
+        # Baseline is clean: zero findings in core/routers/main.py/tests at all severity levels.
+        # B101 (assert in tests) is skipped via [tool.bandit] in pyproject.toml.
+        # All other suppressions use inline # nosec B<id>: <reason> with justification.
+        run: uv run bandit -r core routers main.py tests -c pyproject.toml
         working-directory: apps/backend
       - name: pip-audit (dependency CVE scan)
         run: uv run pip-audit --strict

@@ -32,7 +32,7 @@ def daemon(tmp_path):
     workspace.mkdir()
     d = TownDaemon(
         ws_url="wss://example.com/ws",
-        token="test-token",
+        token="test-token",  # nosec B106: test fixture token, not a real credential
         agent_name="test-agent",
         state_dir=state_dir,
         workspace_path=workspace,

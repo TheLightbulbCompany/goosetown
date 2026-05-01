@@ -41,6 +41,11 @@ select = ["E", "F", "I"]
 "main.py" = ["E402"]
 "data/**" = ["E501"]
 
+[tool.bandit]
+# Skip B101 (assert_used) globally — asserts are the correct pattern in pytest.
+# All other findings are either fixed inline or suppressed with # nosec <id>: <reason>.
+skips = ["B101"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
