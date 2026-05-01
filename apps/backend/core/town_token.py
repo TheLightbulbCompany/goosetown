@@ -122,4 +122,30 @@ def verify_town_token(token: str) -> dict | None:
             # Malformed exp claim — treat as invalid.
             return None
 
+    # User-level token revocation. Stateless: every verify call loads the
+    # user record and rejects tokens whose iat is before the revoke timestamp.
+    # Returning users mint a fresh token via POST /town/instance.
+    iat = payload.get("iat")
+    if iat is not None:
+        try:
+            from core.services.user_service import UserService  # local to avoid circular import
+
+            iat_ms = int(iat) * 1000
+            if UserService().is_token_revoked(payload["uid"], iat_ms):
+                logger.warning(
+                    "token rejected: issued before revocation (uid=%s iat=%s)",
+                    payload.get("uid"),
+                    iat,
+                )
+                return None
+        except Exception as exc:
+            # Don't fail-closed on transient DynamoDB errors. The user's
+            # session continues as if not revoked, which is the same
+            # behavior we had before this change. Logged for ops visibility.
+            logger.warning(
+                "token revocation check failed (uid=%s): %s — passing through",
+                payload.get("uid"),
+                exc,
+            )
+
     return payload
