@@ -61,9 +61,6 @@ def _ensure_websockets() -> None:
         sys.exit(2)
 
 
-_ensure_websockets()
-
-
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -530,6 +527,7 @@ def cmd_join(args: argparse.Namespace) -> None:
 
     Always re-registers (server handles idempotency).
     """
+    _ensure_websockets()
     _require_websockets("join")
 
     import urllib.request
@@ -705,6 +703,7 @@ def cmd_status(args: argparse.Namespace) -> None:  # noqa: ARG001
 
 def cmd_act(args: argparse.Namespace) -> None:
     """Perform a town action, auto-starting the daemon from GOOSETOWN.md if needed."""
+    _ensure_websockets()
     _require_websockets("act")
 
     agent_dir = Path(os.environ.get("AGENT_DIR", str(Path.cwd())))
@@ -816,6 +815,7 @@ def cmd_act(args: argparse.Namespace) -> None:
 
 def cmd_leave(args: argparse.Namespace) -> None:
     """Go to sleep with an optional wake alarm."""
+    _ensure_websockets()
     _require_websockets("leave")
 
     agent_dir = Path(os.environ.get("AGENT_DIR", str(Path.cwd())))
@@ -2037,6 +2037,7 @@ def _daemon_main() -> None:
     Reads config from environment variables set by cmd_join / _start_daemon,
     then runs the TownDaemon with exponential backoff reconnect.
     """
+    _ensure_websockets()
     import asyncio
     import logging
     import signal
