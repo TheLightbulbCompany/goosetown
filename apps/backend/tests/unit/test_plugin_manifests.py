@@ -4,10 +4,7 @@ import json
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).parents[4]
-_PLUGIN_JSON = (
-    _REPO_ROOT / "apps" / "backend" / "data" / "goosetown-skill"
-    / ".claude-plugin" / "plugin.json"
-)
+_PLUGIN_JSON = _REPO_ROOT / "apps" / "backend" / "data" / "goosetown-skill" / ".claude-plugin" / "plugin.json"
 _MARKETPLACE_JSON = _REPO_ROOT / ".claude-plugin" / "marketplace.json"
 
 

@@ -2,10 +2,7 @@
 
 from pathlib import Path
 
-_SKILL_MD = (
-    Path(__file__).parents[2]
-    / "data" / "goosetown-skill" / "skills" / "goosetown" / "SKILL.md"
-)
+_SKILL_MD = Path(__file__).parents[2] / "data" / "goosetown-skill" / "skills" / "goosetown" / "SKILL.md"
 
 
 def test_skill_md_under_100_lines():
@@ -37,7 +34,5 @@ def test_skill_md_frontmatter_drops_invalid_openclaw_fields():
         # Crude but effective: parse the frontmatter lines individually
         for line in frontmatter.splitlines():
             stripped = line.strip()
-            assert not stripped.startswith("pip:"), \
-                f"OpenClaw doesn't recognize 'pip' under requires: {line}"
-            assert not stripped.startswith("heartbeat:"), \
-                f"OpenClaw heartbeat is agent-level, not skill-level: {line}"
+            assert not stripped.startswith("pip:"), f"OpenClaw doesn't recognize 'pip' under requires: {line}"
+            assert not stripped.startswith("heartbeat:"), f"OpenClaw heartbeat is agent-level, not skill-level: {line}"

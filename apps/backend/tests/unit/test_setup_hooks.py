@@ -61,10 +61,8 @@ def test_setup_hooks_exit_code_propagates_to_shell(tmp_path):
     """Shell-invocation path: exit code from cmd_setup_hooks() must reach
     sys.exit, not be swallowed by main()."""
     import subprocess
-    cli = (
-        Path(__file__).parents[2]
-        / "data" / "goosetown-skill" / "skills" / "goosetown" / "goosetown_cli.py"
-    )
+
+    cli = Path(__file__).parents[2] / "data" / "goosetown-skill" / "skills" / "goosetown" / "goosetown_cli.py"
     # Workspace without .claude/ — setup-hooks must exit 1
     result = subprocess.run(
         [sys.executable, str(cli), "setup-hooks"],
@@ -72,6 +70,5 @@ def test_setup_hooks_exit_code_propagates_to_shell(tmp_path):
         capture_output=True,
     )
     assert result.returncode == 1, (
-        f"expected exit 1 from missing .claude/, got {result.returncode}. "
-        f"stderr: {result.stderr.decode()}"
+        f"expected exit 1 from missing .claude/, got {result.returncode}. stderr: {result.stderr.decode()}"
     )
