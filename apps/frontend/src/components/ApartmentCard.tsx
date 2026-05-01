@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import clsx from 'clsx';
 import type { ApartmentAgent } from '../hooks/useApartment';
+import { sceneById } from '../scenes';
 
 // A ``status_message`` like "Learning to cook…" is set by the backend's
 // ``_generate_custom_animation`` task while the agent is waiting on a
@@ -62,7 +63,12 @@ function moodEmoji(mood: string | null): string {
   }
 }
 
-export default function ApartmentCard({ agent }: { agent: ApartmentAgent }) {
+interface ApartmentCardProps {
+  agent: ApartmentAgent;
+  onChatClick?: (agentId: string, agentName: string) => void;
+}
+
+export default function ApartmentCard({ agent, onChatClick }: ApartmentCardProps) {
   const energyPercent = Math.max(0, Math.min(100, agent.energy));
 
   return (
@@ -105,11 +111,17 @@ export default function ApartmentCard({ agent }: { agent: ApartmentAgent }) {
         </div>
       </div>
 
-      {/* Location */}
+      {/* Location — town locations (plaza, library, cafe) get a "Town - " prefix
+          because their names overlap with interior scene ids; interiors use
+          specific spot names (bed, reading_armchair) that read unambiguously. */}
       {agent.current_location && (
         <div className="font-body text-xs text-clay-300">
           Location: <span className="text-brown-200">
-            {agent.location_context === 'town' ? 'Town - ' : ''}{agent.current_location}
+            {(() => {
+              const def = sceneById(agent.location_context ?? '');
+              return def?.id === 'town' ? `${def.displayName} - ` : '';
+            })()}
+            {agent.current_location}
           </span>
           {agent.current_spot && agent.current_spot !== agent.current_location && (
             <span className="text-clay-400 ml-1">({agent.current_spot})</span>
@@ -147,17 +159,37 @@ export default function ApartmentCard({ agent }: { agent: ApartmentAgent }) {
         </div>
       </div>
 
-      {/* Action: view in town */}
-      {agent.location_context === 'town' && (
-        <div className="flex justify-end mt-1">
-          <Link
-            to={`/?focus=${encodeURIComponent(agent.display_name)}`}
-            className="font-body text-xs text-clay-300 hover:text-brown-200 transition-colors"
-          >
-            View in town &rarr;
-          </Link>
-        </div>
-      )}
+      {/* Action row: Chat button + view in <scene> link — both right-aligned. */}
+      {(() => {
+        const def = sceneById(agent.location_context ?? '');
+        const showViewLink = def && def.showInNav !== 'never';
+        const href = showViewLink
+          ? def.id === 'town'
+            ? `/?focus=${encodeURIComponent(agent.display_name)}`
+            : def.route
+          : null;
+        if (!onChatClick && !showViewLink) return null;
+        return (
+          <div className="flex justify-end items-center gap-3 mt-1">
+            {onChatClick && (
+              <button
+                onClick={() => onChatClick(agent.agent_id, agent.display_name)}
+                className="font-body text-xs text-clay-300 hover:text-brown-200 transition-colors"
+              >
+                Chat &rarr;
+              </button>
+            )}
+            {showViewLink && href && (
+              <Link
+                to={href}
+                className="font-body text-xs text-clay-300 hover:text-brown-200 transition-colors"
+              >
+                View in {def.displayName.toLowerCase()} &rarr;
+              </Link>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }

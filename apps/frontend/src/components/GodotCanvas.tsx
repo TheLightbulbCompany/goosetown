@@ -4,7 +4,7 @@
  * Loads the Godot engine script, initializes the game on a <canvas> element,
  * and handles resize/cleanup lifecycle.
  *
- * Accepts a `scene` prop to switch between town and apartment maps via the
+ * Accepts a `scene` prop (any id registered in `SCENES`) to switch maps via the
  * JsBridge autoload's `switchScene` callback. The engine is loaded once and
  * persists across scene switches — only the Godot scene tree changes.
  */
@@ -86,7 +86,17 @@ interface GodotEngine {
 }
 
 interface GodotEngineConstructor {
-  new (config: { executable: string; canvas: HTMLCanvasElement; args?: string[] }): GodotEngine;
+  new (config: {
+    executable: string;
+    canvas: HTMLCanvasElement;
+    args?: string[];
+    /**
+     * 0 = none (we own the sizing), 1 = project (use the project's window size),
+     * 2 = adaptive (resize to browser window — the default; fights our parent
+     * container and overflows on layouts with sidebars).
+     */
+    canvasResizePolicy?: 0 | 1 | 2;
+  }): GodotEngine;
   isWebGLAvailable: (majorVersion?: number) => boolean;
 }
 
@@ -106,7 +116,8 @@ declare global {
 
 interface GodotCanvasProps {
   className?: string;
-  scene?: 'town' | 'apartment';
+  /** Scene id from the SCENES registry. Validated by sceneForPath() upstream. */
+  scene?: string;
 }
 
 export default function GodotCanvas({ className, scene = 'town' }: GodotCanvasProps) {
@@ -153,15 +164,24 @@ export default function GodotCanvas({ className, scene = 'town' }: GodotCanvasPr
           throw new Error('Godot Engine not available after script load');
         }
 
-        // Initialize canvas size
+        // Initialize canvas size — DPR-aware so HiDPI displays render
+        // at the parent's CSS size, not at the window's pixel size.
         const rect = container.getBoundingClientRect();
-        canvas.width = rect.width;
-        canvas.height = rect.height;
+        const dpr0 = window.devicePixelRatio || 1;
+        canvas.style.width = `${rect.width}px`;
+        canvas.style.height = `${rect.height}px`;
+        canvas.width = Math.round(rect.width * dpr0);
+        canvas.height = Math.round(rect.height * dpr0);
 
-        // Create and start the engine
+        // Create and start the engine. canvasResizePolicy: 0 disables
+        // Godot's built-in canvas-resize logic, which by default sets
+        // canvas.style.{width,height} to window dimensions and overflows
+        // our sidebar-constrained parent. The ResizeObserver below owns
+        // the canvas sizing instead.
         const engine = new window.Engine({
           executable: '/godot/goosetown',
           canvas,
+          canvasResizePolicy: 0,
         });
 
         // World state is forwarded to Godot via JS bridge from useTownState's WebSocket.
@@ -196,14 +216,23 @@ export default function GodotCanvas({ className, scene = 'town' }: GodotCanvasPr
 
     void loadEngine();
 
-    // Resize observer to keep canvas matching container
+    // Resize observer to keep canvas matching container.
+    //
+    // The Godot WebGL engine's startGame() sets ``canvas.width`` and
+    // ``canvas.style.width`` to window-derived values, which makes the
+    // canvas overflow its sidebar-constrained parent. Own the sizing
+    // here: set CSS dims to the parent's content rect, and backing-store
+    // dims to that times the device pixel ratio so HiDPI rendering
+    // stays sharp without overflow.
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const { width, height } = entry.contentRect;
-        if (canvas) {
-          canvas.width = width;
-          canvas.height = height;
-        }
+        if (!canvas) continue;
+        const dpr = window.devicePixelRatio || 1;
+        canvas.style.width = `${width}px`;
+        canvas.style.height = `${height}px`;
+        canvas.width = Math.round(width * dpr);
+        canvas.height = Math.round(height * dpr);
       }
     });
     observer.observe(container);

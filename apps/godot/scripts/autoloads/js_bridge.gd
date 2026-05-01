@@ -12,9 +12,25 @@ signal set_camera_requested(x: float, y: float, zoom: float)
 signal switch_scene_requested(scene_name: String)
 signal world_state_received(data: Dictionary)
 
-## Load map scenes on demand to avoid blocking editor startup.
-var TOWN_SCENE: PackedScene = null
-var APARTMENT_SCENE: PackedScene = null
+## Scene registry — single source of truth for scene id → asset path.
+## Coupled by id with the frontend's ``apps/frontend/src/scenes.ts``.
+## Adding a new interior: add a row in BOTH files (ids must match).
+## ``agent_scale`` is a Node2D scale multiplier applied to every agent
+## that renders inside a scene. Library is bigger than the apartment in
+## world units so its fit-zoom is lower (~1.8× vs ~3.4×); without this
+## scale, 48px agent sprites render at half-size in the library and feel
+## tiny next to the bookshelves. Apply 1.5× there to bring agent
+## visibility roughly in line with apartment/town. Town/apartment use 1.0.
+const SCENE_REGISTRY: Dictionary = {
+	"town":      { "path": "res://maps/isol88/Isol88Map.tscn",      "filter_by_owner": false, "agent_scale": 1.0 },
+	"apartment": { "path": "res://maps/apartment/ApartmentMap.tscn", "filter_by_owner": true,  "agent_scale": 1.0 },
+	"library":   { "path": "res://maps/library/LibraryMap.tscn",     "filter_by_owner": false, "agent_scale": 1.5 },
+}
+
+## Lazy-loaded PackedScene cache, keyed by ``SCENE_REGISTRY[id].path``.
+## Populated on first ``switchScene`` call to a given scene to avoid
+## blocking editor startup with a load() of every map.
+var _loaded_scenes: Dictionary = {}
 
 ## Tracks which scene is currently active for agent filtering.
 var current_scene: String = "town"
@@ -190,7 +206,7 @@ func _on_update_world_state(args: Array) -> void:
 
 
 ## Handles scene switch requests from React.
-## Valid scene names: "town", "apartment".
+## Valid scene names come from SCENE_REGISTRY (currently town/apartment/library).
 ## After the switch, dispatches a "godot_scene_changed" CustomEvent to React
 ## with {scene: name} so the React side can confirm the transition completed.
 ## Awaits one frame after change_scene_to_packed so the new scene tree is live
@@ -206,21 +222,14 @@ func _on_switch_scene(args: Array) -> void:
 	print("[JsBridge] Scene switch requested: %s" % scene_name)
 	switch_scene_requested.emit(scene_name)
 
-	# Lazy-load scenes on first switch to avoid blocking editor startup
-	if TOWN_SCENE == null:
-		TOWN_SCENE = load("res://maps/isol88/Isol88Map.tscn")
-	if APARTMENT_SCENE == null:
-		APARTMENT_SCENE = load("res://maps/apartment/ApartmentMap.tscn")
+	if not SCENE_REGISTRY.has(scene_name):
+		push_error("JsBridge._on_switch_scene: unknown scene '%s'" % scene_name)
+		return
 
-	var target_scene: PackedScene
-	match scene_name:
-		"town":
-			target_scene = TOWN_SCENE
-		"apartment":
-			target_scene = APARTMENT_SCENE
-		_:
-			push_error("JsBridge._on_switch_scene: unknown scene '%s'" % scene_name)
-			return
+	var path: String = SCENE_REGISTRY[scene_name]["path"]
+	if not _loaded_scenes.has(path):
+		_loaded_scenes[path] = load(path)
+	var target_scene: PackedScene = _loaded_scenes[path]
 
 	# Update current_scene before the switch so AgentManager filters immediately
 	current_scene = scene_name

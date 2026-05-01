@@ -788,10 +788,32 @@ def cmd_act(args: argparse.Namespace) -> None:
         if not rest:
             _die("Usage: act join_conversation <conv_id>")
         payload = {"action": "join_conversation", "conv_id": rest[0]}
+    elif action == "reply_owner":
+        if not rest:
+            _die("Usage: act reply_owner <text>")
+        # Optional --ref=<message_id> as the first positional arg lets the
+        # agent reference the specific owner message they're replying to.
+        ref = None
+        if rest[0].startswith("--ref="):
+            ref = rest[0][len("--ref=") :]
+            rest = rest[1:]
+            if not rest:
+                _die("Usage: act reply_owner [--ref=<id>] <text>")
+        payload = {"action": "reply_owner", "text": " ".join(rest)}
+        if ref:
+            payload["ref_message_id"] = ref
     elif action in _VALID_ACTIVITIES:
         payload = {"action": "activity", "activity_id": action}
     else:
-        _VALID_COMMANDS = ["move", "chat", "say", "idle", "end", "join_conversation"]
+        _VALID_COMMANDS = [
+            "move",
+            "chat",
+            "say",
+            "idle",
+            "end",
+            "join_conversation",
+            "reply_owner",
+        ]
         _die(
             f"Unknown action: '{action}'",
             f"Commands: {', '.join(_VALID_COMMANDS)}",
@@ -934,6 +956,11 @@ class TownDaemon:
         self._prev_nearby: frozenset = frozenset()
         self._last_think_time: float = 0.0
 
+        # Owner DM state
+        self._owner_messages_buffer: list[dict] = []
+        self._owner_flush_handle = None  # asyncio scheduled handle
+        self._pending_owner_messages: list[dict] = []  # consumed by _handle_world_update
+
     # ------------------------------------------------------------------
     # File I/O helpers
     # ------------------------------------------------------------------
@@ -1000,6 +1027,8 @@ class TownDaemon:
             self._on_activity_interrupted(data)
         elif event == "activity_rejected":
             self._on_activity_rejected(data)
+        elif event == "owner_message":
+            self._on_owner_message(data)
         elif event == "context_changed":
             self._on_context_changed(data)
         elif event in ("move_rejected", "busy"):
@@ -1163,6 +1192,78 @@ class TownDaemon:
                 f'CHAT_MESSAGE {data.get("from", "?")} — "{data.get("text", "")}" '
                 f"(conv_id: {conv_id}, turn {data.get('turn', '?')})"
             )
+
+    def _on_owner_message(self, data: dict) -> None:
+        """Owner sent a private message to the agent.
+
+        Writes to OWNER_MESSAGES.md (last 50, persistent scrollback) and
+        buffers messages for a 2s window before injecting an owner block
+        into TOWN_STATUS.md. Coalesces a burst of messages into one think
+        cycle to avoid one LLM call per message in a quick exchange.
+        """
+        import asyncio
+
+        text = str(data.get("text", "")).strip()
+        message_id = str(data.get("message_id", ""))
+        try:
+            timestamp = int(data.get("timestamp", 0))
+        except (TypeError, ValueError):
+            timestamp = 0
+        if not text:
+            return
+
+        # Persistent scrollback file (read by the agent at any time).
+        self._append_owner_message(text=text, timestamp=timestamp, message_id=message_id)
+
+        # Buffer for coalescing. The 2s flush window starts when the FIRST
+        # message in a batch arrives; subsequent messages within the window
+        # get added to the same batch and are flushed together.
+        self._owner_messages_buffer.append({"text": text, "timestamp": timestamp})
+
+        # If a flush is already scheduled, the new message will be picked
+        # up when the handle fires.
+        if self._owner_flush_handle is not None:
+            return
+
+        try:
+            loop = asyncio.get_event_loop()
+            self._owner_flush_handle = loop.call_later(2.0, self._flush_owner_messages)
+        except RuntimeError:
+            # Event loop not running (shouldn't happen during ws operation,
+            # but defensive). Flush immediately.
+            self._flush_owner_messages()
+
+    def _flush_owner_messages(self) -> None:
+        """Flush buffered owner messages into the next TOWN_STATUS.md write
+        with think:true. Re-renders the status using the most recent state
+        snapshot so the rest of the action prompt (location, activities,
+        nearby) stays accurate.
+        """
+        if not self._owner_messages_buffer:
+            self._owner_flush_handle = None
+            return
+        self._pending_owner_messages = list(self._owner_messages_buffer)
+        self._owner_messages_buffer.clear()
+        self._owner_flush_handle = None
+
+        # Re-render status using the cached state snapshot. _handle_world_update
+        # consumes self._pending_owner_messages when composing the action prompt.
+        if self.state:
+            self._handle_world_update(self.state)
+
+    def _append_owner_message(self, *, text: str, timestamp: int, message_id: str) -> None:
+        """Append a single owner message to OWNER_MESSAGES.md, capped at last 50."""
+        if not self._workspace_path or not self._workspace_path.exists():
+            return
+        path = self._workspace_path / "OWNER_MESSAGES.md"
+        line = f"- [{timestamp}] (msg:{message_id}) **owner:** {text}\n"
+        existing = path.read_text() if path.exists() else ""
+        # Keep only the bullet lines (drop header for re-rendering).
+        kept = [ln for ln in existing.splitlines(keepends=True) if ln.startswith("- [")]
+        kept.append(line)
+        if len(kept) > 50:
+            kept = kept[-50:]
+        path.write_text("# Owner Messages\n\n" + "".join(kept))
 
     def _on_conversation_ended(self, data: dict) -> None:
         """Handle conversation_ended event."""
@@ -1574,7 +1675,27 @@ class TownDaemon:
             if pending_text != "None":
                 status += f"**Pending messages:**\n{pending_text}\n\n"
 
+            # Inject owner-DM block at the top of the action prompt when the
+            # owner has messaged the agent. This block stays prominent so the
+            # LLM treats it as high-priority input. ``self._pending_owner_messages``
+            # is populated by _flush_owner_messages.
+            owner_block = ""
+            if self._pending_owner_messages:
+                quoted = "\n".join(f"> {m['text']}" for m in self._pending_owner_messages)
+                owner_block = (
+                    "\n## Your owner just said:\n\n"
+                    f"{quoted}\n\n"
+                    'Reply with `python3 goosetown_cli.py act reply_owner "<text>"`. '
+                    "You can also act on the suggestion (move, do an activity, etc.), "
+                    "ignore it, or any combination — your choice.\n\n"
+                )
+                # Consumed; do not re-show on the next status write unless a new
+                # owner message arrives.
+                self._pending_owner_messages = []
+
             status += "---\n\n## Your turn — decide what to do next\n\n"
+            if owner_block:
+                status += owner_block
 
             if location_context == "town":
                 status += (
@@ -1714,12 +1835,19 @@ class TownDaemon:
             log.error("websockets package not installed. Install with: pip install websockets")
             sys.exit(1)
 
-        # Pass the token in the Authorization header instead of the URL —
-        # query params end up in CloudWatch / proxy access logs verbatim. The
-        # API Gateway authorizer prefers the header but still accepts the old
-        # ?token= form during the rollout window for daemons that haven't
-        # been re-installed.
-        url = f"{self._ws_url}?type=agent"
+        # The WebSocket API Gateway authorizer is configured with
+        # ``identitySource: route.request.querystring.token`` — meaning
+        # API Gateway 401s the request *before invoking the authorizer
+        # Lambda* if ``?token=`` is missing, regardless of headers.
+        # PR #208 ("WS token migration to Authorization header") updated
+        # the daemon and the Lambda code but never widened the CDK
+        # ``identitySource``, so header-only requests are silently rejected.
+        # Until the IdentitySource is fixed (or split into two authorizers
+        # so headers can carry tokens privately), the daemon must include
+        # ``?token=`` in the URL so API Gateway lets the request through.
+        # We *also* keep the Authorization header so once the gate is
+        # widened the daemon benefits from log-redaction automatically.
+        url = f"{self._ws_url}?type=agent&token={self._token}"
         log.info("Connecting to %s...", self._ws_url)
 
         connect_kwargs = {

@@ -62,7 +62,7 @@ export function useTownState(getToken?: () => Promise<string | null>, userId?: s
 
   // -- WebSocket subscription -------------------------------------------------
   useEffect(() => {
-    if (!WS_URL || !getToken) return;
+    if (!WS_URL) return;
 
     let ws: WebSocket | null = null;
     let cancelled = false;
@@ -71,11 +71,32 @@ export function useTownState(getToken?: () => Promise<string | null>, userId?: s
     const connect = async () => {
       if (cancelled) return;
       let token: string | null = null;
-      try {
-        token = await getToken();
-      } catch {
-        /* retry */
+
+      // Try Clerk-signed viewer token first (signed-in users).
+      if (getToken) {
+        try {
+          token = await getToken();
+        } catch {
+          /* fall through to anonymous */
+        }
       }
+
+      // Fall back to anonymous viewer token (signed-out users, or Clerk
+      // ``getToken`` failure). The endpoint is public; the resulting token
+      // grants WS subscription only — no act / chat / register paths.
+      if (!token && !cancelled) {
+        try {
+          const r = await fetch(`${API_URL}/town/anonymous-viewer-token`);
+          if (r.ok) {
+            const body: { token?: string } = await r.json();
+            token = body.token ?? null;
+          }
+        } catch (err) {
+          console.warn('[GooseTown] anonymous-viewer-token fetch failed:', err);
+          /* retry on next reconnect */
+        }
+      }
+
       if (cancelled) return;
       if (!token) {
         setTimeout(connect, reconnectDelay);
@@ -177,6 +198,12 @@ export function useTownState(getToken?: () => Promise<string | null>, userId?: s
           // appear/disappear correctly without a scene swap.
           if (msg.event === 'agent_context_changed') {
             console.log('[GooseTown] Context changed:', msg.context, 'for agent', msg.agent_id);
+            return;
+          }
+
+          // Owner-agent DM events — forward to useOwnerChat via CustomEvent.
+          if (msg.event === 'owner_reply') {
+            window.dispatchEvent(new CustomEvent('gt_owner_chat_event', { detail: msg }));
             return;
           }
 
