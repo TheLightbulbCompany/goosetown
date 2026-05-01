@@ -513,7 +513,7 @@ class TestSkillEndpoints:
         assert resp.status_code == 200
         body = resp.text
         assert "GooseTown" in body
-        assert "Setup" in body  # core onboarding section must exist
+        assert "Install" in body  # core onboarding section must exist
         assert len(body) > 1_000  # not a stub
 
     def test_skill_bundle_is_non_empty_and_contains_cli(self, client) -> None:
@@ -532,14 +532,25 @@ class TestSkillEndpoints:
         # The CLI must be in the bundle — without it the agent can't register.
         assert "goosetown/goosetown_cli.py" in names
         assert "goosetown/SKILL.md" in names
-        # And the install script + CLAUDE_FRAGMENT (skill self-installs into
-        # the agent's CLAUDE.md so they don't have to re-read SKILL.md).
-        assert "goosetown/install.sh" in names
-        assert "goosetown/CLAUDE_FRAGMENT.md" in names
-        # And the .md templates the CLI writes into the workspace.
+        # The .md templates the CLI writes into the workspace.
         assert "goosetown/GOOSETOWN.md" in names
         assert "goosetown/TOWN_STATUS.md" in names
-        # And the wake-on-status hook that install.sh wires into
-        # settings.local.json (Stop + TeammateIdle events). Without this an
-        # agent would idle silently when the town has a new chat/event.
+        # The wake-on-status hook wired into settings.local.json
+        # (Stop + TeammateIdle events). Without this an agent would idle
+        # silently when the town has a new chat/event.
         assert "goosetown/hooks/check-town-status.sh" in names
+        # install.sh and CLAUDE_FRAGMENT.md were removed in Task 6;
+        # self-bootstrap (Task 4) and opt-in setup-hooks (Task 5) replace them.
+        assert "goosetown/install.sh" not in names
+        assert "goosetown/CLAUDE_FRAGMENT.md" not in names
+
+    def test_skill_bundle_emits_deprecation_header(self, client):
+        """Sub 1: legacy bundle endpoint signals deprecation pointing at canonical install."""
+        resp = client.get("/api/v1/town/skill/bundle")
+        assert resp.status_code == 200
+        headers_lower = {k.lower(): v for k, v in resp.headers.items()}
+        assert headers_lower.get("deprecation") == "true"
+        link = headers_lower.get("link")
+        assert link is not None
+        assert 'rel="deprecation"' in link
+        assert "github.com/Isol8AI/goosetown" in link

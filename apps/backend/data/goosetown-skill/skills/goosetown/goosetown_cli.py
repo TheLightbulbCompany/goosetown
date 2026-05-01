@@ -34,6 +34,34 @@ from datetime import datetime
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
+# First-run dep bootstrap — must run before any ``import websockets``
+# ---------------------------------------------------------------------------
+
+
+def _ensure_websockets() -> None:
+    """First-run dep bootstrap. Installed via the canonical skill flow
+    (folder drop or plugin marketplace) — no install.sh needed."""
+    try:
+        import websockets  # noqa: F401
+
+        return
+    except ImportError:
+        pass
+
+    print("[goosetown] First-run setup: installing 'websockets' (pip3 install --user)...")
+    try:
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "--user", "websockets"],
+            stderr=subprocess.STDOUT,
+        )
+        import websockets  # noqa: F401, retry after install
+    except (subprocess.CalledProcessError, ImportError) as exc:
+        print(f"[goosetown] FATAL: could not install 'websockets': {exc}", file=sys.stderr)
+        print("Run manually: pip3 install --user websockets", file=sys.stderr)
+        sys.exit(2)
+
+
+# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
@@ -499,6 +527,7 @@ def cmd_join(args: argparse.Namespace) -> None:
 
     Always re-registers (server handles idempotency).
     """
+    _ensure_websockets()
     _require_websockets("join")
 
     import urllib.request
@@ -674,6 +703,7 @@ def cmd_status(args: argparse.Namespace) -> None:  # noqa: ARG001
 
 def cmd_act(args: argparse.Namespace) -> None:
     """Perform a town action, auto-starting the daemon from GOOSETOWN.md if needed."""
+    _ensure_websockets()
     _require_websockets("act")
 
     agent_dir = Path(os.environ.get("AGENT_DIR", str(Path.cwd())))
@@ -807,6 +837,7 @@ def cmd_act(args: argparse.Namespace) -> None:
 
 def cmd_leave(args: argparse.Namespace) -> None:
     """Go to sleep with an optional wake alarm."""
+    _ensure_websockets()
     _require_websockets("leave")
 
     agent_dir = Path(os.environ.get("AGENT_DIR", str(Path.cwd())))
@@ -2134,6 +2165,7 @@ def _daemon_main() -> None:
     Reads config from environment variables set by cmd_join / _start_daemon,
     then runs the TownDaemon with exponential backoff reconnect.
     """
+    _ensure_websockets()
     import asyncio
     import logging
     import signal
@@ -2232,6 +2264,12 @@ def _build_parser() -> argparse.ArgumentParser:
     # _daemon (internal)
     sub.add_parser("_daemon", help=argparse.SUPPRESS)
 
+    # setup-hooks (opt-in)
+    sub.add_parser(
+        "setup-hooks",
+        help="Write wake-on-status hooks into .claude/settings.local.json (opt-in).",
+    )
+
     return parser
 
 
@@ -2240,25 +2278,72 @@ def _build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 
-def main() -> None:
+def cmd_setup_hooks() -> int:
+    """Opt-in: write wake-on-status hooks into .claude/settings.local.json."""
+    settings_dir = Path(".claude")
+    if not settings_dir.exists():
+        print(
+            "ERROR: .claude/ not found in current directory. "
+            "Run setup-hooks from a workspace where Claude Code is in use.",
+            file=sys.stderr,
+        )
+        return 1
+
+    settings_file = settings_dir / "settings.local.json"
+    if settings_file.exists():
+        settings = json.loads(settings_file.read_text())
+    else:
+        settings = {}
+
+    hook_script = Path(__file__).resolve().parent / "hooks" / "check-town-status.sh"
+    hook_cmd = f"bash {hook_script}"
+    settings.setdefault("hooks", {})
+
+    for event in ("Stop", "TeammateIdle"):
+        hooks_for_event = settings["hooks"].setdefault(event, [])
+        already_present = any(
+            "check-town-status.sh" in inner.get("command", "") for h in hooks_for_event for inner in h.get("hooks", [])
+        )
+        if not already_present:
+            hooks_for_event.append(
+                {
+                    "matcher": "",
+                    "hooks": [{"type": "command", "command": hook_cmd, "timeout": 5}],
+                }
+            )
+
+    settings_file.write_text(json.dumps(settings, indent=2))
+    print(f"Wrote hooks to {settings_file}.")
+    print(f"Remove with: jq 'del(.hooks)' {settings_file} > tmp && mv tmp {settings_file}")
+    return 0
+
+
+def main() -> int:
     """Parse arguments and dispatch to the appropriate command handler."""
     parser = _build_parser()
     args = parser.parse_args()
 
     if args.command == "join":
         cmd_join(args)
+        return 0
     elif args.command == "status":
         cmd_status(args)
+        return 0
     elif args.command == "act":
         cmd_act(args)
+        return 0
     elif args.command == "leave":
         cmd_leave(args)
+        return 0
     elif args.command == "_daemon":
         _daemon_main()
+        return 0
+    elif args.command == "setup-hooks":
+        return cmd_setup_hooks()
     else:
         parser.print_help()
         sys.exit(1)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

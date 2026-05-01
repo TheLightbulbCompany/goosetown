@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 # The skill lives outside the normal Python package tree — add it to sys.path
-_SKILL_DIR = Path(__file__).parents[2] / "data" / "goosetown-skill"
+_SKILL_DIR = Path(__file__).parents[2] / "data" / "goosetown-skill" / "skills" / "goosetown"
 sys.path.insert(0, str(_SKILL_DIR))
 
 from goosetown_cli import (  # noqa: E402
