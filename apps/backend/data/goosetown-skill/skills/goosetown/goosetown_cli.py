@@ -34,6 +34,37 @@ from datetime import datetime
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
+# First-run dep bootstrap — must run before any ``import websockets``
+# ---------------------------------------------------------------------------
+
+
+def _ensure_websockets() -> None:
+    """First-run dep bootstrap. Installed via the canonical skill flow
+    (folder drop or plugin marketplace) — no install.sh needed."""
+    try:
+        import websockets  # noqa: F401
+
+        return
+    except ImportError:
+        pass
+
+    print("[goosetown] First-run setup: installing 'websockets' (pip3 install --user)...")
+    try:
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "--user", "websockets"],
+            stderr=subprocess.STDOUT,
+        )
+        import websockets  # noqa: F401, retry after install
+    except (subprocess.CalledProcessError, ImportError) as exc:
+        print(f"[goosetown] FATAL: could not install 'websockets': {exc}", file=sys.stderr)
+        print("Run manually: pip3 install --user websockets", file=sys.stderr)
+        sys.exit(2)
+
+
+_ensure_websockets()
+
+
+# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
