@@ -5,6 +5,7 @@ import { DatabaseStack } from "./stacks/database-stack";
 import { AuthStack } from "./stacks/auth-stack";
 import { DnsStack } from "./stacks/dns-stack";
 import { StorageStack } from "./stacks/storage-stack";
+import { ClusterStack } from "./stacks/cluster-stack";
 import { ComputeStack } from "./stacks/compute-stack";
 import { GameServerStack } from "./stacks/gameserver-stack";
 import { ApiStack } from "./stacks/api-stack";
@@ -59,6 +60,12 @@ export class GooseTownStage extends cdk.Stage {
       hostedZone: dns.hostedZone,
     });
 
+    const clusterStack = new ClusterStack(this, `goosetown-${env}-cluster`, {
+      stackName: `goosetown-${env}-cluster`,
+      environment: env,
+      vpc: network.vpc,
+    });
+
     const gameServer = new GameServerStack(
       this,
       `goosetown-${env}-gameserver`,
@@ -66,6 +73,7 @@ export class GooseTownStage extends cdk.Stage {
         stackName: `goosetown-${env}-gameserver`,
         environment: env,
         vpc: network.vpc,
+        cluster: clusterStack.cluster,
         alarmTopic: observability.snsTopic,
       }
     );
@@ -74,6 +82,7 @@ export class GooseTownStage extends cdk.Stage {
       stackName: `goosetown-${env}-compute`,
       environment: env,
       vpc: network.vpc,
+      cluster: clusterStack.cluster,
       tables: database.tables,
       spriteBucket: storage.spriteBucket,
       secrets: auth.secrets,

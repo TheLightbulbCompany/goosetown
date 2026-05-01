@@ -13,6 +13,8 @@ import { Construct } from "constructs";
 export interface GameServerStackProps extends cdk.StackProps {
   environment: string;
   vpc: ec2.IVpc;
+  /** Shared ECS cluster from ClusterStack — both services run on the same cluster. */
+  cluster: ecs.ICluster;
   /** SNS topic for CloudWatch alarm actions. Wired by ObservabilityStack. */
   alarmTopic?: sns.ITopic;
 }
@@ -41,15 +43,11 @@ export class GameServerStack extends cdk.Stack {
       }
     );
 
-    // ECS cluster (separate from backend cluster). Container Insights is
-    // enabled here (unlike the backend cluster) because this stack has no
-    // ALB — without Container Insights there's no cheap signal that the
-    // single game-server task is alive, and "RunningTaskCount" lives
-    // exclusively in the ECS/ContainerInsights namespace.
-    const cluster = new ecs.Cluster(this, "Cluster", {
-      vpc: props.vpc,
-      containerInsightsV2: ecs.ContainerInsights.ENABLED,
-    });
+    // ECS Cluster — shared with ComputeStack via ClusterStack cross-stack
+    // reference. Container Insights is disabled in ClusterStack (cost reason);
+    // the game-server alarm now uses HealthyHostCount instead of
+    // RunningTaskCount (which requires Container Insights).
+    const cluster = props.cluster;
 
     // Log group
     const logGroup = new logs.LogGroup(this, "LogGroup", {
