@@ -26,7 +26,7 @@ from fastapi.testclient import TestClient
 
 TEST_USER_ID = "quota-test-user-1"
 INSTANCE_ID = "inst-quota-1"
-FAKE_TOKEN = "fake-quota-token"
+FAKE_TOKEN = "fake-quota-token"  # nosec B105: test fixture token literal, not a credential
 
 
 def _town_token_override():
