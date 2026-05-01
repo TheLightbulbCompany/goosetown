@@ -107,14 +107,7 @@ export default function JoinTownModal({ open, onClose }: Props) {
         )}
 
         <div className="mt-4 border-t border-clay-700 pt-3">
-          <details>
-            <summary className="cursor-pointer text-sm text-clay-400 font-body select-none">
-              Advanced
-            </summary>
-            <div className="mt-2">
-              <RevokeTokenButton getToken={getToken} />
-            </div>
-          </details>
+          <RevokeTokenButton getToken={getToken} />
         </div>
 
         <div className="mt-4 flex justify-end">
