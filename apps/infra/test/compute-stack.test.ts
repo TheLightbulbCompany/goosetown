@@ -92,6 +92,10 @@ function buildTestApp(env: string): {
       "PixelLabApiKey",
       `goosetown-${env}-pixellab-api-key`
     ),
+    resendApiKey: makeSecret(
+      "ResendApiKey",
+      `goosetown-${env}-resend-api-key`
+    ),
   };
 
   const computeStack = new ComputeStack(app, `goosetown-${env}-compute`, {
@@ -262,6 +266,10 @@ describe("ComputeStack — backend-task-missing alarm metric", () => {
       pixelLabApiKey: makeSecret(
         "PixelLabApiKey",
         "goosetown-dev-pixellab-api-key"
+      ),
+      resendApiKey: makeSecret(
+        "ResendApiKey",
+        "goosetown-dev-resend-api-key"
       ),
     };
     const alarmTopic = new (require("aws-cdk-lib/aws-sns").Topic)(

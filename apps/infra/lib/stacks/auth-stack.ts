@@ -11,6 +11,7 @@ export interface AuthSecrets {
   clerkSecretKey: secretsmanager.ISecret;
   townTokenSecret: secretsmanager.ISecret;
   pixelLabApiKey: secretsmanager.ISecret;
+  resendApiKey: secretsmanager.ISecret;
 }
 
 export class AuthStack extends cdk.Stack {
@@ -49,11 +50,17 @@ export class AuthStack extends cdk.Stack {
       description: "PixelLab API key for sprite generation",
     });
 
+    const resendApiKey = new secretsmanager.Secret(this, "ResendApiKey", {
+      secretName: `goosetown/${env}/resend_api_key`,
+      description: "Resend API key for landing page email signups",
+    });
+
     this.secrets = {
       clerkIssuer,
       clerkSecretKey,
       townTokenSecret,
       pixelLabApiKey,
+      resendApiKey,
     };
 
     // Outputs
