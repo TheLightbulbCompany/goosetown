@@ -28,6 +28,18 @@ jobs:
       - name: pip-audit (dependency CVE scan)
         run: uv run pip-audit --strict
         working-directory: apps/backend
+      - name: Build backend Docker image (for Trivy scan)
+        working-directory: apps/backend
+        run: docker build -t goosetown-backend:scan-${{ github.sha }} .
+      - name: Trivy scan backend image (HIGH/CRITICAL CVEs)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: goosetown-backend:scan-${{ github.sha }}
+          severity: HIGH,CRITICAL
+          exit-code: 1
+          ignore-unfixed: true
+          format: table
+        continue-on-error: true
       - name: Test
         run: uv run pytest tests/ -v
         working-directory: apps/backend
