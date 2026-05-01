@@ -132,21 +132,17 @@ def verify_town_token(token: str) -> dict | None:
 
             iat_ms = int(iat) * 1000
             if UserService().is_token_revoked(payload["uid"], iat_ms):
-                # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
-                # Logs uid + iat only — neither is a credential. Token bytes are never logged.
-                logger.warning(
-                    "auth token rejected: issued before revocation (uid=%s iat=%s)",
+                # Logs uid + iat only — neither is a credential. Token bytes never logged.
+                logger.warning(  # noqa: E501  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
+                    "auth rejection: issued before revocation (uid=%s iat=%s)",
                     payload.get("uid"),
                     iat,
                 )
                 return None
         except Exception as exc:
-            # Don't fail-closed on transient DynamoDB errors. The user's
-            # session continues as if not revoked, which is the same
-            # behavior we had before this change. Logged for ops visibility.
-            # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
-            # Logs uid + exception text only — token bytes are never logged.
-            logger.warning(
+            # Fail-open on transient DDB errors. Log for ops visibility.
+            # uid + exception text only — token bytes never logged.
+            logger.warning(  # noqa: E501  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
                 "auth revocation check failed (uid=%s): %s — passing through",
                 payload.get("uid"),
                 exc,
