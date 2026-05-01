@@ -53,7 +53,7 @@ class ResendClient:
                 if "already exists" in body_json.get("message", "").lower():
                     logger.info("Resend contact already exists for %s — treating as success", email)
                     return
-            except Exception:
+            except Exception:  # nosec B110: malformed body falls through to ResendError below; not a silent swallow
                 pass
 
         raise ResendError(response.status_code, response.text)
