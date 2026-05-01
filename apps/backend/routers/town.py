@@ -224,8 +224,7 @@ def _build_ai_town_state() -> dict:
 
 _skill_md_cache: str | None = None
 _skill_bundle_cache: bytes | None = None
-_SKILL_ROOT_DIR = Path(__file__).resolve().parent.parent / "data" / "goosetown-skill"
-_SKILL_DIR = _SKILL_ROOT_DIR / "skills" / "goosetown"
+_SKILL_DIR = Path(__file__).resolve().parent.parent / "data" / "goosetown-skill" / "skills" / "goosetown"
 
 
 def _load_skill_md() -> str:
@@ -248,14 +247,6 @@ _SKILL_BUNDLE_FILES = (
     "hooks/check-town-status.sh",
 )
 
-# install.sh and CLAUDE_FRAGMENT.md live in the skill root dir (one level above
-# _SKILL_DIR) and are not moved until Task 6. They are still included in the
-# bundle under the same goosetown/ arc prefix for backwards compatibility.
-_SKILL_ROOT_BUNDLE_FILES = (
-    "install.sh",
-    "CLAUDE_FRAGMENT.md",
-)
-
 
 def _build_skill_bundle() -> bytes:
     """Pack the current skill directory into a tarball for `GET /skill/bundle`.
@@ -275,11 +266,6 @@ def _build_skill_bundle() -> bytes:
         with tarfile.open(fileobj=buf, mode="w:gz") as tar:
             for filename in _SKILL_BUNDLE_FILES:
                 filepath = _SKILL_DIR / filename
-                if filepath.is_file():
-                    tar.add(str(filepath), arcname=f"goosetown/{filename}")
-                    included += 1
-            for filename in _SKILL_ROOT_BUNDLE_FILES:
-                filepath = _SKILL_ROOT_DIR / filename
                 if filepath.is_file():
                     tar.add(str(filepath), arcname=f"goosetown/{filename}")
                     included += 1

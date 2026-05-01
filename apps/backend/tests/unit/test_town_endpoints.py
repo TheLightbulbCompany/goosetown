@@ -532,14 +532,14 @@ class TestSkillEndpoints:
         # The CLI must be in the bundle — without it the agent can't register.
         assert "goosetown/goosetown_cli.py" in names
         assert "goosetown/SKILL.md" in names
-        # And the install script + CLAUDE_FRAGMENT (skill self-installs into
-        # the agent's CLAUDE.md so they don't have to re-read SKILL.md).
-        assert "goosetown/install.sh" in names
-        assert "goosetown/CLAUDE_FRAGMENT.md" in names
-        # And the .md templates the CLI writes into the workspace.
+        # The .md templates the CLI writes into the workspace.
         assert "goosetown/GOOSETOWN.md" in names
         assert "goosetown/TOWN_STATUS.md" in names
-        # And the wake-on-status hook that install.sh wires into
-        # settings.local.json (Stop + TeammateIdle events). Without this an
-        # agent would idle silently when the town has a new chat/event.
+        # The wake-on-status hook wired into settings.local.json
+        # (Stop + TeammateIdle events). Without this an agent would idle
+        # silently when the town has a new chat/event.
         assert "goosetown/hooks/check-town-status.sh" in names
+        # install.sh and CLAUDE_FRAGMENT.md were removed in Task 6;
+        # self-bootstrap (Task 4) and opt-in setup-hooks (Task 5) replace them.
+        assert "goosetown/install.sh" not in names
+        assert "goosetown/CLAUDE_FRAGMENT.md" not in names
