@@ -12,6 +12,7 @@
 import * as cdk from "aws-cdk-lib";
 import { Template, Match } from "aws-cdk-lib/assertions";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
+import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
@@ -45,6 +46,13 @@ function buildTestApp(env: string): {
     availabilityZones: ["us-east-1a", "us-east-1b"],
     privateSubnetIds: ["subnet-private-1a", "subnet-private-1b"],
     publicSubnetIds: ["subnet-public-1a", "subnet-public-1b"],
+  });
+
+  // Fixture cluster — mirrors ClusterStack output (CI disabled, shared cluster).
+  const fixtureCluster = new ecs.Cluster(depsStack, "FixtureCluster", {
+    vpc,
+    clusterName: `goosetown-${env}`,
+    containerInsightsV2: ecs.ContainerInsights.DISABLED,
   });
 
   // Sprite bucket stub
@@ -91,6 +99,7 @@ function buildTestApp(env: string): {
     environment: env,
     env: { account: "123456789012", region: "us-east-1" },
     vpc,
+    cluster: fixtureCluster,
     tables: tables as any,
     spriteBucket,
     secrets: secrets as any,
@@ -113,15 +122,16 @@ describe("ComputeStack — CRITICAL: no Fn::ImportValue for management-api-url",
     // The critical regression guard: this import caused fresh-env deploys to
     // fail because ComputeStack deployed before ApiStack. Any reintroduction
     // of this Fn::ImportValue will break greenfield environments.
+    // NOTE: Fn::ImportValue for the shared cluster cross-stack reference is
+    // intentional and expected after the ClusterStack refactor — only the
+    // management-api-url import must stay absent.
     expect(templateJson).not.toContain("management-api-url");
-    expect(templateJson).not.toContain("Fn::ImportValue");
   });
 
   test("prod template contains zero Fn::ImportValue references to management-api-url", () => {
     const { template } = buildTestApp("prod");
     const templateJson = JSON.stringify(template.toJSON());
     expect(templateJson).not.toContain("management-api-url");
-    expect(templateJson).not.toContain("Fn::ImportValue");
   });
 });
 
@@ -259,11 +269,17 @@ describe("ComputeStack — backend-task-missing alarm metric", () => {
       "AlarmTopic",
       { topicName: "goosetown-dev-alarms" }
     );
+    const fixtureCluster = new ecs.Cluster(depsStack, "FixtureCluster", {
+      vpc,
+      clusterName: "goosetown-dev",
+      containerInsightsV2: ecs.ContainerInsights.DISABLED,
+    });
     const computeStack = new ComputeStack(app, "goosetown-dev-compute-alarm", {
       stackName: "goosetown-dev-compute-alarm",
       environment: "dev",
       env: { account: "123456789012", region: "us-east-1" },
       vpc,
+      cluster: fixtureCluster,
       tables: tables as any,
       spriteBucket,
       secrets: secrets as any,

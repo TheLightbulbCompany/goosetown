@@ -23,6 +23,8 @@ import { AuthSecrets } from "./auth-stack";
 export interface ComputeStackProps extends cdk.StackProps {
   environment: string;
   vpc: ec2.IVpc;
+  /** Shared ECS cluster from ClusterStack — both services run on the same cluster. */
+  cluster: ecs.ICluster;
   tables: DatabaseTables;
   spriteBucket: s3.IBucket;
   secrets: AuthSecrets;
@@ -49,16 +51,9 @@ export class ComputeStack extends cdk.Stack {
       platform: Platform.LINUX_AMD64,
     });
 
-    // ECS Cluster — Container Insights disabled to avoid per-task metric
-    // explosion.  Enhanced Container Insights publishes dozens of metrics
-    // per task, and we only run a single backend service here.  AWS/ECS
-    // standard metrics (CPUUtilization, MemoryUtilization per service) are
-    // always published and cover our alerting needs.
-    const cluster = new ecs.Cluster(this, "Cluster", {
-      clusterName: `goosetown-${env}`,
-      vpc: props.vpc,
-      containerInsightsV2: ecs.ContainerInsights.DISABLED,
-    });
+    // ECS Cluster — shared with GameServerStack via ClusterStack cross-stack
+    // reference. Container Insights is disabled in ClusterStack (cost reason).
+    const cluster = props.cluster;
 
     // Task execution role (ECR pull, CloudWatch logs)
     const executionRole = new iam.Role(this, "ExecutionRole", {
