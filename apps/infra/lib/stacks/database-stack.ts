@@ -13,6 +13,7 @@ export interface DatabaseTables {
   conversations: dynamodb.Table;
   connections: dynamodb.Table;
   ownerChats: dynamodb.Table;
+  users: dynamodb.Table;
 }
 
 export class DatabaseStack extends cdk.Stack {
@@ -139,7 +140,18 @@ export class DatabaseStack extends cdk.Stack {
       sortKey: { name: "createdAt", type: dynamodb.AttributeType.NUMBER },
     });
 
-    this.tables = { agents, instances, relationships, conversations, connections, ownerChats };
+    // Users table (per-user state: quota counters, token revocation timestamp)
+    const users = new dynamodb.Table(this, "UsersTable", {
+      tableName: `goosetown-${env}-users`,
+      partitionKey: { name: "userId", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      pointInTimeRecoverySpecification: {
+        pointInTimeRecoveryEnabled: env === "prod",
+      },
+      removalPolicy,
+    });
+
+    this.tables = { agents, instances, relationships, conversations, connections, ownerChats, users };
 
     // Outputs
     new cdk.CfnOutput(this, "AgentsTableName", {
