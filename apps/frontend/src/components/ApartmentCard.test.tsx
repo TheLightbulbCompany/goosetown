@@ -24,6 +24,8 @@ function makeAgent(overrides: Partial<ApartmentAgent> = {}): ApartmentAgent {
     current_spot: 'plaza',
     is_active: true,
     sprite_url: 'https://cdn.example/sprites/lucky/walk.png?v=1',
+    sprite_ready: true,
+    created_at: null,
     ...overrides,
   };
 }

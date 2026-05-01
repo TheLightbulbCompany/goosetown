@@ -20,6 +20,8 @@ export interface ApartmentAgent {
   current_spot: string | null;
   is_active: boolean;
   sprite_url: string | null;
+  sprite_ready: boolean;
+  created_at: number | null; // ms timestamp from backend
 }
 
 export interface ActivityEvent {
