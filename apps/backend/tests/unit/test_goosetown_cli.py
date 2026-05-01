@@ -398,6 +398,84 @@ class TestActiveConversationStatusRendering:
 
 
 # ===========================================================================
+# Owner-block stickiness
+# ===========================================================================
+
+
+class TestOwnerBlockStickiness:
+    """Owner block in TOWN_STATUS.md persists across world_updates until
+    the agent calls ``act reply_owner``. The buffer is cleared in the IPC
+    handler, not after a single render."""
+
+    def _alive_world(self, location: str = "plaza") -> dict:
+        return {
+            "you": {
+                "onboardingPhase": "alive",
+                "location": location,
+                "mood": "neutral",
+                "energy": 80,
+            },
+            "nearby_agents": [],
+            "think": True,
+        }
+
+    def test_owner_block_persists_across_world_updates(self, daemon):
+        daemon.state["agent"] = {"onboardingPhase": "alive", "location": "plaza"}
+        # Simulate _flush_owner_messages having moved a buffered message into
+        # the pending list (we skip the asyncio.call_later 2s window).
+        daemon._pending_owner_messages = [{"text": "go to the cafe and grab a coffee", "timestamp": 1700000000}]
+
+        # Three world_updates back-to-back — block must appear on every one.
+        for _ in range(3):
+            daemon._handle_world_update(self._alive_world())
+            content = _read_status(daemon)
+            assert "Your owner just said:" in content
+            assert "go to the cafe and grab a coffee" in content
+
+    def test_reply_owner_clears_pending_block(self, daemon):
+        daemon.state["agent"] = {"onboardingPhase": "alive", "location": "plaza"}
+        daemon._pending_owner_messages = [{"text": "say hi to Pam for me", "timestamp": 1700000000}]
+        daemon.ws = AsyncMock()  # handle_tool_command requires a live ws
+
+        # Render once — block is present.
+        daemon._handle_world_update(self._alive_world())
+        assert "say hi to Pam" in _read_status(daemon)
+
+        # Agent replies. The IPC handler should drop the buffer and re-render.
+        result = asyncio.get_event_loop().run_until_complete(
+            daemon.handle_tool_command(
+                {
+                    "action": "act",
+                    "payload": {"action": "reply_owner", "text": "On it."},
+                }
+            )
+        )
+        assert result == {"status": "ok", "action": "reply_owner"}
+        assert daemon._pending_owner_messages == []
+
+        # Subsequent renders no longer show the block.
+        daemon._handle_world_update(self._alive_world())
+        assert "Your owner just said:" not in _read_status(daemon)
+
+    def test_chat_action_does_not_clear_owner_block(self, daemon):
+        """Replying in a town conversation is unrelated to acknowledging the
+        owner — clearing should be specific to ``reply_owner``."""
+        daemon.state["agent"] = {"onboardingPhase": "alive", "location": "plaza"}
+        daemon._pending_owner_messages = [{"text": "patrol the plaza", "timestamp": 1700000000}]
+        daemon.ws = AsyncMock()
+
+        asyncio.get_event_loop().run_until_complete(
+            daemon.handle_tool_command(
+                {
+                    "action": "act",
+                    "payload": {"action": "say", "conv_id": "c-1", "text": "hello"},
+                }
+            )
+        )
+        assert daemon._pending_owner_messages == [{"text": "patrol the plaza", "timestamp": 1700000000}]
+
+
+# ===========================================================================
 # Event-driven think triggers
 # ===========================================================================
 

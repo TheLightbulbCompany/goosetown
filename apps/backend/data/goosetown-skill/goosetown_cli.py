@@ -1658,9 +1658,11 @@ class TownDaemon:
                     "You can also act on the suggestion (move, do an activity, etc.), "
                     "ignore it, or any combination — your choice.\n\n"
                 )
-                # Consumed; do not re-show on the next status write unless a new
-                # owner message arrives.
-                self._pending_owner_messages = []
+                # Stays in TOWN_STATUS until the agent calls ``act reply_owner``,
+                # which clears the buffer in handle_tool_command. World updates
+                # cycle every ~2s; clearing here would flash the block for one
+                # tick and disappear before the agent's think cadence even reads
+                # it.
 
             status += "---\n\n## Your turn — decide what to do next\n\n"
             if owner_block:
@@ -1984,6 +1986,13 @@ class TownDaemon:
             if payload.get("action") in ("chat", "say"):
                 self.state["pending_messages"] = []
                 self._write_state()
+            # Owner block stays in TOWN_STATUS until the agent acknowledges
+            # by replying. Once reply_owner fires, drop the buffer so the next
+            # world_update renders without it.
+            if payload.get("action") == "reply_owner":
+                self._pending_owner_messages = []
+                if self.state:
+                    self._handle_world_update(self.state)
             return {"status": "ok", "action": payload.get("action")}
 
         if action == "sleep":
