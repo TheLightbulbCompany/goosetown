@@ -75,8 +75,6 @@ def test_ensure_websockets_exits_on_pip_failure(monkeypatch, capsys):
 def test_status_command_does_not_invoke_bootstrap(monkeypatch):
     """status is documented as offline/stdlib-only; it must not trigger
     pip install of websockets even when websockets is missing."""
-    import importlib
-
     # Tracking: did _ensure_websockets get called?
     called = {"count": 0}
 
@@ -98,14 +96,13 @@ def test_status_command_does_not_invoke_bootstrap(monkeypatch):
     monkey_argv = ["goosetown_cli.py", "status"]
     monkeypatch.setattr(sys, "argv", monkey_argv)
     try:
-        rc = goosetown_cli.main()
-    except SystemExit as exc:
-        rc = exc.code
+        goosetown_cli.main()
+    except SystemExit:
+        pass
 
     # status should NOT call _ensure_websockets — it's offline by design
     assert called["count"] == 0, (
-        f"status invoked _ensure_websockets {called['count']}x; "
-        "it must stay offline-capable per docs."
+        f"status invoked _ensure_websockets {called['count']}x; it must stay offline-capable per docs."
     )
 
 
@@ -126,18 +123,18 @@ def test_setup_hooks_command_does_not_invoke_bootstrap(monkeypatch, tmp_path):
 
     (tmp_path / ".claude").mkdir()
     import os
+
     old_cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
         monkeypatch.setattr(sys, "argv", ["goosetown_cli.py", "setup-hooks"])
         try:
-            rc = goosetown_cli.main()
-        except SystemExit as exc:
-            rc = exc.code
+            goosetown_cli.main()
+        except SystemExit:
+            pass
     finally:
         os.chdir(old_cwd)
 
     assert called["count"] == 0, (
-        f"setup-hooks invoked _ensure_websockets {called['count']}x; "
-        "it doesn't need a WebSocket connection."
+        f"setup-hooks invoked _ensure_websockets {called['count']}x; it doesn't need a WebSocket connection."
     )

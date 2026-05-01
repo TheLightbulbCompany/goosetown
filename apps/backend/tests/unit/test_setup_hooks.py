@@ -104,6 +104,4 @@ def test_setup_hooks_idempotent_when_hook_at_index_other_than_zero(tmp_path):
     written = json.loads(settings_file.read_text())
     stop_entries = written["hooks"]["Stop"]
     # Should still be 1 matcher group — no duplicate appended
-    assert len(stop_entries) == 1, (
-        f"expected 1 Stop matcher group (deduped), got {len(stop_entries)}"
-    )
+    assert len(stop_entries) == 1, f"expected 1 Stop matcher group (deduped), got {len(stop_entries)}"
