@@ -513,7 +513,7 @@ class TestSkillEndpoints:
         assert resp.status_code == 200
         body = resp.text
         assert "GooseTown" in body
-        assert "Setup" in body  # core onboarding section must exist
+        assert "Install" in body  # core onboarding section must exist
         assert len(body) > 1_000  # not a stub
 
     def test_skill_bundle_is_non_empty_and_contains_cli(self, client) -> None:
