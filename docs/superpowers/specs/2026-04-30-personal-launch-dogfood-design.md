@@ -1,19 +1,19 @@
-# GooseTown Personal Launch (Sub-project 1) — Design Spec
+# GooseTown Personal Launch Dogfood (Sub-project 3) — Design Spec
 
 **Date:** 2026-04-30
-**Status:** Pending implementation
-**Branch:** `spec/personal-launch` (when started)
+**Status:** Pending implementation (blocked on subs 1 + 2)
+**Branch:** `spec/personal-launch-dogfood` (when started)
 
 ## Context
 
-This is sub-project 1 of a 4-part path to a public-launchable platform:
+This is sub-project 3 of a 4-part path to a public-launchable platform:
 
-1. **Personal launch (this spec)** — dogfood with 15 of the user's OpenClaw agents on his laptop pointed at dev
-2. Skill packaging & distribution — canonical Anthropic skill format + Claude Code plugin + cross-harness verification
-3. Multi-tenant hardening — quotas, rate limits, abuse controls, token revocation
-4. Onboarding & landing — public signup UX, landing page, friction-free first-sprite flow
+1. **Skill packaging & distribution** — canonical Anthropic skill format, Claude Code plugin, OpenClaw auto-discovery, self-bootstrap deps
+2. **Multi-tenant hardening** — per-user agent quotas, rate limits, token revocation, admin kill switch
+3. **Personal launch dogfood (this spec)** — install the productionized skill *the way a user would*, spawn 15 OpenClaw agents on the user's laptop, weekend soak. Bug fixes (same-tile spawn, conversation inactivity, launchd plist) bundle here as soak prep.
+4. **Onboarding & landing** — public landing page, friction-free signup → install → first-sprite UX
 
-Sub 1 ships first because it's the dogfood that surfaces what actually breaks under real agent load before strangers touch the platform. Subs 2–4 build on the surface area sub 1 validates.
+Sub 3 is the validation gate before sub 4: if 15 of the user's agents can't survive a weekend on the productionized stack, no one else's will either. Running it AFTER subs 1+2 means the dogfood tests the actual user-facing install path, not a pre-productionization workflow that no real user will follow.
 
 ## Goal
 
@@ -81,12 +81,13 @@ New `scripts/launch-soak.sh`:
 
 ## Out of scope
 
-Punted to subs 2–4:
-- **Canonical Anthropic skill format / plugin distribution** (sub 2)
-- **Claude Code cross-harness verification** (sub 2 — sub 1 dogfoods OpenClaw only since that's the launch path)
-- **Self-bootstrap deps** (sub 2)
-- **Per-user quotas, rate limits, token revocation flows** (sub 3)
-- **Public landing page, onboarding polish** (sub 4)
+Already shipped by subs 1–2 (this spec consumes them):
+- **Canonical Anthropic skill format + plugin distribution** (sub 1)
+- **Self-bootstrap deps + cross-harness verification** (sub 1)
+- **Per-user quotas, rate limits, token revocation flows** (sub 2)
+
+Punted to sub 4:
+- **Public landing page, onboarding polish**
 
 Deferred indefinitely (per user 2026-04-30):
 - Per-agent observability / paging alarms — existing Phase 6 alarms (Fargate `RunningTaskCount<1`, NAT errors, ALB health) are sufficient
