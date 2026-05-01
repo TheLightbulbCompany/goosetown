@@ -12,6 +12,7 @@ import MusicButton from './components/buttons/MusicButton.tsx';
 import JoinTownModal from './components/JoinTownModal.tsx';
 import OwnerChatPanel from './components/OwnerChatPanel.tsx';
 import { useApartment } from './hooks/useApartment.ts';
+import { QuotaIndicator } from './components/QuotaIndicator.tsx';
 import { SCENES, sceneForPath } from './scenes.ts';
 import InteriorRoute from './components/InteriorRoute.tsx';
 import SignInPage from './pages/SignIn.tsx';
@@ -45,6 +46,7 @@ function AgentsSidebar({
           </div>
         </SignedIn>
         <ConversationsLog />
+        <QuotaIndicator />
       </>
     );
   }
@@ -83,6 +85,7 @@ function AgentsSidebar({
         </div>
       )}
       <ConversationsLog />
+      <QuotaIndicator />
     </>
   );
 }
