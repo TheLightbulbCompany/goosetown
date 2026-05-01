@@ -20,7 +20,9 @@ export class NetworkStack extends cdk.Stack {
     this.vpc = new ec2.Vpc(this, "Vpc", {
       vpcName: `goosetown-${props.environment}-vpc`,
       maxAzs: 2,
-      natGateways: 1,
+      // Prod gets one NAT per AZ so a single-AZ failure doesn't kill all private-subnet
+      // egress (Known Issue #165). Dev stays at 1 to save the ~$32/mo per extra NAT.
+      natGateways: props.environment === "prod" ? 2 : 1,
       subnetConfiguration: [
         {
           cidrMask: 24,
@@ -40,11 +42,9 @@ export class NetworkStack extends cdk.Stack {
       exportName: `goosetown-${props.environment}-vpc-id`,
     });
 
-    // NAT port-exhaustion alarm. Single NAT across 2 AZs is a known tradeoff
-    // (see RUNBOOK.md and issue #165). This is awareness-only — on a real
-    // AZ failure operators should see it and decide whether to deploy a
-    // second NAT. Port allocation errors signal traffic bursts, not AZ loss,
-    // so `breaching` would be too alarmist.
+    // NAT port-exhaustion alarm. Prod now has 2 NATs (one per AZ, issue #165 resolved);
+    // dev stays at 1. Port allocation errors signal traffic bursts rather than AZ loss,
+    // so `notBreaching` on missing data avoids false alarms during quiet periods.
     if (props.alarmTopic) {
       const natErrorAlarm = new cloudwatch.Alarm(this, "NatPortErrorAlarm", {
         alarmName: `goosetown-${props.environment}-nat-port-exhaustion`,

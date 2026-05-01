@@ -2,9 +2,9 @@
  * network-stack.test.ts
  *
  * Asserts that:
- * 1. The NetworkStack creates exactly 1 NAT gateway (multi-NAT is deferred
- *    to issue #165 — this test documents the intentional single-NAT decision).
- * 2. A CloudWatch alarm exists on the NAT/ErrorPortAllocation metric so that
+ * 1. Prod gets 2 NAT gateways (one per AZ) for HA egress — issue #165 resolved.
+ * 2. Dev keeps 1 NAT gateway to save ~$32/mo per the intentional cost decision.
+ * 3. A CloudWatch alarm exists on the NAT/ErrorPortAllocation metric so that
  *    NAT exhaustion or AZ-level trouble triggers an alert.
  */
 
@@ -41,10 +41,32 @@ describe("NetworkStack — NAT gateway count", () => {
     ({ template } = buildTestApp());
   });
 
-  test("exactly 1 NAT gateway is created (multi-NAT deferred to issue #165)", () => {
+  test("dev has exactly 1 NAT gateway to save on cost (~$32/mo per extra NAT)", () => {
     // CDK creates one AWS::EC2::NatGateway per NAT. With maxAzs=2 and
-    // natGateways=1, only 1 NatGateway resource should appear.
+    // natGateways=1, only 1 NatGateway resource should appear for dev.
     template.resourceCountIs("AWS::EC2::NatGateway", 1);
+  });
+});
+
+describe("NetworkStack — multi-AZ NAT for HA egress (issue #165)", () => {
+  test("prod has 2 NAT gateways across AZs for HA egress", () => {
+    const app = new cdk.App();
+    const stack = new NetworkStack(app, "prod-net", {
+      stackName: "goosetown-prod-network",
+      environment: "prod",
+      env: { account: "123456789012", region: "us-east-1" },
+    });
+    Template.fromStack(stack).resourceCountIs("AWS::EC2::NatGateway", 2);
+  });
+
+  test("dev keeps single NAT gateway to save on cost", () => {
+    const app = new cdk.App();
+    const stack = new NetworkStack(app, "dev-net", {
+      stackName: "goosetown-dev-network",
+      environment: "dev",
+      env: { account: "123456789012", region: "us-east-1" },
+    });
+    Template.fromStack(stack).resourceCountIs("AWS::EC2::NatGateway", 1);
   });
 });
 
