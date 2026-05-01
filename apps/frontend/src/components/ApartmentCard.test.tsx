@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import ApartmentCard from './ApartmentCard';
 import type { ApartmentAgent } from '../hooks/useApartment';
@@ -61,7 +61,7 @@ describe('ApartmentCard', () => {
     expect(container.textContent).toContain('?');
   });
 
-  it('shows "View in town" link only when agent is in town context', () => {
+  it('shows "View in town" link when agent is in town context and no link for unknown context', () => {
     const { rerender } = render(
       <MemoryRouter>
         <ApartmentCard agent={makeAgent({ location_context: 'town' })} />
@@ -71,10 +71,10 @@ describe('ApartmentCard', () => {
 
     rerender(
       <MemoryRouter>
-        <ApartmentCard agent={makeAgent({ location_context: 'apartment' })} />
+        <ApartmentCard agent={makeAgent({ location_context: 'unknown_scene' })} />
       </MemoryRouter>,
     );
-    expect(screen.queryByText(/view in town/i)).toBeNull();
+    expect(screen.queryByText(/view in/i)).toBeNull();
   });
 
   it('view-in-town link URL-encodes the display name into ?focus=', () => {
@@ -107,5 +107,37 @@ describe('ApartmentCard', () => {
     renderCard(makeAgent({ status_message: null }));
     // A status-message render would have italic styled quotes; absence is fine.
     expect(screen.queryByText(/thinking about/)).toBeNull();
+  });
+
+  it('renders "View in library →" link when location_context is library', () => {
+    renderCard(makeAgent({ location_context: 'library', current_location: 'reading_armchair' }));
+    const link = screen.getByText(/View in library/i);
+    expect(link).toBeInTheDocument();
+    expect(link.closest('a')?.getAttribute('href')).toBe('/library');
+  });
+
+  it('renders "View in town →" link with ?focus= when location_context is town', () => {
+    renderCard(makeAgent({ location_context: 'town', display_name: 'Lucky' }));
+    const link = screen.getByText(/View in town/i);
+    expect(link.closest('a')?.getAttribute('href')).toBe('/?focus=Lucky');
+  });
+
+  it('renders "View in apartment →" link when location_context is apartment', () => {
+    renderCard(makeAgent({ location_context: 'apartment', current_location: 'bed' }));
+    const link = screen.getByText(/View in apartment/i);
+    expect(link.closest('a')?.getAttribute('href')).toBe('/apartment');
+  });
+
+  it('renders a Chat button when onChatClick is provided', () => {
+    const onChatClick = vi.fn();
+    const agent = makeAgent({ agent_id: 'agent-1', display_name: 'Dwight' });
+    render(
+      <MemoryRouter>
+        <ApartmentCard agent={agent} onChatClick={onChatClick} />
+      </MemoryRouter>,
+    );
+    const btn = screen.getByText(/^Chat/i);
+    fireEvent.click(btn);
+    expect(onChatClick).toHaveBeenCalledWith('agent-1', 'Dwight');
   });
 });

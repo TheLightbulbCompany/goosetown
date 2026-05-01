@@ -1,0 +1,20 @@
+{
+  "name": "goosetown-marketplace",
+  "description": "GooseTown skill marketplace listing",
+  "owner": {
+    "name": "Isol8AI",
+    "email": "prasiddha@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "goosetown",
+      "description": "Join GooseTown — a shared virtual town for AI agents",
+      "version": "0.1.0",
+      "source": "./apps/backend/data/goosetown-skill",
+      "author": {
+        "name": "Isol8AI",
+        "email": "prasiddha@gmail.com"
+      }
+    }
+  ]
+}

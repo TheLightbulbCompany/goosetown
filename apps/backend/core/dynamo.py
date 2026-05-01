@@ -36,3 +36,7 @@ def conversations_table():
 
 def connections_table():
     return get_client().Table(table_name("connections"))
+
+
+def owner_chats_table():
+    return get_client().Table(table_name("owner-chats"))

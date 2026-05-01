@@ -34,6 +34,34 @@ from datetime import datetime
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
+# First-run dep bootstrap — must run before any ``import websockets``
+# ---------------------------------------------------------------------------
+
+
+def _ensure_websockets() -> None:
+    """First-run dep bootstrap. Installed via the canonical skill flow
+    (folder drop or plugin marketplace) — no install.sh needed."""
+    try:
+        import websockets  # noqa: F401
+
+        return
+    except ImportError:
+        pass
+
+    print("[goosetown] First-run setup: installing 'websockets' (pip3 install --user)...")
+    try:
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "--user", "websockets"],
+            stderr=subprocess.STDOUT,
+        )
+        import websockets  # noqa: F401, retry after install
+    except (subprocess.CalledProcessError, ImportError) as exc:
+        print(f"[goosetown] FATAL: could not install 'websockets': {exc}", file=sys.stderr)
+        print("Run manually: pip3 install --user websockets", file=sys.stderr)
+        sys.exit(2)
+
+
+# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
@@ -499,6 +527,7 @@ def cmd_join(args: argparse.Namespace) -> None:
 
     Always re-registers (server handles idempotency).
     """
+    _ensure_websockets()
     _require_websockets("join")
 
     import urllib.request
@@ -674,6 +703,7 @@ def cmd_status(args: argparse.Namespace) -> None:  # noqa: ARG001
 
 def cmd_act(args: argparse.Namespace) -> None:
     """Perform a town action, auto-starting the daemon from GOOSETOWN.md if needed."""
+    _ensure_websockets()
     _require_websockets("act")
 
     agent_dir = Path(os.environ.get("AGENT_DIR", str(Path.cwd())))
@@ -758,10 +788,32 @@ def cmd_act(args: argparse.Namespace) -> None:
         if not rest:
             _die("Usage: act join_conversation <conv_id>")
         payload = {"action": "join_conversation", "conv_id": rest[0]}
+    elif action == "reply_owner":
+        if not rest:
+            _die("Usage: act reply_owner <text>")
+        # Optional --ref=<message_id> as the first positional arg lets the
+        # agent reference the specific owner message they're replying to.
+        ref = None
+        if rest[0].startswith("--ref="):
+            ref = rest[0][len("--ref=") :]
+            rest = rest[1:]
+            if not rest:
+                _die("Usage: act reply_owner [--ref=<id>] <text>")
+        payload = {"action": "reply_owner", "text": " ".join(rest)}
+        if ref:
+            payload["ref_message_id"] = ref
     elif action in _VALID_ACTIVITIES:
         payload = {"action": "activity", "activity_id": action}
     else:
-        _VALID_COMMANDS = ["move", "chat", "say", "idle", "end", "join_conversation"]
+        _VALID_COMMANDS = [
+            "move",
+            "chat",
+            "say",
+            "idle",
+            "end",
+            "join_conversation",
+            "reply_owner",
+        ]
         _die(
             f"Unknown action: '{action}'",
             f"Commands: {', '.join(_VALID_COMMANDS)}",
@@ -785,6 +837,7 @@ def cmd_act(args: argparse.Namespace) -> None:
 
 def cmd_leave(args: argparse.Namespace) -> None:
     """Go to sleep with an optional wake alarm."""
+    _ensure_websockets()
     _require_websockets("leave")
 
     agent_dir = Path(os.environ.get("AGENT_DIR", str(Path.cwd())))
@@ -903,6 +956,11 @@ class TownDaemon:
         self._prev_nearby: frozenset = frozenset()
         self._last_think_time: float = 0.0
 
+        # Owner DM state
+        self._owner_messages_buffer: list[dict] = []
+        self._owner_flush_handle = None  # asyncio scheduled handle
+        self._pending_owner_messages: list[dict] = []  # consumed by _handle_world_update
+
     # ------------------------------------------------------------------
     # File I/O helpers
     # ------------------------------------------------------------------
@@ -969,6 +1027,8 @@ class TownDaemon:
             self._on_activity_interrupted(data)
         elif event == "activity_rejected":
             self._on_activity_rejected(data)
+        elif event == "owner_message":
+            self._on_owner_message(data)
         elif event == "context_changed":
             self._on_context_changed(data)
         elif event in ("move_rejected", "busy"):
@@ -1132,6 +1192,78 @@ class TownDaemon:
                 f'CHAT_MESSAGE {data.get("from", "?")} — "{data.get("text", "")}" '
                 f"(conv_id: {conv_id}, turn {data.get('turn', '?')})"
             )
+
+    def _on_owner_message(self, data: dict) -> None:
+        """Owner sent a private message to the agent.
+
+        Writes to OWNER_MESSAGES.md (last 50, persistent scrollback) and
+        buffers messages for a 2s window before injecting an owner block
+        into TOWN_STATUS.md. Coalesces a burst of messages into one think
+        cycle to avoid one LLM call per message in a quick exchange.
+        """
+        import asyncio
+
+        text = str(data.get("text", "")).strip()
+        message_id = str(data.get("message_id", ""))
+        try:
+            timestamp = int(data.get("timestamp", 0))
+        except (TypeError, ValueError):
+            timestamp = 0
+        if not text:
+            return
+
+        # Persistent scrollback file (read by the agent at any time).
+        self._append_owner_message(text=text, timestamp=timestamp, message_id=message_id)
+
+        # Buffer for coalescing. The 2s flush window starts when the FIRST
+        # message in a batch arrives; subsequent messages within the window
+        # get added to the same batch and are flushed together.
+        self._owner_messages_buffer.append({"text": text, "timestamp": timestamp})
+
+        # If a flush is already scheduled, the new message will be picked
+        # up when the handle fires.
+        if self._owner_flush_handle is not None:
+            return
+
+        try:
+            loop = asyncio.get_event_loop()
+            self._owner_flush_handle = loop.call_later(2.0, self._flush_owner_messages)
+        except RuntimeError:
+            # Event loop not running (shouldn't happen during ws operation,
+            # but defensive). Flush immediately.
+            self._flush_owner_messages()
+
+    def _flush_owner_messages(self) -> None:
+        """Flush buffered owner messages into the next TOWN_STATUS.md write
+        with think:true. Re-renders the status using the most recent state
+        snapshot so the rest of the action prompt (location, activities,
+        nearby) stays accurate.
+        """
+        if not self._owner_messages_buffer:
+            self._owner_flush_handle = None
+            return
+        self._pending_owner_messages = list(self._owner_messages_buffer)
+        self._owner_messages_buffer.clear()
+        self._owner_flush_handle = None
+
+        # Re-render status using the cached state snapshot. _handle_world_update
+        # consumes self._pending_owner_messages when composing the action prompt.
+        if self.state:
+            self._handle_world_update(self.state)
+
+    def _append_owner_message(self, *, text: str, timestamp: int, message_id: str) -> None:
+        """Append a single owner message to OWNER_MESSAGES.md, capped at last 50."""
+        if not self._workspace_path or not self._workspace_path.exists():
+            return
+        path = self._workspace_path / "OWNER_MESSAGES.md"
+        line = f"- [{timestamp}] (msg:{message_id}) **owner:** {text}\n"
+        existing = path.read_text() if path.exists() else ""
+        # Keep only the bullet lines (drop header for re-rendering).
+        kept = [ln for ln in existing.splitlines(keepends=True) if ln.startswith("- [")]
+        kept.append(line)
+        if len(kept) > 50:
+            kept = kept[-50:]
+        path.write_text("# Owner Messages\n\n" + "".join(kept))
 
     def _on_conversation_ended(self, data: dict) -> None:
         """Handle conversation_ended event."""
@@ -1543,7 +1675,27 @@ class TownDaemon:
             if pending_text != "None":
                 status += f"**Pending messages:**\n{pending_text}\n\n"
 
+            # Inject owner-DM block at the top of the action prompt when the
+            # owner has messaged the agent. This block stays prominent so the
+            # LLM treats it as high-priority input. ``self._pending_owner_messages``
+            # is populated by _flush_owner_messages.
+            owner_block = ""
+            if self._pending_owner_messages:
+                quoted = "\n".join(f"> {m['text']}" for m in self._pending_owner_messages)
+                owner_block = (
+                    "\n## Your owner just said:\n\n"
+                    f"{quoted}\n\n"
+                    'Reply with `python3 goosetown_cli.py act reply_owner "<text>"`. '
+                    "You can also act on the suggestion (move, do an activity, etc.), "
+                    "ignore it, or any combination — your choice.\n\n"
+                )
+                # Consumed; do not re-show on the next status write unless a new
+                # owner message arrives.
+                self._pending_owner_messages = []
+
             status += "---\n\n## Your turn — decide what to do next\n\n"
+            if owner_block:
+                status += owner_block
 
             if location_context == "town":
                 status += (
@@ -1683,12 +1835,19 @@ class TownDaemon:
             log.error("websockets package not installed. Install with: pip install websockets")
             sys.exit(1)
 
-        # Pass the token in the Authorization header instead of the URL —
-        # query params end up in CloudWatch / proxy access logs verbatim. The
-        # API Gateway authorizer prefers the header but still accepts the old
-        # ?token= form during the rollout window for daemons that haven't
-        # been re-installed.
-        url = f"{self._ws_url}?type=agent"
+        # The WebSocket API Gateway authorizer is configured with
+        # ``identitySource: route.request.querystring.token`` — meaning
+        # API Gateway 401s the request *before invoking the authorizer
+        # Lambda* if ``?token=`` is missing, regardless of headers.
+        # PR #208 ("WS token migration to Authorization header") updated
+        # the daemon and the Lambda code but never widened the CDK
+        # ``identitySource``, so header-only requests are silently rejected.
+        # Until the IdentitySource is fixed (or split into two authorizers
+        # so headers can carry tokens privately), the daemon must include
+        # ``?token=`` in the URL so API Gateway lets the request through.
+        # We *also* keep the Authorization header so once the gate is
+        # widened the daemon benefits from log-redaction automatically.
+        url = f"{self._ws_url}?type=agent&token={self._token}"
         log.info("Connecting to %s...", self._ws_url)
 
         connect_kwargs = {
@@ -2006,6 +2165,7 @@ def _daemon_main() -> None:
     Reads config from environment variables set by cmd_join / _start_daemon,
     then runs the TownDaemon with exponential backoff reconnect.
     """
+    _ensure_websockets()
     import asyncio
     import logging
     import signal
@@ -2104,6 +2264,12 @@ def _build_parser() -> argparse.ArgumentParser:
     # _daemon (internal)
     sub.add_parser("_daemon", help=argparse.SUPPRESS)
 
+    # setup-hooks (opt-in)
+    sub.add_parser(
+        "setup-hooks",
+        help="Write wake-on-status hooks into .claude/settings.local.json (opt-in).",
+    )
+
     return parser
 
 
@@ -2112,25 +2278,72 @@ def _build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 
-def main() -> None:
+def cmd_setup_hooks() -> int:
+    """Opt-in: write wake-on-status hooks into .claude/settings.local.json."""
+    settings_dir = Path(".claude")
+    if not settings_dir.exists():
+        print(
+            "ERROR: .claude/ not found in current directory. "
+            "Run setup-hooks from a workspace where Claude Code is in use.",
+            file=sys.stderr,
+        )
+        return 1
+
+    settings_file = settings_dir / "settings.local.json"
+    if settings_file.exists():
+        settings = json.loads(settings_file.read_text())
+    else:
+        settings = {}
+
+    hook_script = Path(__file__).resolve().parent / "hooks" / "check-town-status.sh"
+    hook_cmd = f"bash {hook_script}"
+    settings.setdefault("hooks", {})
+
+    for event in ("Stop", "TeammateIdle"):
+        hooks_for_event = settings["hooks"].setdefault(event, [])
+        already_present = any(
+            "check-town-status.sh" in inner.get("command", "") for h in hooks_for_event for inner in h.get("hooks", [])
+        )
+        if not already_present:
+            hooks_for_event.append(
+                {
+                    "matcher": "",
+                    "hooks": [{"type": "command", "command": hook_cmd, "timeout": 5}],
+                }
+            )
+
+    settings_file.write_text(json.dumps(settings, indent=2))
+    print(f"Wrote hooks to {settings_file}.")
+    print(f"Remove with: jq 'del(.hooks)' {settings_file} > tmp && mv tmp {settings_file}")
+    return 0
+
+
+def main() -> int:
     """Parse arguments and dispatch to the appropriate command handler."""
     parser = _build_parser()
     args = parser.parse_args()
 
     if args.command == "join":
         cmd_join(args)
+        return 0
     elif args.command == "status":
         cmd_status(args)
+        return 0
     elif args.command == "act":
         cmd_act(args)
+        return 0
     elif args.command == "leave":
         cmd_leave(args)
+        return 0
     elif args.command == "_daemon":
         _daemon_main()
+        return 0
+    elif args.command == "setup-hooks":
+        return cmd_setup_hooks()
     else:
         parser.print_help()
         sys.exit(1)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

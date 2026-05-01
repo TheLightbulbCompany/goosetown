@@ -50,11 +50,25 @@ func _on_world_state(data: Dictionary) -> void:
 			if not agent_data is Dictionary:
 				continue
 			var ctx: String = str(agent_data.get("context", "town"))
-			# In town: show all town-context agents
-			# In apartment: show only own agents (matching userId)
+			# Drop agents that aren't in the scene we're currently rendering.
 			if ctx != current_context:
 				continue
-			if current_context == "apartment" and my_user_id != "":
+			# Per-scene "filter_by_owner" flag from the registry: when true
+			# (apartment), drop agents owned by other users so each viewer
+			# only sees their own apartment occupants. Shared interiors
+			# (town, library) leave filter_by_owner=false so everyone sees
+			# everyone.
+			var registry: Dictionary = JsBridge.SCENE_REGISTRY
+			var filter_by_owner: bool = (
+				registry.has(current_context)
+				and registry[current_context].get("filter_by_owner", false)
+			)
+			if filter_by_owner:
+				# Defense-in-depth: anonymous viewers (empty user_id) see no agents in
+				# owner-filtered scenes, even if they somehow reach the scene without
+				# going through the auth-gated route.
+				if my_user_id == "":
+					continue
 				var agent_user: String = str(agent_data.get("userId", ""))
 				if agent_user != my_user_id:
 					continue
@@ -157,9 +171,18 @@ func _on_world_state(data: Dictionary) -> void:
 			var facing_str: String = str(agent_data.get("facing", ""))
 			var display_name: String = str(agent_data.get("name", agent_id))
 
+			# Per-scene agent scale: library is bigger than apartment in world units
+			# (lower fit-zoom), so 48px sprites render at half-size by default. Apply
+			# the registry's ``agent_scale`` so agents stay visible across differently-
+			# sized scenes. Town/apartment default to 1.0; library uses 1.5.
+			var scene_def: Dictionary = JsBridge.SCENE_REGISTRY.get(current_context, {})
+			var agent_scale: float = float(scene_def.get("agent_scale", 1.0))
+			if agent_scale != 1.0:
+				agent.scale = Vector2(agent_scale, agent_scale)
+
 			agent.setup(agent_id, url, x, y, facing_str, display_name)
 			agents[agent_id] = agent
-			print("AgentManager: Spawned %s at (%d, %d) via world_state" % [display_name, int(x), int(y)])
+			print("AgentManager: Spawned %s at (%d, %d) via world_state (scale=%.2f)" % [display_name, int(x), int(y), agent_scale])
 
 			# Set initial activity state (agent may already be mid-activity)
 			var initial_activity: String = str(agent_data.get("activity", ""))

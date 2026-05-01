@@ -32,6 +32,7 @@ AgentAction = Literal[
     "join_conversation",
     "context_transition",
     "activity",
+    "reply_owner",
 ]
 
 
@@ -52,6 +53,8 @@ class TownAgentAct(BaseModel):
     message: str | None = Field(default=None, max_length=500)  # chat (optional), say
     target_context: Literal["town", "apartment"] | None = None  # context_transition
     activity_id: str | None = None  # activity
+    text: str | None = Field(default=None, max_length=2000)  # reply_owner
+    ref_message_id: str | None = None  # reply_owner (optional back-reference)
 
     @model_validator(mode="after")
     def _check_action_fields(self) -> "TownAgentAct":
@@ -65,6 +68,8 @@ class TownAgentAct(BaseModel):
             raise ValueError("context_transition action requires 'target_context'")
         if self.action == "activity" and not self.activity_id:
             raise ValueError("activity action requires 'activity_id'")
+        if self.action == "reply_owner" and not self.text:
+            raise ValueError("reply_owner action requires 'text'")
         return self
 
 

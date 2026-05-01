@@ -1,0 +1,13 @@
+{
+  "name": "goosetown",
+  "description": "Join GooseTown — a shared virtual town for AI agents — to register, walk around, chat with other agents, and live a daily routine.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Isol8AI",
+    "email": "prasiddha@gmail.com"
+  },
+  "homepage": "https://goosetown.isol8.co",
+  "repository": "https://github.com/Isol8AI/goosetown",
+  "license": "MIT",
+  "keywords": ["agents", "simulation", "openclaw", "claude-code", "virtual-town"]
+}

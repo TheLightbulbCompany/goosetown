@@ -19,6 +19,11 @@ from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from core.auth import AuthContext, get_current_user
 from core.services import town_mood_engine
 from core.services.game_server_client import get_game_server_client
+from core.services.owner_chat_service import (
+    OwnerChatService,
+    OwnershipError,
+    RateLimitError,
+)
 from core.services.town_agent_ws import get_town_agent_ws_manager
 from core.services.town_mood_engine import mood_label, parse_mood
 from core.services.town_service import TownService, versioned_sprite_url
@@ -224,7 +229,7 @@ def _build_ai_town_state() -> dict:
 
 _skill_md_cache: str | None = None
 _skill_bundle_cache: bytes | None = None
-_SKILL_DIR = Path(__file__).resolve().parent.parent / "data" / "goosetown-skill"
+_SKILL_DIR = Path(__file__).resolve().parent.parent / "data" / "goosetown-skill" / "skills" / "goosetown"
 
 
 def _load_skill_md() -> str:
@@ -240,8 +245,6 @@ def _load_skill_md() -> str:
 _SKILL_BUNDLE_FILES = (
     "SKILL.md",
     "goosetown_cli.py",
-    "install.sh",
-    "CLAUDE_FRAGMENT.md",
     "GOOSETOWN.md",
     "TOWN_STATUS.md",
     "TOWN_EVENTS.md",
@@ -290,14 +293,25 @@ async def get_skill():
 
 @router.get("/skill/bundle")
 async def get_skill_bundle():
-    """Download the GooseTown skill tools as a tarball."""
+    """Download the GooseTown skill tools as a tarball.
+
+    DEPRECATED: install via Claude Code plugin marketplace
+    (`/plugin marketplace add github.com/Isol8AI/goosetown` then
+    `/plugin install goosetown`) or by dropping the skill folder into
+    `~/.claude/skills/goosetown/`. This endpoint stays alive through
+    subs 2 + 3 to give existing users time to migrate.
+    """
     from fastapi.responses import Response
 
     bundle = _build_skill_bundle()
     return Response(
         content=bundle,
         media_type="application/gzip",
-        headers={"Content-Disposition": "attachment; filename=goosetown-skill.tar.gz"},
+        headers={
+            "Content-Disposition": "attachment; filename=goosetown-skill.tar.gz",
+            "Deprecation": "true",
+            "Link": '<https://github.com/Isol8AI/goosetown#install>; rel="deprecation"',
+        },
     )
 
 
@@ -365,6 +379,10 @@ class AgentRegisterRequest(BaseModel):
     personality: str = Field("", max_length=500)
     appearance: str = Field("", max_length=500)
     traits: str = Field("", max_length=200)
+
+
+class OwnerMessageRequest(BaseModel):
+    text: str
 
 
 # `_sprite_pipeline_task` lives in `core/services/sprite_pipeline.py` — moved
@@ -528,6 +546,181 @@ async def get_agent_status(
     }
 
 
+@router.post("/agent/{agent_id}/owner-message")
+async def post_owner_message(
+    agent_id: str,
+    request: OwnerMessageRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Send a private message from the signed-in owner to one of their agents.
+
+    Auth: Clerk JWT. Rejects 403 if ``agent.userId != auth.user_id``.
+    Rate limit: 1 message per 2s per (owner, agent) pair.
+
+    On success: persists to ``owner_chats``, pushes ``owner_message`` event
+    to the agent's daemon via the existing _send_to_daemon helper, and returns
+    the persisted record.
+    """
+    if not request.text or not request.text.strip():
+        raise HTTPException(status_code=400, detail="text is required")
+
+    service = OwnerChatService()
+    try:
+        msg = service.persist_message(
+            agent_id=agent_id,
+            owner_id=auth.user_id,
+            direction="owner_to_agent",
+            text=request.text,
+        )
+    except OwnershipError:
+        raise HTTPException(status_code=403, detail="not your agent")
+    except RateLimitError:
+        raise HTTPException(
+            status_code=429,
+            detail="too many messages — wait a moment",
+            headers={"Retry-After": "2"},
+        )
+
+    # Daemon's dispatcher reads ``data["event"]`` — see every other
+    # backend→daemon payload in core/services/conversation_service.py.
+    # The original draft used ``"type":`` which the daemon silently
+    # ignored, so owner messages never reached the agent.
+    _send_to_daemon(
+        agent_id,
+        {
+            "event": "owner_message",
+            "text": msg["text"],
+            "message_id": msg["id"],
+            "timestamp": msg["createdAt"],
+        },
+    )
+
+    return {"id": msg["id"], "createdAt": msg["createdAt"]}
+
+
+@router.get("/agent/{agent_id}/owner-chat")
+async def get_owner_chat(
+    agent_id: str,
+    limit: int = 50,
+    before: int | None = None,
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Return the owner's chat history with the agent, oldest first.
+
+    Auth: Clerk JWT. Rejects 403 if ``agent.userId != auth.user_id``.
+    ``before`` (Unix ms) pages backward — return messages with
+    ``createdAt < before``. ``limit`` is capped at 200.
+    """
+    service = OwnerChatService()
+    try:
+        history = service.fetch_history(
+            agent_id=agent_id,
+            owner_id=auth.user_id,
+            limit=max(1, min(limit, 200)),
+            before_ms=before,
+        )
+    except OwnershipError:
+        raise HTTPException(status_code=403, detail="not your agent")
+    return {"messages": history}
+
+
+def _handle_reply_owner_action(
+    *,
+    agent_id: str,
+    owner_id: str,
+    text: str,
+    ref_message_id: str | None,
+) -> None:
+    """Persist an agent's owner-reply and push it to the owner's viewer connections.
+
+    Called from the WS ``town_agent_act`` dispatcher when a daemon emits
+    ``{action: "reply_owner", text, ref_message_id?}``. The agent's owner_id is
+    derived from the authenticated WS connection's ``AgentConnection.user_id``,
+    not from the message body — daemons can't spoof another user's reply.
+    """
+    if not text or not text.strip():
+        logger.warning("reply_owner: empty text from agent %s — dropping", agent_id)
+        return
+
+    service = OwnerChatService()
+    try:
+        msg = service.persist_message(
+            agent_id=agent_id,
+            owner_id=owner_id,
+            direction="agent_to_owner",
+            text=text,
+        )
+    except OwnershipError:
+        # Should never happen: ws connection is authenticated per-agent and
+        # owner_id comes from the AgentConnection. Log and drop.
+        logger.error(
+            "reply_owner: ownership mismatch agent=%s owner=%s",
+            agent_id,
+            owner_id,
+        )
+        return
+
+    _push_to_owner_viewers(
+        user_id=owner_id,
+        payload={
+            "event": "owner_reply",
+            "agent_id": agent_id,
+            "text": msg["text"],
+            "message_id": msg["id"],
+            "timestamp": msg["createdAt"],
+            "ref_message_id": ref_message_id,
+        },
+    )
+
+
+def _push_to_owner_viewers(*, user_id: str, payload: dict) -> None:
+    """Push a payload to every viewer connection associated with ``user_id``.
+
+    Looks up the user's viewer connections in the ``connections`` table and
+    sends each one through the API Gateway Management API. No-op if the user
+    has no active viewer connections (their reply will be fetched via REST
+    history when they reopen the panel). Per-connection failures are logged
+    but do not abort the broadcast.
+    """
+    from core import dynamo
+    from core.services.management_api_client import ManagementApiClient
+
+    table = dynamo.connections_table()
+    scan_kwargs: dict = {
+        "FilterExpression": "userId = :uid AND connectionType = :ct",
+        "ExpressionAttributeValues": {":uid": user_id, ":ct": "viewer"},
+    }
+    items: list[dict] = []
+    while True:
+        try:
+            resp = table.scan(**scan_kwargs)
+        except Exception as exc:
+            logger.warning("push_to_owner_viewers: scan failed: %s", exc)
+            return
+        items.extend(resp.get("Items", []))
+        last_key = resp.get("LastEvaluatedKey")
+        if not last_key:
+            break
+        scan_kwargs["ExclusiveStartKey"] = last_key
+
+    if not items:
+        return
+
+    client = ManagementApiClient()
+    for item in items:
+        connection_id = item.get("connectionId")
+        if not connection_id:
+            continue
+        try:
+            client.send_message(connection_id, payload)
+        except Exception as exc:
+            logger.warning(
+                "push_to_owner_viewers: failed cid=%s: %s",
+                connection_id,
+                exc,
+            )
+
+
 # ===========================================================================
 # Isol8-native endpoints (authenticated)
 # ===========================================================================
@@ -648,6 +841,25 @@ async def get_viewer_token(
     from core.town_token import sign_town_token
 
     token = sign_town_token(auth.user_id, "viewer")
+    return {"token": token}
+
+
+@router.get("/anonymous-viewer-token")
+async def get_anonymous_viewer_token():
+    """Mint a short-lived viewer token for unauthenticated WebSocket access.
+
+    No auth required. Token is HMAC-signed via the same TOWN_TOKEN_SECRET
+    as registered agents and signed-in viewers. The Lambda authorizer
+    accepts it transparently. Anonymous viewers can subscribe to
+    world_state but cannot register, act, or send chat — those endpoints
+    enforce a real user_id (Clerk subject) at the router layer.
+    """
+    from core.town_token import sign_town_token
+
+    # 30-min TTL: short enough that leaked tokens have minimal blast radius,
+    # long enough for a casual viewing session before the WS hook needs to
+    # refetch on reconnect.
+    token = sign_town_token("anonymous", "anonymous-viewer", ttl_seconds=1800)
     return {"token": token}
 
 
@@ -1033,6 +1245,15 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
             activity_name = body.get("activity_id", "")
             if activity_name:
                 await _handle_agent_activity(request.connectionId, activity_name, agent_conn)
+        elif action == "reply_owner":
+            text = body.get("text", "")
+            ref_message_id = body.get("ref_message_id")
+            _handle_reply_owner_action(
+                agent_id=agent_conn.agent_id,
+                owner_id=agent_conn.user_id,
+                text=text,
+                ref_message_id=ref_message_id,
+            )
         # ``idle`` and ``context_transition`` fall through with no extra work:
         # ``idle`` exists only to bypass the energy-exhaustion gate, and
         # ``context_transition`` is handled inside the ``move`` branch when the
