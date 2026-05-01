@@ -543,3 +543,14 @@ class TestSkillEndpoints:
         # self-bootstrap (Task 4) and opt-in setup-hooks (Task 5) replace them.
         assert "goosetown/install.sh" not in names
         assert "goosetown/CLAUDE_FRAGMENT.md" not in names
+
+    def test_skill_bundle_emits_deprecation_header(self, client):
+        """Sub 1: legacy bundle endpoint signals deprecation pointing at canonical install."""
+        resp = client.get("/api/v1/town/skill/bundle")
+        assert resp.status_code == 200
+        headers_lower = {k.lower(): v for k, v in resp.headers.items()}
+        assert headers_lower.get("deprecation") == "true"
+        link = headers_lower.get("link")
+        assert link is not None
+        assert 'rel="deprecation"' in link
+        assert "github.com/Isol8AI/goosetown" in link

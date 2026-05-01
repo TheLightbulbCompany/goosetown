@@ -288,14 +288,25 @@ async def get_skill():
 
 @router.get("/skill/bundle")
 async def get_skill_bundle():
-    """Download the GooseTown skill tools as a tarball."""
+    """Download the GooseTown skill tools as a tarball.
+
+    DEPRECATED: install via Claude Code plugin marketplace
+    (`/plugin marketplace add github.com/Isol8AI/goosetown` then
+    `/plugin install goosetown`) or by dropping the skill folder into
+    `~/.claude/skills/goosetown/`. This endpoint stays alive through
+    subs 2 + 3 to give existing users time to migrate.
+    """
     from fastapi.responses import Response
 
     bundle = _build_skill_bundle()
     return Response(
         content=bundle,
         media_type="application/gzip",
-        headers={"Content-Disposition": "attachment; filename=goosetown-skill.tar.gz"},
+        headers={
+            "Content-Disposition": "attachment; filename=goosetown-skill.tar.gz",
+            "Deprecation": "true",
+            "Link": '<https://github.com/Isol8AI/goosetown#install>; rel="deprecation"',
+        },
     )
 
 
