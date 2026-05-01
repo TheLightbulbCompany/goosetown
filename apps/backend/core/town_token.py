@@ -122,4 +122,30 @@ def verify_town_token(token: str) -> dict | None:
             # Malformed exp claim — treat as invalid.
             return None
 
+    # User-level token revocation. Stateless: every verify call loads the
+    # user record and rejects tokens whose iat is before the revoke timestamp.
+    # Returning users mint a fresh token via POST /town/instance.
+    iat = payload.get("iat")
+    if iat is not None:
+        try:
+            from core.services.user_service import UserService  # local to avoid circular import
+
+            iat_ms = int(iat) * 1000
+            if UserService().is_token_revoked(payload["uid"], iat_ms):
+                # Logs uid + iat only — neither is a credential. Token bytes never logged.
+                logger.warning(  # noqa: E501  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
+                    "auth rejection: issued before revocation (uid=%s iat=%s)",
+                    payload.get("uid"),
+                    iat,
+                )
+                return None
+        except Exception as exc:
+            # Fail-open on transient DDB errors. Log for ops visibility.
+            # uid + exception text only — token bytes never logged.
+            logger.warning(  # noqa: E501  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
+                "auth revocation check failed (uid=%s): %s — passing through",
+                payload.get("uid"),
+                exc,
+            )
+
     return payload

@@ -426,6 +426,11 @@ async def register_agent(
     )
     if request.appearance:
         from core.config import settings
+        from core.services.user_service import UserService
+
+        # Sprite-quota check BEFORE kicking off PixelLab — so a rejected
+        # request doesn't enqueue work that will never be allowed to run.
+        UserService().consume_sprite_quota(user_id)
 
         logger.info(
             "Sprite settings: api_key=%s, bucket=%s, cdn=%s",
@@ -825,6 +830,24 @@ async def get_or_create_instance(
             for a in agents
         ],
     }
+
+
+@router.post("/instance/revoke", status_code=204)
+async def revoke_instance_tokens(
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Revoke all GooseTown tokens previously issued to this user.
+
+    Sets the user's tokenRevokedAt timestamp; any town_token whose iat
+    is earlier than that timestamp will be rejected by verify_town_token.
+    User can mint a fresh one via the existing POST /town/instance.
+
+    Returns 204 No Content on success.
+    """
+    from core.services.user_service import UserService
+
+    UserService().revoke_tokens(auth.user_id)
+    return None
 
 
 @router.get("/viewer-token")

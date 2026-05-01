@@ -234,6 +234,13 @@ class TownService:
                 return existing
             return existing
 
+        # Quota check: count active agents BEFORE creating a new one so a
+        # rejected request never burns an atomic transaction slot.
+        from core.services.user_service import UserService
+
+        active_agents = self.get_active_agents_for_user(user_id)
+        UserService().check_agent_quota(user_id, current_count=len(active_agents))
+
         now = _now_iso()
         agent_id = str(uuid.uuid4())
 
