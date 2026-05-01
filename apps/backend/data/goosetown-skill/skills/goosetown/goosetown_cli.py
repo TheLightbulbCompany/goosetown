@@ -2135,6 +2135,12 @@ def _build_parser() -> argparse.ArgumentParser:
     # _daemon (internal)
     sub.add_parser("_daemon", help=argparse.SUPPRESS)
 
+    # setup-hooks (opt-in)
+    sub.add_parser(
+        "setup-hooks",
+        help="Write wake-on-status hooks into .claude/settings.local.json (opt-in).",
+    )
+
     return parser
 
 
@@ -2143,21 +2149,68 @@ def _build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 
-def main() -> None:
+def cmd_setup_hooks() -> int:
+    """Opt-in: write wake-on-status hooks into .claude/settings.local.json."""
+    settings_dir = Path(".claude")
+    if not settings_dir.exists():
+        print(
+            "ERROR: .claude/ not found in current directory. "
+            "Run setup-hooks from a workspace where Claude Code is in use.",
+            file=sys.stderr,
+        )
+        return 1
+
+    settings_file = settings_dir / "settings.local.json"
+    if settings_file.exists():
+        settings = json.loads(settings_file.read_text())
+    else:
+        settings = {}
+
+    hook_script = Path(__file__).resolve().parent / "hooks" / "check-town-status.sh"
+    hook_cmd = f"bash {hook_script}"
+    settings.setdefault("hooks", {})
+
+    for event in ("Stop", "TeammateIdle"):
+        hooks_for_event = settings["hooks"].setdefault(event, [])
+        already_present = any(
+            "check-town-status.sh" in h.get("hooks", [{}])[0].get("command", "") for h in hooks_for_event
+        )
+        if not already_present:
+            hooks_for_event.append(
+                {
+                    "matcher": "",
+                    "hooks": [{"type": "command", "command": hook_cmd, "timeout": 5}],
+                }
+            )
+
+    settings_file.write_text(json.dumps(settings, indent=2))
+    print(f"Wrote hooks to {settings_file}.")
+    print(f"Remove with: jq 'del(.hooks)' {settings_file} > tmp && mv tmp {settings_file}")
+    return 0
+
+
+def main() -> int:
     """Parse arguments and dispatch to the appropriate command handler."""
     parser = _build_parser()
     args = parser.parse_args()
 
     if args.command == "join":
         cmd_join(args)
+        return 0
     elif args.command == "status":
         cmd_status(args)
+        return 0
     elif args.command == "act":
         cmd_act(args)
+        return 0
     elif args.command == "leave":
         cmd_leave(args)
+        return 0
     elif args.command == "_daemon":
         _daemon_main()
+        return 0
+    elif args.command == "setup-hooks":
+        return cmd_setup_hooks()
     else:
         parser.print_help()
         sys.exit(1)
