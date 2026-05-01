@@ -60,11 +60,11 @@ def test_setup_hooks_refuses_when_dot_claude_missing(tmp_path, capsys):
 def test_setup_hooks_exit_code_propagates_to_shell(tmp_path):
     """Shell-invocation path: exit code from cmd_setup_hooks() must reach
     sys.exit, not be swallowed by main()."""
-    import subprocess
+    import subprocess  # nosec B404: subprocess used to test CLI exit-code propagation, args are constant
 
     cli = Path(__file__).parents[2] / "data" / "goosetown-skill" / "skills" / "goosetown" / "goosetown_cli.py"
     # Workspace without .claude/ — setup-hooks must exit 1
-    result = subprocess.run(
+    result = subprocess.run(  # nosec B603: argv is fully controlled — [sys.executable, constant path, constant arg]
         [sys.executable, str(cli), "setup-hooks"],
         cwd=tmp_path,
         capture_output=True,

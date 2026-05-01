@@ -9,11 +9,11 @@ from moto import mock_aws
 # Force DynamoDB table prefix for tests
 os.environ["DYNAMODB_TABLE_PREFIX"] = "goosetown"
 os.environ["AWS_DEFAULT_REGION"] = "us-east-1"
-os.environ["AWS_ACCESS_KEY_ID"] = "testing"
-os.environ["AWS_SECRET_ACCESS_KEY"] = "testing"
-os.environ["AWS_SECURITY_TOKEN"] = "testing"
-os.environ["AWS_SESSION_TOKEN"] = "testing"
-os.environ["TOWN_TOKEN_SECRET"] = "test-secret"
+os.environ["AWS_ACCESS_KEY_ID"] = "testing"  # nosec B105: moto mock AWS credential, not a real secret
+os.environ["AWS_SECRET_ACCESS_KEY"] = "testing"  # nosec B105: moto mock AWS credential, not a real secret
+os.environ["AWS_SECURITY_TOKEN"] = "testing"  # nosec B105: moto mock AWS credential, not a real secret
+os.environ["AWS_SESSION_TOKEN"] = "testing"  # nosec B105: moto mock AWS credential, not a real secret
+os.environ["TOWN_TOKEN_SECRET"] = "test-secret"  # nosec B105: test HMAC seed used only in unit tests
 os.environ["ENVIRONMENT"] = "dev"
 
 

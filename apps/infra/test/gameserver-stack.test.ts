@@ -10,6 +10,7 @@
 import * as cdk from "aws-cdk-lib";
 import { Template, Match } from "aws-cdk-lib/assertions";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
+import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as sns from "aws-cdk-lib/aws-sns";
 import { GameServerStack } from "../lib/stacks/gameserver-stack";
 
@@ -27,6 +28,13 @@ function buildTestApp(): { template: Template } {
     publicSubnetIds: ["subnet-public-1a", "subnet-public-1b"],
   });
 
+  // Fixture cluster — mirrors ClusterStack output (CI disabled, shared cluster).
+  const fixtureCluster = new ecs.Cluster(depsStack, "FixtureCluster", {
+    vpc,
+    clusterName: "goosetown-dev",
+    containerInsightsV2: ecs.ContainerInsights.DISABLED,
+  });
+
   const alarmTopic = new sns.Topic(depsStack, "AlarmTopic", {
     topicName: "goosetown-dev-alarms",
   });
@@ -36,6 +44,7 @@ function buildTestApp(): { template: Template } {
     environment: "dev",
     env: { account: "123456789012", region: "us-east-1" },
     vpc,
+    cluster: fixtureCluster,
     alarmTopic,
   });
 
@@ -64,18 +73,11 @@ describe("GameServerStack — CloudWatch restart alarm", () => {
     });
   });
 
-  test("cluster has Container Insights enabled", () => {
-    // CDK's ecs.ContainerInsights.ENABLED renders to CFN ClusterSettings as
-    // Name=containerInsights, Value=enabled. Without this, the RunningTaskCount
-    // metric in the ECS/ContainerInsights namespace is never published.
-    template.hasResourceProperties("AWS::ECS::Cluster", {
-      ClusterSettings: Match.arrayWith([
-        Match.objectLike({
-          Name: "containerInsights",
-          Value: "enabled",
-        }),
-      ]),
-    });
+  test("GameServerStack owns zero ECS clusters (cluster lives in ClusterStack)", () => {
+    // After the ClusterStack refactor, GameServerStack no longer creates its
+    // own cluster — it accepts one as a constructor prop. The cluster resource
+    // must live only in ClusterStack's template, not here.
+    template.resourceCountIs("AWS::ECS::Cluster", 0);
   });
 
   test("alarm uses LessThanThreshold comparison operator", () => {

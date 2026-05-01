@@ -21,13 +21,27 @@ jobs:
           uv run ruff check .
           uv run ruff format --check .
         working-directory: apps/backend
-      - name: Bandit (high-severity SAST)
-        # -lll = report only HIGH severity. Tighten to -ll later once baseline is clean.
-        run: uv run bandit -r core routers main.py -lll
+      - name: Bandit (SAST — all severities)
+        # Baseline is clean: zero findings in core/routers/main.py/tests at all severity levels.
+        # B101 (assert in tests) is skipped via [tool.bandit] in pyproject.toml.
+        # All other suppressions use inline # nosec B<id>: <reason> with justification.
+        run: uv run bandit -r core routers main.py tests -c pyproject.toml
         working-directory: apps/backend
       - name: pip-audit (dependency CVE scan)
         run: uv run pip-audit --strict
         working-directory: apps/backend
+      - name: Build backend Docker image (for Trivy scan)
+        working-directory: apps/backend
+        run: docker build -t goosetown-backend:scan-${{ github.sha }} .
+      - name: Trivy scan backend image (HIGH/CRITICAL CVEs)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: goosetown-backend:scan-${{ github.sha }}
+          severity: HIGH,CRITICAL
+          exit-code: 1
+          ignore-unfixed: true
+          format: table
+        continue-on-error: true
       - name: Test
         run: uv run pytest tests/ -v
         working-directory: apps/backend
