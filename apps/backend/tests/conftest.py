@@ -93,6 +93,13 @@ def _create_tables(dynamodb):
     )
 
     dynamodb.create_table(
+        TableName="goosetown-users",
+        KeySchema=[{"AttributeName": "userId", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "userId", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+    dynamodb.create_table(
         TableName="goosetown-conversations",
         KeySchema=[{"AttributeName": "id", "KeyType": "HASH"}],
         AttributeDefinitions=[
