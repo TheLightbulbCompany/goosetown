@@ -124,8 +124,8 @@ export class StorageStack extends cdk.Stack {
     // deploys to) and MUST be passed to the distribution at create time —
     // unlike ALB, there's no separate ``CfnWebACLAssociation`` for
     // CloudFront. Same rule layout as the ALB ACL (see compute-stack.ts):
-    // IP reputation + KnownBadInputs in BLOCK, CommonRuleSet in COUNT
-    // (escalate to BLOCK after FP review), rate-based 2000 / 5min / IP.
+    // IP reputation + KnownBadInputs in BLOCK, CommonRuleSet in BLOCK
+    // (promoted from COUNT after >7 days FP review, PR #216), rate-based 2000 / 5min / IP.
     // Sprite traffic is much lower-volume than the API; the rate limit
     // here primarily protects against scraping the bucket via the CDN.
     const cdnWaf = new wafv2.CfnWebACL(this, "CdnWebAcl", {
@@ -173,7 +173,9 @@ export class StorageStack extends cdk.Stack {
         {
           name: "AWSManagedRulesCommonRuleSet",
           priority: 2,
-          overrideAction: { count: {} },
+          // BLOCK mode after >7 days FP review (PR #216). Mirrors the ALB
+          // WebACL posture — see compute-stack.ts for full rationale.
+          overrideAction: { none: {} },
           statement: {
             managedRuleGroupStatement: {
               vendorName: "AWS",

@@ -290,8 +290,8 @@ export class ComputeStack extends cdk.Stack {
     // (2000 req / 5 min / IP) blocks the volumetric abuse path; managed
     // rule groups catch generic exploit attempts. IP-reputation and
     // KnownBadInputs default to BLOCK because they have very low FP rates;
-    // CommonRuleSet starts in COUNT so we can review false positives in
-    // ALB access logs before escalating it to BLOCK in a follow-up.
+    // CommonRuleSet promoted to BLOCK after >7 days of ALB access-log review
+    // with no legitimate-traffic FPs observed (PR #216).
     const albWaf = new wafv2.CfnWebACL(this, "AlbWebAcl", {
       name: `goosetown-${env}-alb-waf`,
       scope: "REGIONAL",
@@ -337,11 +337,10 @@ export class ComputeStack extends cdk.Stack {
         {
           name: "AWSManagedRulesCommonRuleSet",
           priority: 2,
-          // ``count: {}`` overrides every rule in the group to count-only
-          // — so we get telemetry but don't break legitimate requests
-          // until we've reviewed the false-positive rate. Flip to
-          // ``none: {}`` after the first week of access-log review.
-          overrideAction: { count: {} },
+          // BLOCK mode after >7 days FP review (PR #216). Access logs
+          // showed no legitimate traffic matching CommonRuleSet rules;
+          // promoted from COUNT to ``none: {}`` (default-BLOCK posture).
+          overrideAction: { none: {} },
           statement: {
             managedRuleGroupStatement: {
               vendorName: "AWS",

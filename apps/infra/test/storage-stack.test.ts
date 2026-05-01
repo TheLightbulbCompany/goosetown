@@ -232,8 +232,10 @@ describe("StorageStack — WAF (CLOUDFRONT scope, on the distribution)", () => {
           Name: "AWSManagedRulesKnownBadInputsRuleSet",
         }),
         Match.objectLike({
+          // CommonRuleSet promoted to BLOCK (overrideAction: none) after
+          // >7 days of access-log FP review (PR #216).
           Name: "AWSManagedRulesCommonRuleSet",
-          OverrideAction: { Count: {} },
+          OverrideAction: { None: {} },
         }),
         Match.objectLike({
           Name: "RateLimit2000Per5Min",
@@ -257,5 +259,25 @@ describe("StorageStack — WAF (CLOUDFRONT scope, on the distribution)", () => {
     const json = JSON.stringify(webAclId);
     expect(json).toContain("CdnWebAcl");
     expect(json).toContain("Arn");
+  });
+
+  test("WAF CommonRuleSet uses overrideAction:none (default-BLOCK)", () => {
+    const template = buildTestApp("dev");
+
+    const webACLs = template.findResources("AWS::WAFv2::WebACL");
+    const acls = Object.values(webACLs);
+    expect(acls.length).toBeGreaterThan(0);
+
+    let foundCommonRuleSet = false;
+    for (const acl of acls) {
+      const rules = (acl as { Properties: { Rules: Array<{ Name?: string; OverrideAction?: { Count?: object; None?: object } }> } }).Properties.Rules;
+      const commonRuleSet = rules.find((r) => r.Name?.includes("CommonRuleSet"));
+      if (commonRuleSet) {
+        foundCommonRuleSet = true;
+        expect(commonRuleSet.OverrideAction).toEqual({ None: {} });
+        expect(commonRuleSet.OverrideAction).not.toEqual({ Count: {} });
+      }
+    }
+    expect(foundCommonRuleSet).toBe(true);
   });
 });
