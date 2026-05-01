@@ -2174,7 +2174,9 @@ def cmd_setup_hooks() -> int:
     for event in ("Stop", "TeammateIdle"):
         hooks_for_event = settings["hooks"].setdefault(event, [])
         already_present = any(
-            "check-town-status.sh" in h.get("hooks", [{}])[0].get("command", "") for h in hooks_for_event
+            "check-town-status.sh" in inner.get("command", "")
+            for h in hooks_for_event
+            for inner in h.get("hooks", [])
         )
         if not already_present:
             hooks_for_event.append(

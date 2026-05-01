@@ -72,3 +72,38 @@ def test_setup_hooks_exit_code_propagates_to_shell(tmp_path):
     assert result.returncode == 1, (
         f"expected exit 1 from missing .claude/, got {result.returncode}. stderr: {result.stderr.decode()}"
     )
+
+
+def test_setup_hooks_idempotent_when_hook_at_index_other_than_zero(tmp_path):
+    """If check-town-status.sh is already at index 1+ in a matcher's hook list,
+    setup-hooks must NOT append a duplicate (codex P3 regression)."""
+    import json
+
+    settings_dir = tmp_path / ".claude"
+    settings_dir.mkdir()
+    settings_file = settings_dir / "settings.local.json"
+
+    # Pre-seed an existing hook with check-town-status.sh at index 1
+    seeded = {
+        "hooks": {
+            "Stop": [
+                {
+                    "matcher": "",
+                    "hooks": [
+                        {"type": "command", "command": "echo unrelated"},
+                        {"type": "command", "command": "bash /path/to/check-town-status.sh"},
+                    ],
+                }
+            ]
+        }
+    }
+    settings_file.write_text(json.dumps(seeded, indent=2))
+
+    _run_setup_hooks(tmp_path)
+
+    written = json.loads(settings_file.read_text())
+    stop_entries = written["hooks"]["Stop"]
+    # Should still be 1 matcher group — no duplicate appended
+    assert len(stop_entries) == 1, (
+        f"expected 1 Stop matcher group (deduped), got {len(stop_entries)}"
+    )
