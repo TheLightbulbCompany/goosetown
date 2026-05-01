@@ -827,6 +827,24 @@ async def get_or_create_instance(
     }
 
 
+@router.post("/instance/revoke", status_code=204)
+async def revoke_instance_tokens(
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Revoke all GooseTown tokens previously issued to this user.
+
+    Sets the user's tokenRevokedAt timestamp; any town_token whose iat
+    is earlier than that timestamp will be rejected by verify_town_token.
+    User can mint a fresh one via the existing POST /town/instance.
+
+    Returns 204 No Content on success.
+    """
+    from core.services.user_service import UserService
+
+    UserService().revoke_tokens(auth.user_id)
+    return None
+
+
 @router.get("/viewer-token")
 async def get_viewer_token(
     auth: AuthContext = Depends(get_current_user),
