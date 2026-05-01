@@ -1,19 +1,20 @@
-# GooseTown Personal Launch Dogfood (Sub-project 3) — Design Spec
+# GooseTown Personal Launch Dogfood (Sub-project 4) — Design Spec
 
 **Date:** 2026-04-30
-**Status:** Pending implementation (blocked on subs 1 + 2)
+**Status:** Pending implementation (blocked on subs 1 + 2 + 3)
 **Branch:** `spec/personal-launch-dogfood` (when started)
 
 ## Context
 
-This is sub-project 3 of a 4-part path to a public-launchable platform:
+This is sub-project 4 of a 5-part path to a public-launchable platform:
 
 1. **Skill packaging & distribution** — canonical Anthropic skill format, Claude Code plugin, OpenClaw auto-discovery, self-bootstrap deps
-2. **Multi-tenant hardening** — per-user agent quotas, rate limits, token revocation, admin kill switch
-3. **Personal launch dogfood (this spec)** — install the productionized skill *the way a user would*, spawn 15 OpenClaw agents on the user's laptop, weekend soak. Bug fixes (same-tile spawn, conversation inactivity, launchd plist) bundle here as soak prep.
-4. **Onboarding & landing** — public landing page, friction-free signup → install → first-sprite UX
+2. **Production hardening** — cluster consolidation 4→2, multi-NAT, WAF BLOCK, container scanning, infra-test CI wiring
+3. **Multi-tenant app-level hardening** — per-user agent quotas, rate limits, token revocation, admin kill switch
+4. **Personal launch dogfood (this spec)** — install the productionized skill *the way a user would*, spawn 15 OpenClaw agents on the user's laptop, weekend soak. Bug fixes (same-tile spawn, conversation inactivity, launchd plist) bundle here as soak prep.
+5. **Onboarding & landing** — public landing page, friction-free signup → install → first-sprite UX
 
-Sub 3 is the validation gate before sub 4: if 15 of the user's agents can't survive a weekend on the productionized stack, no one else's will either. Running it AFTER subs 1+2 means the dogfood tests the actual user-facing install path, not a pre-productionization workflow that no real user will follow.
+Sub 4 is the validation gate before sub 5: if 15 of the user's agents can't survive a weekend on the productionized stack, no one else's will either. Running it AFTER subs 1+2+3 means the dogfood tests the actual user-facing install path on production-hardened infra, not a pre-productionization workflow that no real user will follow.
 
 ## Goal
 
@@ -81,16 +82,17 @@ New `scripts/launch-soak.sh`:
 
 ## Out of scope
 
-Already shipped by subs 1–2 (this spec consumes them):
+Already shipped by subs 1–3 (this spec consumes them):
 - **Canonical Anthropic skill format + plugin distribution** (sub 1)
 - **Self-bootstrap deps + cross-harness verification** (sub 1)
-- **Per-user quotas, rate limits, token revocation flows** (sub 2)
+- **Cluster consolidation, multi-NAT, WAF BLOCK, container scanning** (sub 2)
+- **Per-user quotas, rate limits, token revocation flows** (sub 3)
 
-Punted to sub 4:
+Punted to sub 5:
 - **Public landing page, onboarding polish**
 
 Deferred indefinitely (per user 2026-04-30):
-- Per-agent observability / paging alarms — existing Phase 6 alarms (Fargate `RunningTaskCount<1`, NAT errors, ALB health) are sufficient
+- Per-agent observability / paging alarms — existing Phase 6 alarms (Fargate `RunningTaskCount<1`, NAT errors, ALB health, multi-NAT errors post-sub-2) are sufficient
 
 ## Architecture
 

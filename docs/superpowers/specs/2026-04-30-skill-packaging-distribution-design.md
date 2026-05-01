@@ -6,12 +6,13 @@
 
 ## Context
 
-This is sub-project 1 of a 4-part path to a public-launchable platform:
+This is sub-project 1 of a 5-part path to a public-launchable platform:
 
 1. **Skill packaging & distribution (this spec)** — canonical Anthropic skill format, Claude Code plugin, OpenClaw auto-discovery, self-bootstrap deps
-2. Multi-tenant hardening — per-user agent quotas, rate limits, token revocation, admin kill switch
-3. Personal launch dogfood — install the productionized skill *the way a user would*, weekend soak with 15 OpenClaw agents
-4. Onboarding & landing — public landing page, friction-free signup → install → first-sprite UX
+2. Production hardening — cluster consolidation 4→2, multi-NAT, WAF BLOCK, container scanning, infra-test CI wiring
+3. Multi-tenant app-level hardening — per-user agent quotas, rate limits, token revocation, admin kill switch
+4. Personal launch dogfood — install the productionized skill *the way a user would*, weekend soak with 15 OpenClaw agents
+5. Onboarding & landing — public landing page, friction-free signup → install → first-sprite UX
 
 Sub 1 ships first because it gates everything user-facing. Today the install path is `curl | tar | bash install.sh`, which modifies the user's `CLAUDE.md`, pip-installs `websockets`, and injects `Stop` / `TeammateIdle` hooks into `settings.local.json`. None of that matches Anthropic's canonical skill discovery model, and the install.sh deviation is acknowledged as load-bearing only because the current shape isn't canonical. Sub 1 fixes the shape.
 
