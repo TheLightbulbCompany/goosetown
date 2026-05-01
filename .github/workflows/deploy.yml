@@ -18,7 +18,7 @@ jobs:
     env: {}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
       - name: Install
         run: |-
           corepack enable
@@ -29,7 +29,7 @@ jobs:
           pnpm install --frozen-lockfile
           npx cdk synth
       - name: Upload cdk.out
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: cdk.out
           path: apps/infra/cdk.out
@@ -46,14 +46,14 @@ jobs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
       - name: Download cdk.out
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: cdk.out
           path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-west-2
           role-duration-seconds: 1800
@@ -74,14 +74,14 @@ jobs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
       - name: Download cdk.out
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: cdk.out
           path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-west-2
           role-duration-seconds: 1800
@@ -102,14 +102,14 @@ jobs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
       - name: Download cdk.out
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: cdk.out
           path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-west-2
           role-duration-seconds: 1800
@@ -130,14 +130,14 @@ jobs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
       - name: Download cdk.out
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: cdk.out
           path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-west-2
           role-duration-seconds: 1800
@@ -158,14 +158,14 @@ jobs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
       - name: Download cdk.out
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: cdk.out
           path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-west-2
           role-duration-seconds: 1800
@@ -186,14 +186,14 @@ jobs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
       - name: Download cdk.out
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: cdk.out
           path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-west-2
           role-duration-seconds: 1800
@@ -201,7 +201,7 @@ jobs:
           role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
       - id: Publish
         name: Publish Assets-FileAsset12
-        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset12-step.sh
+        run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset12-step.sh
   Assets-FileAsset13:
     name: Publish Assets Assets-FileAsset13
     needs:
@@ -214,14 +214,14 @@ jobs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
       - name: Download cdk.out
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: cdk.out
           path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-west-2
           role-duration-seconds: 1800
@@ -242,14 +242,14 @@ jobs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
       - name: Download cdk.out
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: cdk.out
           path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-west-2
           role-duration-seconds: 1800
@@ -270,14 +270,14 @@ jobs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
       - name: Download cdk.out
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: cdk.out
           path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-west-2
           role-duration-seconds: 1800
@@ -298,14 +298,14 @@ jobs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
       - name: Download cdk.out
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: cdk.out
           path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-west-2
           role-duration-seconds: 1800
@@ -326,14 +326,14 @@ jobs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
       - name: Download cdk.out
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: cdk.out
           path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-west-2
           role-duration-seconds: 1800
@@ -354,14 +354,14 @@ jobs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
       - name: Download cdk.out
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: cdk.out
           path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-west-2
           role-duration-seconds: 1800
@@ -382,14 +382,14 @@ jobs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
       - name: Download cdk.out
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: cdk.out
           path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-west-2
           role-duration-seconds: 1800
@@ -410,14 +410,14 @@ jobs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
       - name: Download cdk.out
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: cdk.out
           path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-west-2
           role-duration-seconds: 1800
@@ -438,14 +438,14 @@ jobs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
       - name: Download cdk.out
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: cdk.out
           path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-west-2
           role-duration-seconds: 1800
@@ -454,6 +454,62 @@ jobs:
       - id: Publish
         name: Publish Assets-FileAsset20
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset20-step.sh
+  Assets-FileAsset21:
+    name: Publish Assets Assets-FileAsset21
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Download cdk.out
+        uses: actions/download-artifact@v4
+        with:
+          name: cdk.out
+          path: cdk.out
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
+      - id: Publish
+        name: Publish Assets-FileAsset21
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset21-step.sh
+  Assets-FileAsset22:
+    name: Publish Assets Assets-FileAsset22
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Download cdk.out
+        uses: actions/download-artifact@v4
+        with:
+          name: cdk.out
+          path: cdk.out
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
+      - id: Publish
+        name: Publish Assets-FileAsset22
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset22-step.sh
   Assets-FileAsset3:
     name: Publish Assets Assets-FileAsset3
     needs:
@@ -466,14 +522,14 @@ jobs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
       - name: Download cdk.out
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: cdk.out
           path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-west-2
           role-duration-seconds: 1800
@@ -494,14 +550,14 @@ jobs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
       - name: Download cdk.out
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: cdk.out
           path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-west-2
           role-duration-seconds: 1800
@@ -522,14 +578,14 @@ jobs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
       - name: Download cdk.out
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: cdk.out
           path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-west-2
           role-duration-seconds: 1800
@@ -550,14 +606,14 @@ jobs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
       - name: Download cdk.out
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: cdk.out
           path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-west-2
           role-duration-seconds: 1800
@@ -578,14 +634,14 @@ jobs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
       - name: Download cdk.out
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: cdk.out
           path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-west-2
           role-duration-seconds: 1800
@@ -606,14 +662,14 @@ jobs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
       - name: Download cdk.out
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: cdk.out
           path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-west-2
           role-duration-seconds: 1800
@@ -634,14 +690,14 @@ jobs:
       asset-hash: ${{ steps.Publish.outputs.asset-hash }}
     steps:
       - name: Download cdk.out
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: cdk.out
           path: cdk.out
       - name: Install
         run: npm install --no-save cdk-assets
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-west-2
           role-duration-seconds: 1800
@@ -661,14 +717,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
       - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
@@ -679,16 +735,16 @@ jobs:
           role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
           role-external-id: Pipeline
       - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v2
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
           name: goosetown-dev-auth
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
             needs.Assets-FileAsset1.outputs.asset-hash }}.json
-          fail-on-empty-changeset: false
+          no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
-  dev-goosetown-dev-database-Deploy:
-    name: Deploy devgoosetowndevdatabase5C6F15D4
+  dev-goosetown-dev-cluster-Deploy:
+    name: Deploy devgoosetowndevcluster8C7B7DBF
     permissions:
       contents: read
       id-token: write
@@ -698,14 +754,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
       - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
@@ -716,16 +772,16 @@ jobs:
           role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
           role-external-id: Pipeline
       - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v2
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
-          name: goosetown-dev-database
+          name: goosetown-dev-cluster
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
             needs.Assets-FileAsset2.outputs.asset-hash }}.json
-          fail-on-empty-changeset: false
+          no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
-  dev-goosetown-dev-dns-Deploy:
-    name: Deploy devgoosetowndevdnsEB9286DE
+  dev-goosetown-dev-database-Deploy:
+    name: Deploy devgoosetowndevdatabase5C6F15D4
     permissions:
       contents: read
       id-token: write
@@ -735,14 +791,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
       - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
@@ -753,16 +809,16 @@ jobs:
           role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
           role-external-id: Pipeline
       - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v2
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
-          name: goosetown-dev-dns
+          name: goosetown-dev-database
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
             needs.Assets-FileAsset3.outputs.asset-hash }}.json
-          fail-on-empty-changeset: false
+          no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
-  dev-goosetown-dev-observability-Deploy:
-    name: Deploy devgoosetowndevobservability4EB2FB7D
+  dev-goosetown-dev-dns-Deploy:
+    name: Deploy devgoosetowndevdnsEB9286DE
     permissions:
       contents: read
       id-token: write
@@ -772,14 +828,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
       - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
@@ -790,12 +846,49 @@ jobs:
           role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
           role-external-id: Pipeline
       - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v2
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: goosetown-dev-dns
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset4.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  dev-goosetown-dev-observability-Deploy:
+    name: Deploy devgoosetowndevobservability4EB2FB7D
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset5
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
           name: goosetown-dev-observability
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset4.outputs.asset-hash }}.json
-          fail-on-empty-changeset: false
+            needs.Assets-FileAsset5.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   dev-goosetown-dev-network-Deploy:
@@ -805,20 +898,20 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset5
       - Assets-FileAsset6
+      - Assets-FileAsset7
       - dev-goosetown-dev-observability-Deploy
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
       - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
@@ -829,12 +922,12 @@ jobs:
           role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
           role-external-id: Pipeline
       - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v2
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
           name: goosetown-dev-network
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset5.outputs.asset-hash }}.json
-          fail-on-empty-changeset: false
+            needs.Assets-FileAsset6.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   dev-goosetown-dev-storage-Deploy:
@@ -844,20 +937,20 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset7
       - Assets-FileAsset8
+      - Assets-FileAsset9
       - dev-goosetown-dev-dns-Deploy
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
       - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
@@ -868,12 +961,12 @@ jobs:
           role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
           role-external-id: Pipeline
       - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v2
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
           name: goosetown-dev-storage
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset7.outputs.asset-hash }}.json
-          fail-on-empty-changeset: false
+            needs.Assets-FileAsset8.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   dev-goosetown-dev-api-Deploy:
@@ -883,7 +976,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset9
+      - Assets-FileAsset10
       - dev-goosetown-dev-network-Deploy
       - dev-goosetown-dev-auth-Deploy
       - dev-goosetown-dev-database-Deploy
@@ -891,14 +984,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
       - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
@@ -909,12 +1002,12 @@ jobs:
           role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
           role-external-id: Pipeline
       - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v2
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
           name: goosetown-dev-api
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset9.outputs.asset-hash }}.json
-          fail-on-empty-changeset: false
+            needs.Assets-FileAsset10.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   dev-goosetown-dev-gameserver-Deploy:
@@ -924,21 +1017,22 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset10
+      - Assets-FileAsset11
       - Assets-DockerAsset1
       - dev-goosetown-dev-network-Deploy
+      - dev-goosetown-dev-cluster-Deploy
       - dev-goosetown-dev-observability-Deploy
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
       - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
@@ -949,12 +1043,12 @@ jobs:
           role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
           role-external-id: Pipeline
       - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v2
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
           name: goosetown-dev-gameserver
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset10.outputs.asset-hash }}.json
-          fail-on-empty-changeset: false
+            needs.Assets-FileAsset11.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   dev-goosetown-dev-compute-Deploy:
@@ -964,8 +1058,8 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset11
-      - Assets-FileAsset8
+      - Assets-FileAsset12
+      - Assets-FileAsset9
       - Assets-DockerAsset2
       - dev-goosetown-dev-network-Deploy
       - dev-goosetown-dev-auth-Deploy
@@ -973,19 +1067,20 @@ jobs:
       - dev-goosetown-dev-storage-Deploy
       - dev-goosetown-dev-api-Deploy
       - dev-goosetown-dev-dns-Deploy
+      - dev-goosetown-dev-cluster-Deploy
       - dev-goosetown-dev-gameserver-Deploy
       - dev-goosetown-dev-observability-Deploy
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
       - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
@@ -996,12 +1091,12 @@ jobs:
           role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
           role-external-id: Pipeline
       - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v2
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
           name: goosetown-dev-compute
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset11.outputs.asset-hash }}.json
-          fail-on-empty-changeset: false
+            needs.Assets-FileAsset12.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   dev-DeployVercelDev:
@@ -1011,6 +1106,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - dev-goosetown-dev-auth-Deploy
+      - dev-goosetown-dev-cluster-Deploy
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
       - dev-goosetown-dev-observability-Deploy
@@ -1080,8 +1176,9 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset12
+      - Assets-FileAsset13
       - dev-goosetown-dev-auth-Deploy
+      - dev-goosetown-dev-cluster-Deploy
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
       - dev-goosetown-dev-observability-Deploy
@@ -1094,14 +1191,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
       - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
@@ -1112,12 +1209,60 @@ jobs:
           role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
           role-external-id: Pipeline
       - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v2
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
           name: goosetown-prod-auth
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset12.outputs.asset-hash }}.json
-          fail-on-empty-changeset: false
+            needs.Assets-FileAsset13.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  prod-goosetown-prod-cluster-Deploy:
+    name: Deploy prodgoosetownprodcluster4712BA47
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset14
+      - dev-goosetown-dev-auth-Deploy
+      - dev-goosetown-dev-cluster-Deploy
+      - dev-goosetown-dev-database-Deploy
+      - dev-goosetown-dev-dns-Deploy
+      - dev-goosetown-dev-observability-Deploy
+      - dev-goosetown-dev-network-Deploy
+      - dev-goosetown-dev-storage-Deploy
+      - dev-goosetown-dev-api-Deploy
+      - dev-goosetown-dev-gameserver-Deploy
+      - dev-goosetown-dev-compute-Deploy
+      - dev-DeployVercelDev
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: goosetown-prod-cluster
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset14.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   prod-goosetown-prod-database-Deploy:
@@ -1127,8 +1272,9 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset13
+      - Assets-FileAsset15
       - dev-goosetown-dev-auth-Deploy
+      - dev-goosetown-dev-cluster-Deploy
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
       - dev-goosetown-dev-observability-Deploy
@@ -1141,14 +1287,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
       - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
@@ -1159,12 +1305,12 @@ jobs:
           role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
           role-external-id: Pipeline
       - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v2
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
           name: goosetown-prod-database
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset13.outputs.asset-hash }}.json
-          fail-on-empty-changeset: false
+            needs.Assets-FileAsset15.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   prod-goosetown-prod-dns-Deploy:
@@ -1174,8 +1320,9 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset14
+      - Assets-FileAsset16
       - dev-goosetown-dev-auth-Deploy
+      - dev-goosetown-dev-cluster-Deploy
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
       - dev-goosetown-dev-observability-Deploy
@@ -1188,14 +1335,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
       - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
@@ -1206,12 +1353,12 @@ jobs:
           role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
           role-external-id: Pipeline
       - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v2
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
           name: goosetown-prod-dns
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset14.outputs.asset-hash }}.json
-          fail-on-empty-changeset: false
+            needs.Assets-FileAsset16.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   prod-goosetown-prod-observability-Deploy:
@@ -1221,8 +1368,9 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset15
+      - Assets-FileAsset17
       - dev-goosetown-dev-auth-Deploy
+      - dev-goosetown-dev-cluster-Deploy
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
       - dev-goosetown-dev-observability-Deploy
@@ -1235,14 +1383,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
       - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
@@ -1253,12 +1401,12 @@ jobs:
           role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
           role-external-id: Pipeline
       - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v2
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
           name: goosetown-prod-observability
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset15.outputs.asset-hash }}.json
-          fail-on-empty-changeset: false
+            needs.Assets-FileAsset17.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   prod-goosetown-prod-network-Deploy:
@@ -1268,10 +1416,11 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset16
-      - Assets-FileAsset6
+      - Assets-FileAsset18
+      - Assets-FileAsset7
       - prod-goosetown-prod-observability-Deploy
       - dev-goosetown-dev-auth-Deploy
+      - dev-goosetown-dev-cluster-Deploy
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
       - dev-goosetown-dev-observability-Deploy
@@ -1284,14 +1433,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
       - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
@@ -1302,12 +1451,12 @@ jobs:
           role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
           role-external-id: Pipeline
       - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v2
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
           name: goosetown-prod-network
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset16.outputs.asset-hash }}.json
-          fail-on-empty-changeset: false
+            needs.Assets-FileAsset18.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   prod-goosetown-prod-storage-Deploy:
@@ -1317,9 +1466,10 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset17
+      - Assets-FileAsset19
       - prod-goosetown-prod-dns-Deploy
       - dev-goosetown-dev-auth-Deploy
+      - dev-goosetown-dev-cluster-Deploy
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
       - dev-goosetown-dev-observability-Deploy
@@ -1332,14 +1482,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
       - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
@@ -1350,12 +1500,12 @@ jobs:
           role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
           role-external-id: Pipeline
       - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v2
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
           name: goosetown-prod-storage
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset17.outputs.asset-hash }}.json
-          fail-on-empty-changeset: false
+            needs.Assets-FileAsset19.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   prod-goosetown-prod-api-Deploy:
@@ -1365,12 +1515,13 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset18
+      - Assets-FileAsset20
       - prod-goosetown-prod-network-Deploy
       - prod-goosetown-prod-auth-Deploy
       - prod-goosetown-prod-database-Deploy
       - prod-goosetown-prod-dns-Deploy
       - dev-goosetown-dev-auth-Deploy
+      - dev-goosetown-dev-cluster-Deploy
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
       - dev-goosetown-dev-observability-Deploy
@@ -1383,14 +1534,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
       - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
@@ -1401,12 +1552,12 @@ jobs:
           role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
           role-external-id: Pipeline
       - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v2
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
           name: goosetown-prod-api
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset18.outputs.asset-hash }}.json
-          fail-on-empty-changeset: false
+            needs.Assets-FileAsset20.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   prod-goosetown-prod-gameserver-Deploy:
@@ -1416,11 +1567,13 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset19
+      - Assets-FileAsset21
       - Assets-DockerAsset1
       - prod-goosetown-prod-network-Deploy
+      - prod-goosetown-prod-cluster-Deploy
       - prod-goosetown-prod-observability-Deploy
       - dev-goosetown-dev-auth-Deploy
+      - dev-goosetown-dev-cluster-Deploy
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
       - dev-goosetown-dev-observability-Deploy
@@ -1433,14 +1586,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
       - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
@@ -1451,12 +1604,12 @@ jobs:
           role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
           role-external-id: Pipeline
       - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v2
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
           name: goosetown-prod-gameserver
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset19.outputs.asset-hash }}.json
-          fail-on-empty-changeset: false
+            needs.Assets-FileAsset21.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   prod-goosetown-prod-compute-Deploy:
@@ -1466,7 +1619,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset20
+      - Assets-FileAsset22
       - Assets-DockerAsset2
       - prod-goosetown-prod-network-Deploy
       - prod-goosetown-prod-auth-Deploy
@@ -1474,9 +1627,11 @@ jobs:
       - prod-goosetown-prod-storage-Deploy
       - prod-goosetown-prod-api-Deploy
       - prod-goosetown-prod-dns-Deploy
+      - prod-goosetown-prod-cluster-Deploy
       - prod-goosetown-prod-gameserver-Deploy
       - prod-goosetown-prod-observability-Deploy
       - dev-goosetown-dev-auth-Deploy
+      - dev-goosetown-dev-cluster-Deploy
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
       - dev-goosetown-dev-observability-Deploy
@@ -1489,14 +1644,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
           role-skip-session-tagging: true
           role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
       - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: us-east-1
           role-duration-seconds: 1800
@@ -1507,12 +1662,12 @@ jobs:
           role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
           role-external-id: Pipeline
       - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v2
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
           name: goosetown-prod-compute
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset20.outputs.asset-hash }}.json
-          fail-on-empty-changeset: false
+            needs.Assets-FileAsset22.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   prod-DeployVercelProd:
@@ -1522,6 +1677,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - prod-goosetown-prod-auth-Deploy
+      - prod-goosetown-prod-cluster-Deploy
       - prod-goosetown-prod-database-Deploy
       - prod-goosetown-prod-dns-Deploy
       - prod-goosetown-prod-observability-Deploy
@@ -1532,6 +1688,7 @@ jobs:
       - prod-goosetown-prod-compute-Deploy
       - Build-Synth
       - dev-goosetown-dev-auth-Deploy
+      - dev-goosetown-dev-cluster-Deploy
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
       - dev-goosetown-dev-observability-Deploy
