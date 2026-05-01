@@ -55,3 +55,23 @@ def test_setup_hooks_refuses_when_dot_claude_missing(tmp_path, capsys):
     assert rc != 0
     captured = capsys.readouterr()
     assert ".claude" in captured.err.lower()
+
+
+def test_setup_hooks_exit_code_propagates_to_shell(tmp_path):
+    """Shell-invocation path: exit code from cmd_setup_hooks() must reach
+    sys.exit, not be swallowed by main()."""
+    import subprocess
+    cli = (
+        Path(__file__).parents[2]
+        / "data" / "goosetown-skill" / "skills" / "goosetown" / "goosetown_cli.py"
+    )
+    # Workspace without .claude/ — setup-hooks must exit 1
+    result = subprocess.run(
+        [sys.executable, str(cli), "setup-hooks"],
+        cwd=tmp_path,
+        capture_output=True,
+    )
+    assert result.returncode == 1, (
+        f"expected exit 1 from missing .claude/, got {result.returncode}. "
+        f"stderr: {result.stderr.decode()}"
+    )
