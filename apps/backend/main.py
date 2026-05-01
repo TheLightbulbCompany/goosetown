@@ -5,8 +5,9 @@ load_dotenv()
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from core.config import settings
 from core.services.game_server_client import get_game_server_client
@@ -205,6 +206,34 @@ async def _reconnect_active_agents() -> None:
 
 
 app = FastAPI(title="GooseTown API", lifespan=lifespan)
+
+
+# ---------------------------------------------------------------------------
+# Global exception handlers
+# ---------------------------------------------------------------------------
+
+
+from core.quota import QuotaExceeded  # noqa: E402
+
+
+@app.exception_handler(QuotaExceeded)
+async def quota_exceeded_handler(request: Request, exc: QuotaExceeded) -> JSONResponse:
+    """Map QuotaExceeded → 429 with a structured payload.
+
+    The daemon reads ``kind``, ``limit``, and ``current`` to surface a
+    human-readable error to the agent owner.
+    """
+    return JSONResponse(
+        status_code=429,
+        content={
+            "error": "quota_exceeded",
+            "kind": exc.kind,
+            "limit": exc.limit,
+            "current": exc.current,
+            "message": str(exc),
+        },
+    )
+
 
 origins = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
 

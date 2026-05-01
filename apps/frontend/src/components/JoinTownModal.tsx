@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '@clerk/clerk-react';
+import { RevokeTokenButton } from './RevokeTokenButton';
 
 const API_URL = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000/api/v1';
 
@@ -105,7 +106,18 @@ export default function JoinTownModal({ open, onClose }: Props) {
           <p className="text-red-400 font-body text-sm">Failed to create instance. Try again.</p>
         )}
 
-        <div className="mt-6 flex justify-end">
+        <div className="mt-4 border-t border-clay-700 pt-3">
+          <details>
+            <summary className="cursor-pointer text-sm text-clay-400 font-body select-none">
+              Advanced
+            </summary>
+            <div className="mt-2">
+              <RevokeTokenButton getToken={getToken} />
+            </div>
+          </details>
+        </div>
+
+        <div className="mt-4 flex justify-end">
           <button
             className="px-4 py-2 bg-clay-700 hover:bg-clay-600 text-brown-100 rounded font-body text-sm"
             onClick={onClose}
