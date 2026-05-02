@@ -154,31 +154,32 @@ describe("ApiStack — ManagementApiUrl CfnOutput (rollback safety)", () => {
 });
 
 describe("ApiStack — authorizer token-source migration", () => {
-  // The authorizer Lambda code is defined inline in api-stack.ts. These
-  // tests are file-content regression guards for the migration that moved
+  // The authorizer Lambda code lives in apps/infra/lambda/ws-authorizer/index.py
+  // (moved from inline Code.fromInline in api-stack.ts to a file-based asset).
+  // These tests are file-content regression guards for the migration that moved
   // the daemon's town-token from a query string (?token=…) to an
   // Authorization header. Tokens in URLs leak into proxy/access logs; the
   // header keeps them out. Query-string fallback is retained for daemons
   // running an older skill bundle.
-  const apiStackSource = fs.readFileSync(
-    path.join(__dirname, "..", "lib", "stacks", "api-stack.ts"),
+  const authorizerSource = fs.readFileSync(
+    path.join(__dirname, "..", "lambda", "ws-authorizer", "index.py"),
     "utf8"
   );
 
   test("authorizer extracts token from Authorization header", () => {
-    expect(apiStackSource).toMatch(/k\.lower\(\) == "authorization"/);
-    expect(apiStackSource).toMatch(/Bearer/);
+    expect(authorizerSource).toMatch(/k\.lower\(\) == "authorization"/);
+    expect(authorizerSource).toMatch(/Bearer/);
   });
 
   test("authorizer keeps query-string fallback during rollout", () => {
-    expect(apiStackSource).toMatch(/queryStringParameters/);
+    expect(authorizerSource).toMatch(/queryStringParameters/);
     // Should still grab token from query when header is absent.
-    expect(apiStackSource).toMatch(/qs\.get\("token"\)/);
+    expect(authorizerSource).toMatch(/qs\.get\("token"\)/);
   });
 
   test("authorizer no longer dumps the full event (which leaks tokens)", () => {
     // Old pattern used to log the entire event — including queryStringParameters,
     // including the token. Confirm that's gone.
-    expect(apiStackSource).not.toMatch(/Authorizer event: %s.*json\.dumps\(event/);
+    expect(authorizerSource).not.toMatch(/Authorizer event: %s.*json\.dumps\(event/);
   });
 });
