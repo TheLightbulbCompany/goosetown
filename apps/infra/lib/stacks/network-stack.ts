@@ -42,6 +42,23 @@ export class NetworkStack extends cdk.Stack {
       exportName: `goosetown-${props.environment}-vpc-id`,
     });
 
+    // ── Free Gateway VPC endpoints (DynamoDB + S3) ─────────────────────────
+    // Gateway endpoints are FREE — no hourly charge, no per-GB transfer fee.
+    // Traffic from Fargate tasks to DynamoDB and S3 is routed through the
+    // endpoint rather than through the NAT Gateway, saving NAT data-processing
+    // costs as agent traffic ramps up.
+    //
+    // Interface endpoints (e.g. Secrets Manager, ECR API) cost ~$22/mo per AZ
+    // and are only worth it at higher volume; they are deferred until we have
+    // concrete NAT data-cost signal. See Known Issues for the single-NAT-AZ
+    // risk note — that is the higher priority egress HA item.
+    this.vpc.addGatewayEndpoint("S3Endpoint", {
+      service: ec2.GatewayVpcEndpointAwsService.S3,
+    });
+    this.vpc.addGatewayEndpoint("DynamoDbEndpoint", {
+      service: ec2.GatewayVpcEndpointAwsService.DYNAMODB,
+    });
+
     // NAT port-exhaustion alarm. Prod now has 2 NATs (one per AZ, issue #165 resolved);
     // dev stays at 1. Port allocation errors signal traffic bursts rather than AZ loss,
     // so `notBreaching` on missing data avoids false alarms during quiet periods.
