@@ -6,10 +6,12 @@
  * 2. Dev keeps 1 NAT gateway to save ~$32/mo per the intentional cost decision.
  * 3. A CloudWatch alarm exists on the NAT/ErrorPortAllocation metric so that
  *    NAT exhaustion or AZ-level trouble triggers an alert.
+ * 4. Free Gateway VPC endpoints exist for DynamoDB and S3, routing Fargate
+ *    traffic to those services without going through the NAT Gateway.
  */
 
 import * as cdk from "aws-cdk-lib";
-import { Template } from "aws-cdk-lib/assertions";
+import { Template, Match } from "aws-cdk-lib/assertions";
 import * as sns from "aws-cdk-lib/aws-sns";
 import { NetworkStack } from "../lib/stacks/network-stack";
 
@@ -123,5 +125,44 @@ describe("NetworkStack — NAT port-allocation alarm", () => {
     expect(natAlarm!.Properties.AlarmActions).toBeDefined();
     expect(Array.isArray(natAlarm!.Properties.AlarmActions)).toBe(true);
     expect(natAlarm!.Properties.AlarmActions!.length).toBeGreaterThan(0);
+  });
+});
+
+describe("NetworkStack — free Gateway VPC endpoints (DynamoDB + S3)", () => {
+  // Gateway endpoints are FREE and route Fargate-to-DDB/S3 traffic without
+  // going through the NAT gateway. Interface endpoints (Secrets Manager etc)
+  // cost ~$22/mo per AZ and are deferred.
+
+  let template: Template;
+
+  beforeAll(() => {
+    ({ template } = buildTestApp());
+  });
+
+  test("DynamoDB Gateway endpoint exists", () => {
+    // CDK renders ServiceName as a Fn::Join intrinsic (includes the region),
+    // so we cannot use Match.stringLikeRegexp on it directly. Instead we
+    // inspect the raw findResources output and check the join components.
+    const endpoints = template.findResources("AWS::EC2::VPCEndpoint");
+    const serviceNames = Object.values(endpoints).map((r: any) =>
+      JSON.stringify(r.Properties.ServiceName)
+    );
+    expect(serviceNames.some((s) => s.includes("dynamodb"))).toBe(true);
+  });
+
+  test("S3 Gateway endpoint exists", () => {
+    const endpoints = template.findResources("AWS::EC2::VPCEndpoint");
+    const serviceNames = Object.values(endpoints).map((r: any) =>
+      JSON.stringify(r.Properties.ServiceName)
+    );
+    expect(serviceNames.some((s) => s.toLowerCase().includes("s3"))).toBe(true);
+  });
+
+  test("exactly 2 Gateway endpoints are provisioned (no accidental Interface endpoints)", () => {
+    const endpoints = template.findResources("AWS::EC2::VPCEndpoint");
+    const gatewayEndpoints = Object.values(endpoints).filter(
+      (r: any) => r.Properties.VpcEndpointType === "Gateway"
+    );
+    expect(gatewayEndpoints.length).toBe(2);
   });
 });
