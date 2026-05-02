@@ -28,4 +28,24 @@ describe("SpriteWaitOverlay", () => {
     });
     expect(screen.getByText(/3s/)).toBeInTheDocument();
   });
+
+  it("flips to a 'still drawing' stuck state after stuckAfterSec elapses", () => {
+    // ``stuckAfterSec`` is configurable so tests don't have to wait the
+    // production 120s default. 5s here keeps the test fast.
+    const createdAt = Date.now();
+    render(<SpriteWaitOverlay createdAt={createdAt} stuckAfterSec={5} />);
+
+    // Idle state at t=0.
+    expect(screen.getByText(/drawing your agent/i)).toBeInTheDocument();
+
+    act(() => {
+      vi.advanceTimersByTime(6_000);
+    });
+
+    // Stuck state copy now visible; the original "drawing your agent" copy
+    // is gone (we render a different branch).
+    expect(screen.getByText(/still drawing/i)).toBeInTheDocument();
+    expect(screen.queryByText(/drawing your agent/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/unusually slow/i)).toBeInTheDocument();
+  });
 });
