@@ -112,17 +112,32 @@ class TestCliEnvFlags:
         assert joined_api_url
         assert joined_api_url[0] == ENDPOINTS["prod"]["api"]
 
-    def test_no_flag_defaults_to_prod(self, monkeypatch):
-        """Without --dev or --prod, the prod endpoint is used."""
-        monkeypatch.delenv("TOWN_API_URL", raising=False)
-        monkeypatch.delenv("TOWN_WS_URL", raising=False)
+    def test_no_flag_leaves_env_untouched(self, monkeypatch):
+        """Without an explicit --dev / --prod flag, ``cli.main`` must NOT
+        rewrite ``TOWN_API_URL`` / ``TOWN_WS_URL``.
+
+        Regression guard for the bug Jim hit during the live agent-team
+        test on 2026-05-02: when ``cmd_join`` spawned the daemon
+        subprocess (``goosetown _daemon``), the spawned child's
+        ``cli.main`` was applying ``apply_env_override("prod")``
+        unconditionally, overwriting the dev URLs the parent
+        (``goosetown --dev join …``) had set in the child's environment.
+        That made the daemon connect to prod instead of dev.
+
+        Default-to-prod for first-time users is handled by
+        ``_load_config`` further downstream — not by this env layer.
+        """
+        monkeypatch.setenv("TOWN_API_URL", "https://from-parent.example.com/api/v1")
+        monkeypatch.setenv("TOWN_WS_URL", "wss://from-parent.example.com")
 
         import goosetown.core as core_mod
 
-        joined_api_url: list[str] = []
+        seen_api_url: list[str] = []
+        seen_ws_url: list[str] = []
 
         def fake_join(args):
-            joined_api_url.append(os.environ.get("TOWN_API_URL", ""))
+            seen_api_url.append(os.environ.get("TOWN_API_URL", ""))
+            seen_ws_url.append(os.environ.get("TOWN_WS_URL", ""))
 
         monkeypatch.setattr(core_mod, "cmd_join", fake_join)
 
@@ -133,8 +148,40 @@ class TestCliEnvFlags:
         except SystemExit:
             pass
 
-        assert joined_api_url
-        assert joined_api_url[0] == ENDPOINTS["prod"]["api"]
+        assert seen_api_url, "cmd_join was not called"
+        # Env values from the parent must be preserved verbatim.
+        assert seen_api_url[0] == "https://from-parent.example.com/api/v1"
+        assert seen_ws_url[0] == "wss://from-parent.example.com"
+
+    def test_daemon_subcommand_does_not_override_parent_env(self, monkeypatch):
+        """``goosetown _daemon`` (the subprocess spawned by _start_daemon)
+        must inherit TOWN_API_URL / TOWN_WS_URL from its parent without
+        re-overriding to prod. This is the exact path Jim's daemon went
+        through during the agent-team test.
+        """
+        monkeypatch.setenv("TOWN_API_URL", ENDPOINTS["dev"]["api"])
+        monkeypatch.setenv("TOWN_WS_URL", ENDPOINTS["dev"]["ws"])
+
+        import goosetown.daemon as daemon_mod
+
+        seen_api_url: list[str] = []
+
+        def fake_daemon_main():
+            seen_api_url.append(os.environ.get("TOWN_API_URL", ""))
+
+        monkeypatch.setattr(daemon_mod, "daemon_main", fake_daemon_main)
+
+        from goosetown.cli import main
+
+        try:
+            main(["_daemon"])
+        except SystemExit:
+            pass
+
+        assert seen_api_url, "daemon_main was not invoked"
+        assert seen_api_url[0] == ENDPOINTS["dev"]["api"], (
+            "daemon child overrode parent's TOWN_API_URL — would have connected to prod"
+        )
 
     def test_both_flags_error(self):
         """Passing --dev and --prod together must exit with code 2 (argparse error)."""

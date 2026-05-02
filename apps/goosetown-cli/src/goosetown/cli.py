@@ -14,7 +14,7 @@ import argparse
 import sys
 
 from goosetown import __version__
-from goosetown.endpoints import DEFAULT_ENV, apply_env_override
+from goosetown.endpoints import apply_env_override
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -116,15 +116,31 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    # ------------------------------------------------------------------
-    # Apply endpoint override BEFORE any subcommand reads config.
-    # _load_config in core.py prefers os.environ vars, so setting them
-    # here is transparent to all downstream code paths.
-    # ------------------------------------------------------------------
-    env = args.env_override or DEFAULT_ENV
-    apply_env_override(env)
-
     command = args.command
+
+    # ------------------------------------------------------------------
+    # Apply endpoint override BEFORE any subcommand reads config — but
+    # ONLY when the user explicitly passed --dev or --prod. Without a
+    # flag we leave os.environ untouched so:
+    #
+    #   * The spawned ``_daemon`` subprocess inherits TOWN_WS_URL /
+    #     TOWN_API_URL from its parent (set by ``_start_daemon`` from
+    #     GOOSETOWN.md). The bug reported by Jim during the live agent-
+    #     team test (2026-05-02): an unconditional
+    #     ``apply_env_override("prod")`` here would overwrite the dev
+    #     URLs the parent ``goosetown --dev join`` had passed down,
+    #     causing the daemon to connect to prod instead of dev.
+    #
+    #   * Subcommands that read an existing GOOSETOWN.md (status, act,
+    #     leave, …) get the URLs from the file via _load_config without
+    #     this layer second-guessing them.
+    #
+    # First-time ``goosetown join`` without a flag falls back to the
+    # ``DEFAULT_ENV`` ("prod") via _load_config's own defaults, not via
+    # this env layer.
+    # ------------------------------------------------------------------
+    if args.env_override is not None:
+        apply_env_override(args.env_override)
     if command == "join":
         cmd_join(args)
         return 0
