@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 from core.services.daemon_bridge import _apply_event_with_sleep_guard
 from core.services.game_server_client import get_game_server_client
@@ -37,12 +38,42 @@ _MAX_CONVERSATION_TURNS = 20
 
 # Auto-end a conversation after this many seconds of silence (no new ``say``
 # turn from any participant, no ``join_conversation`` from a new joiner).
-# 60s is long enough to feel like a natural pause between turns but short
-# enough that abandoned conversations don't trap agents in an idle "talking"
-# state for minutes. The timer resets on every ``chat`` / ``say`` /
-# ``join_conversation`` and is cancelled on ``end_conversation`` or any
-# turn-limit auto-end. See ``_schedule_inactivity_timeout``.
-_INACTIVITY_TIMEOUT_SEC: float = 60.0
+# Default 180s: a two-turn exchange between local-model agents (~30-90s per
+# think cycle) easily exceeds 60s of silence between turns, which the
+# previous default would auto-close mid-flight. The timer resets on every
+# ``chat`` / ``say`` / ``join_conversation`` and is cancelled on
+# ``end_conversation`` or any turn-limit auto-end. See
+# ``_schedule_inactivity_timeout``. Tunable via the
+# ``CONVERSATION_INACTIVITY_TIMEOUT_SEC`` env var so we can adjust without
+# redeploy if the soak surfaces a need.
+_DEFAULT_INACTIVITY_TIMEOUT_SEC: float = 180.0
+
+
+def _read_inactivity_timeout() -> float:
+    """Read the inactivity timeout, falling back to the default on bad input.
+
+    Resolved once at module load (used by ``_inactivity_timeout`` and the
+    info-log line). Pytest can monkeypatch ``_INACTIVITY_TIMEOUT_SEC``
+    directly when needed.
+    """
+    raw = os.environ.get("CONVERSATION_INACTIVITY_TIMEOUT_SEC", "").strip()
+    if not raw:
+        return _DEFAULT_INACTIVITY_TIMEOUT_SEC
+    try:
+        value = float(raw)
+        if value <= 0:
+            raise ValueError
+        return value
+    except ValueError:
+        logger.warning(
+            "CONVERSATION_INACTIVITY_TIMEOUT_SEC=%r is not a positive number — using default %.0fs",
+            raw,
+            _DEFAULT_INACTIVITY_TIMEOUT_SEC,
+        )
+        return _DEFAULT_INACTIVITY_TIMEOUT_SEC
+
+
+_INACTIVITY_TIMEOUT_SEC: float = _read_inactivity_timeout()
 
 # conv_id → asyncio.Task that will call ``_finalize_conversation`` after
 # ``_INACTIVITY_TIMEOUT_SEC`` of silence. In-memory only — a backend

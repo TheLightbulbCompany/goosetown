@@ -1212,3 +1212,49 @@ class TestInactivityTimeout:
             await task
 
         assert finalize_calls == [], "must not double-finalise an ended conv"
+
+
+# ---------------------------------------------------------------------------
+# Inactivity-timeout env-var override (``CONVERSATION_INACTIVITY_TIMEOUT_SEC``).
+# Read once at module load. The reader is tested directly to avoid having to
+# reimport the module under monkeypatched env, which races with other tests
+# using ``cs._INACTIVITY_TIMEOUT_SEC`` directly.
+# ---------------------------------------------------------------------------
+
+
+class TestInactivityTimeoutEnvVar:
+    """``_read_inactivity_timeout`` parses the env override safely."""
+
+    def test_default_when_unset(self, monkeypatch):
+        from core.services import conversation_service as cs
+
+        monkeypatch.delenv("CONVERSATION_INACTIVITY_TIMEOUT_SEC", raising=False)
+        assert cs._read_inactivity_timeout() == cs._DEFAULT_INACTIVITY_TIMEOUT_SEC
+
+    def test_default_is_180_seconds(self):
+        from core.services import conversation_service as cs
+
+        # 60s was too short for slow-model two-turn exchanges. 180s is the new
+        # baseline; if this regresses, the soak window will start auto-closing
+        # mid-conversation again.
+        assert cs._DEFAULT_INACTIVITY_TIMEOUT_SEC == 180.0
+
+    def test_env_override_accepts_positive_float(self, monkeypatch):
+        from core.services import conversation_service as cs
+
+        monkeypatch.setenv("CONVERSATION_INACTIVITY_TIMEOUT_SEC", "240.5")
+        assert cs._read_inactivity_timeout() == 240.5
+
+    def test_env_override_falls_back_on_garbage(self, monkeypatch):
+        from core.services import conversation_service as cs
+
+        monkeypatch.setenv("CONVERSATION_INACTIVITY_TIMEOUT_SEC", "not-a-number")
+        assert cs._read_inactivity_timeout() == cs._DEFAULT_INACTIVITY_TIMEOUT_SEC
+
+    def test_env_override_falls_back_on_zero(self, monkeypatch):
+        from core.services import conversation_service as cs
+
+        # A zero or negative timeout would cause the inactivity coroutine to
+        # fire immediately on every turn — bad. Treat as garbage and fall back.
+        monkeypatch.setenv("CONVERSATION_INACTIVITY_TIMEOUT_SEC", "0")
+        assert cs._read_inactivity_timeout() == cs._DEFAULT_INACTIVITY_TIMEOUT_SEC
