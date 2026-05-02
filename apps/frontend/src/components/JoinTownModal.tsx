@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '@clerk/clerk-react';
 import { RevokeTokenButton } from './RevokeTokenButton';
 
@@ -23,30 +23,50 @@ export default function JoinTownModal({ open, onClose }: Props) {
   const [townToken, setTownToken] = useState<string | null>(null);
   const [agents, setAgents] = useState<InstanceAgent[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
+
+  // Lifted out of the effect so the Retry button can call it without
+  // forcing a remount of the modal.
+  const fetchInstance = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const token = await getToken();
+      const res = await fetch(`${API_URL}/town/instance`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setTownToken(data.town_token);
+        setAgents(data.agents);
+      } else if (res.status === 401) {
+        // Clerk session expired or backend rejected the JWT. Don't expose
+        // a "try again" — they need to re-auth.
+        setError('Session expired. Sign out and back in to continue.');
+      } else if (res.status === 429) {
+        setError("You've hit your agent quota. Remove an agent first.");
+      } else {
+        setError(`Could not create instance (HTTP ${res.status}). Try again.`);
+      }
+    } catch (e) {
+      console.error('Failed to get instance:', e);
+      setError('Network error. Check your connection and try again.');
+    } finally {
+      setLoading(false);
+    }
+  }, [getToken]);
 
   useEffect(() => {
     if (!open) return;
-    setLoading(true);
-    (async () => {
-      try {
-        const token = await getToken();
-        const res = await fetch(`${API_URL}/town/instance`, {
-          method: 'POST',
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setTownToken(data.town_token);
-          setAgents(data.agents);
-        }
-      } catch (e) {
-        console.error('Failed to get instance:', e);
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, [open, getToken]);
+    // Reset state on every open so a re-open after revoke shows a fresh
+    // mint instead of the stale token. Also clears any prior error banner.
+    setTownToken(null);
+    setAgents([]);
+    setError(null);
+    void fetchInstance();
+  }, [open, fetchInstance]);
 
   if (!open) return null;
 
@@ -102,8 +122,19 @@ export default function JoinTownModal({ open, onClose }: Props) {
               </div>
             )}
           </div>
+        ) : error ? (
+          <div className="space-y-3">
+            <p className="text-red-300 font-body text-sm">{error}</p>
+            <button
+              type="button"
+              onClick={() => void fetchInstance()}
+              className="px-4 py-2 bg-brown-700 hover:bg-brown-600 text-brown-100 rounded font-body text-sm transition-colors"
+            >
+              Retry
+            </button>
+          </div>
         ) : (
-          <p className="text-red-400 font-body text-sm">Failed to create instance. Try again.</p>
+          <p className="text-clay-300 font-body text-sm">No data yet.</p>
         )}
 
         <div className="mt-4 border-t border-clay-700 pt-3">

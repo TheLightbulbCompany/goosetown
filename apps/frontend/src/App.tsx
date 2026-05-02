@@ -12,6 +12,7 @@ import MusicButton from './components/buttons/MusicButton.tsx';
 import JoinTownModal from './components/JoinTownModal.tsx';
 import OwnerChatPanel from './components/OwnerChatPanel.tsx';
 import { useApartment } from './hooks/useApartment.ts';
+import { useQuota } from './hooks/useQuota.ts';
 import { QuotaIndicator } from './components/QuotaIndicator.tsx';
 import { OnboardingPanel } from './components/OnboardingPanel.tsx';
 import { AnonymousViewerHint } from './components/AnonymousViewerHint.tsx';
@@ -29,6 +30,19 @@ function AgentsSidebar({
   onAgentChatClick: (agentId: string, agentName: string) => void;
 }) {
   const { data, loading } = useApartment();
+  const quota = useQuota();
+
+  // Soft-gate Add/Join when at limit. Server-side enforcement still happens
+  // in /town/agent/register; this just prevents the user from minting a
+  // token they can't actually use.
+  const atAgentLimit = quota ? quota.agents.used >= quota.agents.limit : false;
+  const atSpriteLimit = quota ? quota.sprite_gen.used_24h >= quota.sprite_gen.limit : false;
+  const joinDisabled = atAgentLimit || atSpriteLimit;
+  const joinDisabledReason = atAgentLimit
+    ? `You're at the ${quota?.agents.limit ?? 0}-agent limit. Remove one to add another.`
+    : atSpriteLimit
+      ? `You've used all ${quota?.sprite_gen.limit ?? 0} sprite generations in the last 24 hours.`
+      : '';
 
   if (loading) {
     return <p className="font-body text-clay-300 text-sm p-2">Loading agents...</p>;
@@ -44,10 +58,15 @@ function AgentsSidebar({
               <p className="font-body text-clay-300 text-sm">No agents in town yet.</p>
               <button
                 onClick={onJoinClick}
-                className="w-full px-4 py-2 bg-brown-600 hover:bg-brown-500 text-brown-100 rounded font-body text-sm transition-colors"
+                disabled={joinDisabled}
+                title={joinDisabled ? joinDisabledReason : undefined}
+                className="w-full px-4 py-2 bg-brown-600 hover:bg-brown-500 text-brown-100 rounded font-body text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-brown-600"
               >
                 Join GooseTown
               </button>
+              {joinDisabled && (
+                <p className="font-body text-xs text-yellow-300/80">{joinDisabledReason}</p>
+              )}
             </div>
           </div>
         </SignedIn>
@@ -71,11 +90,16 @@ function AgentsSidebar({
         </h2>
         <button
           onClick={onJoinClick}
-          className="px-2 py-1 bg-clay-700 hover:bg-clay-600 text-brown-200 rounded text-xs font-body transition-colors"
+          disabled={joinDisabled}
+          title={joinDisabled ? joinDisabledReason : undefined}
+          className="px-2 py-1 bg-clay-700 hover:bg-clay-600 text-brown-200 rounded text-xs font-body transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-clay-700"
         >
           + Add
         </button>
       </div>
+      {joinDisabled && (
+        <p className="-mt-2 mb-3 font-body text-xs text-yellow-300/80">{joinDisabledReason}</p>
+      )}
       <div className="flex flex-col gap-3">
         {activeAgents.map((agent) => (
           <ApartmentCard key={agent.agent_id} agent={agent} onChatClick={onAgentChatClick} />
