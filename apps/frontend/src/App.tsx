@@ -97,7 +97,7 @@ export default function App() {
   const location = useLocation();
   const navigate = useNavigate();
 
-  const { isSignedIn } = useAuth();
+  const { isSignedIn, isLoaded: authLoaded } = useAuth();
 
   // Previously listened for ``goosetown_scene_changed`` (dispatched by
   // useTownState on every ``agent_context_changed`` WS broadcast) and
@@ -151,7 +151,14 @@ export default function App() {
 
   // Landing route: signed-out visitors see the landing page; signed-in
   // visitors are redirected to /town so they don't land here every visit.
+  // While Clerk is still resolving the session, render a neutral clay
+  // backdrop instead of Landing — otherwise signed-in users see the
+  // landing page flash for ~1s before the redirect (isSignedIn is
+  // undefined until ``authLoaded`` flips to true).
   if (location.pathname === '/') {
+    if (!authLoaded) {
+      return <div className="fixed inset-0 bg-clay-900" aria-hidden />;
+    }
     return (
       <>
         {isSignedIn
