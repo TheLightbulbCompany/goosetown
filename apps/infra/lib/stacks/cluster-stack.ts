@@ -24,7 +24,12 @@ export class ClusterStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: ClusterStackProps) {
     super(scope, id, props);
 
-    this.clusterLogicalName = `goosetown-${props.environment}`;
+    // Avoid collision with the legacy `goosetown-${env}` cluster name still claimed by
+    // the pre-sub-2 ComputeStack template. Once the legacy ComputeStack template is
+    // updated (one full pipeline pass after this change), the legacy claim is dropped
+    // and we could rename back — but the new name is fine to keep indefinitely; no
+    // external system depends on the cluster being named `goosetown-${env}` exactly.
+    this.clusterLogicalName = `goosetown-${props.environment}-shared`;
 
     this.cluster = new ecs.Cluster(this, "Cluster", {
       vpc: props.vpc,
