@@ -153,44 +153,6 @@ describe("ApiStack — ManagementApiUrl CfnOutput (rollback safety)", () => {
   });
 });
 
-describe("ApiStack — legacy WebSocketApi auto-export preservation", () => {
-  // Earlier ComputeStack revisions imported `wsApi.apiId` directly to build an
-  // execute-api:ManageConnections IAM grant. The IAM grant has since moved
-  // into ApiStack, so ApiStack's synth no longer emits the auto-generated
-  // cross-stack export. But deployed ComputeStack templates (in both dev and
-  // prod) still hold the Fn::ImportValue references — when ApiStack updates,
-  // CFN refuses to delete the export because compute still imports it. Prod
-  // is currently stuck in this state. This block re-emits the legacy export
-  // names explicitly so api-stack and compute-stack can deploy independently.
-  // Sunset target: one full deploy cycle after merge, then the explicit
-  // CfnOutput can be deleted in a follow-up PR.
-
-  test("dev — LegacyWsApiAutoExport export name matches the live dev hash", () => {
-    const { template } = buildTestApp("dev");
-    const outputs = template.findOutputs("LegacyWsApiAutoExport");
-    expect(Object.keys(outputs).length).toBe(1);
-    const output = Object.values(outputs)[0] as any;
-    // Captured from `aws cloudformation describe-stacks --stack-name
-    // goosetown-dev-api` on 2026-05-02. Hash is per-env because CDK derives
-    // it from the stack-qualified construct path.
-    expect(output.Export?.Name).toBe(
-      "goosetown-dev-api:ExportsOutputRefWebSocketApi34BCF99B0F830E68"
-    );
-  });
-
-  test("prod — LegacyWsApiAutoExport export name matches the live prod hash", () => {
-    const { template } = buildTestApp("prod");
-    const outputs = template.findOutputs("LegacyWsApiAutoExport");
-    expect(Object.keys(outputs).length).toBe(1);
-    const output = Object.values(outputs)[0] as any;
-    // Captured from `aws cloudformation describe-stacks --stack-name
-    // goosetown-prod-api` on 2026-05-02.
-    expect(output.Export?.Name).toBe(
-      "goosetown-prod-api:ExportsOutputRefWebSocketApi6DDF9954"
-    );
-  });
-});
-
 describe("ApiStack — authorizer token-source migration", () => {
   // The authorizer Lambda code is defined inline in api-stack.ts. These
   // tests are file-content regression guards for the migration that moved

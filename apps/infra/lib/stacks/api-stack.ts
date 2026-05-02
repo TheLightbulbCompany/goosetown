@@ -629,37 +629,5 @@ def handler(event, context):
       exportName: `goosetown-${env}-management-api-url`,
     });
 
-    // ─── Legacy auto-export preservation (sunset after one prod deploy cycle) ──
-    //
-    // Earlier revisions of ComputeStack imported `wsApi.apiId` directly to
-    // build an `execute-api:ManageConnections` IAM policy. CDK auto-generated
-    // a cross-stack export with the name
-    //   goosetown-${env}-api:ExportsOutputRefWebSocketApi<HASH>
-    // where <HASH> is derived from the construct path within the stack. The
-    // IAM grant has since been moved into ApiStack itself (see line ~578)
-    // and ComputeStack's source no longer references the WebSocketApi.
-    //
-    // Problem: the deployed ComputeStack templates in both dev and prod still
-    // hold those Fn::ImportValue references (compute hasn't redeployed since
-    // the move). When ApiStack now synths without the cross-stack ref, CDK
-    // tries to drop the auto-export, which CloudFormation rejects:
-    //   "Cannot delete export ... as it is in use by goosetown-${env}-compute".
-    // Prod is currently stuck in this state — every deploy run fails on it
-    // (run #25245104154, 2026-05-02).
-    //
-    // Fix: re-emit the same export name explicitly so it persists. Once this
-    // ApiStack revision lands, ComputeStack can deploy with no import (its
-    // current code) and the legacy import disappears from the live template.
-    // After that, this block can be deleted in a follow-up PR.
-    //
-    // Hashes are env-specific (CDK derives them from the stack-qualified
-    // construct path) — captured from the live exports on 2026-05-02:
-    //   describe-stacks --stack-name goosetown-{dev,prod}-api
-    const legacyWsApiExportHash =
-      env === "prod" ? "WebSocketApi6DDF9954" : "WebSocketApi34BCF99B0F830E68";
-    new cdk.CfnOutput(this, "LegacyWsApiAutoExport", {
-      value: wsApi.apiId,
-      exportName: `goosetown-${env}-api:ExportsOutputRef${legacyWsApiExportHash}`,
-    });
   }
 }
