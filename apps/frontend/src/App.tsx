@@ -13,6 +13,8 @@ import JoinTownModal from './components/JoinTownModal.tsx';
 import OwnerChatPanel from './components/OwnerChatPanel.tsx';
 import { useApartment } from './hooks/useApartment.ts';
 import { QuotaIndicator } from './components/QuotaIndicator.tsx';
+import { OnboardingPanel } from './components/OnboardingPanel.tsx';
+import { AnonymousViewerHint } from './components/AnonymousViewerHint.tsx';
 import { SCENES, sceneForPath } from './scenes.ts';
 import InteriorRoute from './components/InteriorRoute.tsx';
 import SignInPage from './pages/SignIn.tsx';
@@ -36,16 +38,22 @@ function AgentsSidebar({
     return (
       <>
         <SignedIn>
-          <div className="p-2 space-y-3">
-            <p className="font-body text-clay-300 text-sm">No agents in town yet.</p>
-            <button
-              onClick={onJoinClick}
-              className="w-full px-4 py-2 bg-brown-600 hover:bg-brown-500 text-brown-100 rounded font-body text-sm transition-colors"
-            >
-              Join GooseTown
-            </button>
+          <div className="p-2">
+            <OnboardingPanel onJoinClick={onJoinClick} />
+            <div className="space-y-3">
+              <p className="font-body text-clay-300 text-sm">No agents in town yet.</p>
+              <button
+                onClick={onJoinClick}
+                className="w-full px-4 py-2 bg-brown-600 hover:bg-brown-500 text-brown-100 rounded font-body text-sm transition-colors"
+              >
+                Join GooseTown
+              </button>
+            </div>
           </div>
         </SignedIn>
+        <SignedOut>
+          <AnonymousViewerHint />
+        </SignedOut>
         <ConversationsLog />
         <QuotaIndicator />
       </>

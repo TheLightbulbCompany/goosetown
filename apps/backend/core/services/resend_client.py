@@ -29,11 +29,15 @@ class ResendClient:
         self.api_key = api_key
         self.audience_id = audience_id
 
-    async def add_contact(self, email: str) -> None:
+    async def add_contact(self, email: str) -> str:
         """Add a contact to the configured audience.
 
-        Idempotent: a 422 response with 'already exists' is treated as success
-        (Resend's signal for duplicate). Other non-2xx responses raise.
+        Returns:
+            ``"created"`` for new subscriptions, ``"already_subscribed"`` for
+            idempotent retries (Resend's 422 + ``already exists``).
+
+        Raises:
+            ``ResendError`` for any other non-2xx response.
         """
         url = f"{RESEND_API_BASE}/audiences/{self.audience_id}/contacts"
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -44,15 +48,17 @@ class ResendClient:
             )
 
         if 200 <= response.status_code < 300:
-            return
+            return "created"
 
-        # Treat duplicate-email 422 as idempotent success.
+        # Treat duplicate-email 422 as idempotent — surface the distinction
+        # so the UI can tell the user "you're already on the list" instead
+        # of a generic "got it".
         if response.status_code == 422:
             try:
                 body_json = response.json()
                 if "already exists" in body_json.get("message", "").lower():
-                    logger.info("Resend contact already exists for %s — treating as success", email)
-                    return
+                    logger.info("Resend contact already exists for %s", email)
+                    return "already_subscribed"
             except Exception:  # nosec B110: malformed body falls through to ResendError below; not a silent swallow
                 pass
 
