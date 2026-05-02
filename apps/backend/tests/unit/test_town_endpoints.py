@@ -544,6 +544,30 @@ class TestSkillEndpoints:
         assert "goosetown/install.sh" not in names
         assert "goosetown/CLAUDE_FRAGMENT.md" not in names
 
+    def test_skill_bundle_hook_script_is_executable(self, client) -> None:
+        """The bundled `hooks/check-town-status.sh` MUST land with mode 0755.
+
+        Regression guard for the bug Jim surfaced during the agent-team
+        test on 2026-05-02 (T12 OpenClaw smoke). The bundle was packing
+        the hook with mode 0644 because Docker layer caching strips +x
+        off `*.sh` files in some image-build configurations. A non-
+        executable hook silently no-ops on every Stop / TeammateIdle —
+        wake-on-status quietly stops working for any user installing via
+        the legacy tarball path.
+        """
+        import io
+        import tarfile
+
+        import routers.town as town
+
+        town._skill_bundle_cache = None
+        resp = client.get("/api/v1/town/skill/bundle")
+        assert resp.status_code == 200
+        with tarfile.open(fileobj=io.BytesIO(resp.content), mode="r:gz") as tar:
+            hook = tar.getmember("goosetown/hooks/check-town-status.sh")
+        # Owner +x at minimum. The build sets full 0755 explicitly.
+        assert hook.mode & 0o100, f"hook script bundled without owner +x bit (mode={oct(hook.mode)})"
+
     def test_skill_bundle_emits_deprecation_header(self, client):
         """Sub 1: legacy bundle endpoint signals deprecation pointing at canonical install."""
         resp = client.get("/api/v1/town/skill/bundle")
