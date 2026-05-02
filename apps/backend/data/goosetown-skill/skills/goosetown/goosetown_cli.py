@@ -27,6 +27,7 @@ Dependencies:
 import argparse
 import json
 import os
+import plistlib
 import socket
 import subprocess
 import sys
@@ -2239,6 +2240,153 @@ def _daemon_main() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Command: install-launchd
+# ---------------------------------------------------------------------------
+
+
+def _render_launchd_plist(
+    agent_name: str,
+    agent_workspace: Path,
+    python_path: str,
+    cli_path: str,
+) -> bytes:
+    """Return a plist as UTF-8 bytes for a per-agent launchd job.
+
+    The daemon is invoked with ``_daemon`` and the four env vars that
+    ``_daemon_main`` expects (TOWN_TOKEN, TOWN_WS_URL, TOWN_AGENT,
+    TOWN_WORKSPACE) sourced from ``GOOSETOWN.md`` via the ``daemon-resume``
+    entrypoint.  Using plistlib.dumps guarantees schema-valid XML and
+    stable byte output.
+    """
+    state_dir = str(_state_dir(agent_name))
+    label = f"com.goosetown.{agent_name}"
+    plist_dict = {
+        "Label": label,
+        "ProgramArguments": [python_path, cli_path, "daemon-resume", agent_name],
+        "WorkingDirectory": str(agent_workspace),
+        "RunAtLoad": True,
+        "KeepAlive": {
+            "Crashed": True,
+            "NetworkState": True,
+        },
+        "StandardOutPath": f"{state_dir}/launchd.out.log",
+        "StandardErrorPath": f"{state_dir}/launchd.err.log",
+    }
+    return plistlib.dumps(plist_dict, fmt=plistlib.FMT_XML, sort_keys=True)
+
+
+def cmd_install_launchd(args: argparse.Namespace) -> int:
+    """Materialize a launchd plist for the agent daemon and load it.
+
+    Writes to ~/Library/LaunchAgents/com.goosetown.<agent-name>.plist
+    atomically and reloads it via launchctl.  ``--dry-run`` prints the
+    plist content without writing anything.
+    """
+    agent_name: str = args.agent_name
+
+    # Resolve workspace: prefer cwd's GOOSETOWN.md, fall back to
+    # ~/goosetown-soak/<agent-name> (the soak orchestrator layout).
+    agent_dir = Path(os.environ.get("AGENT_DIR", str(Path.cwd())))
+    cfg_path = agent_dir / "GOOSETOWN.md"
+    if not cfg_path.exists():
+        soak_dir = Path.home() / "goosetown-soak" / agent_name
+        if (soak_dir / "GOOSETOWN.md").exists():
+            agent_dir = soak_dir
+        else:
+            print(
+                json.dumps(
+                    {
+                        "error": "GOOSETOWN.md not found",
+                        "hint": (
+                            f"Run from the agent's workspace directory or set AGENT_DIR. "
+                            f"Looked at: {cfg_path}"
+                        ),
+                    }
+                )
+            )
+            return 1
+
+    python_path = args.python or sys.executable
+    cli_path = str(Path(__file__).resolve())
+
+    plist_bytes = _render_launchd_plist(
+        agent_name=agent_name,
+        agent_workspace=agent_dir,
+        python_path=python_path,
+        cli_path=cli_path,
+    )
+
+    if args.dry_run:
+        print(plist_bytes.decode())
+        return 0
+
+    # Ensure state dir exists so launchd stdout/stderr log paths are valid.
+    _state_dir(agent_name).mkdir(parents=True, exist_ok=True)
+
+    launch_agents_dir = Path.home() / "Library" / "LaunchAgents"
+    launch_agents_dir.mkdir(parents=True, exist_ok=True)
+
+    dest = launch_agents_dir / f"com.goosetown.{agent_name}.plist"
+    tmp = dest.with_suffix(".plist.tmp")
+
+    if dest.exists() and dest.read_bytes() == plist_bytes:
+        print(f"[goosetown] launchd plist unchanged: {dest}")
+    else:
+        tmp.write_bytes(plist_bytes)
+        os.replace(str(tmp), str(dest))
+        action = "updated" if dest.exists() else "written"
+        print(f"[goosetown] launchd plist {action}: {dest}")
+
+    # Unload first (non-fatal — first-time install has nothing to unload).
+    subprocess.run(["launchctl", "unload", str(dest)], capture_output=True)
+
+    result = subprocess.run(["launchctl", "load", str(dest)], capture_output=True, text=True)
+    if result.returncode != 0:
+        print(
+            json.dumps(
+                {
+                    "error": "launchctl load failed",
+                    "stderr": result.stderr.strip(),
+                    "plist": str(dest),
+                }
+            )
+        )
+        return 1
+
+    print(f"[goosetown] launchd job loaded: com.goosetown.{agent_name}")
+    print(f"[goosetown] To unload: launchctl unload {dest}")
+    return 0
+
+
+def cmd_daemon_resume(args: argparse.Namespace) -> None:
+    """Resume the daemon for an already-registered agent.
+
+    Reads GOOSETOWN.md from the agent's workspace (~/goosetown-soak/<name>
+    or AGENT_DIR), injects the required env vars, and calls _daemon_main().
+    This is the entry point launchd uses so the daemon can be auto-restarted
+    without re-running the full registration flow.
+    """
+    agent_name: str = args.agent_name
+
+    agent_dir = Path(os.environ.get("AGENT_DIR", ""))
+    if not agent_dir or not (agent_dir / "GOOSETOWN.md").exists():
+        agent_dir = Path.home() / "goosetown-soak" / agent_name
+
+    cfg_path = agent_dir / "GOOSETOWN.md"
+    if not cfg_path.exists():
+        print(json.dumps({"error": f"GOOSETOWN.md not found at {cfg_path}"}))
+        sys.exit(1)
+
+    config = _parse_goosetown_md(cfg_path)
+    os.environ["TOWN_TOKEN"] = config.get("token", "")
+    os.environ["TOWN_WS_URL"] = config.get("ws_url", DEFAULT_WS_URL)
+    os.environ["TOWN_AGENT"] = config.get("agent", agent_name)
+    os.environ["TOWN_WORKSPACE"] = config.get("workspace_path", str(agent_dir))
+
+    _daemon_main()
+
+
+# ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
 
@@ -2281,6 +2429,28 @@ def _build_parser() -> argparse.ArgumentParser:
         "setup-hooks",
         help="Write wake-on-status hooks into .claude/settings.local.json (opt-in).",
     )
+
+    # install-launchd (macOS — auto-restart)
+    p_launchd = sub.add_parser(
+        "install-launchd",
+        help="Install a launchd plist so the daemon auto-restarts on crash, network blip, or lid-close.",
+    )
+    p_launchd.add_argument("agent_name", help="Agent name (same as used in 'join --name').")
+    p_launchd.add_argument(
+        "--python",
+        default=None,
+        help="Path to the Python interpreter to use (default: same as this process).",
+    )
+    p_launchd.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="Print the plist to stdout instead of writing it.",
+    )
+
+    # daemon-resume (internal — invoked by launchd)
+    p_resume = sub.add_parser("daemon-resume", help=argparse.SUPPRESS)
+    p_resume.add_argument("agent_name", help="Agent name — used to locate GOOSETOWN.md.")
 
     return parser
 
@@ -2352,6 +2522,11 @@ def main() -> int:
         return 0
     elif args.command == "setup-hooks":
         return cmd_setup_hooks()
+    elif args.command == "install-launchd":
+        return cmd_install_launchd(args)
+    elif args.command == "daemon-resume":
+        cmd_daemon_resume(args)
+        return 0
     else:
         parser.print_help()
         sys.exit(1)
