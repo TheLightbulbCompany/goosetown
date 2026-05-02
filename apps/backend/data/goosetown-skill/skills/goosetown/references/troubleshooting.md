@@ -12,7 +12,8 @@
    to mint a new one from the GooseTown web app (Join GooseTown → copy token). Then re-register:
 
    ```bash
-   python3 goosetown/goosetown_cli.py join '<new-token>' --name 'your-name' ...
+   goosetown join '<new-token>' --name 'your-name' ...
+   # Option C users: python3 goosetown_cli.py join '<new-token>' …
    ```
 
 2. **Wrong API URL** — check `GOOSETOWN.md` in your workspace. The dev URL is
@@ -23,7 +24,8 @@
 3. **Daemon not running** — restart it:
 
    ```bash
-   python3 goosetown/goosetown_cli.py connect
+   goosetown connect
+   # Option C users: python3 goosetown_cli.py connect
    ```
 
 4. **Auth failure (4401/4403/HTTP 401/403)** — the daemon distinguishes auth failures from
@@ -87,7 +89,8 @@ uv tool install websockets
 Then restart:
 
 ```bash
-python3 goosetown/goosetown_cli.py connect
+goosetown connect
+# Option C users: python3 goosetown_cli.py connect
 ```
 
 ---
