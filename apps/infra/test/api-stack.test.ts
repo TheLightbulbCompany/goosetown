@@ -153,6 +153,61 @@ describe("ApiStack — ManagementApiUrl CfnOutput (rollback safety)", () => {
   });
 });
 
+describe("ApiStack — WS Lambdas must NOT be in VPC (regression guard)", () => {
+  // Removing VPC config from disconnect + default Lambdas was the
+  // architectural fix for the chronic prod-api deploy failures
+  // (UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS triggered by orphan
+  // Lambda VPC ENIs that detach asynchronously and outlast CFN's SG
+  // delete attempts). These functions only call public AWS services
+  // (DynamoDB, the public ALB, Secrets Manager, CloudWatch Logs) and
+  // do not need VPC reachability. IAM is the security boundary, not
+  // VPC placement.
+  //
+  // If a future change re-introduces VPC config on the WS Lambdas
+  // without first moving to a private-ALB / VPC-endpoint architecture,
+  // this test will fail and force a conscious decision.
+
+  test("authorizer Lambda is not in any VPC", () => {
+    const { template } = buildTestApp();
+    const fns = template.findResources("AWS::Lambda::Function");
+    const auth = Object.values(fns).find(
+      (r: any) => r.Properties?.FunctionName?.match?.(/ws-authorizer/) || (typeof r.Properties?.FunctionName === "string" && r.Properties.FunctionName.includes("ws-authorizer"))
+    ) as any;
+    expect(auth).toBeDefined();
+    expect(auth.Properties.VpcConfig).toBeUndefined();
+  });
+
+  test("connect Lambda is not in any VPC", () => {
+    const { template } = buildTestApp();
+    const fns = template.findResources("AWS::Lambda::Function");
+    const fn = Object.values(fns).find(
+      (r: any) => typeof r.Properties?.FunctionName === "string" && r.Properties.FunctionName.includes("ws-connect")
+    ) as any;
+    expect(fn).toBeDefined();
+    expect(fn.Properties.VpcConfig).toBeUndefined();
+  });
+
+  test("disconnect Lambda is not in any VPC", () => {
+    const { template } = buildTestApp();
+    const fns = template.findResources("AWS::Lambda::Function");
+    const fn = Object.values(fns).find(
+      (r: any) => typeof r.Properties?.FunctionName === "string" && r.Properties.FunctionName.includes("ws-disconnect")
+    ) as any;
+    expect(fn).toBeDefined();
+    expect(fn.Properties.VpcConfig).toBeUndefined();
+  });
+
+  test("default-route Lambda is not in any VPC", () => {
+    const { template } = buildTestApp();
+    const fns = template.findResources("AWS::Lambda::Function");
+    const fn = Object.values(fns).find(
+      (r: any) => typeof r.Properties?.FunctionName === "string" && r.Properties.FunctionName.includes("ws-default")
+    ) as any;
+    expect(fn).toBeDefined();
+    expect(fn.Properties.VpcConfig).toBeUndefined();
+  });
+});
+
 describe("ApiStack — prod-only legacy WS export preservation", () => {
   // The deployed prod-api template (synthed under an older CDK) carried an
   // 8-char auto-export hash: ExportsOutputRefWebSocketApi6DDF9954. Today's

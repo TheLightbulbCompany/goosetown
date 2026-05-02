@@ -368,6 +368,16 @@ def handler(event, context):
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
+    // No VPC config — this Lambda only calls public endpoints
+    // (DynamoDB, the public ALB at api-{env}.goosetown.isol8.co,
+    // CloudWatch Logs). Putting it in a VPC was forcing AWS to provision
+    // Lambda VPC ENIs, which detach asynchronously (20-45 min) on every
+    // immutable property change. CloudFormation tried to delete the
+    // function's SG before the ENIs cleared, leaving DELETE_FAILED
+    // tombstones that blocked subsequent deploys (the chronic prod-api
+    // failure mode through 2026-05-02). IAM is the security boundary
+    // for Lambda, not VPC placement; placing the function in a VPC adds
+    // no defense-in-depth when its only callees are public AWS services.
     const disconnectFn = new lambda_.Function(this, "DisconnectFunction", {
       functionName: `goosetown-${env}-ws-disconnect`,
       runtime: lambda_.Runtime.PYTHON_3_12,
@@ -375,8 +385,6 @@ def handler(event, context):
       timeout: cdk.Duration.seconds(15),
       memorySize: 128,
       logGroup: disconnectLogGroup,
-      vpc: props.vpc,
-      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       environment: {
         CONNECTIONS_TABLE: props.connectionsTable.tableName,
         BACKEND_URL:
@@ -435,6 +443,7 @@ def handler(event, context):
     const backendUrl =
       props.backendUrl ?? `http://api-${env}.goosetown.isol8.co`;
 
+    // No VPC config — see DisconnectFunction above for the same rationale.
     const defaultFn = new lambda_.Function(this, "DefaultRouteFunction", {
       functionName: `goosetown-${env}-ws-default`,
       runtime: lambda_.Runtime.PYTHON_3_12,
@@ -442,8 +451,6 @@ def handler(event, context):
       timeout: cdk.Duration.seconds(15),
       memorySize: 128,
       logGroup: defaultLogGroup,
-      vpc: props.vpc,
-      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       environment: {
         BACKEND_URL: backendUrl,
       },
