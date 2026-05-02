@@ -25,11 +25,20 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 
 from core.services.daemon_bridge import _apply_event_with_sleep_guard
 from core.services.game_server_client import get_game_server_client
 from core.services.town_agent_ws import get_town_agent_ws_manager
 from core.services.town_service import TownService
+
+# UUID4 pattern — the only identifier safe to use as a chat target.
+# Names and display names are not globally unique; two users can register
+# agents with the same name. The UUID is the canonical cross-account identity.
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +189,20 @@ async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
         _reject("missing_target_or_message")
         return
 
+    # Enforce UUID target — names are not globally unique. The TOWN_STATUS.md
+    # action menu always emits the UUID; if a name slips through it means the
+    # agent is using a stale or hand-written command. Fail fast so the agent
+    # knows to look up the correct ID rather than silently creating a broken
+    # conversation record.
+    if not _UUID_RE.match(target_agent_id):
+        logger.warning(
+            "chat rejected: target %r is not a UUID (agent %s)",
+            target_agent_id,
+            initiator_id,
+        )
+        _reject("target_must_be_uuid")
+        return
+
     # Load initiator from DB
     initiator = service.get_town_agent_by_id(initiator_id)
     if not initiator:
@@ -206,6 +229,20 @@ async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
     # Validate target is not already in a conversation
     if target.get("currentConversationId"):
         _reject("target_busy")
+        return
+
+    # Validate target's daemon is live. If the target isn't connected to the
+    # WebSocket, there is nobody to receive the conversation_invite — the
+    # invite would silently vanish and the initiator would get an orphaned
+    # conv_id with no reply path. Reject synchronously so the initiator's CLI
+    # sees "target_not_connected" rather than a silent {ok} that leads nowhere.
+    if ws_manager.get_by_agent_id(target_id) is None:
+        logger.info(
+            "chat rejected: target %s is not connected (initiator %s)",
+            target_id,
+            initiator_id,
+        )
+        _reject("target_not_connected")
         return
 
     # Validate agents are within proximity (3 tiles / 96px — same as game server)
