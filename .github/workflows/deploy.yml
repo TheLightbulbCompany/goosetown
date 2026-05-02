@@ -891,84 +891,6 @@ jobs:
           fail-on-empty-changeset: false
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
-  dev-goosetown-dev-network-Deploy:
-    name: Deploy devgoosetowndevnetwork3CAFCB24
-    permissions:
-      contents: read
-      id-token: write
-    needs:
-      - Build-Synth
-      - Assets-FileAsset6
-      - Assets-FileAsset7
-      - dev-goosetown-dev-observability-Deploy
-    runs-on: ubuntu-latest
-    steps:
-      - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
-      - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
-          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
-          role-external-id: Pipeline
-      - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v2
-        with:
-          name: goosetown-dev-network
-          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset6.outputs.asset-hash }}.json
-          fail-on-empty-changeset: false
-          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
-          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
-  dev-goosetown-dev-storage-Deploy:
-    name: Deploy devgoosetowndevstorage6624DD26
-    permissions:
-      contents: read
-      id-token: write
-    needs:
-      - Build-Synth
-      - Assets-FileAsset8
-      - Assets-FileAsset9
-      - dev-goosetown-dev-dns-Deploy
-    runs-on: ubuntu-latest
-    steps:
-      - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
-      - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
-          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
-          role-external-id: Pipeline
-      - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v2
-        with:
-          name: goosetown-dev-storage
-          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset8.outputs.asset-hash }}.json
-          fail-on-empty-changeset: false
-          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
-          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   dev-goosetown-dev-api-Deploy:
     name: Deploy devgoosetowndevapi9E367FB1
     permissions:
@@ -976,8 +898,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset10
-      - dev-goosetown-dev-network-Deploy
+      - Assets-FileAsset6
       - dev-goosetown-dev-auth-Deploy
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
@@ -1006,7 +927,85 @@ jobs:
         with:
           name: goosetown-dev-api
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset10.outputs.asset-hash }}.json
+            needs.Assets-FileAsset6.outputs.asset-hash }}.json
+          fail-on-empty-changeset: false
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  dev-goosetown-dev-network-Deploy:
+    name: Deploy devgoosetowndevnetwork3CAFCB24
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset7
+      - Assets-FileAsset8
+      - dev-goosetown-dev-observability-Deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v2
+        with:
+          name: goosetown-dev-network
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset7.outputs.asset-hash }}.json
+          fail-on-empty-changeset: false
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  dev-goosetown-dev-storage-Deploy:
+    name: Deploy devgoosetowndevstorage6624DD26
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset9
+      - Assets-FileAsset10
+      - dev-goosetown-dev-dns-Deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v2
+        with:
+          name: goosetown-dev-storage
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset9.outputs.asset-hash }}.json
           fail-on-empty-changeset: false
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1059,7 +1058,7 @@ jobs:
     needs:
       - Build-Synth
       - Assets-FileAsset12
-      - Assets-FileAsset9
+      - Assets-FileAsset10
       - Assets-DockerAsset2
       - dev-goosetown-dev-network-Deploy
       - dev-goosetown-dev-auth-Deploy
@@ -1110,9 +1109,9 @@ jobs:
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
       - dev-goosetown-dev-observability-Deploy
+      - dev-goosetown-dev-api-Deploy
       - dev-goosetown-dev-network-Deploy
       - dev-goosetown-dev-storage-Deploy
-      - dev-goosetown-dev-api-Deploy
       - dev-goosetown-dev-gameserver-Deploy
       - dev-goosetown-dev-compute-Deploy
       - Build-Synth
@@ -1182,9 +1181,9 @@ jobs:
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
       - dev-goosetown-dev-observability-Deploy
+      - dev-goosetown-dev-api-Deploy
       - dev-goosetown-dev-network-Deploy
       - dev-goosetown-dev-storage-Deploy
-      - dev-goosetown-dev-api-Deploy
       - dev-goosetown-dev-gameserver-Deploy
       - dev-goosetown-dev-compute-Deploy
       - dev-DeployVercelDev
@@ -1230,9 +1229,9 @@ jobs:
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
       - dev-goosetown-dev-observability-Deploy
+      - dev-goosetown-dev-api-Deploy
       - dev-goosetown-dev-network-Deploy
       - dev-goosetown-dev-storage-Deploy
-      - dev-goosetown-dev-api-Deploy
       - dev-goosetown-dev-gameserver-Deploy
       - dev-goosetown-dev-compute-Deploy
       - dev-DeployVercelDev
@@ -1278,9 +1277,9 @@ jobs:
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
       - dev-goosetown-dev-observability-Deploy
+      - dev-goosetown-dev-api-Deploy
       - dev-goosetown-dev-network-Deploy
       - dev-goosetown-dev-storage-Deploy
-      - dev-goosetown-dev-api-Deploy
       - dev-goosetown-dev-gameserver-Deploy
       - dev-goosetown-dev-compute-Deploy
       - dev-DeployVercelDev
@@ -1326,9 +1325,9 @@ jobs:
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
       - dev-goosetown-dev-observability-Deploy
+      - dev-goosetown-dev-api-Deploy
       - dev-goosetown-dev-network-Deploy
       - dev-goosetown-dev-storage-Deploy
-      - dev-goosetown-dev-api-Deploy
       - dev-goosetown-dev-gameserver-Deploy
       - dev-goosetown-dev-compute-Deploy
       - dev-DeployVercelDev
@@ -1374,9 +1373,9 @@ jobs:
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
       - dev-goosetown-dev-observability-Deploy
+      - dev-goosetown-dev-api-Deploy
       - dev-goosetown-dev-network-Deploy
       - dev-goosetown-dev-storage-Deploy
-      - dev-goosetown-dev-api-Deploy
       - dev-goosetown-dev-gameserver-Deploy
       - dev-goosetown-dev-compute-Deploy
       - dev-DeployVercelDev
@@ -1409,105 +1408,6 @@ jobs:
           fail-on-empty-changeset: false
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
-  prod-goosetown-prod-network-Deploy:
-    name: Deploy prodgoosetownprodnetwork0347EA57
-    permissions:
-      contents: read
-      id-token: write
-    needs:
-      - Build-Synth
-      - Assets-FileAsset18
-      - Assets-FileAsset7
-      - prod-goosetown-prod-observability-Deploy
-      - dev-goosetown-dev-auth-Deploy
-      - dev-goosetown-dev-cluster-Deploy
-      - dev-goosetown-dev-database-Deploy
-      - dev-goosetown-dev-dns-Deploy
-      - dev-goosetown-dev-observability-Deploy
-      - dev-goosetown-dev-network-Deploy
-      - dev-goosetown-dev-storage-Deploy
-      - dev-goosetown-dev-api-Deploy
-      - dev-goosetown-dev-gameserver-Deploy
-      - dev-goosetown-dev-compute-Deploy
-      - dev-DeployVercelDev
-    runs-on: ubuntu-latest
-    steps:
-      - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
-      - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
-          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
-          role-external-id: Pipeline
-      - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v2
-        with:
-          name: goosetown-prod-network
-          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset18.outputs.asset-hash }}.json
-          fail-on-empty-changeset: false
-          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
-          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
-  prod-goosetown-prod-storage-Deploy:
-    name: Deploy prodgoosetownprodstorageC91D586C
-    permissions:
-      contents: read
-      id-token: write
-    needs:
-      - Build-Synth
-      - Assets-FileAsset19
-      - prod-goosetown-prod-dns-Deploy
-      - dev-goosetown-dev-auth-Deploy
-      - dev-goosetown-dev-cluster-Deploy
-      - dev-goosetown-dev-database-Deploy
-      - dev-goosetown-dev-dns-Deploy
-      - dev-goosetown-dev-observability-Deploy
-      - dev-goosetown-dev-network-Deploy
-      - dev-goosetown-dev-storage-Deploy
-      - dev-goosetown-dev-api-Deploy
-      - dev-goosetown-dev-gameserver-Deploy
-      - dev-goosetown-dev-compute-Deploy
-      - dev-DeployVercelDev
-    runs-on: ubuntu-latest
-    steps:
-      - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
-      - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
-          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
-          role-external-id: Pipeline
-      - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v2
-        with:
-          name: goosetown-prod-storage
-          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset19.outputs.asset-hash }}.json
-          fail-on-empty-changeset: false
-          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
-          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   prod-goosetown-prod-api-Deploy:
     name: Deploy prodgoosetownprodapi41E363F5
     permissions:
@@ -1515,8 +1415,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset20
-      - prod-goosetown-prod-network-Deploy
+      - Assets-FileAsset18
       - prod-goosetown-prod-auth-Deploy
       - prod-goosetown-prod-database-Deploy
       - prod-goosetown-prod-dns-Deploy
@@ -1525,9 +1424,9 @@ jobs:
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
       - dev-goosetown-dev-observability-Deploy
+      - dev-goosetown-dev-api-Deploy
       - dev-goosetown-dev-network-Deploy
       - dev-goosetown-dev-storage-Deploy
-      - dev-goosetown-dev-api-Deploy
       - dev-goosetown-dev-gameserver-Deploy
       - dev-goosetown-dev-compute-Deploy
       - dev-DeployVercelDev
@@ -1556,6 +1455,105 @@ jobs:
         with:
           name: goosetown-prod-api
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset18.outputs.asset-hash }}.json
+          fail-on-empty-changeset: false
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  prod-goosetown-prod-network-Deploy:
+    name: Deploy prodgoosetownprodnetwork0347EA57
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset19
+      - Assets-FileAsset8
+      - prod-goosetown-prod-observability-Deploy
+      - dev-goosetown-dev-auth-Deploy
+      - dev-goosetown-dev-cluster-Deploy
+      - dev-goosetown-dev-database-Deploy
+      - dev-goosetown-dev-dns-Deploy
+      - dev-goosetown-dev-observability-Deploy
+      - dev-goosetown-dev-api-Deploy
+      - dev-goosetown-dev-network-Deploy
+      - dev-goosetown-dev-storage-Deploy
+      - dev-goosetown-dev-gameserver-Deploy
+      - dev-goosetown-dev-compute-Deploy
+      - dev-DeployVercelDev
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v2
+        with:
+          name: goosetown-prod-network
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset19.outputs.asset-hash }}.json
+          fail-on-empty-changeset: false
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  prod-goosetown-prod-storage-Deploy:
+    name: Deploy prodgoosetownprodstorageC91D586C
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset20
+      - prod-goosetown-prod-dns-Deploy
+      - dev-goosetown-dev-auth-Deploy
+      - dev-goosetown-dev-cluster-Deploy
+      - dev-goosetown-dev-database-Deploy
+      - dev-goosetown-dev-dns-Deploy
+      - dev-goosetown-dev-observability-Deploy
+      - dev-goosetown-dev-api-Deploy
+      - dev-goosetown-dev-network-Deploy
+      - dev-goosetown-dev-storage-Deploy
+      - dev-goosetown-dev-gameserver-Deploy
+      - dev-goosetown-dev-compute-Deploy
+      - dev-DeployVercelDev
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v2
+        with:
+          name: goosetown-prod-storage
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
             needs.Assets-FileAsset20.outputs.asset-hash }}.json
           fail-on-empty-changeset: false
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
@@ -1577,9 +1575,9 @@ jobs:
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
       - dev-goosetown-dev-observability-Deploy
+      - dev-goosetown-dev-api-Deploy
       - dev-goosetown-dev-network-Deploy
       - dev-goosetown-dev-storage-Deploy
-      - dev-goosetown-dev-api-Deploy
       - dev-goosetown-dev-gameserver-Deploy
       - dev-goosetown-dev-compute-Deploy
       - dev-DeployVercelDev
@@ -1635,9 +1633,9 @@ jobs:
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
       - dev-goosetown-dev-observability-Deploy
+      - dev-goosetown-dev-api-Deploy
       - dev-goosetown-dev-network-Deploy
       - dev-goosetown-dev-storage-Deploy
-      - dev-goosetown-dev-api-Deploy
       - dev-goosetown-dev-gameserver-Deploy
       - dev-goosetown-dev-compute-Deploy
       - dev-DeployVercelDev
@@ -1681,9 +1679,9 @@ jobs:
       - prod-goosetown-prod-database-Deploy
       - prod-goosetown-prod-dns-Deploy
       - prod-goosetown-prod-observability-Deploy
+      - prod-goosetown-prod-api-Deploy
       - prod-goosetown-prod-network-Deploy
       - prod-goosetown-prod-storage-Deploy
-      - prod-goosetown-prod-api-Deploy
       - prod-goosetown-prod-gameserver-Deploy
       - prod-goosetown-prod-compute-Deploy
       - Build-Synth
@@ -1692,9 +1690,9 @@ jobs:
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
       - dev-goosetown-dev-observability-Deploy
+      - dev-goosetown-dev-api-Deploy
       - dev-goosetown-dev-network-Deploy
       - dev-goosetown-dev-storage-Deploy
-      - dev-goosetown-dev-api-Deploy
       - dev-goosetown-dev-gameserver-Deploy
       - dev-goosetown-dev-compute-Deploy
       - dev-DeployVercelDev
