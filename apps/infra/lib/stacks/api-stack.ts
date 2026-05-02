@@ -629,5 +629,36 @@ def handler(event, context):
       exportName: `goosetown-${env}-management-api-url`,
     });
 
+    // ─── Prod-only: preserve legacy WebSocketApi auto-export name ─────────
+    //
+    // The deployed prod-api template (originally synthed under an older
+    // CDK) emits the cross-stack auto-export
+    //   goosetown-prod-api:ExportsOutputRefWebSocketApi6DDF9954
+    // (8-char hash). Today's CDK derives a 16-char hash for the same
+    // construct path, so a fresh synth's auto-export has a different name.
+    // CFN sees the old export disappearing and tries to delete it — which
+    // fails because goosetown-prod-compute still imports the old name:
+    //
+    //   "Cannot delete export goosetown-prod-api:ExportsOutputRefWeb
+    //    SocketApi6DDF9954 as it is in use by goosetown-prod-compute"
+    //
+    // (deploy run 25256962682, 2026-05-02 16:57 UTC; same on the prior
+    // run #25245104154.)
+    //
+    // Re-emit the old name explicitly *only for prod*. The new auto-gen
+    // export (with the 16-char hash) coexists under a different name, so
+    // there's no duplicate. After prod-compute redeploys (its current
+    // source no longer imports wsApi.apiId — the import in the deployed
+    // template is residual), this block becomes safe to remove.
+    //
+    // Dev does not need this: its deployed compute template already
+    // imports the 16-char-hash form (matching today's synth), so the
+    // auto-export name is stable across redeploys.
+    if (env === "prod") {
+      new cdk.CfnOutput(this, "LegacyWsApiAutoExportProd", {
+        value: wsApi.apiId,
+        exportName: "goosetown-prod-api:ExportsOutputRefWebSocketApi6DDF9954",
+      });
+    }
   }
 }
