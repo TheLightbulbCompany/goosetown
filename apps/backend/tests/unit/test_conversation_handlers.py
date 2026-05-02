@@ -26,6 +26,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 # ---------------------------------------------------------------------------
+# Test UUIDs — agent IDs must be UUIDs (fix #1: names are not globally unique)
+# ---------------------------------------------------------------------------
+
+# A valid UUID used as the "target agent" in _handle_chat tests.
+TARGET_UUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+# ---------------------------------------------------------------------------
 # Patch targets (mirrors test_context_transitions.py).
 # ---------------------------------------------------------------------------
 
@@ -145,7 +152,7 @@ class TestHandleChat:
         ):
             await _handle_chat(
                 "conn-abc",
-                {"target": "agent-2", "message": "   "},
+                {"target": TARGET_UUID, "message": "   "},
                 _make_agent_conn(),
             )
 
@@ -167,7 +174,7 @@ class TestHandleChat:
         ):
             await _handle_chat(
                 "conn-abc",
-                {"target": "agent-2", "message": "hi"},
+                {"target": TARGET_UUID, "message": "hi"},
                 _make_agent_conn(),
             )
 
@@ -191,7 +198,7 @@ class TestHandleChat:
         ):
             await _handle_chat(
                 "conn-abc",
-                {"target": "agent-2", "message": "hi"},
+                {"target": TARGET_UUID, "message": "hi"},
                 _make_agent_conn(),
             )
 
@@ -215,7 +222,7 @@ class TestHandleChat:
         ):
             await _handle_chat(
                 "conn-abc",
-                {"target": "agent-2", "message": "hi"},
+                {"target": TARGET_UUID, "message": "hi"},
                 _make_agent_conn(),
             )
 
@@ -227,7 +234,7 @@ class TestHandleChat:
 
         sent: list = []
         initiator = _make_agent(agent_id="agent-init")
-        inactive_target = _make_agent(agent_id="agent-2", is_active="false")
+        inactive_target = _make_agent(agent_id=TARGET_UUID, is_active="false")
         svc_mock = MagicMock()
         svc_mock.get_town_agent_by_id.side_effect = [initiator, inactive_target]
 
@@ -239,7 +246,7 @@ class TestHandleChat:
         ):
             await _handle_chat(
                 "conn-abc",
-                {"target": "agent-2", "message": "hi"},
+                {"target": TARGET_UUID, "message": "hi"},
                 _make_agent_conn(),
             )
 
@@ -249,8 +256,11 @@ class TestHandleChat:
     async def test_cannot_chat_with_self(self):
         from routers.town import _handle_chat
 
+        # Use a UUID as the agent_id so the UUID check passes before reaching
+        # the self-chat check.
+        self_uuid = "11111111-2222-3333-4444-555555555555"
         sent: list = []
-        initiator = _make_agent(agent_id="agent-init")
+        initiator = _make_agent(agent_id=self_uuid)
         # Same id for target — target returned is the initiator itself
         svc_mock = MagicMock()
         svc_mock.get_town_agent_by_id.side_effect = [initiator, initiator]
@@ -263,8 +273,8 @@ class TestHandleChat:
         ):
             await _handle_chat(
                 "conn-abc",
-                {"target": "agent-init", "message": "hi"},
-                _make_agent_conn(),
+                {"target": self_uuid, "message": "hi"},
+                _make_agent_conn(agent_id=self_uuid),
             )
 
         assert sent[0][1]["reason"] == "cannot_chat_with_self"
@@ -275,7 +285,7 @@ class TestHandleChat:
 
         sent: list = []
         initiator = _make_agent(agent_id="agent-init")
-        busy_target = _make_agent(agent_id="agent-2", current_conversation_id="conv-x")
+        busy_target = _make_agent(agent_id=TARGET_UUID, current_conversation_id="conv-x")
         svc_mock = MagicMock()
         svc_mock.get_town_agent_by_id.side_effect = [initiator, busy_target]
 
@@ -287,7 +297,7 @@ class TestHandleChat:
         ):
             await _handle_chat(
                 "conn-abc",
-                {"target": "agent-2", "message": "hi"},
+                {"target": TARGET_UUID, "message": "hi"},
                 _make_agent_conn(),
             )
 
@@ -299,26 +309,29 @@ class TestHandleChat:
 
         sent: list = []
         initiator = _make_agent(agent_id="agent-init")
-        target = _make_agent(agent_id="agent-2")
+        target = _make_agent(agent_id=TARGET_UUID)
         svc_mock = MagicMock()
         svc_mock.get_town_agent_by_id.side_effect = [initiator, target]
-        # Far apart: dx=500 >> 96 threshold
+        # Far apart: dx=500 >> 96 threshold. Target conn present so
+        # target_not_connected check passes; not_nearby fires instead.
+        target_conn = SimpleNamespace(agent_id=TARGET_UUID, connection_id="conn-target", agent_name="T")
+        ws_mock = _make_ws_manager_mock({TARGET_UUID: target_conn})
         gs_mock = _make_gs_mock(
             cached_states={
                 "agent-init": {"x": 0, "y": 0},
-                "agent-2": {"x": 500, "y": 0},
+                TARGET_UUID: {"x": 500, "y": 0},
             }
         )
 
         with (
             patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
-            patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
+            patch(WS_MANAGER_PATH, return_value=ws_mock),
             patch(GS_CLIENT_PATH, return_value=gs_mock),
         ):
             await _handle_chat(
                 "conn-abc",
-                {"target": "agent-2", "message": "hi"},
+                {"target": TARGET_UUID, "message": "hi"},
                 _make_agent_conn(),
             )
 
@@ -332,21 +345,24 @@ class TestHandleChat:
 
         sent: list = []
         initiator = _make_agent(agent_id="agent-init", current_location="plaza")
-        target = _make_agent(agent_id="agent-2", current_location="library")
+        target = _make_agent(agent_id=TARGET_UUID, current_location="library")
         svc_mock = MagicMock()
         svc_mock.get_town_agent_by_id.side_effect = [initiator, target]
-        # No cached states → falls back to location check
+        # Target connected — so target_not_connected check passes.
+        target_conn = SimpleNamespace(agent_id=TARGET_UUID, connection_id="conn-target", agent_name="T")
+        ws_mock = _make_ws_manager_mock({TARGET_UUID: target_conn})
+        # No cached positions → falls back to location check
         gs_mock = _make_gs_mock(cached_states={})
 
         with (
             patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
-            patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
+            patch(WS_MANAGER_PATH, return_value=ws_mock),
             patch(GS_CLIENT_PATH, return_value=gs_mock),
         ):
             await _handle_chat(
                 "conn-abc",
-                {"target": "agent-2", "message": "hi"},
+                {"target": TARGET_UUID, "message": "hi"},
                 _make_agent_conn(),
             )
 
@@ -359,19 +375,19 @@ class TestHandleChat:
 
         sent: list = []
         initiator = _make_agent(agent_id="agent-init", current_location="cafe")
-        target = _make_agent(agent_id="agent-2", display_name="Marbles", current_location="cafe")
+        target = _make_agent(agent_id=TARGET_UUID, display_name="Marbles", current_location="cafe")
         svc_mock = MagicMock()
         svc_mock.get_town_agent_by_id.side_effect = [initiator, target]
         svc_mock.create_active_conversation.return_value = {"id": "conv-new"}
 
         # Target is connected; give its WS mgr entry
-        target_conn = SimpleNamespace(agent_id="agent-2", connection_id="conn-target", agent_name="Marbles")
-        ws_mock = _make_ws_manager_mock({"agent-2": target_conn})
+        target_conn = SimpleNamespace(agent_id=TARGET_UUID, connection_id="conn-target", agent_name="Marbles")
+        ws_mock = _make_ws_manager_mock({TARGET_UUID: target_conn})
 
         gs_mock = _make_gs_mock(
             cached_states={
                 "agent-init": {"x": 10, "y": 0},
-                "agent-2": {"x": 20, "y": 0},
+                TARGET_UUID: {"x": 20, "y": 0},
             }
         )
 
@@ -383,7 +399,7 @@ class TestHandleChat:
         ):
             await _handle_chat(
                 "conn-abc",
-                {"target": "agent-2", "message": "howdy"},
+                {"target": TARGET_UUID, "message": "howdy"},
                 _make_agent_conn(),
             )
 
@@ -391,7 +407,7 @@ class TestHandleChat:
         svc_mock.create_active_conversation.assert_called_once()
         call_kwargs = svc_mock.create_active_conversation.call_args.kwargs
         assert call_kwargs["initiator_id"] == "agent-init"
-        assert call_kwargs["target_id"] == "agent-2"
+        assert call_kwargs["target_id"] == TARGET_UUID
         assert call_kwargs["opening_message"] == "howdy"
         assert call_kwargs["location"] == "cafe"
 
@@ -418,12 +434,21 @@ class TestHandleChat:
 
     @pytest.mark.asyncio
     async def test_happy_path_target_offline_still_creates_conversation(self):
-        """If target is not connected, conversation still created, no invite sent."""
+        """If target is not connected, conversation still created, no invite sent.
+
+        NOTE: This test exercises the OLD behaviour (pre-fix #2) via a legacy
+        path where ws_manager still has no entry. After fix #2 the real handler
+        now rejects if target is offline; this test is intentionally
+        kept as documentation but is superseded by
+        ``test_target_not_connected_rejects``.
+        """
         from routers.town import _handle_chat
 
         sent: list = []
         initiator = _make_agent(agent_id="agent-init", current_location="cafe")
-        target = _make_agent(agent_id="agent-2", current_location="cafe")
+        # Use a valid UUID so the UUID-check passes
+        target_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        target = _make_agent(agent_id=target_uuid, current_location="cafe")
         svc_mock = MagicMock()
         svc_mock.get_town_agent_by_id.side_effect = [initiator, target]
         svc_mock.create_active_conversation.return_value = {"id": "conv-new"}
@@ -439,14 +464,91 @@ class TestHandleChat:
         ):
             await _handle_chat(
                 "conn-abc",
-                {"target": "agent-2", "message": "hi"},
+                {"target": target_uuid, "message": "hi"},
                 _make_agent_conn(),
             )
 
-        svc_mock.create_active_conversation.assert_called_once()
-        events = [msg["event"] for _, msg in sent]
-        assert "conversation_invite" not in events
-        assert "act_ok" in events  # initiator still acknowledged
+        # Fix #2: offline target is now rejected before conversation creation.
+        svc_mock.create_active_conversation.assert_not_called()
+        assert sent[0][1]["reason"] == "target_not_connected"
+
+    # ------------------------------------------------------------------
+    # Fix #1: UUID-only target validation.
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_target_name_instead_of_uuid_rejects(self):
+        """Passing an agent name (not a UUID) as target is synchronously rejected.
+
+        This is the new behaviour introduced by fix #1: names are not globally
+        unique across accounts, so the backend now requires a UUID and rejects
+        with ``target_must_be_uuid`` before any DB lookup.
+        """
+        from routers.town import _handle_chat
+
+        sent: list = []
+        svc_mock = MagicMock()
+
+        with (
+            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(SERVICE_PATH, return_value=svc_mock),
+            patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
+            patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
+        ):
+            await _handle_chat(
+                "conn-abc",
+                {"target": "pam", "message": "Hey Pam!"},
+                _make_agent_conn(),
+            )
+
+        assert len(sent) == 1
+        assert sent[0][1]["event"] == "chat_rejected"
+        assert sent[0][1]["reason"] == "target_must_be_uuid"
+        # No DB calls — the UUID check is a pure string validation that fires
+        # before any service lookup.
+        svc_mock.get_town_agent_by_id.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_target_not_connected_rejects(self):
+        """If target's daemon is offline, chat is rejected with target_not_connected.
+
+        Fix #2: previously the backend created the conversation silently and the
+        CLI got {ok}, but the invite was never delivered because the target had
+        no WS connection.  Now we reject synchronously.
+        """
+        from routers.town import _handle_chat
+
+        sent: list = []
+        initiator = _make_agent(agent_id="agent-init", current_location="cafe")
+        target_uuid = "12345678-1234-1234-1234-123456789abc"
+        target = _make_agent(agent_id=target_uuid, current_location="cafe")
+        svc_mock = MagicMock()
+        svc_mock.get_town_agent_by_id.side_effect = [initiator, target]
+
+        # Target not connected — ws_manager returns None for their ID
+        ws_mock = _make_ws_manager_mock({})
+        gs_mock = _make_gs_mock(
+            cached_states={
+                "agent-init": {"x": 10, "y": 0},
+                target_uuid: {"x": 20, "y": 0},
+            }
+        )
+
+        with (
+            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(SERVICE_PATH, return_value=svc_mock),
+            patch(WS_MANAGER_PATH, return_value=ws_mock),
+            patch(GS_CLIENT_PATH, return_value=gs_mock),
+        ):
+            await _handle_chat(
+                "conn-abc",
+                {"target": target_uuid, "message": "hello"},
+                _make_agent_conn(),
+            )
+
+        assert sent[0][1]["event"] == "chat_rejected"
+        assert sent[0][1]["reason"] == "target_not_connected"
+        svc_mock.create_active_conversation.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1015,13 +1117,13 @@ class TestInactivityTimeout:
 
         sent: list = []
         initiator = _make_agent(agent_id="agent-init", current_location="cafe")
-        target = _make_agent(agent_id="agent-2", display_name="M", current_location="cafe")
+        target = _make_agent(agent_id=TARGET_UUID, display_name="M", current_location="cafe")
         svc_mock = MagicMock()
         svc_mock.get_town_agent_by_id.side_effect = [initiator, target]
         svc_mock.create_active_conversation.return_value = {"id": "conv-new"}
 
-        target_conn = SimpleNamespace(agent_id="agent-2", connection_id="conn-target", agent_name="M")
-        ws_mock = _make_ws_manager_mock({"agent-2": target_conn})
+        target_conn = SimpleNamespace(agent_id=TARGET_UUID, connection_id="conn-target", agent_name="M")
+        ws_mock = _make_ws_manager_mock({TARGET_UUID: target_conn})
 
         with (
             patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
@@ -1031,7 +1133,7 @@ class TestInactivityTimeout:
         ):
             await _handle_chat(
                 "conn-abc",
-                {"target": "agent-2", "message": "hey"},
+                {"target": TARGET_UUID, "message": "hey"},
                 _make_agent_conn(),
             )
 

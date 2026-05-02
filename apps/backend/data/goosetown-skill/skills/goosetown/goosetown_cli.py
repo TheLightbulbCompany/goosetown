@@ -1593,6 +1593,18 @@ class TownDaemon:
         energy = agent.get("energy", 100)
         location_context = agent.get("location_context", "town")
 
+        # Self-heal stale onboardingPhase: if the cached phase is "static"
+        # but the agent state already has spriteReady=True, transition to
+        # "alive" immediately. This happens when the daemon is restarted
+        # after sprite generation completed (or when phase tracking was
+        # introduced after the agent was already registered and sprite-ready).
+        # Without this guard the daemon writes the "sprite generating" blurb
+        # forever even though the agent is fully live.
+        if agent.get("onboardingPhase") == "static" and agent.get("spriteReady"):
+            log.info("onboardingPhase self-heal: spriteReady=True, transitioning static → alive")
+            agent["onboardingPhase"] = "alive"
+            self.state["agent"]["onboardingPhase"] = "alive"
+
         # Onboarding short-circuit: sprite is still being generated.
         # Write the welcome blurb and stop — UNLESS the agent is in an
         # active conversation, which always takes priority.
