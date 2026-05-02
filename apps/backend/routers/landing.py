@@ -45,13 +45,13 @@ async def signup(req: SignupRequest):
     )
 
     try:
-        await client.add_contact(req.email)
+        result = await client.add_contact(req.email)
     except ResendError as exc:
         if 400 <= exc.status < 500:
             raise HTTPException(status_code=400, detail="Could not add to list") from exc
         raise HTTPException(status_code=503, detail="Signup temporarily unavailable") from exc
 
-    return {"status": "ok"}
+    return {"status": result}  # "created" | "already_subscribed"
 
 
 @router.get("/healthz", status_code=200)

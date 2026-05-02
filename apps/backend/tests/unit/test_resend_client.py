@@ -14,8 +14,9 @@ async def test_add_contact_posts_to_resend_audiences_endpoint():
     mock_response = httpx.Response(200, json={"id": "contact-abc"})
 
     with patch("httpx.AsyncClient.post", new=AsyncMock(return_value=mock_response)) as mock_post:
-        await client.add_contact("user@example.com")
+        result = await client.add_contact("user@example.com")
 
+    assert result == "created"
     mock_post.assert_called_once()
     call_args = mock_post.call_args
     assert "audiences/aud-123/contacts" in call_args.args[0]
@@ -57,5 +58,8 @@ async def test_add_contact_treats_already_exists_as_success():
     mock_response = httpx.Response(422, json={"name": "validation_error", "message": "Contact already exists."})
 
     with patch("httpx.AsyncClient.post", new=AsyncMock(return_value=mock_response)):
-        # Should NOT raise
-        await client.add_contact("dup@example.com")
+        # Should NOT raise. Returns the distinct ``already_subscribed`` flag
+        # so the UI can show different copy than for a brand-new signup.
+        result = await client.add_contact("dup@example.com")
+
+    assert result == "already_subscribed"
