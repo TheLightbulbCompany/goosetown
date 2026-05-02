@@ -229,7 +229,7 @@ jobs:
           role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
       - id: Publish
         name: Publish Assets-FileAsset13
-        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset13-step.sh
+        run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset13-step.sh
   Assets-FileAsset14:
     name: Publish Assets Assets-FileAsset14
     needs:
@@ -257,7 +257,7 @@ jobs:
           role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
       - id: Publish
         name: Publish Assets-FileAsset14
-        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset14-step.sh
+        run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset14-step.sh
   Assets-FileAsset15:
     name: Publish Assets Assets-FileAsset15
     needs:
@@ -285,7 +285,7 @@ jobs:
           role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
       - id: Publish
         name: Publish Assets-FileAsset15
-        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset15-step.sh
+        run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset15-step.sh
   Assets-FileAsset16:
     name: Publish Assets Assets-FileAsset16
     needs:
@@ -313,7 +313,7 @@ jobs:
           role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
       - id: Publish
         name: Publish Assets-FileAsset16
-        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset16-step.sh
+        run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset16-step.sh
   Assets-FileAsset17:
     name: Publish Assets Assets-FileAsset17
     needs:
@@ -510,6 +510,118 @@ jobs:
       - id: Publish
         name: Publish Assets-FileAsset22
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset22-step.sh
+  Assets-FileAsset23:
+    name: Publish Assets Assets-FileAsset23
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Download cdk.out
+        uses: actions/download-artifact@v8
+        with:
+          name: cdk.out
+          path: cdk.out
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
+      - id: Publish
+        name: Publish Assets-FileAsset23
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset23-step.sh
+  Assets-FileAsset24:
+    name: Publish Assets Assets-FileAsset24
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Download cdk.out
+        uses: actions/download-artifact@v8
+        with:
+          name: cdk.out
+          path: cdk.out
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
+      - id: Publish
+        name: Publish Assets-FileAsset24
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset24-step.sh
+  Assets-FileAsset25:
+    name: Publish Assets Assets-FileAsset25
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Download cdk.out
+        uses: actions/download-artifact@v8
+        with:
+          name: cdk.out
+          path: cdk.out
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
+      - id: Publish
+        name: Publish Assets-FileAsset25
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset25-step.sh
+  Assets-FileAsset26:
+    name: Publish Assets Assets-FileAsset26
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Download cdk.out
+        uses: actions/download-artifact@v8
+        with:
+          name: cdk.out
+          path: cdk.out
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
+      - id: Publish
+        name: Publish Assets-FileAsset26
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset26-step.sh
   Assets-FileAsset3:
     name: Publish Assets Assets-FileAsset3
     needs:
@@ -899,6 +1011,10 @@ jobs:
     needs:
       - Build-Synth
       - Assets-FileAsset6
+      - Assets-FileAsset7
+      - Assets-FileAsset8
+      - Assets-FileAsset9
+      - Assets-FileAsset10
       - dev-goosetown-dev-auth-Deploy
       - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-dns-Deploy
@@ -938,8 +1054,8 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset7
-      - Assets-FileAsset8
+      - Assets-FileAsset11
+      - Assets-FileAsset12
       - dev-goosetown-dev-observability-Deploy
     runs-on: ubuntu-latest
     steps:
@@ -966,7 +1082,7 @@ jobs:
         with:
           name: goosetown-dev-network
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset7.outputs.asset-hash }}.json
+            needs.Assets-FileAsset11.outputs.asset-hash }}.json
           fail-on-empty-changeset: false
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -977,8 +1093,8 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset9
-      - Assets-FileAsset10
+      - Assets-FileAsset13
+      - Assets-FileAsset14
       - dev-goosetown-dev-dns-Deploy
     runs-on: ubuntu-latest
     steps:
@@ -1005,7 +1121,7 @@ jobs:
         with:
           name: goosetown-dev-storage
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset9.outputs.asset-hash }}.json
+            needs.Assets-FileAsset13.outputs.asset-hash }}.json
           fail-on-empty-changeset: false
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1016,7 +1132,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset11
+      - Assets-FileAsset15
       - Assets-DockerAsset1
       - dev-goosetown-dev-network-Deploy
       - dev-goosetown-dev-cluster-Deploy
@@ -1046,7 +1162,7 @@ jobs:
         with:
           name: goosetown-dev-gameserver
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset11.outputs.asset-hash }}.json
+            needs.Assets-FileAsset15.outputs.asset-hash }}.json
           fail-on-empty-changeset: false
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1057,8 +1173,8 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset12
-      - Assets-FileAsset10
+      - Assets-FileAsset16
+      - Assets-FileAsset14
       - Assets-DockerAsset2
       - dev-goosetown-dev-network-Deploy
       - dev-goosetown-dev-auth-Deploy
@@ -1094,7 +1210,7 @@ jobs:
         with:
           name: goosetown-dev-compute
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset12.outputs.asset-hash }}.json
+            needs.Assets-FileAsset16.outputs.asset-hash }}.json
           fail-on-empty-changeset: false
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1175,7 +1291,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset13
+      - Assets-FileAsset17
       - dev-goosetown-dev-auth-Deploy
       - dev-goosetown-dev-cluster-Deploy
       - dev-goosetown-dev-database-Deploy
@@ -1212,7 +1328,7 @@ jobs:
         with:
           name: goosetown-prod-auth
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset13.outputs.asset-hash }}.json
+            needs.Assets-FileAsset17.outputs.asset-hash }}.json
           fail-on-empty-changeset: false
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1223,7 +1339,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset14
+      - Assets-FileAsset18
       - dev-goosetown-dev-auth-Deploy
       - dev-goosetown-dev-cluster-Deploy
       - dev-goosetown-dev-database-Deploy
@@ -1260,7 +1376,7 @@ jobs:
         with:
           name: goosetown-prod-cluster
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset14.outputs.asset-hash }}.json
+            needs.Assets-FileAsset18.outputs.asset-hash }}.json
           fail-on-empty-changeset: false
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1271,7 +1387,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset15
+      - Assets-FileAsset19
       - dev-goosetown-dev-auth-Deploy
       - dev-goosetown-dev-cluster-Deploy
       - dev-goosetown-dev-database-Deploy
@@ -1308,7 +1424,7 @@ jobs:
         with:
           name: goosetown-prod-database
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset15.outputs.asset-hash }}.json
+            needs.Assets-FileAsset19.outputs.asset-hash }}.json
           fail-on-empty-changeset: false
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1319,7 +1435,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset16
+      - Assets-FileAsset20
       - dev-goosetown-dev-auth-Deploy
       - dev-goosetown-dev-cluster-Deploy
       - dev-goosetown-dev-database-Deploy
@@ -1356,7 +1472,7 @@ jobs:
         with:
           name: goosetown-prod-dns
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset16.outputs.asset-hash }}.json
+            needs.Assets-FileAsset20.outputs.asset-hash }}.json
           fail-on-empty-changeset: false
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1367,7 +1483,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset17
+      - Assets-FileAsset21
       - dev-goosetown-dev-auth-Deploy
       - dev-goosetown-dev-cluster-Deploy
       - dev-goosetown-dev-database-Deploy
@@ -1404,7 +1520,7 @@ jobs:
         with:
           name: goosetown-prod-observability
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset17.outputs.asset-hash }}.json
+            needs.Assets-FileAsset21.outputs.asset-hash }}.json
           fail-on-empty-changeset: false
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1415,7 +1531,11 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset18
+      - Assets-FileAsset22
+      - Assets-FileAsset7
+      - Assets-FileAsset8
+      - Assets-FileAsset9
+      - Assets-FileAsset10
       - prod-goosetown-prod-auth-Deploy
       - prod-goosetown-prod-database-Deploy
       - prod-goosetown-prod-dns-Deploy
@@ -1455,7 +1575,7 @@ jobs:
         with:
           name: goosetown-prod-api
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset18.outputs.asset-hash }}.json
+            needs.Assets-FileAsset22.outputs.asset-hash }}.json
           fail-on-empty-changeset: false
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1466,8 +1586,8 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset19
-      - Assets-FileAsset8
+      - Assets-FileAsset23
+      - Assets-FileAsset12
       - prod-goosetown-prod-observability-Deploy
       - dev-goosetown-dev-auth-Deploy
       - dev-goosetown-dev-cluster-Deploy
@@ -1505,7 +1625,7 @@ jobs:
         with:
           name: goosetown-prod-network
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset19.outputs.asset-hash }}.json
+            needs.Assets-FileAsset23.outputs.asset-hash }}.json
           fail-on-empty-changeset: false
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1516,7 +1636,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset20
+      - Assets-FileAsset24
       - prod-goosetown-prod-dns-Deploy
       - dev-goosetown-dev-auth-Deploy
       - dev-goosetown-dev-cluster-Deploy
@@ -1554,7 +1674,7 @@ jobs:
         with:
           name: goosetown-prod-storage
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset20.outputs.asset-hash }}.json
+            needs.Assets-FileAsset24.outputs.asset-hash }}.json
           fail-on-empty-changeset: false
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1565,7 +1685,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset21
+      - Assets-FileAsset25
       - Assets-DockerAsset1
       - prod-goosetown-prod-network-Deploy
       - prod-goosetown-prod-cluster-Deploy
@@ -1606,7 +1726,7 @@ jobs:
         with:
           name: goosetown-prod-gameserver
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset21.outputs.asset-hash }}.json
+            needs.Assets-FileAsset25.outputs.asset-hash }}.json
           fail-on-empty-changeset: false
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1617,7 +1737,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset22
+      - Assets-FileAsset26
       - Assets-DockerAsset2
       - prod-goosetown-prod-network-Deploy
       - prod-goosetown-prod-auth-Deploy
@@ -1664,7 +1784,7 @@ jobs:
         with:
           name: goosetown-prod-compute
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset22.outputs.asset-hash }}.json
+            needs.Assets-FileAsset26.outputs.asset-hash }}.json
           fail-on-empty-changeset: false
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
