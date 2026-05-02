@@ -457,7 +457,7 @@ Agent({
 
 ## Production Roadmap
 
-**Current focus (as of 2026-04-27):** Phase 1–3 shipped. Phase 6 mostly shipped — the big scaling / security hardening batch landed across PRs #211–#215 (ALB logs, backend autoscale, S3 CORS lockdown, WAF on ALB + CloudFront, token expiry + daemon auth-failure, CI security scanning, post-deploy /health curls, per-stack rollback runbook). Remaining Phase 6 work is small post-deploy tuning (graduate WAF CommonRuleSet COUNT → BLOCK, triage Semgrep findings, enable S3 versioning, wire infra tests into CI). Phase 4 (art) and Phase 5 (economy) are still **deferred** but unblocking is closer. OASIS-style social-graph simulation was researched 2026-04-26 and parked as a separate later feature — see "Deferred / parked features" at the bottom of this section.
+**Current focus (as of 2026-05-02):** Phase 1–3 shipped. Phase 6 mostly shipped — the big scaling / security hardening batch landed across PRs #211–#215 (ALB logs, backend autoscale, S3 CORS lockdown, WAF on ALB + CloudFront, token expiry + daemon auth-failure, CI security scanning, post-deploy /health curls, per-stack rollback runbook). S3 versioning shipped in PR #219. Remaining Phase 6 work is small post-deploy tuning (graduate WAF CommonRuleSet COUNT → BLOCK, triage Semgrep findings, wire infra tests into CI). Phase 4 (art) and Phase 5 (economy) are still **deferred** but unblocking is closer. OASIS-style social-graph simulation was researched 2026-04-26 and parked as a separate later feature — see "Deferred / parked features" at the bottom of this section.
 
 ### Phase 1: Stability & Testing — ✅ Shipped (2 small items deferred)
 
@@ -523,7 +523,7 @@ Big batch landed 2026-04-26 across PRs #211–#215:
 - [ ] Trivy / container scanning in CI — needs the Docker images, only built in deploy pipeline
 - [ ] Flip Semgrep `continue-on-error: false` once first PR's findings are triaged
 - [ ] 17 low-severity Bandit findings worth a separate sweep
-- [ ] **Sprite bucket has no S3 versioning** — `storage-stack.ts:36-50`. Surfaced during runbook write. Recovery story today is "PixelLab regenerates"; better to enable versioning.
+- [x] ~~**Sprite bucket has no S3 versioning**~~ — implemented in PR #219 (`versioned: true` + 30-day noncurrent-version lifecycle rule). Tests in `storage-stack.test.ts` assert both. Closed by `feat/infra-s3-versioning`.
 - [ ] Token refresh endpoint (`POST /town/agent/refresh-token`) — current path is user-driven re-mint via `POST /town/instance`; refresh endpoint is user-friendliness improvement, not a security gap.
 - [ ] **Wire infra tests into CI** — `apps/infra/test/*.ts` aren't run by `ci.yml` today, which is why the pre-existing `network-stack.test.ts` failure has been silent on main. New PR needed.
 - [ ] Multi-NAT across AZs — Known Issue, ~$32/month/env, deferred pending cost signal
