@@ -5,7 +5,9 @@ import * as ec2 from "aws-cdk-lib/aws-ec2";
 import { ClusterStack } from "../lib/stacks/cluster-stack";
 
 describe("ClusterStack", () => {
-  test("creates exactly one ECS cluster named goosetown-{env}", () => {
+  test("creates exactly one ECS cluster named goosetown-{env}-shared", () => {
+    // The "-shared" suffix avoids collision with the legacy `goosetown-${env}`
+    // cluster name still claimed by the pre-sub-2 ComputeStack template.
     const app = new cdk.App();
     const vpcStack = new cdk.Stack(app, "VpcParent");
     const vpc = new ec2.Vpc(vpcStack, "Vpc", { maxAzs: 2 });
@@ -18,7 +20,7 @@ describe("ClusterStack", () => {
     const t = Template.fromStack(stack);
     t.resourceCountIs("AWS::ECS::Cluster", 1);
     t.hasResourceProperties("AWS::ECS::Cluster", {
-      ClusterName: "goosetown-dev",
+      ClusterName: "goosetown-dev-shared",
     });
   });
 
