@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Routes, Route, useLocation, useNavigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { SignedIn, SignedOut, UserButton, useAuth } from '@clerk/clerk-react';
 import { ToastContainer, toast } from 'react-toastify';
 import TownNav from './components/TownNav.tsx';
@@ -12,10 +12,12 @@ import MusicButton from './components/buttons/MusicButton.tsx';
 import JoinTownModal from './components/JoinTownModal.tsx';
 import OwnerChatPanel from './components/OwnerChatPanel.tsx';
 import { useApartment } from './hooks/useApartment.ts';
+import { QuotaIndicator } from './components/QuotaIndicator.tsx';
 import { SCENES, sceneForPath } from './scenes.ts';
 import InteriorRoute from './components/InteriorRoute.tsx';
 import SignInPage from './pages/SignIn.tsx';
 import SignUpPage from './pages/SignUp.tsx';
+import { Landing } from './pages/Landing.tsx';
 
 function AgentsSidebar({
   onJoinClick,
@@ -45,6 +47,7 @@ function AgentsSidebar({
           </div>
         </SignedIn>
         <ConversationsLog />
+        <QuotaIndicator />
       </>
     );
   }
@@ -83,6 +86,7 @@ function AgentsSidebar({
         </div>
       )}
       <ConversationsLog />
+      <QuotaIndicator />
     </>
   );
 }
@@ -106,7 +110,7 @@ export default function App() {
   // camera to that agent. Retries for a few seconds to handle the case where
   // the Godot scene is still switching from apartment to town.
   useEffect(() => {
-    if (location.pathname !== '/') return;
+    if (location.pathname !== '/town') return;
     const params = new URLSearchParams(location.search);
     const focus = params.get('focus');
     if (!focus) return;
@@ -129,7 +133,7 @@ export default function App() {
         setTimeout(() => tryFocus(attempt + 1), 300);
       } else {
         toast.warn(`${focus} isn't currently in town`);
-        navigate('/', { replace: true });
+        navigate('/town', { replace: true });
       }
     };
     // Small initial delay so scene switch can complete first
@@ -144,6 +148,19 @@ export default function App() {
     () => sceneForPath(location.pathname, !!isSignedIn),
     [location.pathname, isSignedIn],
   );
+
+  // Landing route: signed-out visitors see the landing page; signed-in
+  // visitors are redirected to /town so they don't land here every visit.
+  if (location.pathname === '/') {
+    return (
+      <>
+        {isSignedIn
+          ? <Navigate to="/town" replace />
+          : <Landing />}
+        <ToastContainer position="bottom-right" autoClose={2000} closeOnClick theme="dark" />
+      </>
+    );
+  }
 
   return (
     <main className="relative flex flex-col h-screen w-screen overflow-hidden bg-clay-900 font-body">

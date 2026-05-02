@@ -42,7 +42,13 @@ def test_revoke_endpoint_requires_auth(dynamodb_tables):
     """No JWT → 401 (the app maps missing credentials to 401)."""
     from main import app
 
-    # Use a bare TestClient — no dependency override and no Authorization header.
-    with TestClient(app, raise_server_exceptions=False) as bare_client:
-        response = bare_client.post("/api/v1/town/instance/revoke")
+    # NOT a context manager: `with TestClient(app)` triggers FastAPI lifespan
+    # startup, which initializes module-level asyncio.Queue singletons bound
+    # to whatever event loop is current at that moment. When this test runs
+    # mid-suite, a prior test's loop is already dead and we hit
+    # `RuntimeError: Queue bound to a different event loop`. Bare TestClient
+    # skips lifespan and uses the existing event loop. Matches the pattern
+    # used by tests/unit/test_anonymous_viewer.py and the sibling test above.
+    bare_client = TestClient(app, raise_server_exceptions=False)
+    response = bare_client.post("/api/v1/town/instance/revoke")
     assert response.status_code == 401

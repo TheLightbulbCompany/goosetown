@@ -850,6 +850,45 @@ async def revoke_instance_tokens(
     return None
 
 
+@router.get("/quota")
+async def get_quota(
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Per-user quota state for UI display.
+
+    Returns the authenticated user's current agent count and sprite-generation
+    usage within the rolling 24-hour window, alongside the corresponding hard
+    limits.  Used by the QuotaIndicator component on the agents sidebar.
+    """
+    import time
+
+    from core.services.town_service import TownService
+    from core.services.user_service import (
+        AGENT_QUOTA,
+        SPRITE_QUOTA_DAILY,
+        SPRITE_QUOTA_WINDOW_MS,
+        UserService,
+    )
+
+    user = UserService().get_or_create(auth.user_id)
+    now_ms = int(time.time() * 1000)
+    cutoff = now_ms - SPRITE_QUOTA_WINDOW_MS
+    recent_sprites = [j for j in (user.get("sprite_jobs_24h") or []) if int(j.get("timestamp_ms", 0)) >= cutoff]
+
+    active_agents = TownService().get_active_agents_for_user(auth.user_id)
+
+    return {
+        "agents": {
+            "used": len(active_agents),
+            "limit": AGENT_QUOTA,
+        },
+        "sprite_gen": {
+            "used_24h": len(recent_sprites),
+            "limit": SPRITE_QUOTA_DAILY,
+        },
+    }
+
+
 @router.get("/viewer-token")
 async def get_viewer_token(
     auth: AuthContext = Depends(get_current_user),
