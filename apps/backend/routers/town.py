@@ -268,11 +268,28 @@ def _build_skill_bundle() -> bytes:
 
         buf = io.BytesIO()
         included = 0
+        # Files whose extracted permissions matter — preserved with the
+        # executable bit set explicitly because Docker image layer caching
+        # strips +x off `*.sh` files in some build configurations. Without
+        # this, the tarball ships a non-executable hook script and any
+        # caller's `setup-hooks` writes a `bash <script>` command that
+        # silently fails. Surfaced by Jim during the agent-team test on
+        # 2026-05-02 (T12 OpenClaw smoke).
+        _EXECUTABLE_BUNDLE_FILES = {"hooks/check-town-status.sh"}
+
         with tarfile.open(fileobj=buf, mode="w:gz") as tar:
             for filename in _SKILL_BUNDLE_FILES:
                 filepath = _SKILL_DIR / filename
                 if filepath.is_file():
-                    tar.add(str(filepath), arcname=f"goosetown/{filename}")
+                    tarinfo = tar.gettarinfo(
+                        str(filepath), arcname=f"goosetown/{filename}"
+                    )
+                    if filename in _EXECUTABLE_BUNDLE_FILES:
+                        tarinfo.mode = 0o755
+                    else:
+                        tarinfo.mode = 0o644
+                    with open(filepath, "rb") as fh:
+                        tar.addfile(tarinfo, fileobj=fh)
                     included += 1
         if included == 0:
             raise RuntimeError(
