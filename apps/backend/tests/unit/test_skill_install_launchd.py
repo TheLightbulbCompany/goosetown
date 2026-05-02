@@ -3,14 +3,13 @@
 import plistlib
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 _SKILL_DIR = Path(__file__).parents[2] / "data" / "goosetown-skill" / "skills" / "goosetown"
 sys.path.insert(0, str(_SKILL_DIR))
 
-from goosetown_cli import _render_launchd_plist, _build_parser  # noqa: E402
+from goosetown_cli import _build_parser, _render_launchd_plist  # noqa: E402
 
 
 class TestRenderLaunchdPlist:
