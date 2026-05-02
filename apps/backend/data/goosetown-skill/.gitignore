@@ -1,0 +1,9 @@
+# Per-agent workspaces created during local dev runs of the CLI.
+# These contain a real signed `town_token` after `goosetown join` runs +
+# private TOWN_LIFE.md diaries. They must NEVER be committed (the directory
+# is shipped via the public Claude Code plugin marketplace).
+workspaces/
+
+# Python bytecode produced by importing the bundled CLI.
+__pycache__/
+*.pyc

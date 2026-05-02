@@ -8,6 +8,27 @@ permissions:
   contents: read
 
 jobs:
+  no-committed-tokens:
+    name: No committed town_tokens (skill bundle)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Grep for committed signed tokens
+        # The skill bundle ships through the Claude Code plugin marketplace and
+        # the legacy /town/skill/bundle endpoint. Both are unauthenticated; any
+        # committed `token: eyJ...` line leaks (a) the user's Clerk user_id,
+        # (b) the instance UUID, and (c) — if `TOWN_TOKEN_SECRET` ever matched
+        # the signing key — a usable bearer credential. Hard-fail the build if
+        # any *.md file under the skill bundle has a non-placeholder token line.
+        # `eyJ` is the canonical base64url prefix for `{"u...` JSON.
+        run: |
+          set -e
+          if grep -rn -E '^token:[[:space:]]*eyJ' apps/backend/data/goosetown-skill/ ; then
+            echo "::error::Committed signed token detected in skill bundle. Replace with a placeholder."
+            exit 1
+          fi
+          echo "OK — no committed tokens found."
+
   backend-test:
     name: Backend Lint & Test
     runs-on: ubuntu-latest
