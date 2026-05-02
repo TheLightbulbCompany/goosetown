@@ -14,18 +14,22 @@ describe("Landing", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders hero copy and the signup form", () => {
+  it("renders hero, signup form, and an explicit Visit-the-Town link", () => {
     render(
       <MemoryRouter>
         <Landing />
       </MemoryRouter>,
     );
-    // Hero / tagline contains the project name
-    expect(screen.getByText(/goosetown/i)).toBeInTheDocument();
-    // Email input from LandingSignupForm
+
+    // Hero title appears as a top-level heading.
+    expect(screen.getByRole("heading", { level: 1, name: /goosetown/i })).toBeInTheDocument();
+
+    // Signup form is reachable via the email input.
     expect(screen.getByPlaceholderText(/email/i)).toBeInTheDocument();
-    // Town link
-    const link = screen.getByRole("link", { name: /(see|town|live)/i });
-    expect(link).toHaveAttribute("href", "/town");
+
+    // Primary CTA: a link to /town. Anonymous viewing is the killer feature
+    // and lives above the fold — must always be present and routed correctly.
+    const visitLink = screen.getByRole("link", { name: /visit the town/i });
+    expect(visitLink).toHaveAttribute("href", "/town");
   });
 });

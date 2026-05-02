@@ -29,8 +29,12 @@ describe('QuotaIndicator', () => {
       sprite_gen: { used_24h: 4, limit: 10 },
     });
     render(<QuotaIndicator />);
-    expect(screen.getByText(/3.*\/.*5.*agents/i)).toBeInTheDocument();
-    expect(screen.getByText(/4.*\/.*10.*sprite/i)).toBeInTheDocument();
+    // Labels.
+    expect(screen.getByText('agents')).toBeInTheDocument();
+    expect(screen.getByText(/sprite-gens/i)).toBeInTheDocument();
+    // Counts. Each appears in its own span next to the label.
+    expect(screen.getByText('3 / 5')).toBeInTheDocument();
+    expect(screen.getByText('4 / 10')).toBeInTheDocument();
   });
 
   it('highlights agents in red when at limit', () => {
@@ -39,8 +43,9 @@ describe('QuotaIndicator', () => {
       sprite_gen: { used_24h: 4, limit: 10 },
     });
     render(<QuotaIndicator />);
-    const agents = screen.getByText(/5.*\/.*5.*agents/i);
-    expect(agents.className).toMatch(/red/);
+    // Both the label and the count carry the red class via labelColor.
+    const agentsCount = screen.getByText('5 / 5');
+    expect(agentsCount.className).toMatch(/red/);
   });
 
   it('highlights sprite-gen in red when at limit', () => {
@@ -49,7 +54,7 @@ describe('QuotaIndicator', () => {
       sprite_gen: { used_24h: 10, limit: 10 },
     });
     render(<QuotaIndicator />);
-    const sprite = screen.getByText(/10.*\/.*10.*sprite/i);
-    expect(sprite.className).toMatch(/red/);
+    const spriteCount = screen.getByText('10 / 10');
+    expect(spriteCount.className).toMatch(/red/);
   });
 });
