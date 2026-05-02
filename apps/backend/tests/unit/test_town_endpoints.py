@@ -566,9 +566,7 @@ class TestSkillEndpoints:
         with tarfile.open(fileobj=io.BytesIO(resp.content), mode="r:gz") as tar:
             hook = tar.getmember("goosetown/hooks/check-town-status.sh")
         # Owner +x at minimum. The build sets full 0755 explicitly.
-        assert hook.mode & 0o100, (
-            f"hook script bundled without owner +x bit (mode={oct(hook.mode)})"
-        )
+        assert hook.mode & 0o100, f"hook script bundled without owner +x bit (mode={oct(hook.mode)})"
 
     def test_skill_bundle_emits_deprecation_header(self, client):
         """Sub 1: legacy bundle endpoint signals deprecation pointing at canonical install."""

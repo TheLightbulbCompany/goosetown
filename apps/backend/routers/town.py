@@ -281,9 +281,7 @@ def _build_skill_bundle() -> bytes:
             for filename in _SKILL_BUNDLE_FILES:
                 filepath = _SKILL_DIR / filename
                 if filepath.is_file():
-                    tarinfo = tar.gettarinfo(
-                        str(filepath), arcname=f"goosetown/{filename}"
-                    )
+                    tarinfo = tar.gettarinfo(str(filepath), arcname=f"goosetown/{filename}")
                     if filename in _EXECUTABLE_BUNDLE_FILES:
                         tarinfo.mode = 0o755
                     else:
