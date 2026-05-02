@@ -2297,10 +2297,7 @@ def cmd_install_launchd(args: argparse.Namespace) -> int:
                 json.dumps(
                     {
                         "error": "GOOSETOWN.md not found",
-                        "hint": (
-                            f"Run from the agent's workspace directory or set AGENT_DIR. "
-                            f"Looked at: {cfg_path}"
-                        ),
+                        "hint": (f"Run from the agent's workspace directory or set AGENT_DIR. Looked at: {cfg_path}"),
                     }
                 )
             )
