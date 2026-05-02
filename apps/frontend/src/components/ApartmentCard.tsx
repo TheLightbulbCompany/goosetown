@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import clsx from 'clsx';
 import type { ApartmentAgent } from '../hooks/useApartment';
 import { sceneById } from '../scenes';
+import { SpriteWaitOverlay } from './SpriteWaitOverlay';
 
 // A ``status_message`` like "Learning to cook…" is set by the backend's
 // ``_generate_custom_animation`` task while the agent is waiting on a
@@ -80,7 +81,7 @@ export default function ApartmentCard({ agent, onChatClick }: ApartmentCardProps
     >
       {/* Header: character sprite + name */}
       <div className="flex items-center gap-3">
-        <div className="w-12 h-12 bg-clay-700 rounded flex items-center justify-center text-brown-200 font-display text-lg shrink-0 overflow-hidden">
+        <div className="relative w-12 h-12 bg-clay-700 rounded flex items-center justify-center text-brown-200 font-display text-lg shrink-0 overflow-hidden">
           {agent.sprite_url ? (
             <img
               src={agent.sprite_url}
@@ -90,6 +91,9 @@ export default function ApartmentCard({ agent, onChatClick }: ApartmentCardProps
             />
           ) : (
             '?'
+          )}
+          {!agent.sprite_ready && agent.created_at != null && (
+            <SpriteWaitOverlay createdAt={agent.created_at} />
           )}
         </div>
         <div className="flex-1 min-w-0">

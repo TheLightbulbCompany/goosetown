@@ -143,6 +143,11 @@ export class ComputeStack extends cdk.Stack {
         WS_MANAGEMENT_API_URL: env === "prod"
           ? "https://ws.goosetown.isol8.co"
           : "https://ws-dev.goosetown.isol8.co",
+        // Operator step (one-time, post-merge): after creating Resend audiences
+        // (one for dev, one for prod), replace these TBD strings and redeploy.
+        // Until populated, /landing/signup returns 503 with a server log
+        // explaining the misconfiguration.
+        RESEND_AUDIENCE_ID: env === "prod" ? "TBD-prod-audience-id" : "TBD-dev-audience-id",
       },
       secrets: {
         CLERK_ISSUER: ecs.Secret.fromSecretsManager(props.secrets.clerkIssuer),
@@ -155,6 +160,7 @@ export class ComputeStack extends cdk.Stack {
         PIXELLAB_API_KEY: ecs.Secret.fromSecretsManager(
           props.secrets.pixelLabApiKey
         ),
+        RESEND_API_KEY: ecs.Secret.fromSecretsManager(props.secrets.resendApiKey),
       },
       portMappings: [{ containerPort: 8000, protocol: ecs.Protocol.TCP }],
       healthCheck: {

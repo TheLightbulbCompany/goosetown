@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from core.config import settings
 from core.services.game_server_client import get_game_server_client
+from routers import landing as landing_router
 from routers.town import router as town_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -246,6 +247,7 @@ app.add_middleware(
 )
 
 app.include_router(town_router, prefix="/api/v1/town", tags=["town"])
+app.include_router(landing_router.router, prefix="/api/v1")
 
 
 @app.get("/health")

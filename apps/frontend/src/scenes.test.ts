@@ -20,9 +20,17 @@ describe('SCENES registry', () => {
 });
 
 describe('sceneForPath', () => {
-  it('returns "town" for "/"', () => {
+  it('returns "town" for "/" (unknown path falls back to town)', () => {
+    // "/" is the Landing page — not a registered scene. sceneForPath falls
+    // back to "town" for unrecognised paths, which keeps GodotCanvas in the
+    // town scene while App.tsx handles the Landing render separately.
     expect(sceneForPath('/', false)).toBe('town');
     expect(sceneForPath('/', true)).toBe('town');
+  });
+
+  it('returns "town" for "/town"', () => {
+    expect(sceneForPath('/town', false)).toBe('town');
+    expect(sceneForPath('/town', true)).toBe('town');
   });
 
   it('returns the scene id when path matches and auth requirements are met', () => {

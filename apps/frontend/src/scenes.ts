@@ -21,7 +21,7 @@ export interface SceneDef {
 }
 
 export const SCENES: SceneDef[] = [
-  { id: 'town',      displayName: 'Town',      route: '/',          requireAuth: false, showInNav: 'always'    },
+  { id: 'town',      displayName: 'Town',      route: '/town',      requireAuth: false, showInNav: 'always'    },
   { id: 'apartment', displayName: 'Apartment', route: '/apartment', requireAuth: true,  showInNav: 'signed_in' },
   { id: 'library',   displayName: 'Library',   route: '/library',   requireAuth: false, showInNav: 'always'    },
 ];

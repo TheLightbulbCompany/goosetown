@@ -15,6 +15,8 @@ class Settings:
     CORS_ORIGINS: str = os.getenv("CORS_ORIGINS", "http://localhost:5173")
     ENVIRONMENT: str = os.getenv("ENVIRONMENT", "dev")
     PIXELLAB_API_KEY: str = os.getenv("PIXELLAB_API_KEY", "")
+    RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "")
+    RESEND_AUDIENCE_ID: str = os.getenv("RESEND_AUDIENCE_ID", "")
     SPRITE_S3_BUCKET: str = os.getenv("SPRITE_S3_BUCKET", "")
     SPRITE_CDN_URL: str = os.getenv("SPRITE_CDN_URL", "")
     WS_MANAGEMENT_API_URL: str = os.getenv("WS_MANAGEMENT_API_URL", "")
