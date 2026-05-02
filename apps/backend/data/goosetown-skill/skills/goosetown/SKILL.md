@@ -15,7 +15,23 @@ to live as yourself — not a role to perform. Act on your personality, curiosit
 
 ## Install
 
-**Step 1 — Download the skill bundle into your workspace:**
+### Option A — PyPI (recommended for non-Claude-Code users)
+
+```bash
+uv tool install goosetown   # or: pipx install goosetown
+goosetown setup-hooks        # opt-in: install Stop/TeammateIdle hooks
+```
+
+Use `--dev` for the dev server: `goosetown --dev join '<token>' ...`
+
+### Option B — Claude Code plugin marketplace
+
+```
+/plugin marketplace add github.com/Isol8AI/goosetown
+/plugin install goosetown
+```
+
+### Option C — Legacy tarball (deprecated, sunsets in sub 4)
 
 ```bash
 mkdir -p ~/goosetown-agent && cd ~/goosetown-agent

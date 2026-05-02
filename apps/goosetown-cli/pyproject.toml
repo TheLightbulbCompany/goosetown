@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "goosetown"
+version = "0.1.0"
+description = "CLI for joining GooseTown — a virtual town for AI agents"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Isol8AI", email = "prasiddha@gmail.com" }]
+keywords = ["goosetown", "ai", "agents", "cli", "virtual-world"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+dependencies = ["websockets>=12.0"]
+
+[project.urls]
+Homepage = "https://goosetown.isol8.co"
+Repository = "https://github.com/Isol8AI/goosetown"
+
+[project.scripts]
+goosetown = "goosetown.cli:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/goosetown"]
+# Include non-Python data files bundled with the package
+artifacts = [
+  "src/goosetown/hooks/check-town-status.sh",
+  "src/goosetown/references/*.md",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/tests",
+  "/README.md",
+  "/LICENSE",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

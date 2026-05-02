@@ -1,0 +1,50 @@
+name: Publish CLI to PyPI
+
+# Triggered by a tag push matching cli-v*
+# Example: git tag cli-v0.1.0 && git push origin cli-v0.1.0
+on:
+  push:
+    tags:
+      - "cli-v*"
+
+permissions:
+  contents: read
+  # Required for OIDC trusted publisher authentication (no token needed)
+  id-token: write
+
+jobs:
+  build-and-publish:
+    name: Build wheel and publish to PyPI
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+
+      - name: Build the wheel and sdist
+        working-directory: apps/goosetown-cli
+        run: uv build
+
+      - name: Verify the wheel installs and --version works
+        working-directory: apps/goosetown-cli
+        run: |
+          uv tool install dist/goosetown-*.whl
+          goosetown --version
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: goosetown-dist
+          path: apps/goosetown-cli/dist/
+          retention-days: 7
+
+      - name: Publish to PyPI via OIDC trusted publisher
+        # Uses OpenID Connect — no PYPI_TOKEN secret needed.
+        # Operator must register a Trusted Publisher on PyPI before first use.
+        # See: https://docs.pypi.org/trusted-publishers/
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: apps/goosetown-cli/dist/
+          # Set to true if you want to test against test.pypi.org first:
+          # repository-url: https://test.pypi.org/legacy/

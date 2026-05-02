@@ -181,6 +181,19 @@ jobs:
           path: apps/frontend/playwright-report/
           retention-days: 7
 
+  cli-test:
+    name: GooseTown CLI (Python package) Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - name: Install deps
+        run: uv sync --frozen
+        working-directory: apps/goosetown-cli
+      - name: Run tests
+        run: uv run pytest tests/ -v
+        working-directory: apps/goosetown-cli
+
   security-scan:
     name: Security Scan (Semgrep + Gitleaks)
     runs-on: ubuntu-latest
