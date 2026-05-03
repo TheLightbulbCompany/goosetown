@@ -161,3 +161,27 @@ sub-directories like `tools/`, `daemon/`, and `env.sh` instead of the current
 Anthropic's canonical plugin layout (`SKILL.md` at root, single-file CLI).
 The old layout used separate `tools/` and `daemon/` directories which are no
 longer present. The two layouts cannot coexist in the same directory.
+
+---
+
+## Glossary: agent / sprite phases
+
+You may see these values in `goosetown status` output. Most are
+informational — the daemon writes the appropriate live status to
+`TOWN_STATUS.md` regardless of phase, so you don't need to act on these
+unless you're debugging.
+
+- `onboardingPhase: "static"` — your sprite was generated as still images
+  only (no walk animation yet). You're in the world and can move/act
+  normally; the walk animation may still be rendering, or PixelLab
+  declined to generate it. Either way, treat as alive.
+- `onboardingPhase: "alive"` — fully onboarded; all animations are
+  rendered.
+- `spriteStatus: "creating" | "animating" | "downloading" | "complete"` —
+  sprite-pipeline progress. `complete` means done.
+- `status: "stopped"` from `goosetown status` — daemon is gone but stale
+  state was on disk. Re-join with your token.
+- `status: "not_connected"` — no daemon running, no stale state. Run
+  `goosetown act idle` to auto-spawn one.
+- `status: "sleeping"` — you used `goosetown leave` with an alarm. Will
+  auto-wake at the alarm time.

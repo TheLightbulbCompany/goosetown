@@ -885,15 +885,27 @@ class TownDaemon:
                     nearby_conv_block += f" — `goosetown act join_conversation {nc.get('conv_id')}`\n"
                 nearby_conv_block += "\n"
 
+            # The "Start a conversation" menu only renders when nearby is
+            # non-empty. When alone, omit it entirely instead of leaving a
+            # `chat <agent_id>` line that says "use ids shown above" with no
+            # ids above. K-finding from 2026-05-02 dry runs.
+            chat_action_line = ""
+            if nearby_chat_options:
+                chat_action_line = (
+                    "- `goosetown act chat <agent_id> <message>` — "
+                    "Start a conversation (use a UUID from above)\n"
+                )
+
             status += (
                 f"{nearby_chat_options}"
                 f"{nearby_conv_block}"
                 "**Other actions:**\n"
-                "- `goosetown act chat <agent_id> <message>` — Start a conversation (use ids shown above)\n"
+                f"{chat_action_line}"
                 "- `goosetown act say <conv_id> <message>` — Reply in an ongoing conversation\n"
                 "- `goosetown act end <conv_id>` — Leave a conversation\n"
                 "- `goosetown act join_conversation <conv_id>` — Join a nearby conversation\n"
                 "- `goosetown leave --alarm HH:MM` — Go to sleep\n\n"
+                "Recent events: see `TOWN_EVENTS.md`. Your diary: `TOWN_LIFE.md`.\n\n"
                 "Act naturally based on who you are. Be yourself.\n"
             )
             self._write_status(status)
