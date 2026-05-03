@@ -114,6 +114,24 @@ def _is_daemon_alive(sd: Path) -> bool:
         return False
 
 
+def _clear_daemon_state(sd: Path) -> None:
+    """Clear cached daemon state files after a clean shutdown.
+
+    Removes ``state.json``, ``daemon.pid``, and ``daemon.sock``. Called
+    by ``cmd_leave`` so a subsequent ``goosetown status`` doesn't return
+    a stale ``connected: true`` from the previous session — that's the
+    D2 stale-cache bug surfaced by the 2026-05-02 dry runs.
+
+    Tolerant of missing files; safe to call when the daemon was already
+    cleaned up.
+    """
+    for fname in ("state.json", "daemon.pid", "daemon.sock"):
+        try:
+            (sd / fname).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _start_daemon(config: dict, agent_dir: Path) -> dict:
     """Spawn the daemon subprocess and wait for it to write state.json."""
     import time
@@ -328,7 +346,15 @@ def cmd_join(args: argparse.Namespace) -> None:
 
 
 def cmd_status(args: argparse.Namespace) -> None:  # noqa: ARG001
-    """Read cached state instantly — no network, no websockets required."""
+    """Read cached state instantly — no network, no websockets required.
+
+    Cross-checks pidfile liveness before trusting ``state.json``: a daemon
+    that crashed or was force-killed leaves stale state on disk, and a
+    clean ``goosetown leave`` should already have cleared it via
+    ``_clear_daemon_state``. If the cached state claims connected but no
+    live daemon process backs it, surface ``status=stopped`` so the agent
+    knows to re-join rather than acting on stale world data.
+    """
     agent_dir = Path(os.environ.get("AGENT_DIR", str(Path.cwd())))
     cfg_path = agent_dir / "GOOSETOWN.md"
 
@@ -343,6 +369,20 @@ def cmd_status(args: argparse.Namespace) -> None:  # noqa: ARG001
     alarm_file = sd / "alarm.json"
 
     if state_file.exists():
+        if not _is_daemon_alive(sd):
+            # Stale state from a crashed / killed / unclean-shutdown daemon.
+            # Don't lie about connectedness; tell the agent to rejoin.
+            _out(
+                {
+                    "status": "stopped",
+                    "connected": False,
+                    "message": (
+                        "Daemon is not running but stale state remains on "
+                        "disk. Run 'goosetown join <token>' to reconnect."
+                    ),
+                }
+            )
+            return
         try:
             _out(json.loads(state_file.read_text()))
             return
@@ -531,9 +571,12 @@ def cmd_leave(args: argparse.Namespace) -> None:
                 os.kill(pid, 9)
             except ProcessLookupError:
                 pass
-            pid_file.unlink(missing_ok=True)
         except (ValueError, OSError):
             pass
+
+    # Clear all cached daemon state so a subsequent ``goosetown status``
+    # doesn't return ``connected: true`` from the previous session.
+    _clear_daemon_state(sd)
 
     _out(result)
 
