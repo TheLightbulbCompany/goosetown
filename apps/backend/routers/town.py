@@ -618,6 +618,108 @@ async def post_owner_message(
     return {"id": msg["id"], "createdAt": msg["createdAt"]}
 
 
+@router.post("/agent/{agent_id}/deactivate")
+async def deactivate_agent(
+    agent_id: str,
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Soft-delete an agent: set ``isActive=false`` and despawn from the world.
+
+    Owner-auth (Clerk JWT). 403 if ``agent.userId != auth.user_id``.
+    Idempotent: returning agents already inactive is a 200 with the current
+    state (not a 409) so the UI's "Remove" button is safe to retry.
+
+    Soft-delete only — the agent record (TOWN_LIFE.md, sprite, conversation
+    history, relationships) is preserved. The slot is freed against the
+    per-user quota; a future ``/reactivate`` call brings the agent back.
+
+    Side effects:
+      * ``isActive`` flips to ``"false"`` (string, matches existing schema).
+      * Active WebSocket connection (if any) is unregistered from the
+        in-memory manager so subsequent ``_send_to_daemon`` no-ops.
+      * Game-server agent (if connected) is despawned via
+        ``disconnect_agent`` so other agents stop seeing them.
+    """
+    service = TownService()
+    agent = service.get_town_agent_by_id(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="agent not found")
+    if agent.get("userId") != auth.user_id:
+        raise HTTPException(status_code=403, detail="not your agent")
+
+    if agent.get("isActive") != "true":
+        # Already inactive — idempotent return.
+        return {"id": agent_id, "isActive": False}
+
+    service.update_agent_state(agent_id, is_active="false")
+
+    # Best-effort cleanup of in-memory connection state. None of these
+    # raise on missing entries — they're idempotent no-ops if the agent
+    # wasn't connected.
+    try:
+        ws_manager = get_town_agent_ws_manager()
+        ws_manager.unregister_by_agent_id(agent_id)
+    except Exception as e:
+        logger.warning("deactivate: ws unregister failed for %s: %s", agent_id, e)
+
+    try:
+        gs_client = get_game_server_client()
+        await gs_client.disconnect_agent(agent_id)
+    except Exception as e:
+        logger.warning("deactivate: game server despawn failed for %s: %s", agent_id, e)
+
+    return {"id": agent_id, "isActive": False}
+
+
+@router.post("/agent/{agent_id}/reactivate")
+async def reactivate_agent(
+    agent_id: str,
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Re-activate a previously deactivated agent.
+
+    Owner-auth. Quota-gated: returns 429 if the user is already at
+    ``AGENT_QUOTA`` active agents. Idempotent: returns 200 if already
+    active.
+
+    Reactivation does NOT auto-reconnect the agent's daemon — the agent
+    must run ``goosetown act idle`` (or any other ``goosetown act ...``)
+    in their workspace to re-spawn the daemon, which in turn re-connects
+    to the WebSocket and to the game server. This avoids surprising the
+    user with a still-living daemon process from a previous session.
+    """
+    from core.services.user_service import AGENT_QUOTA
+
+    service = TownService()
+    agent = service.get_town_agent_by_id(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="agent not found")
+    if agent.get("userId") != auth.user_id:
+        raise HTTPException(status_code=403, detail="not your agent")
+
+    if agent.get("isActive") == "true":
+        return {"id": agent_id, "isActive": True}
+
+    active_agents = service.get_active_agents_for_user(auth.user_id)
+    if len(active_agents) >= AGENT_QUOTA:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "error": "quota_exceeded",
+                "kind": "agents",
+                "limit": AGENT_QUOTA,
+                "current": len(active_agents),
+                "message": (
+                    f"You have {len(active_agents)} active agents (limit "
+                    f"{AGENT_QUOTA}). Deactivate another agent first."
+                ),
+            },
+        )
+
+    service.update_agent_state(agent_id, is_active="true")
+    return {"id": agent_id, "isActive": True}
+
+
 @router.get("/agent/{agent_id}/owner-chat")
 async def get_owner_chat(
     agent_id: str,

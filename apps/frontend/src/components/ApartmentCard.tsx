@@ -67,9 +67,19 @@ function moodEmoji(mood: string | null): string {
 interface ApartmentCardProps {
   agent: ApartmentAgent;
   onChatClick?: (agentId: string, agentName: string) => void;
+  /** When provided and agent is active, renders a "Remove" link that
+   * soft-deletes the agent (frees a quota slot; preserves history). */
+  onRemove?: (agentId: string, agentName: string) => void;
+  /** When provided and agent is inactive, renders a "Reactivate" link. */
+  onReactivate?: (agentId: string, agentName: string) => void;
 }
 
-export default function ApartmentCard({ agent, onChatClick }: ApartmentCardProps) {
+export default function ApartmentCard({
+  agent,
+  onChatClick,
+  onRemove,
+  onReactivate,
+}: ApartmentCardProps) {
   const energyPercent = Math.max(0, Math.min(100, agent.energy));
 
   return (
@@ -163,21 +173,27 @@ export default function ApartmentCard({ agent, onChatClick }: ApartmentCardProps
         </div>
       </div>
 
-      {/* Action row: Chat button + view in <scene> link — both right-aligned. */}
+      {/* Action row: Chat button + view in <scene> link + Remove/Reactivate.
+       * All right-aligned. Active agents see Chat/View/Remove; inactive
+       * agents see only Reactivate (chat/view make no sense for despawned
+       * agents). */}
       {(() => {
         const def = sceneById(agent.location_context ?? '');
-        const showViewLink = def && def.showInNav !== 'never';
+        const showViewLink = def && def.showInNav !== 'never' && agent.is_active;
         const href = showViewLink
           ? def.id === 'town'
             ? `/?focus=${encodeURIComponent(agent.display_name)}`
             : def.route
           : null;
-        if (!onChatClick && !showViewLink) return null;
+        const showChat = onChatClick && agent.is_active;
+        const showRemove = onRemove && agent.is_active;
+        const showReactivate = onReactivate && !agent.is_active;
+        if (!showChat && !showViewLink && !showRemove && !showReactivate) return null;
         return (
           <div className="flex justify-end items-center gap-3 mt-1">
-            {onChatClick && (
+            {showChat && (
               <button
-                onClick={() => onChatClick(agent.agent_id, agent.display_name)}
+                onClick={() => onChatClick!(agent.agent_id, agent.display_name)}
                 className="font-body text-xs text-clay-300 hover:text-brown-200 transition-colors"
               >
                 Chat &rarr;
@@ -188,8 +204,26 @@ export default function ApartmentCard({ agent, onChatClick }: ApartmentCardProps
                 to={href}
                 className="font-body text-xs text-clay-300 hover:text-brown-200 transition-colors"
               >
-                View in {def.displayName.toLowerCase()} &rarr;
+                View in {def!.displayName.toLowerCase()} &rarr;
               </Link>
+            )}
+            {showRemove && (
+              <button
+                onClick={() => onRemove!(agent.agent_id, agent.display_name)}
+                className="font-body text-xs text-red-400/70 hover:text-red-300 transition-colors"
+                title="Soft-delete: removes from town, preserves diary and history"
+              >
+                Remove
+              </button>
+            )}
+            {showReactivate && (
+              <button
+                onClick={() => onReactivate!(agent.agent_id, agent.display_name)}
+                className="font-body text-xs text-green-400/70 hover:text-green-300 transition-colors"
+                title="Bring this agent back into town (uses a quota slot)"
+              >
+                Reactivate
+              </button>
             )}
           </div>
         );

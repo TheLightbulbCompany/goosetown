@@ -22,6 +22,8 @@ import SignInPage from './pages/SignIn.tsx';
 import SignUpPage from './pages/SignUp.tsx';
 import { Landing } from './pages/Landing.tsx';
 
+const API_URL = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000/api/v1';
+
 function AgentsSidebar({
   onJoinClick,
   onAgentChatClick,
@@ -31,6 +33,56 @@ function AgentsSidebar({
 }) {
   const { data, loading } = useApartment();
   const quota = useQuota();
+  const { getToken } = useAuth();
+
+  // Soft-delete: removes from town, frees a quota slot, preserves agent
+  // record (TOWN_LIFE.md, sprite, conversations, relationships). The
+  // useApartment hook polls every 2s so the UI will reflect the change
+  // shortly without a manual refetch.
+  const handleRemove = async (agentId: string, agentName: string) => {
+    if (!confirm(
+      `Remove ${agentName} from GooseTown?\n\n` +
+      `They'll disappear from town immediately. Their diary, sprite, ` +
+      `and history are preserved — you can reactivate them later.`,
+    )) return;
+    try {
+      const token = await getToken();
+      const res = await fetch(`${API_URL}/town/agent/${agentId}/deactivate`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const detail = await res.text();
+        toast.error(`Couldn't remove ${agentName}: ${res.status} ${detail.slice(0, 80)}`);
+        return;
+      }
+      toast.success(`${agentName} removed from town`);
+    } catch (e) {
+      toast.error(`Couldn't remove ${agentName}: ${e instanceof Error ? e.message : 'unknown error'}`);
+    }
+  };
+
+  const handleReactivate = async (agentId: string, agentName: string) => {
+    try {
+      const token = await getToken();
+      const res = await fetch(`${API_URL}/town/agent/${agentId}/reactivate`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 429) {
+        toast.error(`Can't reactivate ${agentName}: you're at the agent limit. Remove another agent first.`);
+        return;
+      }
+      if (!res.ok) {
+        const detail = await res.text();
+        toast.error(`Couldn't reactivate ${agentName}: ${res.status} ${detail.slice(0, 80)}`);
+        return;
+      }
+      toast.success(`${agentName} is back in town`);
+    } catch (e) {
+      toast.error(`Couldn't reactivate ${agentName}: ${e instanceof Error ? e.message : 'unknown error'}`);
+    }
+  };
 
   // Soft-gate Add/Join when at limit. Server-side enforcement still happens
   // in /town/agent/register; this just prevents the user from minting a
@@ -102,7 +154,13 @@ function AgentsSidebar({
       )}
       <div className="flex flex-col gap-3">
         {activeAgents.map((agent) => (
-          <ApartmentCard key={agent.agent_id} agent={agent} onChatClick={onAgentChatClick} />
+          <ApartmentCard
+              key={agent.agent_id}
+              agent={agent}
+              onChatClick={onAgentChatClick}
+              onRemove={handleRemove}
+              onReactivate={handleReactivate}
+            />
         ))}
       </div>
       {inactiveAgents.length > 0 && (
@@ -112,7 +170,13 @@ function AgentsSidebar({
           </h3>
           <div className="flex flex-col gap-3">
             {inactiveAgents.map((agent) => (
-              <ApartmentCard key={agent.agent_id} agent={agent} onChatClick={onAgentChatClick} />
+              <ApartmentCard
+              key={agent.agent_id}
+              agent={agent}
+              onChatClick={onAgentChatClick}
+              onRemove={handleRemove}
+              onReactivate={handleReactivate}
+            />
             ))}
           </div>
         </div>
