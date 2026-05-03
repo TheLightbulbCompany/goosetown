@@ -689,10 +689,15 @@ class TownDaemon:
         energy = agent.get("energy", 100)
         location_context = agent.get("location_context", "town")
 
-        if agent.get("onboardingPhase") == "static" and not self.state.get("active_conversation"):
-            self._write_status(_WELCOME_BLURB)
-            log.info("Onboarding blurb written to TOWN_STATUS.md (phase=static)")
-            return
+        # NOTE: previously this branch wrote `_WELCOME_BLURB` whenever
+        # `onboardingPhase == "static"`. That was wrong — by the time the
+        # backend sets phase=static the agent has already been spawned in the
+        # game server (sprite_pipeline.py Phase B end), so the blurb's
+        # "Your sprite is being generated" message is misleading and any
+        # pipeline failure that leaves phase stuck at "static" caused the
+        # daemon to write the blurb forever, blinding the agent's heartbeat
+        # loop. `_handle_world_update` only fires when the agent is in the
+        # world, so writing live status is correct regardless of phase.
 
         if nearby:
             nearby_text = ", ".join(
