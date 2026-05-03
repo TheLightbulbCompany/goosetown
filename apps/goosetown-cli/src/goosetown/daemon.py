@@ -111,6 +111,11 @@ class TownDaemon:
 
         self._initial_state_event = None  # asyncio.Event, created in run()
         self._arrived_event = None  # asyncio.Event, created in run()
+        # Chat-outcome future — set by _on_conversation_started (success) or
+        # _on_chat_rejected (failure). Created fresh per `act chat` invocation
+        # in handle_tool_command so the CLI can synchronously surface the
+        # backend's verdict instead of fire-and-forget {"status": "ok"}.
+        self._chat_outcome = None  # asyncio.Future | None
 
         self._events: list[str] = []
         self._max_events = 50
@@ -178,6 +183,8 @@ class TownDaemon:
             self._on_conversation_message(event, data)
         elif event == "conversation_started":
             self._on_conversation_started(data)
+        elif event == "chat_rejected":
+            self._on_chat_rejected(data)
         elif event == "conversation_ended":
             self._on_conversation_ended(data)
         elif event == "participant_joined":
@@ -316,6 +323,28 @@ class TownDaemon:
             "turns": [{"speaker": "you", "text": opening}] if opening else [],
         }
         self._append_event(f'CHAT_STARTED with {with_display} — "{opening}" (conv_id: {conv_id})')
+        # If a `act chat` invocation is awaiting an outcome, settle the future.
+        if self._chat_outcome is not None and not self._chat_outcome.done():
+            self._chat_outcome.set_result(
+                {"status": "started", "conv_id": conv_id, "with": with_display}
+            )
+
+    def _on_chat_rejected(self, data: dict) -> None:
+        """Handle chat_rejected — backend refused the chat invite.
+
+        Settles ``self._chat_outcome`` so handle_tool_command's chat branch
+        can return a real error to the CLI instead of fire-and-forget
+        ``{"status": "ok"}``. Late-arriving rejections (after the CLI gave
+        up) are tolerated: ``self._chat_outcome`` may be ``None`` or already
+        done, in which case the rejection is logged and dropped.
+        """
+        import logging
+
+        log = logging.getLogger("town_daemon")
+        reason = data.get("reason", "unknown")
+        log.info("chat_rejected received: %s", reason)
+        if self._chat_outcome is not None and not self._chat_outcome.done():
+            self._chat_outcome.set_result({"status": "error", "reason": reason})
 
     def _on_conversation_message(self, event: str, data: dict) -> None:
         """Handle conversation_invite and conversation_message events."""
@@ -1006,9 +1035,37 @@ class TownDaemon:
             import logging as _logging
 
             _log = _logging.getLogger("town_daemon")
+
+            # For chat, set up the outcome future BEFORE sending so the
+            # rejection event can't arrive between send and wait.
+            chat_outcome_future = None
+            if payload.get("action") == "chat":
+                chat_outcome_future = asyncio.get_running_loop().create_future()
+                self._chat_outcome = chat_outcome_future
+
             _log.info("Sending via WS: %s", msg[:100])
             await self.ws.send(msg)
             _log.info("WS send complete")
+
+            if payload.get("action") == "chat":
+                # Wait briefly for backend verdict — conversation_started
+                # (success) or chat_rejected (failure). 5s is generous; the
+                # backend is hot-path and rejections are sub-100ms.
+                try:
+                    outcome = await asyncio.wait_for(chat_outcome_future, timeout=5.0)
+                    return outcome
+                except asyncio.TimeoutError:
+                    return {
+                        "status": "ambiguous",
+                        "action": "chat",
+                        "note": (
+                            "Backend did not acknowledge within 5s. The chat "
+                            "may have succeeded silently — check TOWN_EVENTS.md."
+                        ),
+                    }
+                finally:
+                    self._chat_outcome = None
+
             if payload.get("action") == "move":
                 self._arrived_event.clear()
                 requested_dest = payload.get("destination", "")
@@ -1046,7 +1103,12 @@ class TownDaemon:
                     "message": "Did not arrive within 120s",
                     "last_known_location": cached_loc,
                 }
-            if payload.get("action") in ("chat", "say"):
+            if payload.get("action") == "say":
+                # `say` is fire-and-forget for now: the backend echoes the
+                # message back via conversation_message, which the daemon
+                # routes through _on_conversation_message. A rejection path
+                # symmetric to chat_rejected for `say` is a separate
+                # finding (Pixel #5/9).
                 self.state["pending_messages"] = []
                 self._write_state()
             return {"status": "ok", "action": payload.get("action")}
