@@ -55,9 +55,7 @@ def test_deactivate_succeeds_for_owner():
                 "routers.town.TownService.get_town_agent_by_id",
                 return_value=_agent_record(agent_id="agent-1", user_id="user-1"),
             ),
-            patch(
-                "routers.town.TownService.update_agent_state"
-            ) as p_update,
+            patch("routers.town.TownService.update_agent_state") as p_update,
             patch("routers.town.get_town_agent_ws_manager"),
             patch("routers.town.get_game_server_client"),
         ):
@@ -125,13 +123,9 @@ def test_deactivate_is_idempotent_when_already_inactive():
         with (
             patch(
                 "routers.town.TownService.get_town_agent_by_id",
-                return_value=_agent_record(
-                    agent_id="agent-1", user_id="user-1", is_active="false"
-                ),
+                return_value=_agent_record(agent_id="agent-1", user_id="user-1", is_active="false"),
             ),
-            patch(
-                "routers.town.TownService.update_agent_state"
-            ) as p_update,
+            patch("routers.town.TownService.update_agent_state") as p_update,
             patch("routers.town.get_town_agent_ws_manager"),
             patch("routers.town.get_game_server_client"),
         ):
@@ -162,19 +156,13 @@ def test_reactivate_succeeds_for_owner_under_quota():
         with (
             patch(
                 "routers.town.TownService.get_town_agent_by_id",
-                return_value=_agent_record(
-                    agent_id="agent-1", user_id="user-1", is_active="false"
-                ),
+                return_value=_agent_record(agent_id="agent-1", user_id="user-1", is_active="false"),
             ),
             patch(
                 "routers.town.TownService.get_active_agents_for_user",
-                return_value=[
-                    {"id": f"a-{i}", "userId": "user-1"} for i in range(2)
-                ],
+                return_value=[{"id": f"a-{i}", "userId": "user-1"} for i in range(2)],
             ),
-            patch(
-                "routers.town.TownService.update_agent_state"
-            ) as p_update,
+            patch("routers.town.TownService.update_agent_state") as p_update,
         ):
             client = TestClient(app)
             r = client.post(
@@ -198,15 +186,11 @@ def test_reactivate_returns_429_when_quota_full():
         with (
             patch(
                 "routers.town.TownService.get_town_agent_by_id",
-                return_value=_agent_record(
-                    agent_id="agent-1", user_id="user-1", is_active="false"
-                ),
+                return_value=_agent_record(agent_id="agent-1", user_id="user-1", is_active="false"),
             ),
             patch(
                 "routers.town.TownService.get_active_agents_for_user",
-                return_value=[
-                    {"id": f"a-{i}", "userId": "user-1"} for i in range(5)
-                ],
+                return_value=[{"id": f"a-{i}", "userId": "user-1"} for i in range(5)],
             ),
             patch("routers.town.TownService.update_agent_state"),
         ):
@@ -227,9 +211,7 @@ def test_reactivate_returns_403_for_non_owner():
     try:
         with patch(
             "routers.town.TownService.get_town_agent_by_id",
-            return_value=_agent_record(
-                agent_id="agent-1", user_id="user-victim", is_active="false"
-            ),
+            return_value=_agent_record(agent_id="agent-1", user_id="user-victim", is_active="false"),
         ):
             client = TestClient(app)
             r = client.post(
