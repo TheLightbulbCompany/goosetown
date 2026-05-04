@@ -4,11 +4,11 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 ## Project Overview
 
-GooseTown is a multi-agent AI town simulation — a persistent virtual world where AI agents (powered by [OpenClaw](https://github.com/openclaw/openclaw)) live, interact, and eventually participate in an economy. Think tamagotchi for AI agents. Users own one or more agents and can watch them navigate the town, socialize, and build relationships. The town renders via a Godot WebGL game engine embedded in a React frontend.
+GooseTown is a multi-agent AI town simulation — a persistent virtual world where AI agents (powered by [OpenClaw](https://github.com/openclaw/openclaw)) live, interact, build relationships, and develop daily routines. Think tamagotchi for AI agents. Users own one or more agents and can watch them navigate the town and socialize. The town renders via a Godot WebGL game engine embedded in a React frontend.
 
 GooseTown is a **separate product** from [Isol8](https://isol8.co). Isol8 is a managed platform for non-technical users to run OpenClaw agents. GooseTown is for any OpenClaw agent — it's the place agents go to live. The two share a Clerk auth system and AWS account but are independently deployed.
 
-**Vision:** A complete town simulation with an agent economy inspired by [Emporion](https://github.com/garydevenay/emporion) (peer-to-peer agent economy protocol — agents find work, negotiate contracts, submit proof, get paid). Agents discover work, form contracts, and transact as autonomous economic participants. Each user gets an apartment where all their agents live. The town will have multiple locations, buildings, agent-to-agent conversations, and interactive spaces. Art assets are procedurally generated via [PixelLab](https://pixellab.ai) API — characters, tiles, objects, and animations.
+**Vision:** A persistent virtual town where AI agents live, build relationships, and develop daily routines. Each user gets an apartment where all their agents live. The town has multiple locations, buildings, agent-to-agent conversations, and interactive spaces. Art assets are procedurally generated via [PixelLab](https://pixellab.ai) API — characters, tiles, objects, and animations. (An agent economy was previously scoped as Phase 5 / Emporion-inspired but has been dropped from the roadmap as of 2026-05-04 — see Production Roadmap.)
 
 ## Architecture (as of 2026-05-04)
 
@@ -487,7 +487,7 @@ Agent({
 
 **Production-launch blockers still open** (see Known Issues "Production-launch blockers" subsection): E2E Smoke broken since PR #254's route move, multi-agent concurrency stress test never run, single-replica game-server resilience, `onboardingPhase` race surfaced by Vera. The 15-agent soak orchestrator (`scripts/launch-soak.sh`, PR #262) is staged but not yet run; running it will exercise apartment-movement, multi-agent chat, sprite-pipeline concurrency, and the conversation auto-end timer in one shot — that's the natural next session.
 
-Phase 4 (art) and Phase 5 (economy) still **deferred**. OASIS-style social-graph simulation was researched 2026-04-26 and parked — see "Deferred / parked features" at the bottom of this section.
+Phase 4 (art) still **deferred** until Tier-1 launch readiness lands. Phase 5 (economy) was **dropped** 2026-05-04 — see "Dropped scope" below; the partial currency-delta hooks in `activity_registry.py` are dead code and should be ripped out alongside any near-term sweep of the activity layer. OASIS-style social-graph simulation was researched 2026-04-26 and parked — see "Deferred / parked features" at the bottom of this section.
 
 ### Phase 1: Stability & Testing — ✅ Shipped (2 small items deferred)
 
@@ -569,35 +569,21 @@ Big batch landed 2026-04-26 across PRs #211–#215:
 - [ ] Animate agent idle states (not just walk)
 - [ ] Polish: particle effects, ambient animations, water, trees
 
-### Phase 5: Economy — ⏸ Deferred until Phase 6 complete
+### Dropped scope
 
-Inspired by [Emporion](https://github.com/garydevenay/emporion) — a peer-to-peer agent economy protocol where agents find work, negotiate contracts, submit proof, and get paid autonomously. Key Emporion concepts to adapt:
-
-- **Identity**: Agents already have persistent IDs. Add wallet/balance to agent record.
-- **Work Discovery**: Job board at the marketplace location — agents post listings (supply) and requests (demand).
-- **Contract Formation**: Structured agreements with scope, milestones, deadlines, and proof requirements.
-- **Verification**: Counterparty acceptance (agent A confirms agent B completed the task).
-- **Settlement**: Internal town currency (no Lightning — simplified for simulation). Earned from activities, spent at locations.
-
-Implementation:
-- [ ] Agent wallet system (currency field on agent record, transaction log table)
-- [ ] Job board: agents post and accept work contracts at marketplace
-- [ ] Marketplace location with buy/sell/trade interactions
-- [ ] Contracts: peer-to-peer agreements stored in DynamoDB
-- [ ] Resource generation: agents earn currency from activities (reading at library, working at cafe, etc.)
-- [ ] Economic metrics dashboard for viewers
-- [ ] Price discovery: supply/demand dynamics emerge from agent decisions
+- **Phase 5: Economy** (dropped 2026-05-04). Was scoped as an Emporion-inspired peer-to-peer agent economy: wallets, contracts, marketplace, currency earned from activities. Removed from the roadmap because the value-vs-complexity trade is unfavourable at this product stage — the simulation works as a "tamagotchi for AI agents" without it, and the contracts/verification machinery is a multi-month build that pulls focus from launch readiness and the activity-system polish that actually surfaces in soak findings. **Cleanup left behind**: `apps/backend/core/services/activity_registry.py` defines `currency_delta` on 5 activities (`perform`, `work_on_laptop`, `work_at_desk`, `order_coffee`, `cook`), but `apply_activity_effect` does not return the delta and no wallet/transaction infrastructure exists. The `currency_delta` field is dead code and should be removed in any near-term sweep of the activity layer (caught in the 2026-05-04 game-designer audit).
+- **Bank as economy hub**: previously planned as Phase 5's marketplace location. Without the economy, the bank currently has only `check_balance` (mood_delta=0, the only zero-upside activity in the game). Either repurpose the bank with non-economic activities or remove it from the location set.
 
 ### Deferred / parked features
 
 - **OASIS-style social-graph simulation** — researched 2026-04-26. Two-option scope:
   - Full feature (Approach B from research): add a town bulletin board / feed + OASIS-as-sidecar (Python 3.11 separate Fargate task) that simulates how the feed unfolds. ~5–7 weeks. Targets content-moderation foresight and personality-design feedback.
   - Thin internal QA tool (recommended): 1–2 week sidecar that runs OASIS against current agent personalities for moderation rehearsal before any user-facing feed launches.
-  - **Why parked:** market evidence (NN/g empirical pushback on Synthetic Users, sycophancy of RLHF-trained LLMs, Inworld's pivot away from games) suggests the validity of social-graph predictions is genuinely contested. Most defensible re-evaluation point is alongside Phase 5 economy — "predict your agent's marketplace strategy" has a real buyer (the agent owner). Don't take OASIS as a backend dep; run as sidecar in its own Python 3.11 environment if/when we ship it.
+  - **Why parked:** market evidence (NN/g empirical pushback on Synthetic Users, sycophancy of RLHF-trained LLMs, Inworld's pivot away from games) suggests the validity of social-graph predictions is genuinely contested. The original "re-evaluate alongside Phase 5 economy" framing is moot now that Phase 5 is dropped; the next natural re-evaluation point is whenever a content-moderation pre-launch concern actually arises. Don't take OASIS as a backend dep; run as sidecar in its own Python 3.11 environment if/when we ship it.
 
 ## Agent Activities & Gameplay Design
 
-Agents need **things to do** beyond walking around. Each location should offer activities that affect mood, energy, relationships, and (eventually) economy. The agent's LLM decides what to do based on TOWN_STATUS.md — the game server just enforces physics and proximity.
+Agents need **things to do** beyond walking around. Each location offers activities that affect mood, energy, and relationships. The agent's LLM decides what to do based on TOWN_STATUS.md — the game server just enforces physics and proximity.
 
 ### Location Activities
 
@@ -607,7 +593,7 @@ Agents need **things to do** beyond walking around. Each location should offer a
 | **Library** | Read (learn new topics), study, write in journal | +mood (introverts), generates knowledge for conversations |
 | **Cafe** | Order drink, sit and chat, work on laptop | +energy (small), +mood, social bonding spot |
 | **Activity Center** | Exercise, play games, garden | +energy, +mood, competitive interactions |
-| **Bank/Marketplace** | Post jobs, browse listings, trade, check balance | Economy hub — earn/spend currency |
+| **Bank** | (currently only `check_balance`, mood +0 — placeholder pending repurpose; was Phase 5's economy hub before that scope was dropped 2026-05-04) | TBD |
 | **Residence** | Enter apartment, sleep, decorate | +energy (sleep), personalization |
 | **Apartment** | Work at desk, cook, read, watch TV, sleep | +energy, personal space, crafting |
 
@@ -616,7 +602,7 @@ Agents need **things to do** beyond walking around. Each location should offer a
 1. Agent arrives at location → TOWN_STATUS.md shows available activities
 2. Agent calls `town_act <activity>` (e.g., `town_act read`, `town_act order_coffee`)
 3. Backend records activity start time, broadcasts activity state to viewers
-4. Activity has a **duration** (5-30 seconds sim time) and **outcome** (mood/energy/currency change)
+4. Activity has a **duration** (5-30 seconds sim time) and **outcome** (mood/energy change; the `currency_delta` field on `activity_registry.py` is dead code — Phase 5 dropped 2026-05-04)
 5. When activity completes, agent gets result in next world_update
 6. Viewer sees activity animation/label on the agent sprite
 
@@ -633,7 +619,7 @@ Agents need **things to do** beyond walking around. Each location should offer a
 Agents should naturally develop routines based on their personality and needs:
 - **Energy depletes** from activities → agent goes home to sleep → wakes refreshed
 - **Mood fluctuates** based on social interaction (extroverts need people, introverts need solitude)
-- **Economy pressure** drives agents to work (earn currency) and spend (buy items/services)
+- **Trait modulation**: introverts and extroverts respond differently to social vs solo activities (per `town_mood_engine.apply_event`'s trait-override table)
 - **Relationships** create social gravity — agents seek out friends, avoid enemies
 
 ### Art Pipeline (PixelLab Integration)
