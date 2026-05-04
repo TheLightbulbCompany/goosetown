@@ -116,6 +116,16 @@ class TownDaemon:
         # in handle_tool_command so the CLI can synchronously surface the
         # backend's verdict instead of fire-and-forget {"status": "ok"}.
         self._chat_outcome = None  # asyncio.Future | None
+        # Move-outcome future — set by _on_arrived (success) or
+        # _on_move_rejected (failure). Created fresh per `act move`
+        # invocation. Replaces the old shared _arrived_event which
+        # couldn't distinguish arrival from rejection.
+        self._move_outcome = None  # asyncio.Future | None
+        # Last requested move destination — used by _on_arrived to
+        # normalize away the player_spawn marker quirk (Godot's
+        # _get_agent_location can return player_spawn when it's near
+        # plaza). When None, the reported location passes through.
+        self._pending_move_destination: str | None = None
 
         self._events: list[str] = []
         self._max_events = 50
@@ -559,22 +569,57 @@ class TownDaemon:
         log.info("Context changed to %s, location=%s", new_context, new_location)
 
     def _on_move_rejected(self, data: dict) -> None:
-        """Handle move_rejected or busy events — unblock pending move waits."""
+        """Handle move_rejected or busy events.
+
+        Settles ``self._move_outcome`` with a structured rejection so the
+        CLI can return ``{"status": "rejected", "reason": ..., "destination": ...}``
+        instead of the historical ``{"status": "arrived"}`` lie. Also
+        sets the legacy ``self._arrived_event`` so any code path still
+        polling on it doesn't deadlock — callers should migrate to
+        ``_move_outcome`` for accurate signalling.
+        """
         reason = data.get("reason", data.get("event", "unknown"))
         destination = data.get("destination", "?")
         self._append_event(f"MOVE_REJECTED {destination}: {reason}")
+        if self._move_outcome is not None and not self._move_outcome.done():
+            self._move_outcome.set_result(
+                {"status": "rejected", "reason": reason, "destination": destination}
+            )
         if self._arrived_event is not None:
             self._arrived_event.set()
 
     def _on_arrived(self, data: dict) -> None:
-        """Handle arrived event — unblocks pending move IPC calls."""
+        """Handle arrived event — unblocks pending move IPC calls.
+
+        Normalizes away the ``player_spawn`` marker quirk: the Godot
+        game server's nearest-marker location lookup can return
+        ``player_spawn`` when it sits near ``plaza`` even though the
+        agent is at the user-requested destination. When the reported
+        location is ``player_spawn`` AND the daemon has a pending
+        move destination that isn't ``player_spawn``, prefer the
+        requested destination — the agent is there by intent.
+        """
+        reported_location = data.get("location", "")
+        # Normalize the player_spawn marker overlap quirk.
+        normalized_location = reported_location
+        if (
+            reported_location == "player_spawn"
+            and self._pending_move_destination
+            and self._pending_move_destination != "player_spawn"
+        ):
+            normalized_location = self._pending_move_destination
+
         if "agent" in self.state:
             self.state["agent"]["activity"] = "idle"
-            if "location" in data:
-                self.state["agent"]["location"] = data["location"]
+            if normalized_location:
+                self.state["agent"]["location"] = normalized_location
+        if self._move_outcome is not None and not self._move_outcome.done():
+            self._move_outcome.set_result(
+                {"status": "arrived", "location": normalized_location}
+            )
         if self._arrived_event is not None:
             self._arrived_event.set()
-        self._append_event(f"ARRIVED {data.get('location', '?')}")
+        self._append_event(f"ARRIVED {normalized_location or '?'}")
 
     def _on_wake(self, data: dict) -> None:
         """Handle wake alarm event."""
@@ -1048,12 +1093,19 @@ class TownDaemon:
 
             _log = _logging.getLogger("town_daemon")
 
-            # For chat, set up the outcome future BEFORE sending so the
-            # rejection event can't arrive between send and wait.
+            # For chat / move, set up the outcome future BEFORE sending so
+            # the rejection event can't arrive between send and wait.
             chat_outcome_future = None
             if payload.get("action") == "chat":
                 chat_outcome_future = asyncio.get_running_loop().create_future()
                 self._chat_outcome = chat_outcome_future
+
+            move_outcome_future = None
+            if payload.get("action") == "move":
+                move_outcome_future = asyncio.get_running_loop().create_future()
+                self._move_outcome = move_outcome_future
+                self._pending_move_destination = payload.get("destination", "")
+                self._arrived_event.clear()
 
             _log.info("Sending via WS: %s", msg[:100])
             await self.ws.send(msg)
@@ -1079,35 +1131,32 @@ class TownDaemon:
                     self._chat_outcome = None
 
             if payload.get("action") == "move":
-                self._arrived_event.clear()
-                requested_dest = payload.get("destination", "")
-                loop = asyncio.get_event_loop()
-                deadline = loop.time() + 120.0
-                poll_interval = 0.5
-                while loop.time() < deadline:
-                    try:
-                        await asyncio.wait_for(
-                            self._arrived_event.wait(),
-                            timeout=min(poll_interval, deadline - loop.time()),
-                        )
-                        return {
-                            "status": "arrived",
-                            "location": self.state.get("agent", {}).get("location"),
-                        }
-                    except asyncio.TimeoutError:
-                        cached_loc = self.state.get("agent", {}).get("location", "")
-                        if cached_loc and requested_dest and cached_loc == requested_dest:
-                            return {
-                                "status": "arrived",
-                                "location": cached_loc,
-                                "note": "arrived via state poll",
-                            }
+                # _move_outcome was set up before send; await it. If a
+                # rejection (busy / unknown_location / etc.) arrives, return
+                # the structured rejection immediately. If an arrival
+                # arrives, return the (player_spawn-corrected) location.
+                requested_dest = self._pending_move_destination or ""
+                try:
+                    outcome = await asyncio.wait_for(move_outcome_future, timeout=120.0)
+                    return outcome
+                except asyncio.TimeoutError:
+                    pass
+                finally:
+                    # Clear out the pending destination so a passive
+                    # arrival event later doesn't accidentally rewrite
+                    # state with a stale assumption.
+                    self._move_outcome = None
+                    self._pending_move_destination = None
+
+                # 120s elapsed without any signal — last-resort state
+                # cache check in case the world_update path delivered the
+                # arrival without a separate ``arrived`` event.
                 cached_loc = self.state.get("agent", {}).get("location", "")
                 if cached_loc and requested_dest and cached_loc == requested_dest:
                     return {
                         "status": "arrived",
                         "location": cached_loc,
-                        "note": "recovered via final state cache check",
+                        "note": "arrived via state poll",
                     }
                 return {
                     "status": "timeout",
