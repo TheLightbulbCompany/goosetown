@@ -407,8 +407,23 @@ class TownDaemon:
             self._chat_outcome.set_result({"status": "error", "reason": reason})
 
     def _on_conversation_message(self, event: str, data: dict) -> None:
-        """Handle conversation_invite and conversation_message events."""
-        self.state.setdefault("pending_messages", []).append(data)
+        """Handle conversation_invite and conversation_message events.
+
+        Filters the agent's OWN turns out of ``pending_messages`` —
+        backend echoes every ``say`` back to the speaker (intentional;
+        gives the speaker a record of their own turn in
+        ``active_conversation.turns``), but those echoes don't belong
+        in the ``pending_messages`` inbox the agent reads to decide
+        what to respond to. Vera-finding U + 5/5 soak agents reported
+        seeing their own ``say`` text re-appear on every poll for 10+
+        minutes (some tagged ``from: self``), causing agents to
+        respond to themselves.
+        """
+        from_agent_name = data.get("from_agent_name", "")
+        is_own_message = bool(from_agent_name) and from_agent_name == self._agent_name
+
+        if not is_own_message:
+            self.state.setdefault("pending_messages", []).append(data)
         conv_id = data.get("conv_id", "")
 
         if event == "conversation_invite":
@@ -814,13 +829,34 @@ class TownDaemon:
     # ------------------------------------------------------------------
 
     def _handle_world_update(self, data: dict) -> None:
-        """Handle world_update — update state and write TOWN_STATUS.md."""
+        """Handle world_update — update state and write TOWN_STATUS.md.
+
+        Applies the same ``_MARKER_NORMALIZE`` correction as
+        ``_on_arrived``: when the backend's ``location`` field for the
+        agent reads ``player_spawn`` or ``exit`` (Godot's
+        ``_get_agent_location`` rounds to its nearest known marker —
+        an internal navmesh node that's never a real user-facing
+        location), prefer the user-requested destination.
+
+        Without this, every world_update tick (~2s cadence) overwrites
+        whatever ``_on_arrived`` corrected: PR #286 normalized the
+        arrival event but the next world_update reset the location.
+        Vera-finding N′; reproduced by 3/5 soak agents.
+        """
         import logging
 
         log = logging.getLogger("town_daemon")
 
         if "you" in data:
-            self.state["agent"] = data["you"]
+            you = data["you"]
+            reported_location = you.get("location", "") if isinstance(you, dict) else ""
+            if (
+                reported_location in _MARKER_NORMALIZE
+                and self._pending_move_destination
+                and self._pending_move_destination not in _MARKER_NORMALIZE
+            ):
+                you = {**you, "location": self._pending_move_destination}
+            self.state["agent"] = you
         if "nearby_agents" in data:
             self.state["nearby"] = data["nearby_agents"]
         self._write_state()
@@ -1173,6 +1209,24 @@ class TownDaemon:
 
             move_outcome_future = None
             if payload.get("action") == "move":
+                # Vera-finding X (margot↔ranger-kai cut at turn 4):
+                # the agent's heartbeat-driven decision loop calls
+                # ``act move`` while ``active_conversation`` is set,
+                # which yanks the agent away from the conversation.
+                # Reject move synchronously so the agent's own decision
+                # loop doesn't have to know to gate on activity.
+                if self.state.get("active_conversation"):
+                    active_conv_id = self.state["active_conversation"].get("conv_id", "?")
+                    return {
+                        "status": "rejected",
+                        "action": "move",
+                        "reason": "in_conversation",
+                        "conv_id": active_conv_id,
+                        "message": (
+                            "You're in a conversation — finish it with `act end "
+                            f"{active_conv_id}` before moving."
+                        ),
+                    }
                 move_outcome_future = asyncio.get_running_loop().create_future()
                 self._move_outcome = move_outcome_future
                 self._pending_move_destination = payload.get("destination", "")
