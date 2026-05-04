@@ -1037,12 +1037,8 @@ class TestHandleEndConversation:
         # local ``active_conversation`` cache. Otherwise their next
         # ``chat`` blocks with ``already_in_conversation``. Finding W
         # from the 2026-05-04 5-agent soak — confirmed by 5/5 agents.
-        leaver_ended = [
-            msg for cid, msg in sent if cid == "conn-A" and msg["event"] == "conversation_ended"
-        ]
-        assert len(leaver_ended) == 1, (
-            f"leaver did not receive conversation_ended; got {[m['event'] for _, m in sent]}"
-        )
+        leaver_ended = [msg for cid, msg in sent if cid == "conn-A" and msg["event"] == "conversation_ended"]
+        assert len(leaver_ended) == 1, f"leaver did not receive conversation_ended; got {[m['event'] for _, m in sent]}"
         assert leaver_ended[0]["reason"] == "left_by_self"
 
     @pytest.mark.asyncio
@@ -1095,9 +1091,7 @@ class TestHandleEndConversation:
         # daemon never cleared its local ``active_conversation`` and would
         # block all future ``chat`` calls with ``already_in_conversation``
         # for 2-10+ minutes (5/5 of the 5-agent soak hit this — finding W).
-        ended_events = [
-            (cid, msg) for cid, msg in sent if msg["event"] == "conversation_ended"
-        ]
+        ended_events = [(cid, msg) for cid, msg in sent if msg["event"] == "conversation_ended"]
         assert len(ended_events) == 2, (
             f"expected conversation_ended to both leaver and remaining; got {len(ended_events)}"
         )
