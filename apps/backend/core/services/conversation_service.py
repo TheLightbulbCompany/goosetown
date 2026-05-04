@@ -214,6 +214,16 @@ async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
         _reject("already_in_conversation")
         return
 
+    # Validate initiator is not in the middle of a timed activity. Without
+    # this guard, the chat-start path overwrote the game server's
+    # ``_agent_activity`` with "talking" while the DDB ``currentActivity``
+    # field stayed set, leaving the two sources of truth diverged until
+    # the activity timer fired. Surfaced 2026-05-04 by the game-designer
+    # audit.
+    if initiator.get("currentActivity"):
+        _reject("already_in_activity")
+        return
+
     # Target is agent_id (UUID). Globally unique — the only identifier safe
     # to use for cross-user chat. Machine names and display names can collide.
     target = service.get_town_agent_by_id(target_agent_id)
@@ -228,6 +238,13 @@ async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
 
     # Validate target is not already in a conversation
     if target.get("currentConversationId"):
+        _reject("target_busy")
+        return
+
+    # Validate target is not mid-activity. Same divergence concern as the
+    # initiator check above — pulling the target out of an activity to
+    # join a chat would corrupt their activity state.
+    if target.get("currentActivity"):
         _reject("target_busy")
         return
 
@@ -557,6 +574,10 @@ async def _handle_join_conversation(connection_id: str, body: dict, agent_conn) 
 
     if joiner.get("currentConversationId"):
         _reject("already_in_conversation")
+        return
+
+    if joiner.get("currentActivity"):
+        _reject("already_in_activity")
         return
 
     updated = service.join_conversation(conv_id, joiner_id)
