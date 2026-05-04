@@ -279,9 +279,14 @@ export class ComputeStack extends cdk.Stack {
     // levels). Target 60% CPU — leaves headroom for sprite-pipeline bursts
     // before sustained breach forces scale-out. Game server stays single-
     // replica until sharding is designed (see gameserver-stack.ts).
+    // maxCapacity: prod 12, dev 3. Producer's 2026-05-04 launch-readiness
+    // plan (Tier 2 #2.2) raised prod from 6→12 to give headroom for an
+    // HN-spike scenario where 500 simultaneous /town/instance + register
+    // calls would peg CPU on 6 tasks. Game server stays single-replica
+    // until room-sharding (ADR-0002).
     const scaling = this.service.autoScaleTaskCount({
       minCapacity: isProd ? 2 : 1,
-      maxCapacity: isProd ? 6 : 3,
+      maxCapacity: isProd ? 12 : 3,
     });
     scaling.scaleOnCpuUtilization("CpuScaling", {
       targetUtilizationPercent: 60,
