@@ -205,6 +205,72 @@ class TestHandleChat:
         assert sent[0][1]["reason"] == "already_in_conversation"
 
     @pytest.mark.asyncio
+    async def test_initiator_already_in_activity_rejects(self):
+        """An agent mid-activity cannot start a chat — would diverge the
+        DDB ``currentActivity`` field from the game server's
+        ``_agent_activity`` (which gets overwritten with "talking").
+        Surfaced 2026-05-04 by the game-designer audit."""
+        from routers.town import _handle_chat
+
+        sent: list = []
+        initiator = _make_agent()
+        initiator["currentActivity"] = "read"  # mid-activity
+        svc_mock = MagicMock()
+        svc_mock.get_town_agent_by_id.return_value = initiator
+
+        with (
+            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(SERVICE_PATH, return_value=svc_mock),
+            patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
+            patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
+        ):
+            await _handle_chat(
+                "conn-abc",
+                {"target": TARGET_UUID, "message": "hi"},
+                _make_agent_conn(),
+            )
+
+        assert sent[0][1]["event"] == "chat_rejected"
+        assert sent[0][1]["reason"] == "already_in_activity"
+        # And we did NOT create a conversation row.
+        svc_mock.create_active_conversation.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_target_already_in_activity_rejects(self):
+        """Symmetric: pulling the target out of an activity to join a
+        chat would corrupt their activity state. Reject with
+        ``target_busy`` (matches the existing target_busy semantic for
+        target-in-conversation)."""
+        from routers.town import _handle_chat
+
+        sent: list = []
+        initiator = _make_agent()
+        target = _make_agent(agent_id="agent-target", current_location="plaza")
+        target["currentActivity"] = "read"  # target mid-activity
+        target["isActive"] = "true"
+
+        svc_mock = MagicMock()
+        # First call returns initiator, second call returns target.
+        svc_mock.get_town_agent_by_id.side_effect = lambda aid: (
+            initiator if aid == "agent-init" else target
+        )
+
+        with (
+            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(SERVICE_PATH, return_value=svc_mock),
+            patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
+            patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
+        ):
+            await _handle_chat(
+                "conn-abc",
+                {"target": TARGET_UUID, "message": "hi"},
+                _make_agent_conn(),
+            )
+
+        assert sent[0][1]["event"] == "chat_rejected"
+        assert sent[0][1]["reason"] == "target_busy"
+
+    @pytest.mark.asyncio
     async def test_target_not_found_rejects(self):
         from routers.town import _handle_chat
 
