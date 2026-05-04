@@ -101,7 +101,6 @@ class Activity:
         duration_seconds: How long the activity runs before completion.
         mood_delta: Mood change applied on completion (clamped to -50..+50).
         energy_delta: Energy change applied on completion (clamped to 0..100).
-        currency_delta: Currency change applied on completion (economy Phase 5).
         introvert_bonus: Additional mood for agents with introversion > 0.5.
         extrovert_bonus: Additional mood for agents with introversion <= 0.5.
         animation: Animation state name broadcast in ``world_state``.
@@ -122,7 +121,6 @@ class Activity:
     duration_seconds: int
     mood_delta: int
     energy_delta: int
-    currency_delta: int = 0
     introvert_bonus: int = 0
     extrovert_bonus: int = 0
     animation: str = "idle"
@@ -158,7 +156,6 @@ _ACTIVITIES: list[Activity] = [
         duration_seconds=30,
         mood_delta=6,
         energy_delta=-6,
-        currency_delta=3,
         animation="performing",
         description="Performing",
         agent_prompt=(
@@ -291,7 +288,6 @@ _ACTIVITIES: list[Activity] = [
         duration_seconds=5,
         mood_delta=3,
         energy_delta=6,
-        currency_delta=-1,
         animation="drink",
         description="Getting coffee",
         agent_prompt=(
@@ -321,7 +317,6 @@ _ACTIVITIES: list[Activity] = [
         duration_seconds=20,
         mood_delta=1,
         energy_delta=-5,
-        currency_delta=3,
         animation="working",
         description="Working on laptop",
         agent_prompt=(
@@ -446,7 +441,6 @@ _ACTIVITIES: list[Activity] = [
         duration_seconds=20,
         mood_delta=1,
         energy_delta=-5,
-        currency_delta=3,
         animation="working",
         description="Working at desk",
         spot="desk",
@@ -464,7 +458,6 @@ _ACTIVITIES: list[Activity] = [
         duration_seconds=15,
         mood_delta=4,
         energy_delta=5,
-        currency_delta=-1,
         animation="cooking",
         description="Cooking",
         spot="stove",

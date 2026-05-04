@@ -37,7 +37,7 @@ from core.services.activity_registry import apply_activity_effect, get_activity
 from core.services.daemon_bridge import _send_to_daemon
 from core.services.game_server_client import get_game_server_client
 from core.services.town_agent_ws import get_town_agent_ws_manager
-from core.services.town_mood_engine import parse_mood
+from core.services.town_mood_engine import apply_event, parse_mood
 from core.services.town_service import TownService
 
 logger = logging.getLogger(__name__)
@@ -448,6 +448,21 @@ async def _activity_timer(
 
     new_energy, new_mood, interrupted = apply_activity_effect(activity, current_energy, current_mood, traits, elapsed)
 
+    # Wire the previously-dead ``solitary_activity`` named event from the
+    # mood engine. Every completed (non-interrupted) activity in the
+    # registry is solo by definition — conversations are a separate event
+    # path. Firing this event applies a baseline solitude reward modulated
+    # by the introvert/extrovert override table in town_mood_engine, on
+    # top of the per-activity ``mood_delta`` / ``introvert_bonus`` /
+    # ``extrovert_bonus`` already applied by ``apply_activity_effect``.
+    # Surfaced 2026-05-04 as dead code in the game-designer audit; the
+    # design intent (introverts feel rewarded for any time alone, even
+    # if the activity itself is unflavored — e.g. ``rest``) was unwired.
+    if not interrupted:
+        new_energy, new_mood = apply_event(
+            "solitary_activity", new_energy, new_mood, traits
+        )
+
     # --- Persist updated mood/energy and clear activity ---
     service.update_agent_mood_energy(agent_id, new_mood, new_energy)
     service.update_agent_activity(agent_id, None, None)
@@ -542,6 +557,16 @@ async def complete_activity_from_startup(agent_id: str, activity, elapsed: float
 
     new_energy, new_mood, interrupted = apply_activity_effect(activity, current_energy, current_mood, traits, elapsed)
 
+    # Apply solitary_activity named event (see _complete_activity for the
+    # rationale). The startup-recovery path also benefits from the
+    # baseline reward so an agent waking up after a backend bounce
+    # mid-activity gets the same trait-modulated outcome as if the
+    # backend had never gone down.
+    if not interrupted:
+        new_energy, new_mood = apply_event(
+            "solitary_activity", new_energy, new_mood, traits
+        )
+
     service.update_agent_mood_energy(agent_id, new_mood, new_energy)
     service.update_agent_activity(agent_id, None, None)
 
@@ -593,6 +618,13 @@ async def restart_activity_timer(agent_id: str, activity, remaining: float) -> N
     new_energy, new_mood, interrupted = apply_activity_effect(
         activity, current_energy, current_mood, traits, activity.duration_seconds
     )
+
+    # Apply solitary_activity named event on startup-recovered completions
+    # too, for consistency with the live path (see _complete_activity).
+    if not interrupted:
+        new_energy, new_mood = apply_event(
+            "solitary_activity", new_energy, new_mood, traits
+        )
 
     service.update_agent_mood_energy(agent_id, new_mood, new_energy)
     service.update_agent_activity(agent_id, None, None)

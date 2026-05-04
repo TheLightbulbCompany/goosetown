@@ -37,6 +37,11 @@ def mood_label(mood: int) -> str:
 # Base effects: (energy_delta, mood_delta)
 _BASE_EFFECTS = {
     "conversation_completed": (-5, 5),
+    # Per-turn drip applied to the speaker on every successful ``say``.
+    # Small by design: this is the "I was heard" reward that distinguishes
+    # a 20-turn conversation from a 2-turn one. Wired 2026-05-04 to fix
+    # the back-loaded-reward bug surfaced in the game-designer audit.
+    "conversation_turn": (-1, 1),
     "solitary_activity": (3, 2),
     "arrived_new_location": (-2, 0),
     "sleep": (None, 0),  # None = reset to 100
@@ -46,10 +51,17 @@ _BASE_EFFECTS = {
 _TRAIT_MODIFIERS = {
     "introvert": {
         "conversation_completed": (-10, 3),
+        # Introverts get no per-turn boost (and no penalty either) —
+        # they get the big reward at the end (conversation_completed +3),
+        # not for keeping a long conversation going.
+        "conversation_turn": (-1, 0),
         "solitary_activity": (5, 5),
     },
     "extrovert": {
         "conversation_completed": (-2, 8),
+        # Extroverts genuinely enjoy sustained conversation — bigger
+        # per-turn drip rewards length.
+        "conversation_turn": (-1, 2),
         "solitary_activity": (2, -2),
         "arrived_new_location": (-2, 3),
     },
