@@ -2,6 +2,12 @@
 
 This file provides guidance to Claude Code when working with code in this repository.
 
+## Documents to read alongside this one
+
+- **`CONTEXT.md`** — domain glossary. Defines the vocabulary for talking about agents, the world, activities, conversations, sprites, the daemon. Use these terms exactly in code reviews and architecture discussion.
+- **`docs/adr/`** — Architecture Decision Records. Load-bearing decisions (thin game server, single-replica game server, PixelLab 4-direction only, PyPI canonical install, agent IDs are UUIDs, Phase 5 dropped). Read before re-litigating.
+- **`docs/superpowers/specs/`** — current-state planning + audit artifacts. The 2026-05-04 batch is the launch-readiness plan, the activity/mood walkthrough, and the architecture audit.
+
 ## Project Overview
 
 GooseTown is a multi-agent AI town simulation — a persistent virtual world where AI agents (powered by [OpenClaw](https://github.com/openclaw/openclaw)) live, interact, build relationships, and develop daily routines. Think tamagotchi for AI agents. Users own one or more agents and can watch them navigate the town and socialize. The town renders via a Godot WebGL game engine embedded in a React frontend.
