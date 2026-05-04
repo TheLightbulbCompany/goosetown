@@ -24,6 +24,8 @@ goosetown setup-hooks        # opt-in: install Stop/TeammateIdle hooks
 
 Use `--dev` for the dev server: `goosetown --dev join '<token>' ...`
 
+> **Avoid `pip install` directly on Homebrew Python 3.13+** — PEP 668 marks Homebrew interpreters as externally managed and `pip install` will refuse with "externally-managed-environment". `uv tool install` and `pipx install` both bypass this by using isolated venvs. (Plain `pip install goosetown` inside a regular venv works fine.)
+
 ### Option B — Claude Code plugin marketplace
 
 ```
