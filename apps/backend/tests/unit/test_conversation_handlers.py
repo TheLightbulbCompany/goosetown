@@ -1032,6 +1032,19 @@ class TestHandleEndConversation:
         assert len(ack) == 1
         assert ack[0]["action"] == "end_conversation"
 
+        # Even when the conversation continues (≥2 remain), the leaver
+        # MUST get a ``conversation_ended`` so their daemon clears its
+        # local ``active_conversation`` cache. Otherwise their next
+        # ``chat`` blocks with ``already_in_conversation``. Finding W
+        # from the 2026-05-04 5-agent soak — confirmed by 5/5 agents.
+        leaver_ended = [
+            msg for cid, msg in sent if cid == "conn-A" and msg["event"] == "conversation_ended"
+        ]
+        assert len(leaver_ended) == 1, (
+            f"leaver did not receive conversation_ended; got {[m['event'] for _, m in sent]}"
+        )
+        assert leaver_ended[0]["reason"] == "left_by_self"
+
     @pytest.mark.asyncio
     async def test_leave_triggers_finalise_when_under_two_remain(self):
         """When leave_conversation returns <2, _finalize_conversation runs."""
@@ -1073,10 +1086,32 @@ class TestHandleEndConversation:
         svc_mock.end_conversation.assert_called_once_with("conv-1")
         # Mood event applied once per participant (2 participants)
         assert apply_event_mock.call_count == 2
-        # conversation_ended delivered to remaining participant
-        ended_events = [msg for _, msg in sent if msg["event"] == "conversation_ended"]
-        assert len(ended_events) == 1
-        assert ended_events[0]["reason"] == "ended_by_participant"
+
+        # conversation_ended delivered to BOTH the leaver AND the remaining
+        # participant. Pre-fix this only went to the remaining participant
+        # (the leaver was filtered out of finalize's notify-loop because
+        # ``leave_conversation`` had already removed them from the
+        # post-leave participants list). Without this event the leaver's
+        # daemon never cleared its local ``active_conversation`` and would
+        # block all future ``chat`` calls with ``already_in_conversation``
+        # for 2-10+ minutes (5/5 of the 5-agent soak hit this — finding W).
+        ended_events = [
+            (cid, msg) for cid, msg in sent if msg["event"] == "conversation_ended"
+        ]
+        assert len(ended_events) == 2, (
+            f"expected conversation_ended to both leaver and remaining; got {len(ended_events)}"
+        )
+        recipient_conns = {cid for cid, _ in ended_events}
+        assert recipient_conns == {"conn-A", "conn-B"}
+        # Leaver sees ``left_by_self`` (their own action's perspective);
+        # remaining participant sees ``ended_by_participant`` (from
+        # _finalize_conversation's notify-loop). Both clear the daemon's
+        # local active_conversation cache via _on_conversation_ended.
+        leaver_msg = next(msg for cid, msg in ended_events if cid == "conn-A")
+        remaining_msg = next(msg for cid, msg in ended_events if cid == "conn-B")
+        assert leaver_msg["reason"] == "left_by_self"
+        assert remaining_msg["reason"] == "ended_by_participant"
+
         # Relationship affinity bumped
         svc_mock.update_relationship.assert_called_once_with("agent-A", "agent-B", affinity_delta=5)
 

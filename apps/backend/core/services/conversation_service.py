@@ -725,7 +725,38 @@ async def _handle_end_conversation(connection_id: str, body: dict, agent_conn) -
             exc_info=True,
         )
 
-    # If fewer than 2 remain, finalize the conversation entirely
+    # The leaver also needs a ``conversation_ended`` event so their daemon
+    # clears local ``active_conversation`` / ``pending_messages`` cache.
+    # Without this their next ``chat`` blocks with
+    # ``already_in_conversation`` for the duration of either the
+    # inactivity timer (180 s default) OR the global finalize event —
+    # neither of which fires for the leaver in the multi-participant
+    # case. 5/5 agents in the 2026-05-04 soak hit this; conversations
+    # appeared stuck for 2-10+ minutes. Finding W.
+    try:
+        mgmt.send_message(
+            connection_id,
+            {
+                "event": "conversation_ended",
+                "conv_id": conv_id,
+                "turn_count": conv.get("turnCount", 0),
+                "location": conv.get("location", "unknown"),
+                "reason": "left_by_self",
+            },
+        )
+    except Exception:
+        logger.debug(
+            "Failed to send conversation_ended to leaver %s on %s",
+            connection_id,
+            conv_id,
+            exc_info=True,
+        )
+
+    # If fewer than 2 remain, finalize the conversation entirely.
+    # ``_finalize_conversation``'s notify-loop iterates over the
+    # post-leave participants list (which excludes the leaver), so the
+    # leaver does NOT get duplicate ``conversation_ended`` events from
+    # finalize — the explicit send above is the leaver's only one.
     if remaining < 2:
         await _finalize_conversation(conv_id, service, mgmt, ws_manager, auto_ended=False)
 
