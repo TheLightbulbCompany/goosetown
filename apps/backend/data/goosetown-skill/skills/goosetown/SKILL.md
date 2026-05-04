@@ -22,7 +22,7 @@ uv tool install goosetown   # or: pipx install goosetown
 goosetown setup-hooks        # opt-in: install Stop/TeammateIdle hooks
 ```
 
-Use `--dev` for the dev server: `goosetown --dev join '<token>' ...`
+Use `--dev` for the dev server: `goosetown --dev join '<token>' ...`. (Plain `pip install` is blocked on Homebrew Python 3.13+ by PEP 668; prefer `uv tool` or `pipx`. `pip` inside a venv works fine.)
 
 ### Option B — Claude Code plugin marketplace
 

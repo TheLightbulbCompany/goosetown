@@ -51,6 +51,56 @@ def _is_auth_failure(exc: BaseException) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Internal Godot navmesh markers — when the game server reports an arrival
+# location or a rejection destination as one of these names, it's a Godot
+# "_get_agent_location" closest-marker artifact, not a user-meaningful
+# label. The daemon normalizes by preferring the user-requested
+# destination from `_pending_move_destination` when it's set.
+# ---------------------------------------------------------------------------
+
+_MARKER_NORMALIZE: frozenset[str] = frozenset({"player_spawn", "exit"})
+
+
+def mood_label(mood: int) -> str:
+    """Convert numeric mood (-50..+50) to a human-readable label.
+
+    Mirrors ``apps/backend/core/services/town_mood_engine.mood_label``.
+    Kept in sync manually because the CLI ships as its own PyPI
+    package without a dep on the backend module.
+    """
+    if mood <= -30:
+        return "miserable"
+    if mood <= -10:
+        return "sad"
+    if mood <= 10:
+        return "neutral"
+    if mood <= 30:
+        return "happy"
+    return "elated"
+
+
+def render_mood(mood) -> str:  # noqa: ANN001 — accepts int OR pre-labeled string
+    """Render mood for TOWN_STATUS.md so agents see meaning, not raw numbers.
+
+    Vera (dry-run #3) flagged ``Mood: 10`` as opaque — an agent reading
+    its own status file can't tell if 10 is good or bad without
+    consulting external docs. Render as ``happy (10)``. Falls back to
+    the raw value as a string for non-numeric inputs (defensive).
+    """
+    if isinstance(mood, (int, float)):
+        return f"{mood_label(int(mood))} ({int(mood)})"
+    return str(mood) if mood else "neutral"
+
+
+def render_activity(activity) -> str:  # noqa: ANN001
+    """Render activity, defaulting blank/empty/None to ``"idle"`` so the
+    Activity field in TOWN_STATUS.md is never blank (Vera-finding R)."""
+    if not activity:
+        return "idle"
+    return str(activity)
+
+
+# ---------------------------------------------------------------------------
 # Onboarding blurb
 # ---------------------------------------------------------------------------
 
@@ -271,7 +321,7 @@ class TownDaemon:
             self._write_status(
                 "# GooseTown Status\n\n"
                 f"**Location:** {location}\n"
-                f"**Activity:** {activity}\n\n"
+                f"**Activity:** {render_activity(activity)}\n\n"
                 "**Nearby:** no one\n\n"
                 "You are now in GooseTown! Look around and decide what to do.\n\n"
                 "## What do you want to do?\n\n"
@@ -577,13 +627,29 @@ class TownDaemon:
         sets the legacy ``self._arrived_event`` so any code path still
         polling on it doesn't deadlock — callers should migrate to
         ``_move_outcome`` for accurate signalling.
+
+        Normalizes the rejection's ``destination`` field: when the game
+        server reports an internal navmesh marker name like ``"exit"``
+        or ``"player_spawn"`` (because the rejecting scene's
+        ``_get_agent_location`` rounded to its nearest known marker),
+        prefer the user-requested destination. Otherwise the agent sees
+        ``destination: "exit"`` after asking for ``"cafe"`` — surfaced
+        as Vera-finding M on 2026-05-04.
         """
         reason = data.get("reason", data.get("event", "unknown"))
-        destination = data.get("destination", "?")
-        self._append_event(f"MOVE_REJECTED {destination}: {reason}")
+        reported_destination = data.get("destination", "?")
+        normalized_destination = reported_destination
+        if (
+            reported_destination in _MARKER_NORMALIZE
+            and self._pending_move_destination
+            and self._pending_move_destination not in _MARKER_NORMALIZE
+        ):
+            normalized_destination = self._pending_move_destination
+
+        self._append_event(f"MOVE_REJECTED {normalized_destination}: {reason}")
         if self._move_outcome is not None and not self._move_outcome.done():
             self._move_outcome.set_result(
-                {"status": "rejected", "reason": reason, "destination": destination}
+                {"status": "rejected", "reason": reason, "destination": normalized_destination}
             )
         if self._arrived_event is not None:
             self._arrived_event.set()
@@ -600,12 +666,17 @@ class TownDaemon:
         requested destination — the agent is there by intent.
         """
         reported_location = data.get("location", "")
-        # Normalize the player_spawn marker overlap quirk.
+        # Normalize internal navmesh markers (player_spawn, exit) to the
+        # user-requested destination — these are closest-marker artifacts,
+        # not meaningful location labels for an agent reading their state.
+        # Vera-finding N: arrival into the library reported `location: "exit"`
+        # because the library scene's nearest marker happens to be the exit
+        # marker.
         normalized_location = reported_location
         if (
-            reported_location == "player_spawn"
+            reported_location in _MARKER_NORMALIZE
             and self._pending_move_destination
-            and self._pending_move_destination != "player_spawn"
+            and self._pending_move_destination not in _MARKER_NORMALIZE
         ):
             normalized_location = self._pending_move_destination
 
@@ -807,8 +878,8 @@ class TownDaemon:
                 else (
                     "# GooseTown Status\n\n"
                     f"**Location:** {location}\n"
-                    f"**Activity:** {activity}\n"
-                    f"**Mood:** {mood} | **Energy:** {energy}\n\n"
+                    f"**Activity:** {render_activity(activity)}\n"
+                    f"**Mood:** {render_mood(mood)} | **Energy:** {energy}\n\n"
                     f"**Nearby:** {nearby_text}\n\n"
                 )
             )
@@ -967,8 +1038,8 @@ class TownDaemon:
                 self._write_status(
                     "# GooseTown Status\n\n"
                     f"**Location:** {location}\n"
-                    f"**Activity:** {activity}\n"
-                    f"**Mood:** {mood} | **Energy:** {energy}\n\n"
+                    f"**Activity:** {render_activity(activity)}\n"
+                    f"**Mood:** {render_mood(mood)} | **Energy:** {energy}\n\n"
                     f"**Nearby:** {nearby_text}\n\n"
                     f"**Pending messages:**\n{pending_text}\n"
                 )
