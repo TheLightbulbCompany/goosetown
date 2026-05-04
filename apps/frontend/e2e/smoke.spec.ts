@@ -21,7 +21,11 @@ test.describe('GooseTown smoke', () => {
       if (msg.type() === 'error') consoleErrors.push(msg.text());
     });
 
-    await page.goto('/');
+    // PR #254 (2026-04-30) moved the canvas + conversations sidebar from
+    // ``/`` (now the landing page) to ``/town``. The smoke spec was missed
+    // in that route move and silently failed on every PR for the next four
+    // days. Surfaced 2026-05-04 readiness review.
+    await page.goto('/town');
     await expect(page).toHaveTitle(/GooseTown/i);
 
     // Sidebar Conversations section renders even when signed out.
@@ -72,7 +76,11 @@ test.describe('GooseTown smoke', () => {
     // Runs against live dev, so on a PR whose code hasn't deployed yet the
     // handler may not exist. In that case we skip — the deploy pipeline
     // re-runs smoke tests post-deploy, which is where the real guard fires.
-    await page.goto('/');
+    // PR #254 (2026-04-30) moved the canvas + conversations sidebar from
+    // ``/`` (now the landing page) to ``/town``. The smoke spec was missed
+    // in that route move and silently failed on every PR for the next four
+    // days. Surfaced 2026-05-04 readiness review.
+    await page.goto('/town');
     await expect(page.locator('canvas').first()).toBeVisible({ timeout: 20_000 });
 
     const handlerExists = await page.evaluate(
