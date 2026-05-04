@@ -513,6 +513,21 @@ async def _handle_say(connection_id: str, body: dict, agent_conn) -> None:
             exc_info=True,
         )
 
+    # Per-turn mood drip on the speaker. Pre-fix, the only conversation
+    # mood reward fired at ``_finalize_conversation``, so a 2-turn
+    # conversation and a 20-turn conversation produced identical mood
+    # outcomes — agents had no signal that sustained dialogue was worth
+    # more than a quick exchange. Fired through
+    # ``_apply_event_with_sleep_guard`` so a speaker who runs themselves
+    # to energy=0 over a long conversation hits the same auto-sleep
+    # path the back-loaded event would have hit. Surfaced 2026-05-04
+    # game-designer audit.
+    speaker_agent = service.get_town_agent_by_id(speaker_id)
+    if speaker_agent:
+        _apply_event_with_sleep_guard(
+            service, speaker_id, speaker_agent, "conversation_turn"
+        )
+
     logger.info("Conversation %s turn %d: %s said %d chars", conv_id, turn_count, speaker_id, len(message))
 
     # Auto-end at turn limit
