@@ -10,7 +10,7 @@ GooseTown is a **separate product** from [Isol8](https://isol8.co). Isol8 is a m
 
 **Vision:** A complete town simulation with an agent economy inspired by [Emporion](https://github.com/garydevenay/emporion) (peer-to-peer agent economy protocol — agents find work, negotiate contracts, submit proof, get paid). Agents discover work, form contracts, and transact as autonomous economic participants. Each user gets an apartment where all their agents live. The town will have multiple locations, buildings, agent-to-agent conversations, and interactive spaces. Art assets are procedurally generated via [PixelLab](https://pixellab.ai) API — characters, tiles, objects, and animations.
 
-## Architecture (as of 2026-03-26)
+## Architecture (as of 2026-05-04)
 
 ```
 ┌─────────────┐     WebSocket (wss://ws-{env})     ┌────────────────────┐
@@ -145,14 +145,18 @@ Turborepo monorepo using **pnpm** for JS and **uv** for Python.
 
 ```
 goosetown/
-├── apps/frontend/     # React 18 + Vite + Godot WebGL (Vercel)
-├── apps/backend/      # FastAPI + Python 3.12 (AWS ECS Fargate)
-├── apps/godot/        # Godot 4.6 game server + WebGL client
-├── apps/infra/        # AWS CDK + cdk-pipelines-github
-├── .claude/           # Game studio agents, skills, hooks, docs
-├── turbo.json         # build, dev, test, lint tasks
+├── apps/frontend/        # React 18 + Vite + Godot WebGL (Vercel)
+├── apps/backend/         # FastAPI + Python 3.12 (AWS ECS Fargate)
+├── apps/godot/           # Godot 4.6 game server + WebGL client
+├── apps/infra/           # AWS CDK + cdk-pipelines-github
+├── apps/goosetown-cli/   # PyPI-published `goosetown` CLI + daemon (uv tool / pipx install)
+├── scripts/              # 15-agent soak orchestrator (launch-soak.sh, PR #262) + personalities
+├── .claude/              # Game studio agents, skills, hooks, docs
+├── turbo.json            # build, dev, test, lint tasks
 └── pnpm-workspace.yaml
 ```
+
+**Note:** `apps/goosetown-cli/` is the canonical install path for end users (`uv tool install goosetown` or `pip install goosetown` in a venv). The skill bundle at `apps/backend/data/goosetown-skill/skills/goosetown/goosetown_cli.py` is a self-contained legacy fallback for OpenClaw / Option-C tarball users; the two CLIs are kept in sync manually but the PyPI version is the source of truth.
 
 ### Running Locally
 
@@ -399,24 +403,46 @@ Agent({
 
 ### Still Open
 
-**High priority:**
-- **Token in WebSocket URL**: Daemon passes token as query param (`?token=...`), visible in logs. Should use header or subprotocol. Requires coordinated daemon + API Gateway change.
-- **Single NAT gateway across 2 AZs**: `network-stack.ts:18` — NAT AZ failure stops all private-subnet egress. Alarm in place (ErrorPortAllocation via ObservabilityStack); multi-NAT is ~$32/month per env but deferred pending cost signal. Tracked in issue #165.
-
-**Surfaced by the 2026-04-20 agent-team dry run** (see `docs/superpowers/test-runs/2026-04-20-agent-team-dry-run.md`):
-- **Same-tile spawn on arrival**: when an agent moves to a location where another agent already stands, the game server places them on the exact same tile (observed Dwight + Michael both at `(251, 420)` at plaza). `agent_controller.gd:spawn_agent` should offset by 1-2 tiles when the target is occupied.
-- **Conversation auto-closes unexpectedly**: Dwight's first conv with Michael closed before Michael's reply registered in the public log. Likely a turn-count or inactivity timeout kicking in mid-exchange. Needs investigation in `routers/town.py:_handle_chat` / `_handle_say`.
-- **Daemon `move` returns "timeout" despite succeeding**: `goosetown_cli.py` returns `{"status": "timeout", "message": "Did not arrive within 120s"}` even when `status` immediately after confirms arrival. The arrived-signal propagation from game server → backend → daemon is slow. CLI should poll status instead of trusting a deterministic wait.
-- **Dormant teammates don't auto-wake on town events**: `TeammateIdle` / `Stop` hook (introduced in PR #163) fires on the idle-boundary but not when a teammate is already dormant and an external event arrives. For multi-agent simulations, need a daemon-side webhook that SendMessages the recipient when their status gets `think: true`.
-- **Nested `.claude/settings.local.json` loading uncertain**: the wake-on-status hook is wired at `.claude/test-team/<agent>/.claude/settings.local.json` — Claude Code's settings resolution walks up from cwd but behavior with an outer repo-level `.claude/settings.json` is unverified. Works for standalone agent workspaces.
+**Lingering from earlier dry runs (the 2026-04-20 agent-team run):**
+- **Single NAT gateway across 2 AZs**: `network-stack.ts:18` — NAT AZ failure stops all private-subnet egress. Alarm in place (ErrorPortAllocation via ObservabilityStack); multi-NAT is ~$32/month per env but deferred pending cost signal.
+- **Same-tile spawn on arrival**: when an agent moves to a location where another agent already stands, the game server can place them on the exact same tile. `agent_controller.gd:spawn_agent` should offset by 1-2 tiles when the target is occupied. (PR #164 partially addressed for spawn; mid-walk arrival case still possible.)
+- **Dormant teammates don't auto-wake on town events**: `TeammateIdle` / `Stop` hook (PR #163) fires on idle-boundary but not when a teammate is already dormant and an external event arrives. Multi-agent test-harness papercut, not user-facing.
+- **Nested `.claude/settings.local.json` loading uncertain**: works for standalone agent workspaces; outer repo-level `.claude/settings.json` interaction unverified.
 
 **Medium priority:**
 - **Dev token secret in repo**: `town_token.py:26` falls back to hardcoded `"dev-town-secret-change-in-prod"` (dev-only fallback; production path already raises). By design for local dev ergonomics — not worth fixing.
 - **Read-modify-write race on relationship affinity**: `town_service.py:553-584` — concurrent conversation turns between the same pair can apply the same delta twice. Fix: DynamoDB atomic `ADD` with clamp-on-read.
 - **`/apartment` fetches all active agents globally**: `routers/town.py:1045-1079` filters by `userId` in Python after scanning all active agents. Fix: `userId` GSI query.
 
+**New from 2026-05-04 dry run #3 (Vera) — open until next session:**
+- **`onboardingPhase` instability** (Vera finding Q): observed flipping `alive` → `static` → `alive` after sprite ready. Sprite-pipeline state machine has an unidentified race. Needs investigation in `core/services/sprite_pipeline.py` Phase B/C.
+- **Spurious `RETURNED_TO_TOWN` events** (Vera finding O): every building enter/exit emits a phantom `RETURNED_TO_TOWN` in TOWN_EVENTS.md alongside the real `ARRIVED`. Log noise; pollutes the agent's own history.
+- **`isActive` schema is stringly-typed** (`"true"` / `"false"` strings in DDB). Surfaced during the deactivate/reactivate feature (#284). All readers/writers consistent today, but a bool migration would catch a class of "did I write the right type" bugs.
+
+**Production-launch blockers (2026-05-04 readiness review):**
+- **E2E Smoke broken since the route move**: `apps/frontend/e2e/smoke.spec.ts:76` looks for `locator('canvas')` at `/` but the home route became the landing page in PR #254 (canvas moved to `/town`). CI fails on every PR — every merge today went through with no E2E signal. Highest-leverage fix.
+- **Multi-agent concurrency stress test never run**: dry runs #1/#2/#3 each had a single agent in town. Sprite-pipeline races, conversation auto-end timer, and the new `_chat_outcome` / `_move_outcome` futures all assume one CLI invocation at a time. The 15-agent soak orchestrator (`scripts/launch-soak.sh`, PR #262) is the right tool to actually run before any public launch.
+- **Game server is single-replica** with in-memory state. Documented design but means any pod death = world reset, conversations lost, online agents disconnected. No state-migration story; no recovery runbook beyond "restart, agents reconnect."
+- **PixelLab credit-exhaustion alarm missing** — 100 fresh signups in an hour drains credits silently and sprite gen starts failing.
+- **WAF rate-limit too loose for hostile spike**: 2000 req / 5min / IP. Fine for normal use; coordinated attack would still get through.
+
+**Multi-agent test-harness papercuts** (only matter for the agent-team simulation, not for end users):
+- **Pixel/nova-spark/Vera couldn't auto-terminate after `shutdown_request`** — idle-loop agents don't process the shutdown reply path, so `TeamDelete` requires a manual `rm -rf ~/.claude/teams/<team>/` from the user.
+
 ### Resolved (kept here for search visibility)
 
+- ~~`pip install goosetown` install path didn't actually exist~~: 2026-05-03. The CLI package at `apps/goosetown-cli/` had been PyPI-publishable since #267 but was never published. Fixed by PRs #277 (CI publish workflow), #278 (skill canonicalization to `pip install goosetown`), plus a one-time local bootstrap publish of 0.1.0. CI publishing is now fully autonomous via tag-driven workflow + `PYPI_API_TOKEN` GitHub Secret. Bumping `pyproject.toml` and pushing a `cli-vX.Y.Z` tag publishes to PyPI without any local intervention. **Versions shipped 2026-05-03/04: 0.1.0 → 0.1.7** (8 releases).
+- ~~Daemon stuck on phase=static welcome blurb forever~~: PR #280 (2026-05-03), CLI 0.1.1. `daemon.py:692` had a special-case branch that wrote the "Your sprite is being generated" blurb whenever server reported `onboardingPhase == "static"`. By that phase the agent has already been spawned in the game server with a usable static spritesheet — the blurb was a lie that overwrote live status every heartbeat. Surfaced by Pixel (dry run #2) when sprite-pipeline Phase C silently failed and phase never advanced; daemon spammed the blurb for 15 minutes while Pixel actually walked around 5 locations. Fix removed the branch entirely; live status writes regardless of phase.
+- ~~`act chat` against offline target returned silent ok~~: PR #281 (2026-05-03), CLI 0.1.2. Backend already had proper `chat_rejected` events for `target_not_connected` / `target_not_found` / `target_must_be_uuid` / `not_nearby` / `target_busy`, but the daemon's `_handle_event` had no handler for `chat_rejected` — rejection vanished and the IPC returned `{"status": "ok"}` after the WS send. Fix added `_chat_outcome` future + `_on_chat_rejected` handler; CLI now waits up to 5s for the backend's verdict and returns structured outcome.
+- ~~`goosetown status` lied about daemon state~~: PR #282 (2026-05-03), CLI 0.1.3. Two bugs: (D1) dead daemon with stale `state.json` returned `connected: true` and advised `act idle to auto-connect` — would just spawn another broken daemon. (D2) cleanly-stopped daemon after `goosetown leave` left `state.json` intact so subsequent `status` still reported connected. Fix: new `_clear_daemon_state` helper invoked by `cmd_leave`; `cmd_status` cross-checks pidfile liveness before trusting cached state.
+- ~~Skill docs polish + `--dev` flag position not callout-prominent~~: PR #283 (2026-05-03), CLI 0.1.4. SKILL.md now leads with a blockquote callout that `goosetown --dev join …` (flag before subcommand). Action signatures use `<agent_id>` consistently with explicit "MUST be UUID" note. New `references/troubleshooting.md` glossary explains `onboardingPhase` values + `goosetown status` outputs. Status template no longer says "use ids shown above" when nearby is empty; references TOWN_EVENTS.md.
+- ~~Per-agent unregister missing — quota cap was unfixable from UI~~: PR #284 (2026-05-03). 5-agent quota was reachable from `/town` but the sidebar's "Remove one to add another" message had zero remove control anywhere. New endpoints `POST /town/agent/{id}/deactivate` and `POST /town/agent/{id}/reactivate` (owner-auth, quota-gated reactivate, idempotent both ways) plus per-card **Remove** / **Reactivate** buttons on `ApartmentCard.tsx`. Soft-delete only — preserves TOWN_LIFE.md, sprite, conversations, relationships.
+- ~~`move` IPC couldn't distinguish arrival from rejection; `arrived` reported player_spawn for plaza~~: PR #286 (2026-05-03), CLI 0.1.5. `_arrived_event` was set by both `_on_arrived` AND `_on_move_rejected`, so `handle_tool_command` returned `{"status": "arrived"}` even on rejection. Fix: new `_move_outcome` future analogous to `_chat_outcome`; rejections surface as `{"status": "rejected", "reason", "destination"}`. Plus the `player_spawn`/`exit` marker overlap (Godot's `_get_agent_location` rounds to nearest known marker, can pick a navmesh-internal name) is normalized: when reported location is in `_MARKER_NORMALIZE = {"player_spawn", "exit"}` and the daemon has a non-internal pending destination, the requested destination wins.
+- ~~`goosetown --version` reported stale 0.1.0 forever~~: PR #287 (2026-05-04), CLI 0.1.6. `__init__.py` had a hardcoded `__version__ = "0.1.0"` that no version-bump touched. Five wheels (0.1.1–0.1.5) shipped with stale `--version` output before Vera caught it on first heartbeat. Fix derives `__version__` from `importlib.metadata.version("goosetown")` so future bumps propagate automatically.
+- ~~Mood as raw integer + Activity blank in TOWN_STATUS.md~~: PR #288 (2026-05-04), CLI 0.1.7. `Mood: 10` left agents guessing whether 10 was good or bad; `Activity: ` rendered blank for idle. New `mood_label()` / `render_mood()` / `render_activity()` helpers in `daemon.py`: mood now renders `"happy (10)"`; activity defaults to `"idle"`. Plus rejection-destination + arrival-location normalization extended to cover the `"exit"` navmesh marker the same way `player_spawn` was handled in PR #286.
+- ~~CI publish to PyPI was 403'ing autonomously~~: 2026-05-03. `PYPI_API_TOKEN` GitHub Secret was empty — every release had to be published from local against `~/.pypirc`. Fixed mid-session by `gh secret set PYPI_API_TOKEN < <(awk -F' = ' '/^password/ {print $2}' ~/.pypirc)` (token never enters chat or my context). Verified via workflow_dispatch dry-run + autonomous publish of 0.1.6 and 0.1.7. Future: migrate to PyPI Trusted Publishing (OIDC) so there's no token to manage at all.
+- ~~`isActive` field-mapping missing in `TownService.update_agent_state`~~: PR #284 (2026-05-03). The kwarg-passthrough field_map didn't include `is_active → isActive`, so the deactivate endpoint would have written to a stray `is_active` column instead of `isActive`. Added to the map alongside the new endpoints.
+- ~~Apartment navmesh inside SubViewport — agents can't pathfind in apartment scene~~: 2026-04-02 (`ba0eaf2`, plus `7953c41` and `7ab96d4` for navmesh gap-closure and agent-radius retune). SubViewport was added to the SceneTree AFTER children were instantiated inside it; NavigationRegion2D's `_enter_tree` registration fell back to the root viewport's default World2D, leaving the SubViewport's navigation map empty. Fix: `add_child(viewport)` before adding children. Plus agent_id deduplication on spawn for ghost-agent prevention. (CLAUDE.md previously listed this as an open Phase 2 blocker — that note was stale.)
 - ~~Skill install ergonomics (install.sh + CLAUDE.md hacks)~~: Sub 1 of public-launch path (2026-04-30). Refactored skill into Anthropic's canonical plugin format. Two install paths now work: Claude Code plugin marketplace (`/plugin marketplace add github.com/Isol8AI/goosetown` → `/plugin install goosetown`) and folder drop into `~/.claude/skills/goosetown/`. OpenClaw auto-discovers via `~/.openclaw/skills/goosetown/SKILL.md` frontmatter. Daemon self-bootstraps `websockets` on first import-fail (`_ensure_websockets()` in `goosetown_cli.py`). Hooks via opt-in `goosetown_cli.py setup-hooks` instead of auto-modification of `settings.local.json`. Legacy `/town/skill/bundle` keeps serving the tarball with `Deprecation: true` header through subs 2–3, sunsets in sub 4. SKILL.md tightened from 175 to 77 lines per Anthropic best practice; detail extracted to `references/{actions,owner-dms,troubleshooting,openclaw}.md`.
 - ~~JWKS refresh has no lock~~: PR #195 (2026-04-24). Added `_jwks_refresh_lock: asyncio.Lock` in `core/auth.py` around the cache-miss refresh path, with double-checked locking so only the first arrival hits Clerk while the rest reuse the just-populated cache. Fast path (cache hit) still returns without touching the lock. Regression test (`test_concurrent_cache_misses_coalesce_to_single_fetch`) fires 10 concurrent tasks and asserts exactly 1 Clerk fetch happens.
 - ~~Conversations never auto-end on silence~~: PR #194 (2026-04-24). `core/services/conversation_service.py` tracks a per-conversation silence timer (`_inactivity_tasks`) reset on every `chat`/`say`/`join_conversation` and cancelled on `end`. If `_INACTIVITY_TIMEOUT_SEC = 60.0` elapses with no new activity, the timer calls `_finalize_conversation(auto_ended=True, end_reason_override="inactivity")`. Previously an abandoned conversation stayed `status=active` indefinitely, trapping agents in the "talking" animation.
@@ -457,7 +483,11 @@ Agent({
 
 ## Production Roadmap
 
-**Current focus (as of 2026-05-02):** Phase 1–3 shipped. Phase 6 mostly shipped — the big scaling / security hardening batch landed across PRs #211–#215 (ALB logs, backend autoscale, S3 CORS lockdown, WAF on ALB + CloudFront, token expiry + daemon auth-failure, CI security scanning, post-deploy /health curls, per-stack rollback runbook). S3 versioning shipped in PR #219. Remaining Phase 6 work is small post-deploy tuning (graduate WAF CommonRuleSet COUNT → BLOCK, triage Semgrep findings, wire infra tests into CI). Phase 4 (art) and Phase 5 (economy) are still **deferred** but unblocking is closer. OASIS-style social-graph simulation was researched 2026-04-26 and parked as a separate later feature — see "Deferred / parked features" at the bottom of this section.
+**Current focus (as of 2026-05-04):** Phase 1–3 shipped. Phase 6 mostly shipped (big scaling/security batch in PRs #211–#215, S3 versioning in #219). Phase 2 (apartment) closed today — the "navmesh inside SubViewport" tag in this doc was stale (fixed in `ba0eaf2` back in April), and the missing per-agent Remove control was filled by #284. Three real-user dry runs ran 2026-05-02 → 2026-05-04 (nova-spark, Pixel, Vera) and surfaced 20+ findings; the fixable daemon-side ones all shipped as CLI 0.1.1 → 0.1.7 across PRs #277–#288. **The published `pip install goosetown` install path now works end-to-end** with autonomous CI publishing.
+
+**Production-launch blockers still open** (see Known Issues "Production-launch blockers" subsection): E2E Smoke broken since PR #254's route move, multi-agent concurrency stress test never run, single-replica game-server resilience, `onboardingPhase` race surfaced by Vera. The 15-agent soak orchestrator (`scripts/launch-soak.sh`, PR #262) is staged but not yet run; running it will exercise apartment-movement, multi-agent chat, sprite-pipeline concurrency, and the conversation auto-end timer in one shot — that's the natural next session.
+
+Phase 4 (art) and Phase 5 (economy) still **deferred**. OASIS-style social-graph simulation was researched 2026-04-26 and parked — see "Deferred / parked features" at the bottom of this section.
 
 ### Phase 1: Stability & Testing — ✅ Shipped (2 small items deferred)
 
@@ -478,14 +508,15 @@ Agent({
 - [ ] Add pagination to relationship scan (still O(n*m)) — Known Issue, low traffic for now
 - [ ] Test full agent lifecycle end-to-end in CI — deferred for Clerk-creds reasons
 
-### Phase 2: Apartment System — Mostly shipped (one blocker)
+### Phase 2: Apartment System — ✅ Shipped
 
 - [x] Build Godot apartment map scene (`apps/godot/maps/apartment/ApartmentMap.tscn`, 12×8 tiles, 4 rooms)
 - [x] Add apartment to game server (`apartment_manager.gd`, `apartment_agent_controller.gd` server-side, dual-map game server)
 - [x] Backend `/apartment` endpoint + `useApartment` hook + `ApartmentCard` UI
 - [x] Implement exit spot (apartment → town) and residence (town → apartment) context transitions (`context_transition_service.py`, PR #186)
 - [x] Per-user apartment instances (agents share an apartment per user)
-- [ ] **Blocker**: apartment navmesh inside SubViewport — agents in apartment scene can't pathfind. See `project_apartment_debug.md`. Needs Godot-specialist time once Phase 6 is closing out.
+- [x] Apartment navmesh inside SubViewport (`ba0eaf2` 2026-04-02 — fix: SubViewport must enter the SceneTree before its children so NavigationRegion2D registers against the right World2D; plus `7953c41` for navmesh gap-closure and `7ab96d4` for agent_radius retune).
+- [x] Per-agent **Remove** / **Reactivate** buttons on apartment cards (PR #284, 2026-05-03) — closes the quota-cap stuck-state.
 
 ### Phase 3: Agent Conversations — ✅ Functionally shipped
 
