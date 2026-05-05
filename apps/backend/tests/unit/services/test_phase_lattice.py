@@ -67,9 +67,7 @@ class TestAdvancePhase:
             applied = advance_phase("agent-1", "alive", service=svc)
         assert applied is True
         # DDB write happened with the new phase.
-        svc.update_agent_state.assert_called_once_with(
-            "agent-1", onboarding_phase="alive"
-        )
+        svc.update_agent_state.assert_called_once_with("agent-1", onboarding_phase="alive")
         # Cache write happened with the SAME phase string-cast.
         ws.update_onboarding_phase.assert_called_once_with("agent-1", "alive")
 
@@ -126,9 +124,7 @@ class TestAdvancePhase:
         with patch(WS_MGR_PATH, return_value=ws):
             applied = advance_phase("agent-1", "static", service=svc)
         assert applied is True
-        svc.update_agent_state.assert_called_once_with(
-            "agent-1", onboarding_phase="static"
-        )
+        svc.update_agent_state.assert_called_once_with("agent-1", onboarding_phase="static")
 
     def test_invalid_phase_raises(self):
         svc = MagicMock()
@@ -196,6 +192,4 @@ class TestRestorePhaseFromDb:
         ws = _ws_mgr_with_phase(None)
         with patch(WS_MGR_PATH, return_value=ws):
             restore_phase_from_db("agent-1", "legacy_value")
-        ws.update_onboarding_phase.assert_called_once_with(
-            "agent-1", "legacy_value"
-        )
+        ws.update_onboarding_phase.assert_called_once_with("agent-1", "legacy_value")

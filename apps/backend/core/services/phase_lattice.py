@@ -110,9 +110,7 @@ def advance_phase(
         InvalidPhaseError: phase not in the lattice.
     """
     if phase not in _VALID_PHASES:
-        raise InvalidPhaseError(
-            f"Unknown phase {phase!r}. Valid phases: {sorted(_VALID_PHASES)}"
-        )
+        raise InvalidPhaseError(f"Unknown phase {phase!r}. Valid phases: {sorted(_VALID_PHASES)}")
 
     cache = get_town_agent_ws_manager()
     conn = cache.get_by_agent_id(agent_id)
@@ -134,9 +132,7 @@ def advance_phase(
     # double-call advance_phase (e.g. the resume path firing after
     # the live path) and we don't want to retrigger DDB writes.
     if current == phase:
-        logger.debug(
-            "phase already at %s for agent %s; skip", phase, agent_id
-        )
+        logger.debug("phase already at %s for agent %s; skip", phase, agent_id)
         return False
 
     svc = service or TownService()
