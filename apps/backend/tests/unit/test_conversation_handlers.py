@@ -251,9 +251,7 @@ class TestHandleChat:
 
         svc_mock = MagicMock()
         # First call returns initiator, second call returns target.
-        svc_mock.get_town_agent_by_id.side_effect = lambda aid: (
-            initiator if aid == "agent-init" else target
-        )
+        svc_mock.get_town_agent_by_id.side_effect = lambda aid: initiator if aid == "agent-init" else target
 
         with (
             patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),

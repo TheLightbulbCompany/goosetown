@@ -541,9 +541,7 @@ async def _handle_say(connection_id: str, body: dict, agent_conn) -> None:
     # game-designer audit.
     speaker_agent = service.get_town_agent_by_id(speaker_id)
     if speaker_agent:
-        _apply_event_with_sleep_guard(
-            service, speaker_id, speaker_agent, "conversation_turn"
-        )
+        _apply_event_with_sleep_guard(service, speaker_id, speaker_agent, "conversation_turn")
 
     logger.info("Conversation %s turn %d: %s said %d chars", conv_id, turn_count, speaker_id, len(message))
 
