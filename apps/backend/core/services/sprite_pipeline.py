@@ -39,6 +39,7 @@ import logging
 
 from core.services.daemon_bridge import _make_agent_event_callback, _send_to_daemon
 from core.services.game_server_client import get_game_server_client
+from core.services.phase_lattice import advance_phase
 from core.services.town_agent_ws import get_town_agent_ws_manager
 from core.services.town_service import TownService
 
@@ -135,18 +136,21 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
                         "fps": 8,
                     },
                 }
-                service.update_agent_state(
+                # Phase advance via the lattice helper — atomically writes
+                # to DDB + ws_manager cache + enforces the monotonic
+                # ordering. Bundles the sibling fields (sprite_*) into
+                # the same DDB write so they don't fan out into multiple
+                # round-trips.
+                advance_phase(
                     agent_id,
+                    "static",
+                    service=service,
                     sprite_ready=True,
                     sprite_url=static_cdn_url,
                     sprite_animations=initial_sprite_animations,
                     sprite_status="static_ready",
-                    onboarding_phase="static",
                 )
                 logger.info("[agent:%s] Phase B complete: static sprite ready", agent_id)
-
-                # Hot-path cache sync (see _send_to_daemon).
-                get_town_agent_ws_manager().update_onboarding_phase(str(agent_id), "static")
 
                 # Connect to game server immediately with static sprite
                 gs_client = get_game_server_client()
@@ -261,9 +265,7 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
 
         if not full_sprite_animations:
             logger.warning("[agent:%s] No animations resolved — agent remains on static sprite", agent_id)
-            service.update_agent_state(agent_id, onboarding_phase="alive")
-            # Hot-path cache sync (see _send_to_daemon).
-            get_town_agent_ws_manager().update_onboarding_phase(str(agent_id), "alive")
+            advance_phase(agent_id, "alive", service=service)
             return
 
         # Real walk URL overrides the static placeholder
@@ -306,10 +308,8 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
                 except Exception:
                     logger.exception("Failed to connect agent %s with animations", agent_id)
 
-        # Flip to alive
-        service.update_agent_state(agent_id, onboarding_phase="alive")
-        # Hot-path cache sync (see _send_to_daemon).
-        get_town_agent_ws_manager().update_onboarding_phase(str(agent_id), "alive")
+        # Flip to alive (single seam — atomic DDB + cache via the lattice).
+        advance_phase(agent_id, "alive", service=service)
         logger.info("[agent:%s] Agent is alive", agent_id)
 
         # Notify daemon that sprite is fully ready
@@ -437,13 +437,18 @@ async def resume_sprite_generation(
                     }
 
             walk_url = sprite_animations.get("walk", {}).get("url", existing_sprite_url)
-            service.update_agent_state(
+            # Resume path was missing the cache mirror entirely — phase
+            # got written to DDB but the in-memory ws_manager cache stayed
+            # stale, so a daemon connecting to a recovered agent could
+            # see the old phase. The lattice helper closes that gap.
+            advance_phase(
                 agent_id,
+                "alive",
+                service=service,
                 sprite_ready=True,
                 sprite_url=walk_url,
                 sprite_animations=sprite_animations,
                 sprite_status="complete",
-                onboarding_phase="alive",
             )
             logger.info("[resume:%s] Complete: %d animations", agent_id, len(sprite_animations))
 
