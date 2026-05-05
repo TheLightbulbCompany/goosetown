@@ -415,13 +415,18 @@ describe("ComputeStack — backend autoscaling", () => {
     );
   });
 
-  test("prod scales 2→6 tasks", () => {
+  test("prod scales 2→12 tasks", () => {
+    // Producer's 2026-05-04 launch-readiness plan (Tier 2 #2.2) raised
+    // prod maxCapacity from 6→12 to give headroom for HN-spike scale.
+    // 500 simultaneous /town/instance + register calls would peg CPU
+    // on 6 tasks before WAF rate-limit kicked in; doubling the ceiling
+    // buys breathing room. Game server stays single-replica per ADR-0002.
     const { template } = buildTestApp("prod");
     template.hasResourceProperties(
       "AWS::ApplicationAutoScaling::ScalableTarget",
       {
         MinCapacity: 2,
-        MaxCapacity: 6,
+        MaxCapacity: 12,
         ScalableDimension: "ecs:service:DesiredCount",
       }
     );

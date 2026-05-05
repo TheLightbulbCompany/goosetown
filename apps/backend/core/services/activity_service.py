@@ -459,9 +459,7 @@ async def _activity_timer(
     # design intent (introverts feel rewarded for any time alone, even
     # if the activity itself is unflavored — e.g. ``rest``) was unwired.
     if not interrupted:
-        new_energy, new_mood = apply_event(
-            "solitary_activity", new_energy, new_mood, traits
-        )
+        new_energy, new_mood = apply_event("solitary_activity", new_energy, new_mood, traits)
 
     # --- Persist updated mood/energy and clear activity ---
     service.update_agent_mood_energy(agent_id, new_mood, new_energy)
@@ -563,9 +561,7 @@ async def complete_activity_from_startup(agent_id: str, activity, elapsed: float
     # mid-activity gets the same trait-modulated outcome as if the
     # backend had never gone down.
     if not interrupted:
-        new_energy, new_mood = apply_event(
-            "solitary_activity", new_energy, new_mood, traits
-        )
+        new_energy, new_mood = apply_event("solitary_activity", new_energy, new_mood, traits)
 
     service.update_agent_mood_energy(agent_id, new_mood, new_energy)
     service.update_agent_activity(agent_id, None, None)
@@ -622,9 +618,7 @@ async def restart_activity_timer(agent_id: str, activity, remaining: float) -> N
     # Apply solitary_activity named event on startup-recovered completions
     # too, for consistency with the live path (see _complete_activity).
     if not interrupted:
-        new_energy, new_mood = apply_event(
-            "solitary_activity", new_energy, new_mood, traits
-        )
+        new_energy, new_mood = apply_event("solitary_activity", new_energy, new_mood, traits)
 
     service.update_agent_mood_energy(agent_id, new_mood, new_energy)
     service.update_agent_activity(agent_id, None, None)
