@@ -8,10 +8,10 @@ external caller still importing `routers.town._handle_chat` etc.
 The two external helpers used by these handlers:
 * ``_apply_event_with_sleep_guard`` — imported from
   ``core.services.daemon_bridge`` (module-top).
-* ``ManagementApiClient`` — deferred in every original handler because
-  the Management API client picks up its endpoint from the environment
-  at construction time; deferred import keeps import-time side effects
-  out of module-load.
+* ``DaemonMailbox`` — fetched per-handler via ``get_daemon_mailbox()``
+  to avoid touching boto3 / Settings at module-load time. Replaces the
+  pre-Phase-2 pattern of constructing ``ManagementApiClient`` inside
+  each handler. Audit Candidate 5.
 
 ``_MAX_CONVERSATION_TURNS`` constant comes along as its natural home.
 The facing calculation that used to live here moved to the game server
@@ -99,8 +99,6 @@ async def _inactivity_timeout(conv_id: str) -> None:
     Cancelled (and replaced) on every new turn or join, so it only fires
     when a conversation has genuinely gone quiet.
     """
-    from core.services.management_api_client import ManagementApiClient
-
     try:
         await asyncio.sleep(_INACTIVITY_TIMEOUT_SEC)
     except asyncio.CancelledError:
@@ -123,9 +121,8 @@ async def _inactivity_timeout(conv_id: str) -> None:
         conv_id,
         _INACTIVITY_TIMEOUT_SEC,
     )
-    mgmt = ManagementApiClient()
     ws_manager = get_town_agent_ws_manager()
-    await _finalize_conversation(conv_id, service, mgmt, ws_manager, auto_ended=True, end_reason_override="inactivity")
+    await _finalize_conversation(conv_id, service, ws_manager, auto_ended=True, end_reason_override="inactivity")
 
 
 def _schedule_inactivity_timeout(conv_id: str) -> None:
@@ -166,21 +163,15 @@ async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
             and ``message`` (opening line).
         agent_conn: Connection record for the initiating agent.
     """
-    from core.services.management_api_client import ManagementApiClient
+    from core.services.daemon_mailbox import get_daemon_mailbox
 
-    mgmt = ManagementApiClient()
+    mailbox = get_daemon_mailbox()
     service = TownService()
     ws_manager = get_town_agent_ws_manager()
     initiator_id = agent_conn.agent_id
 
     def _reject(reason: str) -> None:
-        try:
-            mgmt.send_message(
-                connection_id,
-                {"event": "chat_rejected", "reason": reason},
-            )
-        except Exception as exc:
-            logger.warning("Failed to send chat_rejected to %s: %s", initiator_id, exc)
+        mailbox.reject(connection_id, "chat_rejected", reason)
 
     target_agent_id = body.get("target", "").strip()
     opening_message = body.get("message", "").strip()
@@ -304,20 +295,17 @@ async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
     # Deliver invite to target agent if they are connected
     target_conn = ws_manager.get_by_agent_id(target_id)
     if target_conn:
-        try:
-            mgmt.send_message(
-                target_conn.connection_id,
-                {
-                    "event": "conversation_invite",
-                    "conv_id": conv_id,
-                    "from": initiator_display,
-                    "from_agent_name": agent_conn.agent_name,
-                    "message": opening_message,
-                    "location": location,
-                },
-            )
-        except Exception as exc:
-            logger.warning("Failed to deliver conversation_invite to %s: %s", target_id, exc)
+        mailbox.notify_connection(
+            target_conn.connection_id,
+            {
+                "event": "conversation_invite",
+                "conv_id": conv_id,
+                "from": initiator_display,
+                "from_agent_name": agent_conn.agent_name,
+                "message": opening_message,
+                "location": location,
+            },
+        )
     else:
         logger.info("Target agent %s not connected — invite stored in conversation record", target_id)
 
@@ -327,35 +315,29 @@ async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
     # line, and the conv_id isn't mirrored into state.json. F11 from the
     # 2026-04-21 agent-team dry run.
     target_display_name = target.get("displayName", target.get("agentName", target_agent_id))
-    try:
-        mgmt.send_message(
-            connection_id,
-            {
-                "event": "conversation_started",
-                "conv_id": conv_id,
-                "with_agent_id": target_id,
-                "with_display": target_display_name,
-                "with_agent_name": target.get("agentName", ""),
-                "opening_message": opening_message,
-                "location": location,
-            },
-        )
-    except Exception as exc:
-        logger.warning("Failed to send conversation_started to %s: %s", initiator_id, exc)
+    mailbox.notify_connection(
+        connection_id,
+        {
+            "event": "conversation_started",
+            "conv_id": conv_id,
+            "with_agent_id": target_id,
+            "with_display": target_display_name,
+            "with_agent_name": target.get("agentName", ""),
+            "opening_message": opening_message,
+            "location": location,
+        },
+    )
 
     # Acknowledge to initiator with the conversation ID
-    try:
-        mgmt.send_message(
-            connection_id,
-            {
-                "event": "act_ok",
-                "action": "chat",
-                "conv_id": conv_id,
-                "target": target_display_name,
-            },
-        )
-    except Exception as exc:
-        logger.warning("Failed to send chat act_ok to %s: %s", initiator_id, exc)
+    mailbox.notify_connection(
+        connection_id,
+        {
+            "event": "act_ok",
+            "action": "chat",
+            "conv_id": conv_id,
+            "target": target_display_name,
+        },
+    )
 
     # Send speech bubble to game server for viewer display
     try:
@@ -421,21 +403,15 @@ async def _handle_say(connection_id: str, body: dict, agent_conn) -> None:
         body: Parsed message body with ``conv_id`` and ``message``.
         agent_conn: Connection record for the speaking agent.
     """
-    from core.services.management_api_client import ManagementApiClient
+    from core.services.daemon_mailbox import get_daemon_mailbox
 
-    mgmt = ManagementApiClient()
+    mailbox = get_daemon_mailbox()
     service = TownService()
     ws_manager = get_town_agent_ws_manager()
     speaker_id = agent_conn.agent_id
 
     def _reject(reason: str) -> None:
-        try:
-            mgmt.send_message(
-                connection_id,
-                {"event": "say_rejected", "reason": reason},
-            )
-        except Exception as exc:
-            logger.warning("Failed to send say_rejected to %s: %s", speaker_id, exc)
+        mailbox.reject(connection_id, "say_rejected", reason)
 
     conv_id = body.get("conv_id", "").strip()
     message = body.get("message", "").strip()
@@ -486,23 +462,17 @@ async def _handle_say(connection_id: str, body: dict, agent_conn) -> None:
     # agent-team dry run. Single source of truth: backend broadcasts, daemons
     # append.
     for pid in participants:
-        other_conn = ws_manager.get_by_agent_id(pid)
-        if not other_conn:
-            continue
-        try:
-            mgmt.send_message(
-                other_conn.connection_id,
-                {
-                    "event": "conversation_message",
-                    "conv_id": conv_id,
-                    "from": speaker_display,
-                    "from_agent_name": agent_conn.agent_name,
-                    "text": message,
-                    "turn": turn_count,
-                },
-            )
-        except Exception as exc:
-            logger.warning("Failed to forward message to %s: %s", pid, exc)
+        mailbox.notify(
+            pid,
+            {
+                "event": "conversation_message",
+                "conv_id": conv_id,
+                "from": speaker_display,
+                "from_agent_name": agent_conn.agent_name,
+                "text": message,
+                "turn": turn_count,
+            },
+        )
 
     # Send speech bubble to game server for viewer display
     try:
@@ -548,7 +518,7 @@ async def _handle_say(connection_id: str, body: dict, agent_conn) -> None:
     # Auto-end at turn limit
     if turn_count >= _MAX_CONVERSATION_TURNS:
         logger.info("Conversation %s reached turn limit (%d), auto-ending", conv_id, _MAX_CONVERSATION_TURNS)
-        await _finalize_conversation(conv_id, service, mgmt, ws_manager, auto_ended=True)
+        await _finalize_conversation(conv_id, service, ws_manager, auto_ended=True)
         return
 
     # A new turn is activity — reset the silence timer. Do this AFTER the
@@ -559,21 +529,15 @@ async def _handle_say(connection_id: str, body: dict, agent_conn) -> None:
 
 async def _handle_join_conversation(connection_id: str, body: dict, agent_conn) -> None:
     """Handle a join_conversation action — agent joins an existing active conversation."""
-    from core.services.management_api_client import ManagementApiClient
+    from core.services.daemon_mailbox import get_daemon_mailbox
 
-    mgmt = ManagementApiClient()
+    mailbox = get_daemon_mailbox()
     service = TownService()
     ws_manager = get_town_agent_ws_manager()
     joiner_id = agent_conn.agent_id
 
     def _reject(reason: str) -> None:
-        try:
-            mgmt.send_message(
-                connection_id,
-                {"event": "join_rejected", "reason": reason},
-            )
-        except Exception as exc:
-            logger.warning("Failed to send join_rejected to %s: %s", joiner_id, exc)
+        mailbox.reject(connection_id, "join_rejected", reason)
 
     conv_id = body.get("conv_id", "")
     if not conv_id:
@@ -608,30 +572,21 @@ async def _handle_join_conversation(connection_id: str, body: dict, agent_conn) 
     for pid in participants:
         if pid == joiner_id:
             continue
-        conn = ws_manager.get_by_agent_id(pid)
-        if not conn:
-            continue
-        try:
-            mgmt.send_message(
-                conn.connection_id,
-                {
-                    "event": "participant_joined",
-                    "conv_id": conv_id,
-                    "agent_id": joiner_id,
-                    "display_name": joiner_display,
-                },
-            )
-        except Exception as exc:
-            logger.warning("Failed to send participant_joined to %s: %s", pid, exc)
+        mailbox.notify(
+            pid,
+            {
+                "event": "participant_joined",
+                "conv_id": conv_id,
+                "agent_id": joiner_id,
+                "display_name": joiner_display,
+            },
+        )
 
     # Acknowledge to the joiner
-    try:
-        mgmt.send_message(
-            connection_id,
-            {"event": "act_ok", "action": "join_conversation", "conv_id": conv_id},
-        )
-    except Exception as exc:
-        logger.warning("Failed to send join act_ok to %s: %s", joiner_id, exc)
+    mailbox.notify_connection(
+        connection_id,
+        {"event": "act_ok", "action": "join_conversation", "conv_id": conv_id},
+    )
 
     # Re-lay-out the whole group now that a new participant joined. The game
     # server's ``layout_conversation`` handler reshuffles everyone onto a
@@ -676,21 +631,15 @@ async def _handle_end_conversation(connection_id: str, body: dict, agent_conn) -
         body: Parsed message body with ``conv_id``.
         agent_conn: Connection record for the ending agent.
     """
-    from core.services.management_api_client import ManagementApiClient
+    from core.services.daemon_mailbox import get_daemon_mailbox
 
-    mgmt = ManagementApiClient()
+    mailbox = get_daemon_mailbox()
     service = TownService()
     ws_manager = get_town_agent_ws_manager()
     ender_id = agent_conn.agent_id
 
     def _reject(reason: str) -> None:
-        try:
-            mgmt.send_message(
-                connection_id,
-                {"event": "end_rejected", "reason": reason},
-            )
-        except Exception as exc:
-            logger.warning("Failed to send end_rejected to %s: %s", ender_id, exc)
+        mailbox.reject(connection_id, "end_rejected", reason)
 
     conv_id = body.get("conv_id", "").strip()
     if not conv_id:
@@ -726,38 +675,22 @@ async def _handle_end_conversation(connection_id: str, body: dict, agent_conn) -
     for pid in participants:
         if pid == ender_id:
             continue
-        conn = ws_manager.get_by_agent_id(pid)
-        if not conn:
-            continue
-        try:
-            mgmt.send_message(
-                conn.connection_id,
-                {
-                    "event": "participant_left",
-                    "conv_id": conv_id,
-                    "agent_id": ender_id,
-                    "display_name": leaver_display,
-                    "remaining": remaining,
-                },
-            )
-        except Exception as exc:
-            logger.warning("Failed to send participant_left to %s: %s", pid, exc)
+        mailbox.notify(
+            pid,
+            {
+                "event": "participant_left",
+                "conv_id": conv_id,
+                "agent_id": ender_id,
+                "display_name": leaver_display,
+                "remaining": remaining,
+            },
+        )
 
     # Acknowledge leaver
-    try:
-        mgmt.send_message(
-            connection_id,
-            {"event": "act_ok", "action": "end_conversation", "conv_id": conv_id},
-        )
-    except Exception:
-        # Ack failed — leaver's connection is probably already gone.
-        # Conversation state is still consistent (participant removed).
-        logger.debug(
-            "Failed to ack end_conversation to %s on %s",
-            connection_id,
-            conv_id,
-            exc_info=True,
-        )
+    mailbox.notify_connection(
+        connection_id,
+        {"event": "act_ok", "action": "end_conversation", "conv_id": conv_id},
+    )
 
     # The leaver also needs a ``conversation_ended`` event so their daemon
     # clears local ``active_conversation`` / ``pending_messages`` cache.
@@ -767,24 +700,16 @@ async def _handle_end_conversation(connection_id: str, body: dict, agent_conn) -
     # neither of which fires for the leaver in the multi-participant
     # case. 5/5 agents in the 2026-05-04 soak hit this; conversations
     # appeared stuck for 2-10+ minutes. Finding W.
-    try:
-        mgmt.send_message(
-            connection_id,
-            {
-                "event": "conversation_ended",
-                "conv_id": conv_id,
-                "turn_count": conv.get("turnCount", 0),
-                "location": conv.get("location", "unknown"),
-                "reason": "left_by_self",
-            },
-        )
-    except Exception:
-        logger.debug(
-            "Failed to send conversation_ended to leaver %s on %s",
-            connection_id,
-            conv_id,
-            exc_info=True,
-        )
+    mailbox.notify_connection(
+        connection_id,
+        {
+            "event": "conversation_ended",
+            "conv_id": conv_id,
+            "turn_count": conv.get("turnCount", 0),
+            "location": conv.get("location", "unknown"),
+            "reason": "left_by_self",
+        },
+    )
 
     # If fewer than 2 remain, finalize the conversation entirely.
     # ``_finalize_conversation``'s notify-loop iterates over the
@@ -792,13 +717,12 @@ async def _handle_end_conversation(connection_id: str, body: dict, agent_conn) -
     # leaver does NOT get duplicate ``conversation_ended`` events from
     # finalize — the explicit send above is the leaver's only one.
     if remaining < 2:
-        await _finalize_conversation(conv_id, service, mgmt, ws_manager, auto_ended=False)
+        await _finalize_conversation(conv_id, service, ws_manager, auto_ended=False)
 
 
 async def _finalize_conversation(
     conv_id: str,
     service: TownService,
-    mgmt,
     ws_manager,
     auto_ended: bool,
     end_reason_override: str | None = None,
@@ -811,12 +735,14 @@ async def _finalize_conversation(
     Args:
         conv_id: Conversation UUID to finalise.
         service: ``TownService`` instance (caller's, to avoid re-instantiation).
-        mgmt: ``ManagementApiClient`` instance.
         ws_manager: Active WebSocket manager.
         auto_ended: Whether the conversation ended by hitting the turn limit
             or the silence timeout (``True``) or by explicit agent request
             (``False``).
     """
+    from core.services.daemon_mailbox import get_daemon_mailbox
+
+    mailbox = get_daemon_mailbox()
     # Cancel any pending silence-auto-end timer for this conv. Idempotent —
     # if the silence-timer path itself is finalising, the task has already
     # self-removed from ``_inactivity_tasks`` in its ``finally`` block.
@@ -889,23 +815,17 @@ async def _finalize_conversation(
     log_summary = _build_log_summary(public_log)
 
     for agent_id in participants:
-        conn = ws_manager.get_by_agent_id(agent_id)
-        if not conn:
-            continue
-        try:
-            mgmt.send_message(
-                conn.connection_id,
-                {
-                    "event": "conversation_ended",
-                    "conv_id": conv_id,
-                    "turn_count": turn_count,
-                    "location": location,
-                    "reason": end_reason,
-                    "log_summary": log_summary,
-                },
-            )
-        except Exception as exc:
-            logger.warning("Failed to send conversation_ended to %s: %s", agent_id, exc)
+        mailbox.notify(
+            agent_id,
+            {
+                "event": "conversation_ended",
+                "conv_id": conv_id,
+                "turn_count": turn_count,
+                "location": location,
+                "reason": end_reason,
+                "log_summary": log_summary,
+            },
+        )
 
     logger.info(
         "Conversation %s finalised (%s, %d turns, location=%s, %d participants)",
