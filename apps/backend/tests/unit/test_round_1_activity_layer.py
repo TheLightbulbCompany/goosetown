@@ -22,7 +22,6 @@ from __future__ import annotations
 from core.services.activity_registry import Activity
 from core.services.town_mood_engine import _BASE_EFFECTS, _TRAIT_MODIFIERS, apply_event
 
-
 # ---------------------------------------------------------------------------
 # 1. solitary_activity wiring
 # ---------------------------------------------------------------------------
