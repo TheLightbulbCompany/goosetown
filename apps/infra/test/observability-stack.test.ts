@@ -76,3 +76,87 @@ describe("ObservabilityStack — prod env", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// PixelLab credit-balance poller (Tier 1 #1.1, 2026-05-04 launch-readiness)
+// ---------------------------------------------------------------------------
+
+describe("ObservabilityStack — PixelLab credits poller", () => {
+  let template: Template;
+
+  beforeAll(() => {
+    ({ template } = buildTestApp("dev"));
+  });
+
+  test("Lambda function is created with the deterministic name", () => {
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      FunctionName: "goosetown-dev-pixellab-credits-poller",
+      Runtime: "python3.12",
+      Handler: "index.handler",
+    });
+  });
+
+  test("Lambda has the correct env vars wired", () => {
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      FunctionName: "goosetown-dev-pixellab-credits-poller",
+      Environment: Match.objectLike({
+        Variables: Match.objectLike({
+          ENVIRONMENT: "dev",
+          PIXELLAB_API_KEY_SECRET_NAME: "goosetown-dev-pixellab-api-key",
+        }),
+      }),
+    });
+  });
+
+  test("EventBridge rule schedules the Lambda every 15 minutes", () => {
+    template.hasResourceProperties("AWS::Events::Rule", {
+      Name: "goosetown-dev-pixellab-credits-poll",
+      ScheduleExpression: "rate(15 minutes)",
+    });
+  });
+
+  test("CloudWatch alarm fires on the GooseTown/PixelLabCreditsRemaining metric", () => {
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "goosetown-dev-pixellab-credits-low",
+      Namespace: "GooseTown",
+      MetricName: "PixelLabCreditsRemaining",
+      Dimensions: [
+        { Name: "Environment", Value: "dev" },
+      ],
+      ComparisonOperator: "LessThanOrEqualToThreshold",
+      // 1000 default threshold, evaluated 2-of-3 to require sustained low.
+      Threshold: 1000,
+      EvaluationPeriods: 3,
+      DatapointsToAlarm: 2,
+      // Defensive: missing data = ALARM, so a poller bug pages on-call.
+      TreatMissingData: "breaching",
+    });
+  });
+
+  test("Alarm publishes to the shared SNS topic", () => {
+    // Inspect AlarmActions to confirm the SNS topic ARN is referenced
+    // (CloudFormation uses Fn::GetAtt for the topic ARN).
+    const alarms = template.findResources("AWS::CloudWatch::Alarm", {
+      Properties: { AlarmName: "goosetown-dev-pixellab-credits-low" },
+    });
+    expect(Object.keys(alarms).length).toBe(1);
+    const alarm = Object.values(alarms)[0] as any;
+    expect(alarm.Properties.AlarmActions).toBeDefined();
+    expect(alarm.Properties.AlarmActions.length).toBe(1);
+  });
+
+  test("Configurable threshold takes effect when prop is set", () => {
+    const app = new cdk.App();
+    const stack = new ObservabilityStack(app, "goosetown-dev-observability", {
+      stackName: "goosetown-dev-observability",
+      environment: "dev",
+      env: { account: "123456789012", region: "us-east-1" },
+      pixelLabCreditAlarmThreshold: 500,
+    });
+    const t = Template.fromStack(stack);
+    t.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "goosetown-dev-pixellab-credits-low",
+      Threshold: 500,
+    });
+  });
+});
