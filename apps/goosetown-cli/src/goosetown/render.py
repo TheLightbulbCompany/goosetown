@@ -24,12 +24,10 @@ solution. Phase 1 lays the groundwork:
     ``_handle_world_update`` that build markdown from list[dict]
     inputs. Pure functions today, just inline.
 
-The bigger renderer extraction (the four "static status" templates
-in ``_on_connected`` / ``_on_sprite_ready`` / ``_on_context_changed``
-/ ``_on_wake``) is deliberately **not** in this PR. Each of those is
-a 10-30 line literal-string template; collapsing them into one
-parameterised helper is a behaviour-equivalence-test-heavy change
-that's better in its own focused PR.
+Phase 2 adds ``render_static_status`` for the four "static status"
+templates in ``_on_connected`` / ``_on_sprite_ready`` /
+``_on_context_changed`` / ``_on_wake``. Those templates stay exact
+string-equivalent, but the daemon no longer owns the markdown literals.
 """
 
 from __future__ import annotations
@@ -195,3 +193,102 @@ def render_pending_messages(pending: list[dict]) -> str:
             )
 
     return "\n".join(lines) if lines else "None"
+
+
+def render_static_status(
+    kind: str,
+    *,
+    location: str = "unknown",
+    activity: str = "idle",
+    context: str = "",
+    message: str = "You just woke up in GooseTown.",
+) -> str:
+    """Render daemon-owned static TOWN_STATUS.md templates.
+
+    ``kind`` selects the historical template. Keep the variants here
+    exact-output pinned because agents read these files as prompts, not
+    just UI copy.
+    """
+    if kind == "connected_ready":
+        return (
+            "# GooseTown Status\n\n"
+            f"**Location:** {location}\n"
+            f"**Activity:** {render_activity(activity)}\n\n"
+            "**Nearby:** no one\n\n"
+            "You are now in GooseTown! Look around and decide what to do.\n\n"
+            "## What do you want to do?\n\n"
+            "- `goosetown act move plaza` — Go to the town plaza\n"
+            "- `goosetown act move library` — Visit the library\n"
+            "- `goosetown act move cafe` — Grab a coffee\n"
+            "- `goosetown act move activity_center` — Activities and games\n"
+            "- `goosetown act move residence` — Go to your apartment\n"
+        )
+    if kind == "connected_waiting":
+        return (
+            "# GooseTown Status\n\n"
+            "**Status:** Your pixel art sprite is being generated...\n\n"
+            "Your unique character is being created by PixelLab. "
+            "This takes about 2-3 minutes. You'll automatically appear in town once it's ready.\n\n"
+            "While you wait, here's what GooseTown has:\n"
+            "- **Plaza** — Town center with a fountain, great for people-watching\n"
+            "- **Library** — Quiet spot for reading and studying\n"
+            "- **Cafe** — Coffee and conversation\n"
+            "- **Activity Center** — Games, exercise, gardening\n"
+            "- **Your Apartment** — Your private home with a bed, desk, kitchen, and aquarium\n\n"
+            "Once your sprite is ready, you'll be able to explore all of these places.\n"
+            "Use `goosetown status` to check if your sprite is ready yet.\n"
+        )
+    if kind == "sprite_ready":
+        return (
+            "# GooseTown Status\n\n"
+            "**Your sprite is ready!** You now appear in town.\n\n"
+            "## What do you want to do?\n\n"
+            "- `goosetown act move plaza` — Go to the town plaza\n"
+            "- `goosetown act move library` — Visit the library\n"
+            "- `goosetown act move cafe` — Grab a coffee\n"
+            "- `goosetown act move activity_center` — Activities and games\n"
+            "- `goosetown act move residence` — Go to your apartment\n"
+        )
+    if kind == "context_changed":
+        if context == "apartment":
+            return (
+                "# GooseTown Status\n\n"
+                "**You entered your apartment.**\n\n"
+                f"**Location:** {location}\n"
+                "**Activity:** idle\n\n"
+                "**Where you can go (apartment):**\n"
+                "- `goosetown act move desk` — Office desk\n"
+                "- `goosetown act move couch` — Living room couch\n"
+                "- `goosetown act move bed` — Bedroom\n"
+                "- `goosetown act move bookshelf` — Bookshelf\n"
+                "- `goosetown act move stove` — Kitchen stove\n"
+                "- `goosetown act move record_player` — Record player\n"
+                "- `goosetown act move aquarium` — Aquarium\n\n"
+                "**Return to town:**\n"
+                "- `goosetown act move exit` — Leave apartment and return to town\n\n"
+                "Use `goosetown status` for full status.\n"
+            )
+        return (
+            "# GooseTown Status\n\n"
+            "**You returned to town.**\n\n"
+            f"**Location:** {location}\n"
+            "**Activity:** idle\n\n"
+            "**Where you can go:**\n"
+            "- `goosetown act move plaza` — Town center with a fountain\n"
+            "- `goosetown act move library` — Books and quiet study\n"
+            "- `goosetown act move cafe` — Cozy coffee shop\n"
+            "- `goosetown act move activity_center` — Games and group activities\n"
+            "- `goosetown act move residence` — Go back to your apartment\n\n"
+            "Use `goosetown status` for full status.\n"
+        )
+    if kind == "wake":
+        return (
+            "# GooseTown Status\n\n"
+            f"**{message}**\n\n"
+            "## What do you want to do?\n\n"
+            "You just woke up. Read your surroundings and decide:\n"
+            "- `goosetown act move <location>` — Walk somewhere (plaza, library, cafe, activity_center, residence)\n"
+            "- `goosetown act idle [activity]` — Do something at your location\n"
+            "- `goosetown status` — See full status\n"
+        )
+    raise ValueError(f"unknown static status kind: {kind}")

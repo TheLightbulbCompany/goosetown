@@ -61,8 +61,8 @@ def _is_auth_failure(exc: BaseException) -> bool:
 # Marker normalization + mood/activity formatters live in ``goosetown.render``
 # now (audit Candidates 1 + 10, Phase 1). Re-exported here so existing imports
 # from ``goosetown.daemon`` keep working — the public CLI surface didn't
-# change. Phase 2 will eventually move the four inline status templates here
-# too, at which point the daemon shrinks further.
+# change. Phase 2 also moves static status markdown templates behind the same
+# pure render seam.
 from goosetown.render import (  # noqa: E402, F401
     MARKER_NORMALIZE as _MARKER_NORMALIZE,
 )
@@ -73,6 +73,7 @@ from goosetown.render import (  # noqa: E402
     render_mood,
     render_nearby_text,
     render_pending_messages,
+    render_static_status,
 )
 
 # Public aliases — keep the leading-underscore name available for any
@@ -86,6 +87,7 @@ __all__ = [
     "render_mood",
     "render_nearby_text",
     "render_pending_messages",
+    "render_static_status",
 ]
 
 
@@ -312,50 +314,22 @@ class TownDaemon:
 
         if sprite_ready:
             self._write_status(
-                "# GooseTown Status\n\n"
-                f"**Location:** {location}\n"
-                f"**Activity:** {render_activity(activity)}\n\n"
-                "**Nearby:** no one\n\n"
-                "You are now in GooseTown! Look around and decide what to do.\n\n"
-                "## What do you want to do?\n\n"
-                "- `goosetown act move plaza` — Go to the town plaza\n"
-                "- `goosetown act move library` — Visit the library\n"
-                "- `goosetown act move cafe` — Grab a coffee\n"
-                "- `goosetown act move activity_center` — Activities and games\n"
-                "- `goosetown act move residence` — Go to your apartment\n"
+                render_static_status(
+                    "connected_ready",
+                    location=location,
+                    activity=activity,
+                )
             )
             self._append_event("CONNECTED to GooseTown — you are in town!")
         else:
-            self._write_status(
-                "# GooseTown Status\n\n"
-                "**Status:** Your pixel art sprite is being generated...\n\n"
-                "Your unique character is being created by PixelLab. "
-                "This takes about 2-3 minutes. You'll automatically appear in town once it's ready.\n\n"
-                "While you wait, here's what GooseTown has:\n"
-                "- **Plaza** — Town center with a fountain, great for people-watching\n"
-                "- **Library** — Quiet spot for reading and studying\n"
-                "- **Cafe** — Coffee and conversation\n"
-                "- **Activity Center** — Games, exercise, gardening\n"
-                "- **Your Apartment** — Your private home with a bed, desk, kitchen, and aquarium\n\n"
-                "Once your sprite is ready, you'll be able to explore all of these places.\n"
-                "Use `goosetown status` to check if your sprite is ready yet.\n"
-            )
+            self._write_status(render_static_status("connected_waiting"))
             self._append_event("CONNECTED to GooseTown — waiting for sprite generation")
 
     def _on_sprite_ready(self, data: dict) -> None:  # noqa: ARG002
         """Handle sprite_ready event."""
         if "agent" in self.state:
             self.state["agent"]["spriteReady"] = True
-        self._write_status(
-            "# GooseTown Status\n\n"
-            "**Your sprite is ready!** You now appear in town.\n\n"
-            "## What do you want to do?\n\n"
-            "- `goosetown act move plaza` — Go to the town plaza\n"
-            "- `goosetown act move library` — Visit the library\n"
-            "- `goosetown act move cafe` — Grab a coffee\n"
-            "- `goosetown act move activity_center` — Activities and games\n"
-            "- `goosetown act move residence` — Go to your apartment\n"
-        )
+        self._write_status(render_static_status("sprite_ready"))
         self._append_event("SPRITE READY — you now appear in GooseTown!")
 
     def _on_state_update(self, data: dict) -> None:
@@ -600,41 +574,17 @@ class TownDaemon:
         self._write_state()
 
         if new_context == "apartment":
-            transition_status = (
-                "# GooseTown Status\n\n"
-                "**You entered your apartment.**\n\n"
-                f"**Location:** {new_location}\n"
-                "**Activity:** idle\n\n"
-                "**Where you can go (apartment):**\n"
-                "- `goosetown act move desk` — Office desk\n"
-                "- `goosetown act move couch` — Living room couch\n"
-                "- `goosetown act move bed` — Bedroom\n"
-                "- `goosetown act move bookshelf` — Bookshelf\n"
-                "- `goosetown act move stove` — Kitchen stove\n"
-                "- `goosetown act move record_player` — Record player\n"
-                "- `goosetown act move aquarium` — Aquarium\n\n"
-                "**Return to town:**\n"
-                "- `goosetown act move exit` — Leave apartment and return to town\n\n"
-                "Use `goosetown status` for full status.\n"
-            )
             event_label = "ENTERED_APARTMENT"
         else:
-            transition_status = (
-                "# GooseTown Status\n\n"
-                "**You returned to town.**\n\n"
-                f"**Location:** {new_location}\n"
-                "**Activity:** idle\n\n"
-                "**Where you can go:**\n"
-                "- `goosetown act move plaza` — Town center with a fountain\n"
-                "- `goosetown act move library` — Books and quiet study\n"
-                "- `goosetown act move cafe` — Cozy coffee shop\n"
-                "- `goosetown act move activity_center` — Games and group activities\n"
-                "- `goosetown act move residence` — Go back to your apartment\n\n"
-                "Use `goosetown status` for full status.\n"
-            )
             event_label = "RETURNED_TO_TOWN"
 
-        self._write_status(transition_status)
+        self._write_status(
+            render_static_status(
+                "context_changed",
+                context=new_context,
+                location=new_location,
+            )
+        )
         self._append_event(f"{event_label} (location={new_location})")
         log.info("Context changed to %s, location=%s", new_context, new_location)
 
@@ -714,13 +664,10 @@ class TownDaemon:
         logging.getLogger("town_daemon").info("Wake alarm fired")
         message = data.get("message", "You just woke up in GooseTown.")
         self._write_status(
-            "# GooseTown Status\n\n"
-            f"**{message}**\n\n"
-            "## What do you want to do?\n\n"
-            "You just woke up. Read your surroundings and decide:\n"
-            "- `goosetown act move <location>` — Walk somewhere (plaza, library, cafe, activity_center, residence)\n"
-            "- `goosetown act idle [activity]` — Do something at your location\n"
-            "- `goosetown status` — See full status\n"
+            render_static_status(
+                "wake",
+                message=message,
+            )
         )
         self._append_event("WOKE UP")
 
