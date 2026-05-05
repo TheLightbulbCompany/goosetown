@@ -28,7 +28,7 @@ import pytest
 # there, not the routers.town re-export.
 WS_MANAGER_PATH = "core.services.daemon_bridge.get_town_agent_ws_manager"
 SERVICE_PATH = "core.services.daemon_bridge.TownService"
-MGMT_PATH = "core.services.management_api_client.ManagementApiClient"
+MAILBOX_FACTORY_PATH = "core.services.daemon_bridge.get_daemon_mailbox"
 
 
 def _make_agent_conn(
@@ -56,9 +56,9 @@ def _make_ws_mock(agent_conn):
     return mock
 
 
-def _make_mgmt_mock(sent_log: list):
+def _make_mailbox_mock(sent_log: list):
     mock = MagicMock()
-    mock.send_message.side_effect = lambda cid, msg: sent_log.append((cid, msg)) or True
+    mock.notify_connection.side_effect = lambda cid, msg: sent_log.append((cid, msg)) or True
     return mock
 
 
@@ -73,7 +73,7 @@ def test_non_agent_state_does_no_db_reads():
     with (
         patch(WS_MANAGER_PATH, return_value=_make_ws_mock(agent_conn)),
         patch(SERVICE_PATH, return_value=svc_mock),
-        patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+        patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
     ):
         ok = _send_to_daemon("agent-1", {"event": "sprite_progress", "status": "..."})
 
@@ -99,7 +99,7 @@ def test_agent_state_while_in_conversation_skips_nearby_fetch():
     with (
         patch(WS_MANAGER_PATH, return_value=_make_ws_mock(agent_conn)),
         patch(SERVICE_PATH, return_value=svc_mock),
-        patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+        patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
     ):
         ok = _send_to_daemon("agent-1", payload)
 
@@ -127,7 +127,7 @@ def test_agent_state_no_own_conv_with_nearby_agents_calls_nearby_once():
     with (
         patch(WS_MANAGER_PATH, return_value=_make_ws_mock(agent_conn)),
         patch(SERVICE_PATH, return_value=svc_mock),
-        patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+        patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
     ):
         ok = _send_to_daemon("agent-1", payload)
 
@@ -151,7 +151,7 @@ def test_missing_from_ws_manager_returns_false_without_db():
     with (
         patch(WS_MANAGER_PATH, return_value=ws_mock),
         patch(SERVICE_PATH, return_value=svc_mock),
-        patch(MGMT_PATH, return_value=MagicMock()),
+        patch(MAILBOX_FACTORY_PATH, return_value=MagicMock()),
     ):
         ok = _send_to_daemon("agent-ghost", {"event": "sprite_progress"})
 
