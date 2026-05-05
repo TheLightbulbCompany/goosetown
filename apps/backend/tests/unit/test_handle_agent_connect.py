@@ -20,14 +20,14 @@ import pytest
 # Patch targets — handler resolves these from its own module scope.
 TOWN_SERVICE_PATH = "core.services.agent_connect_service.TownService"
 GS_CLIENT_PATH = "core.services.agent_connect_service.get_game_server_client"
-TOKEN_VERIFY_PATH = "core.town_token.verify_town_token"
+TOKEN_VERIFY_PATH = "core.town_token.verify_town_token"  # nosec B105 — module path, not a credential
 MAILBOX_FACTORY_PATH = "core.services.daemon_mailbox.get_daemon_mailbox"
 
 
 def _make_request(connection_id: str = "conn-new") -> SimpleNamespace:
     return SimpleNamespace(
         connectionId=connection_id,
-        body={"token": "tok-X", "agent_name": "Lucky"},
+        body={"token": "tok-X", "agent_name": "Lucky"},  # nosec B105 — fake test token
     )
 
 
@@ -161,7 +161,7 @@ async def test_connect_returns_400_without_token():
 
     request = SimpleNamespace(
         connectionId="conn-x",
-        body={"token": "", "agent_name": "Lucky"},
+        body={"token": "", "agent_name": "Lucky"},  # nosec B105 — empty-token test fixture
     )
     fake_mailbox = MagicMock()
     with patch(MAILBOX_FACTORY_PATH, return_value=fake_mailbox):
