@@ -1,14 +1,14 @@
 """Regression tests for findings M, N, P, R from dry-run #3.
 
-  M — Move-rejection's ``destination`` field echoed the navmesh node
-     name (``"exit"``) instead of the user-requested destination.
-  N — Arrival into a building reported ``location: "exit"`` (same
-     class as the player_spawn quirk fixed in PR #286, different
-     marker).
-  P — ``Mood:`` rendered as raw integer (``"Mood: 10"``) leaving
-     agents to guess if 10 is good or bad.
-  R — ``Activity:`` rendered blank when idle (``"Activity: "``)
-     instead of ``"Activity: idle"``.
+M — Move-rejection's ``destination`` field echoed the navmesh node
+   name (``"exit"``) instead of the user-requested destination.
+N — Arrival into a building reported ``location: "exit"`` (same
+   class as the player_spawn quirk fixed in PR #286, different
+   marker).
+P — ``Mood:`` rendered as raw integer (``"Mood: 10"``) leaving
+   agents to guess if 10 is good or bad.
+R — ``Activity:`` rendered blank when idle (``"Activity: "``)
+   instead of ``"Activity: idle"``.
 """
 
 from __future__ import annotations

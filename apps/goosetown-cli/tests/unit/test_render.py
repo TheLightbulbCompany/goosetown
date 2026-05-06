@@ -22,6 +22,7 @@ from goosetown.render import (
     render_mood,
     render_nearby_text,
     render_pending_messages,
+    render_static_status,
 )
 
 
@@ -248,3 +249,108 @@ class TestRenderPendingMessages:
         out = render_pending_messages([{"event": "conversation_invite"}])
         assert "?" in out
         assert "conv_id: ?" in out
+
+
+# ---------------------------------------------------------------------------
+# render_static_status
+# ---------------------------------------------------------------------------
+
+
+class TestRenderStaticStatus:
+    def test_connected_ready_exact_template(self):
+        assert render_static_status(
+            "connected_ready", location="plaza", activity="reading"
+        ) == (
+            "# GooseTown Status\n\n"
+            "**Location:** plaza\n"
+            "**Activity:** reading\n\n"
+            "**Nearby:** no one\n\n"
+            "You are now in GooseTown! Look around and decide what to do.\n\n"
+            "## What do you want to do?\n\n"
+            "- `goosetown act move plaza` — Go to the town plaza\n"
+            "- `goosetown act move library` — Visit the library\n"
+            "- `goosetown act move cafe` — Grab a coffee\n"
+            "- `goosetown act move activity_center` — Activities and games\n"
+            "- `goosetown act move residence` — Go to your apartment\n"
+        )
+
+    def test_connected_waiting_exact_template(self):
+        assert render_static_status("connected_waiting") == (
+            "# GooseTown Status\n\n"
+            "**Status:** Your pixel art sprite is being generated...\n\n"
+            "Your unique character is being created by PixelLab. "
+            "This takes about 2-3 minutes. You'll automatically appear in town once it's ready.\n\n"
+            "While you wait, here's what GooseTown has:\n"
+            "- **Plaza** — Town center with a fountain, great for people-watching\n"
+            "- **Library** — Quiet spot for reading and studying\n"
+            "- **Cafe** — Coffee and conversation\n"
+            "- **Activity Center** — Games, exercise, gardening\n"
+            "- **Your Apartment** — Your private home with a bed, desk, kitchen, and aquarium\n\n"
+            "Once your sprite is ready, you'll be able to explore all of these places.\n"
+            "Use `goosetown status` to check if your sprite is ready yet.\n"
+        )
+
+    def test_sprite_ready_exact_template(self):
+        assert render_static_status("sprite_ready") == (
+            "# GooseTown Status\n\n"
+            "**Your sprite is ready!** You now appear in town.\n\n"
+            "## What do you want to do?\n\n"
+            "- `goosetown act move plaza` — Go to the town plaza\n"
+            "- `goosetown act move library` — Visit the library\n"
+            "- `goosetown act move cafe` — Grab a coffee\n"
+            "- `goosetown act move activity_center` — Activities and games\n"
+            "- `goosetown act move residence` — Go to your apartment\n"
+        )
+
+    def test_context_changed_apartment_exact_template(self):
+        assert render_static_status(
+            "context_changed", context="apartment", location="desk"
+        ) == (
+            "# GooseTown Status\n\n"
+            "**You entered your apartment.**\n\n"
+            "**Location:** desk\n"
+            "**Activity:** idle\n\n"
+            "**Where you can go (apartment):**\n"
+            "- `goosetown act move desk` — Office desk\n"
+            "- `goosetown act move couch` — Living room couch\n"
+            "- `goosetown act move bed` — Bedroom\n"
+            "- `goosetown act move bookshelf` — Bookshelf\n"
+            "- `goosetown act move stove` — Kitchen stove\n"
+            "- `goosetown act move record_player` — Record player\n"
+            "- `goosetown act move aquarium` — Aquarium\n\n"
+            "**Return to town:**\n"
+            "- `goosetown act move exit` — Leave apartment and return to town\n\n"
+            "Use `goosetown status` for full status.\n"
+        )
+
+    def test_context_changed_town_exact_template(self):
+        assert render_static_status(
+            "context_changed", context="town", location="plaza"
+        ) == (
+            "# GooseTown Status\n\n"
+            "**You returned to town.**\n\n"
+            "**Location:** plaza\n"
+            "**Activity:** idle\n\n"
+            "**Where you can go:**\n"
+            "- `goosetown act move plaza` — Town center with a fountain\n"
+            "- `goosetown act move library` — Books and quiet study\n"
+            "- `goosetown act move cafe` — Cozy coffee shop\n"
+            "- `goosetown act move activity_center` — Games and group activities\n"
+            "- `goosetown act move residence` — Go back to your apartment\n\n"
+            "Use `goosetown status` for full status.\n"
+        )
+
+    def test_wake_exact_template(self):
+        assert render_static_status("wake", message="Good morning.") == (
+            "# GooseTown Status\n\n"
+            "**Good morning.**\n\n"
+            "## What do you want to do?\n\n"
+            "You just woke up. Read your surroundings and decide:\n"
+            "- `goosetown act move <location>` — Walk somewhere (plaza, library, cafe, activity_center, residence)\n"
+            "- `goosetown act idle [activity]` — Do something at your location\n"
+            "- `goosetown status` — See full status\n"
+        )
+
+    def test_unknown_kind_raises(self):
+        with pytest.raises(ValueError, match="unknown static status kind"):
+            render_static_status("missing")

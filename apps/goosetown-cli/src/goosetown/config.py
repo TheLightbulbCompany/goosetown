@@ -38,7 +38,9 @@ def load_config(agent_dir: Path | None = None) -> dict:
         agent_dir = Path(os.environ.get("AGENT_DIR", str(Path.cwd())))
     cfg_path = agent_dir / "GOOSETOWN.md"
     if not cfg_path.exists():
-        payload = {"error": "GOOSETOWN.md not found. Run 'goosetown join <token>' first."}
+        payload = {
+            "error": "GOOSETOWN.md not found. Run 'goosetown join <token>' first."
+        }
         print(json.dumps(payload))
         sys.exit(1)
     cfg = parse_goosetown_md(cfg_path)

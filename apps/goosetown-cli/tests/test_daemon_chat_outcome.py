@@ -50,26 +50,38 @@ class TestChatRejectedHandler:
     async def test_chat_rejected_sets_outcome_with_reason(self, daemon: TownDaemon):
         # Set up the outcome future as run() does.
         daemon._chat_outcome = asyncio.get_running_loop().create_future()
-        daemon._on_chat_rejected({"event": "chat_rejected", "reason": "target_not_connected"})
+        daemon._on_chat_rejected(
+            {"event": "chat_rejected", "reason": "target_not_connected"}
+        )
         assert daemon._chat_outcome.done()
         outcome = daemon._chat_outcome.result()
         assert outcome["status"] == "error"
         assert outcome["reason"] == "target_not_connected"
 
     @pytest.mark.asyncio
-    async def test_chat_rejected_does_not_crash_when_no_outcome_future(self, daemon: TownDaemon):
+    async def test_chat_rejected_does_not_crash_when_no_outcome_future(
+        self, daemon: TownDaemon
+    ):
         """Late-arriving rejections (after the CLI gave up) must not crash the daemon."""
         daemon._chat_outcome = None
         # Should not raise:
-        daemon._on_chat_rejected({"event": "chat_rejected", "reason": "target_not_found"})
+        daemon._on_chat_rejected(
+            {"event": "chat_rejected", "reason": "target_not_found"}
+        )
 
     @pytest.mark.asyncio
-    async def test_chat_rejected_only_sets_pending_future_once(self, daemon: TownDaemon):
+    async def test_chat_rejected_only_sets_pending_future_once(
+        self, daemon: TownDaemon
+    ):
         """A rejection arriving after success (or vice versa) must not break the future."""
         daemon._chat_outcome = asyncio.get_running_loop().create_future()
-        daemon._on_chat_rejected({"event": "chat_rejected", "reason": "target_not_connected"})
+        daemon._on_chat_rejected(
+            {"event": "chat_rejected", "reason": "target_not_connected"}
+        )
         # Second event should be a no-op (future already done):
-        daemon._on_chat_rejected({"event": "chat_rejected", "reason": "target_not_found"})
+        daemon._on_chat_rejected(
+            {"event": "chat_rejected", "reason": "target_not_found"}
+        )
         assert daemon._chat_outcome.result()["reason"] == "target_not_connected"
 
 

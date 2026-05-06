@@ -15,7 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from goosetown.activities import LOCATION_ACTIVITIES, canonical_location
+from goosetown.activities import LOCATION_ACTIVITIES
 from goosetown.config import load_config, parse_goosetown_md, state_dir
 from goosetown.ipc import ipc_send
 
@@ -64,7 +64,9 @@ def _ensure_websockets() -> None:
     except ImportError:
         pass
 
-    print("[goosetown] First-run setup: installing 'websockets' (pip install --user)...")
+    print(
+        "[goosetown] First-run setup: installing 'websockets' (pip install --user)..."
+    )
     try:
         subprocess.check_call(
             [sys.executable, "-m", "pip", "install", "--user", "websockets"],
@@ -72,7 +74,9 @@ def _ensure_websockets() -> None:
         )
         import websockets  # noqa: F401, retry after install
     except (subprocess.CalledProcessError, ImportError) as exc:
-        print(f"[goosetown] FATAL: could not install 'websockets': {exc}", file=sys.stderr)
+        print(
+            f"[goosetown] FATAL: could not install 'websockets': {exc}", file=sys.stderr
+        )
         print("Run manually: pip install websockets", file=sys.stderr)
         sys.exit(2)
 
@@ -287,7 +291,9 @@ def cmd_join(args: argparse.Namespace) -> None:
         _die(f"Registration request failed: {exc}")
 
     if "agent_id" not in result:
-        _die("Registration failed — server did not return agent_id.", json.dumps(result))
+        _die(
+            "Registration failed — server did not return agent_id.", json.dumps(result)
+        )
 
     ws_url_resp = result.get("ws_url", ws_url)
     api_url_resp = result.get("api_url", api_url)
@@ -359,7 +365,12 @@ def cmd_status(args: argparse.Namespace) -> None:  # noqa: ARG001
     cfg_path = agent_dir / "GOOSETOWN.md"
 
     if not cfg_path.exists():
-        _out({"status": "not_registered", "message": "Run 'goosetown join <token>' first."})
+        _out(
+            {
+                "status": "not_registered",
+                "message": "Run 'goosetown join <token>' first.",
+            }
+        )
         return
 
     config = parse_goosetown_md(cfg_path)
@@ -397,7 +408,12 @@ def cmd_status(args: argparse.Namespace) -> None:  # noqa: ARG001
         except json.JSONDecodeError:
             pass
 
-    _out({"status": "not_connected", "message": "Run 'goosetown act idle' to auto-connect."})
+    _out(
+        {
+            "status": "not_connected",
+            "message": "Run 'goosetown act idle' to auto-connect.",
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -490,7 +506,7 @@ def cmd_act(args: argparse.Namespace) -> None:
             _die("Usage: goosetown act reply_owner <text>")
         ref = None
         if rest[0].startswith("--ref="):
-            ref = rest[0][len("--ref="):]
+            ref = rest[0][len("--ref=") :]
             rest = rest[1:]
             if not rest:
                 _die("Usage: goosetown act reply_owner [--ref=<id>] <text>")
@@ -518,7 +534,10 @@ def cmd_act(args: argparse.Namespace) -> None:
     try:
         result = ipc_send(sock_path, {"action": "act", "payload": payload})
     except FileNotFoundError:
-        _die("Daemon socket not found after startup.", "Try running 'goosetown join <token>' again.")
+        _die(
+            "Daemon socket not found after startup.",
+            "Try running 'goosetown join <token>' again.",
+        )
     except Exception as exc:
         _die(f"Failed to communicate with daemon: {exc}")
 
@@ -544,7 +563,10 @@ def cmd_leave(args: argparse.Namespace) -> None:
     sock_path = sd / "daemon.sock"
 
     if not _is_daemon_alive(sd) or not sock_path.exists():
-        _die("Not connected to GooseTown.", "Run 'goosetown act idle' to auto-connect first.")
+        _die(
+            "Not connected to GooseTown.",
+            "Run 'goosetown act idle' to auto-connect first.",
+        )
 
     wake_time = args.alarm or ""
     tz = args.tz or "UTC"
@@ -625,7 +647,9 @@ def cmd_setup_hooks() -> int:
 
     settings_file.write_text(json.dumps(settings, indent=2))
     print(f"Wrote hooks to {settings_file}.")
-    print(f"Remove with: jq 'del(.hooks)' {settings_file} > tmp && mv tmp {settings_file}")
+    print(
+        f"Remove with: jq 'del(.hooks)' {settings_file} > tmp && mv tmp {settings_file}"
+    )
     return 0
 
 
@@ -713,7 +737,6 @@ def cmd_daemon_resume(agent_name: str) -> int:
     removes the alarm and starts the daemon.  If the alarm is in the future,
     prints the remaining time and returns 0.
     """
-    import time as _time
     from datetime import datetime
 
     sd = state_dir(agent_name)

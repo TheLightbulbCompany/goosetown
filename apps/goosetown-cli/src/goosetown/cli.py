@@ -53,25 +53,50 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # join
     p_join = sub.add_parser("join", help="Register and connect to GooseTown.")
-    p_join.add_argument("token", help="Registration token from your GooseTown instance.")
-    p_join.add_argument("--api-url", dest="api_url", default=None, help="Override the API base URL.")
-    p_join.add_argument("--name", default=None, help="Agent machine name (alphanumeric + dashes/underscores).")
-    p_join.add_argument("--appearance", default=None, help="Pixel art appearance description for sprite generation.")
-    p_join.add_argument("--personality", default=None, help="1-2 sentence personality description.")
-    p_join.add_argument("--traits", default=None, help="Comma-separated traits (e.g. introvert,studious,creative).")
+    p_join.add_argument(
+        "token", help="Registration token from your GooseTown instance."
+    )
+    p_join.add_argument(
+        "--api-url", dest="api_url", default=None, help="Override the API base URL."
+    )
+    p_join.add_argument(
+        "--name",
+        default=None,
+        help="Agent machine name (alphanumeric + dashes/underscores).",
+    )
+    p_join.add_argument(
+        "--appearance",
+        default=None,
+        help="Pixel art appearance description for sprite generation.",
+    )
+    p_join.add_argument(
+        "--personality", default=None, help="1-2 sentence personality description."
+    )
+    p_join.add_argument(
+        "--traits",
+        default=None,
+        help="Comma-separated traits (e.g. introvert,studious,creative).",
+    )
 
     # status
     sub.add_parser("status", help="Check current status (instant, no network).")
 
     # act
     p_act = sub.add_parser("act", help="Perform a town action.")
-    p_act.add_argument("action", help="Action to perform (move, chat, say, idle, end, or an activity name).")
+    p_act.add_argument(
+        "action",
+        help="Action to perform (move, chat, say, idle, end, or an activity name).",
+    )
     p_act.add_argument("args", nargs="*", help="Additional arguments for the action.")
 
     # leave
     p_leave = sub.add_parser("leave", help="Go to sleep with an optional wake alarm.")
-    p_leave.add_argument("--alarm", metavar="HH:MM", default="", help="Wake alarm time.")
-    p_leave.add_argument("--tz", default="UTC", help="Timezone for the alarm (default: UTC).")
+    p_leave.add_argument(
+        "--alarm", metavar="HH:MM", default="", help="Wake alarm time."
+    )
+    p_leave.add_argument(
+        "--tz", default="UTC", help="Timezone for the alarm (default: UTC)."
+    )
 
     # setup-hooks (opt-in)
     sub.add_parser(
@@ -84,7 +109,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "install-launchd",
         help="Install a launchd plist to keep the daemon alive on macOS.",
     )
-    p_launchd.add_argument("agent_name", help="Agent name (must match a GOOSETOWN.md in the workspace).")
+    p_launchd.add_argument(
+        "agent_name", help="Agent name (must match a GOOSETOWN.md in the workspace)."
+    )
 
     # daemon-resume (internal: resume after alarm)
     p_resume = sub.add_parser(

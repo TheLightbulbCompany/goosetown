@@ -35,7 +35,9 @@ from goosetown import core
 
 
 @pytest.fixture
-def isolated_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+def isolated_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, Path]:
     """Create a tmp workspace with a stub GOOSETOWN.md, return (agent_dir, state_dir)."""
     agent_dir = tmp_path / "workspace"
     agent_dir.mkdir()
@@ -64,7 +66,9 @@ def _run_status(capsys: pytest.CaptureFixture) -> dict:
 def _write_alive_state(sd: Path) -> None:
     """Simulate a connected daemon: pidfile points at THIS process; state shows alive."""
     (sd / "daemon.pid").write_text(str(os.getpid()))
-    (sd / "state.json").write_text(json.dumps({"connected": True, "agent": {"location": "plaza"}}))
+    (sd / "state.json").write_text(
+        json.dumps({"connected": True, "agent": {"location": "plaza"}})
+    )
 
 
 def _write_dead_pid_state(sd: Path) -> None:
@@ -76,7 +80,9 @@ def _write_dead_pid_state(sd: Path) -> None:
     # races into a real pid, the test is wrong by ~one in 32k.
     dead_pid = 99999
     (sd / "daemon.pid").write_text(str(dead_pid))
-    (sd / "state.json").write_text(json.dumps({"connected": True, "agent": {"location": "plaza"}}))
+    (sd / "state.json").write_text(
+        json.dumps({"connected": True, "agent": {"location": "plaza"}})
+    )
 
 
 class TestStatusReflectsDaemonLiveness:
@@ -122,7 +128,10 @@ class TestLeaveClearsStateJson:
     status calls don't return stale connected=true."""
 
     def test_leave_removes_or_invalidates_state_json(
-        self, isolated_workspace, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+        self,
+        isolated_workspace,
+        capsys: pytest.CaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
     ):
         """After leave's daemon-shutdown phase, state.json should not say
         connected=true. The most direct test is that status no longer
