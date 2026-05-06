@@ -11,8 +11,8 @@ Covers:
       10 rejections, and also applies sleep-reset at the force-close.
 
 The goal is coverage for the logic we've been touching this week. We mock the
-DynamoDB service, ManagementApiClient, and WS manager at their source modules
-so the routers/town.py local imports resolve to the mocks.
+DynamoDB service, DaemonMailbox, and WS manager at their source modules so the
+routers/town.py local imports resolve to the mocks.
 """
 
 import asyncio
@@ -177,7 +177,7 @@ class TestApplyEventWithSleepGuard:
         # (sub-project #3 fourth slice, 2026-04-22); patch where the name is
         # looked up, not the routers.town re-export.
         patches = {
-            "mgmt_class": patch("core.services.management_api_client.ManagementApiClient"),
+            "mailbox_factory": patch("core.services.daemon_bridge.get_daemon_mailbox"),
             "ws_mgr": patch("core.services.daemon_bridge.get_town_agent_ws_manager"),
         }
         started = {name: p.start() for name, p in patches.items()}
@@ -213,8 +213,8 @@ class TestApplyEventWithSleepGuard:
         # Agent is connected — helper must send forced_sleep + close
         conn = _make_conn()
         mocks["ws_mgr"].return_value.get_by_agent_id.return_value = conn
-        mgmt_instance = MagicMock()
-        mocks["mgmt_class"].return_value = mgmt_instance
+        mailbox = MagicMock()
+        mocks["mailbox_factory"].return_value = mailbox
 
         new_e, new_m, slept = _apply_event_with_sleep_guard(service, "agent-1", agent, "conversation_completed")
 
@@ -226,12 +226,12 @@ class TestApplyEventWithSleepGuard:
         assert call_args[0][0] == "agent-1"
         assert call_args[0][2] == 100  # energy arg is 100
         service.update_agent_activity.assert_called_once_with("agent-1", "sleeping", None)
-        # WS: forced_sleep sent, then close_connection
-        mgmt_instance.send_message.assert_called_once()
-        sent_payload = mgmt_instance.send_message.call_args[0][1]
+        # WS: forced_sleep sent, then disconnect
+        mailbox.notify_connection.assert_called_once()
+        sent_payload = mailbox.notify_connection.call_args[0][1]
         assert sent_payload["event"] == "forced_sleep"
         assert sent_payload["reason"] == "exhausted"
-        mgmt_instance.close_connection.assert_called_once_with(conn.connection_id)
+        mailbox.disconnect.assert_called_once_with(conn.connection_id)
 
     def test_exhausted_with_no_ws_connection_still_applies_sleep(self, mocks):
         """If the agent has no live WS when exhaustion triggers (edge case
@@ -269,21 +269,18 @@ class TestEnergySoftGate:
         service = MagicMock()
         service.get_town_agent_by_id.return_value = _make_agent(energy=0)
 
-        mgmt_instance = MagicMock()
+        mailbox = MagicMock()
 
         with (
             patch("routers.town.get_town_agent_ws_manager", return_value=ws_manager),
             patch("routers.town.TownService", return_value=service),
-            patch(
-                "core.services.management_api_client.ManagementApiClient",
-                return_value=mgmt_instance,
-            ),
+            patch("core.services.daemon_mailbox.get_daemon_mailbox", return_value=mailbox),
         ):
             yield SimpleNamespace(
                 ws_manager=ws_manager,
                 agent_conn=agent_conn,
                 service=service,
-                mgmt=mgmt_instance,
+                mailbox=mailbox,
             )
 
     @pytest.mark.asyncio
@@ -309,15 +306,15 @@ class TestEnergySoftGate:
         assert result == {"statusCode": 200, "rejected": "exhausted"}
         assert setup.agent_conn.exhausted_rejections == 1
 
-        # send_message called once with an exhausted event
-        assert setup.mgmt.send_message.call_count == 1
-        payload = setup.mgmt.send_message.call_args[0][1]
+        # notify_connection called once with an exhausted event
+        assert setup.mailbox.notify_connection.call_count == 1
+        payload = setup.mailbox.notify_connection.call_args[0][1]
         assert payload["event"] == "exhausted"
         assert payload["action"] == "say"
         assert payload["rejections"] == 1
 
         # Under 10 rejections: no force-close yet
-        setup.mgmt.close_connection.assert_not_called()
+        setup.mailbox.disconnect.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_tenth_rejection_force_closes_and_applies_sleep(self, setup):
@@ -345,7 +342,7 @@ class TestEnergySoftGate:
         assert setup.agent_conn.exhausted_rejections == 10
 
         # Force-close was invoked once
-        setup.mgmt.close_connection.assert_called_once_with("conn-abc")
+        setup.mailbox.disconnect.assert_called_once_with("conn-abc")
         # Sleep event was applied so the next reconnect is clean
         setup.service.update_agent_mood_energy.assert_called_once()
         # Last arg of that call is new_energy — should be 100
@@ -378,8 +375,8 @@ class TestEnergySoftGate:
         # Not rejected
         assert "rejected" not in result
         assert setup.agent_conn.exhausted_rejections == 0
-        setup.mgmt.send_message.assert_not_called()
-        setup.mgmt.close_connection.assert_not_called()
+        setup.mailbox.notify_connection.assert_not_called()
+        setup.mailbox.disconnect.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

@@ -1,8 +1,8 @@
 """Unit tests for context transition logic (town ↔ apartment).
 
 Tests ``_handle_context_transition`` and the ``_transition_to_apartment`` shim
-in routers/town.py by mocking ManagementApiClient, TownService,
-GameServerClient, and TownAgentWsManager at their source modules so
+in routers/town.py by mocking DaemonMailbox, TownService, GameServerClient,
+and TownAgentWsManager at their source modules so
 local-import statements in the router functions are intercepted correctly.
 
 The two-phase transition flow:
@@ -56,9 +56,12 @@ def _make_agent(
 
 
 def _make_mgmt_mock(sent_messages: list) -> MagicMock:
-    """Return a ManagementApiClient mock that captures sent messages."""
+    """Return a DaemonMailbox mock that captures sent messages."""
     mock = MagicMock()
-    mock.send_message.side_effect = lambda cid, msg: sent_messages.append(msg)
+    mock.notify_connection.side_effect = lambda cid, msg: sent_messages.append(msg)
+    mock.reject.side_effect = lambda _cid, event, reason, **extra: sent_messages.append(
+        {"event": event, "reason": reason, **extra}
+    )
     return mock
 
 
@@ -75,9 +78,7 @@ def _make_ws_manager_mock() -> MagicMock:
 # ``get_game_server_client``, ``get_town_agent_ws_manager``) are what need
 # patching now — patching at the old ``routers.town.*`` names would only
 # affect the re-exports, not the bindings the function actually reads.
-# ManagementApiClient is still deferred-imported inside the function body,
-# so its patch target is the defining module.
-MGMT_PATH = "core.services.management_api_client.ManagementApiClient"
+MGMT_PATH = "core.services.context_transition_service.get_daemon_mailbox"
 SERVICE_PATH = "core.services.context_transition_service.TownService"
 GS_CLIENT_PATH = "core.services.context_transition_service.get_game_server_client"
 WS_MANAGER_PATH = "core.services.context_transition_service.get_town_agent_ws_manager"

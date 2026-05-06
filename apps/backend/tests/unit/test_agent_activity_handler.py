@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-MGMT_PATH = "core.services.management_api_client.ManagementApiClient"
+MAILBOX_FACTORY_PATH = "core.services.activity_service.get_daemon_mailbox"
 # Activity handlers moved to core.services.activity_service (sub-project #3
 # third slice, 2026-04-22). Patch the module-top imports at the new home.
 SERVICE_PATH = "core.services.activity_service.TownService"
@@ -90,9 +90,9 @@ def _make_agent(
     }
 
 
-def _mgmt_mock(sent: list) -> MagicMock:
+def _mailbox_mock(sent: list) -> MagicMock:
     mock = MagicMock()
-    mock.send_message.side_effect = lambda cid, msg: sent.append((cid, msg))
+    mock.notify_connection.side_effect = lambda cid, msg: sent.append((cid, msg))
     return mock
 
 
@@ -116,7 +116,7 @@ class TestHandleAgentActivity:
         svc_mock = MagicMock()
 
         with (
-            patch(MGMT_PATH, return_value=_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(GET_ACTIVITY_PATH, return_value=None),
         ):
@@ -136,7 +136,7 @@ class TestHandleAgentActivity:
         svc_mock.get_town_agent_by_id.return_value = None
 
         with (
-            patch(MGMT_PATH, return_value=_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(GET_ACTIVITY_PATH, return_value=_make_activity()),
         ):
@@ -157,7 +157,7 @@ class TestHandleAgentActivity:
         svc_mock.get_town_agent_by_id.return_value = agent
 
         with (
-            patch(MGMT_PATH, return_value=_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(GET_ACTIVITY_PATH, return_value=activity),
             patch(CONTEXT_MSG_PATH, return_value="go to your apartment first"),
@@ -181,7 +181,7 @@ class TestHandleAgentActivity:
         svc_mock.get_town_agent_by_id.return_value = agent
 
         with (
-            patch(MGMT_PATH, return_value=_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(GET_ACTIVITY_PATH, return_value=activity),
             patch(CONTEXT_MSG_PATH, return_value=None),
@@ -203,7 +203,7 @@ class TestHandleAgentActivity:
         svc_mock.get_town_agent_by_id.return_value = agent
 
         with (
-            patch(MGMT_PATH, return_value=_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(GET_ACTIVITY_PATH, return_value=activity),
             patch(CONTEXT_MSG_PATH, return_value=None),
@@ -227,7 +227,7 @@ class TestHandleAgentActivity:
         gs = _gs_mock()
 
         with (
-            patch(MGMT_PATH, return_value=_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(GS_CLIENT_PATH, return_value=gs),
             patch(GET_ACTIVITY_PATH, return_value=activity),
@@ -278,7 +278,7 @@ class TestHandleAgentActivity:
             return "apartment" if loc == "desk" else loc
 
         with (
-            patch(MGMT_PATH, return_value=_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(GS_CLIENT_PATH, return_value=gs),
             patch(GET_ACTIVITY_PATH, return_value=activity),

@@ -41,6 +41,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from core.services.daemon_mailbox import get_daemon_mailbox
 from core.services.game_server_client import get_game_server_client
 from core.services.town_agent_ws import get_town_agent_ws_manager
 from core.services.town_service import TownService
@@ -138,9 +139,7 @@ async def _handle_context_transition(
             to town).
         agent_conn: Connection record from ``TownAgentWsManager``.
     """
-    from core.services.management_api_client import ManagementApiClient
-
-    mgmt = ManagementApiClient()
+    mailbox = get_daemon_mailbox()
     service = TownService()
     ws_manager = get_town_agent_ws_manager()
     gs_client = get_game_server_client()
@@ -150,13 +149,7 @@ async def _handle_context_transition(
 
     def _reject(reason: str) -> None:
         logger.warning("[agent:%s] Transition REJECTED: %s → %s", agent_id[:8], destination, reason)
-        try:
-            mgmt.send_message(
-                connection_id,
-                {"event": "move_rejected", "destination": destination, "reason": reason},
-            )
-        except Exception as exc:
-            logger.warning("Failed to send move_rejected to %s: %s", agent_id, exc)
+        mailbox.reject(connection_id, "move_rejected", reason, destination=destination)
 
     # --- Load agent from DB ---
     agent = service.get_town_agent_by_id(agent_id)
@@ -250,17 +243,14 @@ async def _handle_context_transition(
     )
 
     # Notify the daemon
-    try:
-        mgmt.send_message(
-            connection_id,
-            {
-                "event": "context_changed",
-                "context": dest_context,
-                "location": dest_location,
-            },
-        )
-    except Exception as exc:
-        logger.warning("Failed to send context_changed to %s: %s", agent_id, exc)
+    mailbox.notify_connection(
+        connection_id,
+        {
+            "event": "context_changed",
+            "context": dest_context,
+            "location": dest_location,
+        },
+    )
 
     # Notify browser viewers so they switch scenes
     try:
@@ -268,26 +258,15 @@ async def _handle_context_transition(
 
         relay = get_viewer_relay()
         for viewer_conn_id in list(relay._viewer_connections):
-            try:
-                mgmt.send_message(
-                    viewer_conn_id,
-                    {
-                        "event": "agent_context_changed",
-                        "agent_id": agent_id,
-                        "context": dest_context,
-                        "userId": agent_conn.user_id,
-                    },
-                )
-            except Exception:
-                # One stale viewer connection shouldn't stop notifying the
-                # rest. Logging at debug since this is expected when a
-                # viewer's WS dies between the snapshot and the send.
-                logger.debug(
-                    "Failed to notify viewer %s of context change for %s",
-                    viewer_conn_id,
-                    agent_id,
-                    exc_info=True,
-                )
+            mailbox.notify_connection(
+                viewer_conn_id,
+                {
+                    "event": "agent_context_changed",
+                    "agent_id": agent_id,
+                    "context": dest_context,
+                    "userId": agent_conn.user_id,
+                },
+            )
     except Exception as exc:
         logger.debug("Failed to notify viewers of context change: %s", exc)
 
