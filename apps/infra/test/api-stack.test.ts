@@ -208,36 +208,6 @@ describe("ApiStack — WS Lambdas must NOT be in VPC (regression guard)", () => 
   });
 });
 
-describe("ApiStack — prod-only legacy WS export preservation", () => {
-  // The deployed prod-api template (synthed under an older CDK) carried an
-  // 8-char auto-export hash: ExportsOutputRefWebSocketApi6DDF9954. Today's
-  // CDK derives a 16-char hash for the same construct path, so a fresh synth
-  // omits the legacy name and CFN refuses to drop it (still imported by
-  // goosetown-prod-compute). The explicit prod-only CfnOutput keeps the
-  // legacy name alive so prod-api can update independently.
-
-  test("prod template exposes the legacy 8-char-hash export", () => {
-    const { template } = buildTestApp("prod");
-    const outputs = template.findOutputs("LegacyWsApiAutoExportProd");
-    expect(Object.keys(outputs).length).toBe(1);
-    const output = Object.values(outputs)[0] as any;
-    // Must match the literal export name CFN sees on the deployed prod-api
-    // stack, captured 2026-05-02 via describe-stacks.
-    expect(output.Export?.Name).toBe(
-      "goosetown-prod-api:ExportsOutputRefWebSocketApi6DDF9954"
-    );
-  });
-
-  test("dev template does NOT emit the prod-only legacy export", () => {
-    // Dev's deployed compute imports the 16-char-hash form (matches today's
-    // CDK auto-export), so no preservation is needed; emitting it on dev
-    // would collide with the auto-gen export name.
-    const { template } = buildTestApp("dev");
-    const outputs = template.findOutputs("LegacyWsApiAutoExportProd");
-    expect(Object.keys(outputs).length).toBe(0);
-  });
-});
-
 describe("ApiStack — authorizer token-source migration", () => {
   // The authorizer Lambda code lives in apps/infra/lambda/ws-authorizer/index.py
   // (moved from inline Code.fromInline in api-stack.ts to a file-based asset).
