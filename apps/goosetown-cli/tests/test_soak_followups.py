@@ -1,13 +1,13 @@
 """Regression tests for U / X / N′ from the 2026-05-04 5-agent soak.
 
-  U — ``pending_messages`` echoes own ``say`` messages back to the
-     speaker, leaving 5/5 soak agents seeing their own turns
-     re-appear on every poll for 10+ minutes.
-  X — Heartbeat-driven move loop calls ``act move`` mid-conversation
-     and yanks the agent away. margot↔ranger-kai got cut at turn 4.
-  N′ — ``_handle_world_update`` overwrites the daemon's local
-     location with the raw backend value on every ~2s tick, undoing
-     the ``_on_arrived`` normalization shipped in PR #286.
+U — ``pending_messages`` echoes own ``say`` messages back to the
+   speaker, leaving 5/5 soak agents seeing their own turns
+   re-appear on every poll for 10+ minutes.
+X — Heartbeat-driven move loop calls ``act move`` mid-conversation
+   and yanks the agent away. margot↔ranger-kai got cut at turn 4.
+N′ — ``_handle_world_update`` overwrites the daemon's local
+   location with the raw backend value on every ~2s tick, undoing
+   the ``_on_arrived`` normalization shipped in PR #286.
 """
 
 from __future__ import annotations
@@ -47,7 +47,11 @@ class TestPendingMessagesExcludesOwn:
         ``conversation_message`` event with ``from_agent_name`` matching
         ``self._agent_name``. Daemon must not treat that as something
         the agent needs to respond to."""
-        daemon.state["active_conversation"] = {"conv_id": "c1", "participants": ["other"], "turns": []}
+        daemon.state["active_conversation"] = {
+            "conv_id": "c1",
+            "participants": ["other"],
+            "turns": [],
+        }
         daemon._on_conversation_message(
             "conversation_message",
             {
@@ -62,7 +66,11 @@ class TestPendingMessagesExcludesOwn:
 
     def test_other_agent_message_enters_pending(self, daemon: TownDaemon):
         """Symmetric sanity: messages from OTHERS still flow to pending."""
-        daemon.state["active_conversation"] = {"conv_id": "c1", "participants": ["other"], "turns": []}
+        daemon.state["active_conversation"] = {
+            "conv_id": "c1",
+            "participants": ["other"],
+            "turns": [],
+        }
         daemon._on_conversation_message(
             "conversation_message",
             {
@@ -81,7 +89,11 @@ class TestPendingMessagesExcludesOwn:
         """The speaker MUST still see their own turn in
         active_conversation.turns — that's what F8 from the 2026-04-21
         dry run set up. Filtering only applies to pending_messages."""
-        daemon.state["active_conversation"] = {"conv_id": "c1", "participants": ["other"], "turns": []}
+        daemon.state["active_conversation"] = {
+            "conv_id": "c1",
+            "participants": ["other"],
+            "turns": [],
+        }
         daemon._on_conversation_message(
             "conversation_message",
             {
@@ -101,7 +113,11 @@ class TestPendingMessagesExcludesOwn:
         """Older backend builds may not stamp from_agent_name. In that
         case we can't tell — default to including (avoids dropping a
         real third-party message). Defensive behavior."""
-        daemon.state["active_conversation"] = {"conv_id": "c1", "participants": ["other"], "turns": []}
+        daemon.state["active_conversation"] = {
+            "conv_id": "c1",
+            "participants": ["other"],
+            "turns": [],
+        }
         daemon._on_conversation_message(
             "conversation_message",
             {"conv_id": "c1", "from": "?", "text": "ambiguous", "turn": 1},
@@ -136,9 +152,7 @@ class TestWorldUpdateLocationNormalization:
         )
         assert daemon.state["agent"]["location"] == "plaza"
 
-    def test_world_update_corrects_exit_when_entering_library(
-        self, daemon: TownDaemon
-    ):
+    def test_world_update_corrects_exit_when_entering_library(self, daemon: TownDaemon):
         daemon._pending_move_destination = "library"
         daemon._handle_world_update(
             {
@@ -224,7 +238,10 @@ class TestMoveRejectedWhileInConversation:
         asyncio.wait_for = _fast_timeout  # type: ignore[assignment]
         try:
             result = await daemon.handle_tool_command(
-                {"action": "act", "payload": {"action": "move", "destination": "library"}}
+                {
+                    "action": "act",
+                    "payload": {"action": "move", "destination": "library"},
+                }
             )
         finally:
             asyncio.wait_for = original_wait_for  # type: ignore[assignment]

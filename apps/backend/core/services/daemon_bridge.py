@@ -32,6 +32,7 @@ from __future__ import annotations
 import logging
 
 from core.services import town_mood_engine
+from core.services.daemon_mailbox import get_daemon_mailbox
 from core.services.town_agent_ws import get_town_agent_ws_manager
 from core.services.town_mood_engine import parse_mood
 from core.services.town_service import TownService
@@ -91,8 +92,6 @@ def _send_to_daemon(agent_id: str, payload: dict) -> bool:
     back to a DynamoDB lookup that would resolve to the same answer at
     higher cost.
     """
-    from core.services.management_api_client import ManagementApiClient
-
     evt = payload.get("event", payload.get("type", "?"))
 
     ws_manager = get_town_agent_ws_manager()
@@ -131,20 +130,15 @@ def _send_to_daemon(agent_id: str, payload: dict) -> bool:
                 if nearby_convs:
                     payload = {**payload, "nearby_conversations": nearby_convs}
 
-    try:
-        mgmt = ManagementApiClient()
-        sent = mgmt.send_message(conn_id, payload)
-        if not sent:
-            logger.warning(
-                "[agent:%s] _send_to_daemon: connection gone %s (event=%s)",
-                agent_id[:8],
-                conn_id[:12],
-                evt,
-            )
-        return sent
-    except Exception as exc:
-        logger.warning("[agent:%s] _send_to_daemon: failed (event=%s): %s", agent_id[:8], evt, exc)
-        return False
+    sent = get_daemon_mailbox().notify_connection(conn_id, payload)
+    if not sent:
+        logger.warning(
+            "[agent:%s] _send_to_daemon: connection gone %s (event=%s)",
+            agent_id[:8],
+            conn_id[:12],
+            evt,
+        )
+    return sent
 
 
 def _apply_event_with_sleep_guard(
@@ -166,8 +160,6 @@ def _apply_event_with_sleep_guard(
         ``(new_energy, new_mood, slept)`` — slept=True means energy was
         refilled and the WS was closed.
     """
-    from core.services.management_api_client import ManagementApiClient
-
     current_energy = int(agent.get("energy", 100) or 0)
     current_mood = parse_mood(agent.get("mood"))
     traits = agent.get("traits", "")
@@ -189,27 +181,21 @@ def _apply_event_with_sleep_guard(
     ws_manager = get_town_agent_ws_manager()
     conn = ws_manager.get_by_agent_id(agent_id)
     if conn:
-        mgmt = ManagementApiClient()
-        try:
-            mgmt.send_message(
-                conn.connection_id,
-                {
-                    "event": "forced_sleep",
-                    "reason": "exhausted",
-                    "new_energy": new_energy,
-                    "message": (
-                        "You exhausted yourself. The server has put you to "
-                        "sleep and is closing your connection. Reconnect "
-                        "whenever you want to wake up refreshed."
-                    ),
-                },
-            )
-        except Exception as exc:
-            logger.warning("Failed to send forced_sleep to %s: %s", agent_id, exc)
-        try:
-            mgmt.close_connection(conn.connection_id)
-        except Exception as exc:
-            logger.warning("Failed to close WS for auto-slept agent %s: %s", agent_id, exc)
+        mailbox = get_daemon_mailbox()
+        mailbox.notify_connection(
+            conn.connection_id,
+            {
+                "event": "forced_sleep",
+                "reason": "exhausted",
+                "new_energy": new_energy,
+                "message": (
+                    "You exhausted yourself. The server has put you to "
+                    "sleep and is closing your connection. Reconnect "
+                    "whenever you want to wake up refreshed."
+                ),
+            },
+        )
+        mailbox.disconnect(conn.connection_id)
     logger.info(
         "[agent:%s] Auto-slept after %s dropped energy to 0 (reset to %d)",
         agent_id[:8],

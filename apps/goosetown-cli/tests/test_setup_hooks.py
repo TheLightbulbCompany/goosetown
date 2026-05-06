@@ -10,8 +10,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 
 def _run_setup_hooks(workspace: Path) -> int:
     """Invoke the setup-hooks subcommand with cwd=<workspace>."""
@@ -85,7 +83,10 @@ def test_setup_hooks_idempotent_when_hook_at_index_other_than_zero(tmp_path):
                     "matcher": "",
                     "hooks": [
                         {"type": "command", "command": "echo unrelated"},
-                        {"type": "command", "command": "bash /path/to/check-town-status.sh"},
+                        {
+                            "type": "command",
+                            "command": "bash /path/to/check-town-status.sh",
+                        },
                     ],
                 }
             ]
@@ -97,4 +98,6 @@ def test_setup_hooks_idempotent_when_hook_at_index_other_than_zero(tmp_path):
 
     written = json.loads(settings_file.read_text())
     stop_entries = written["hooks"]["Stop"]
-    assert len(stop_entries) == 1, f"expected 1 Stop matcher group (deduped), got {len(stop_entries)}"
+    assert len(stop_entries) == 1, (
+        f"expected 1 Stop matcher group (deduped), got {len(stop_entries)}"
+    )

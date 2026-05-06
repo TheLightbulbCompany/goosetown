@@ -30,10 +30,22 @@ class Settings:
         if self.ENVIRONMENT == "dev":
             return
 
+        # WS_LAMBDA_SECRET is intentionally NOT in the required list. The
+        # corresponding shared-secret authentication between the API
+        # Gateway WS Lambdas and the backend's /ws-message endpoint was
+        # never wired through CDK — the Lambdas at apps/infra/lambda/
+        # don't read or send the x-ws-lambda-secret header, so the
+        # backend's check at routers/town.py:1219 is vacuously satisfied
+        # ("" != "" → False, no rejection). Adding it to ``required``
+        # blocks prod startup with no security benefit, since neither
+        # side actually enforces the secret today. If we later wire the
+        # secret end-to-end (auth-stack creates it; api-stack passes
+        # it to Lambdas as env or fetched-from-Secrets-Manager;
+        # compute-stack passes it to the backend as a Secret), this
+        # check can be reinstated.
         required = {
             "TOWN_TOKEN_SECRET": self.TOWN_TOKEN_SECRET,
             "WS_MANAGEMENT_API_URL": self.WS_MANAGEMENT_API_URL,
-            "WS_LAMBDA_SECRET": self.WS_LAMBDA_SECRET,
             "SPRITE_S3_BUCKET": self.SPRITE_S3_BUCKET,
             "SPRITE_CDN_URL": self.SPRITE_CDN_URL,
             "CLERK_ISSUER": self.CLERK_ISSUER,

@@ -3,7 +3,6 @@
 import subprocess
 import sys
 
-import pytest
 
 from goosetown import __version__
 
@@ -61,7 +60,9 @@ class TestHelpFlag:
             text=True,
         )
         for cmd in ("join", "status", "act", "leave", "setup-hooks"):
-            assert cmd in result.stdout, f"subcommand '{cmd}' missing from --help output"
+            assert cmd in result.stdout, (
+                f"subcommand '{cmd}' missing from --help output"
+            )
 
     def test_join_subcommand_help(self):
         """goosetown join --help should show join-specific flags."""

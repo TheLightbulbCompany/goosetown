@@ -35,8 +35,8 @@ from typing import Optional
 
 from core.services.activity_registry import apply_activity_effect, get_activity
 from core.services.daemon_bridge import _send_to_daemon
+from core.services.daemon_mailbox import get_daemon_mailbox
 from core.services.game_server_client import get_game_server_client
-from core.services.town_agent_ws import get_town_agent_ws_manager
 from core.services.town_mood_engine import apply_event, parse_mood
 from core.services.town_service import TownService
 
@@ -69,9 +69,8 @@ async def _handle_agent_activity(connection_id: str, activity_name: str, agent_c
         canonical_location,
         get_context_mismatch_message,
     )
-    from core.services.management_api_client import ManagementApiClient
 
-    mgmt = ManagementApiClient()
+    mailbox = get_daemon_mailbox()
     service = TownService()
     agent_id = agent_conn.agent_id
 
@@ -79,10 +78,7 @@ async def _handle_agent_activity(connection_id: str, activity_name: str, agent_c
         payload: dict = {"event": "activity_rejected", "activity": activity_name, "reason": reason}
         if message:
             payload["message"] = message
-        try:
-            mgmt.send_message(connection_id, payload)
-        except Exception as exc:
-            logger.warning("Failed to send activity_rejected to %s: %s", agent_id, exc)
+        mailbox.notify_connection(connection_id, payload)
 
     # --- Look up activity ---
     activity = get_activity(activity_name)
@@ -136,17 +132,14 @@ async def _handle_agent_activity(connection_id: str, activity_name: str, agent_c
         logger.warning("Failed to send set_activity to game server for %s: %s", agent_id, exc)
 
     # --- Acknowledge to the agent ---
-    try:
-        mgmt.send_message(
-            connection_id,
-            {
-                "event": "act_ok",
-                "activity": activity_name,
-                "duration_seconds": activity.duration_seconds,
-            },
-        )
-    except Exception as exc:
-        logger.warning("Failed to send act_ok to %s: %s", agent_id, exc)
+    mailbox.notify_connection(
+        connection_id,
+        {
+            "event": "act_ok",
+            "activity": activity_name,
+            "duration_seconds": activity.duration_seconds,
+        },
+    )
 
     # --- Trigger lazy custom animation generation if needed ---
     from core.services.pixellab_service import CUSTOM_ANIMATIONS
@@ -321,28 +314,14 @@ async def _generate_custom_animation(agent_id: str, character_id: str, animation
             logger.exception("Failed to push sprite update to game server for %s", agent_id)
 
         # Push sprites_updated to daemon and viewers
-        try:
-            from core.services.management_api_client import ManagementApiClient
-
-            ws_mgr = get_town_agent_ws_manager()
-            conn = ws_mgr.get_by_agent_id(agent_id)
-            if conn:
-                mgmt = ManagementApiClient()
-                mgmt.send_message(
-                    conn.connection_id,
-                    {
-                        "event": "sprites_updated",
-                        "agent_id": agent_id,
-                        "animations": existing,
-                    },
-                )
-        except Exception:
-            logger.debug(
-                "sprites_updated push to daemon failed for %s — daemon will "
-                "pick up new animations on next world_update",
-                agent_id,
-                exc_info=True,
-            )
+        get_daemon_mailbox().notify(
+            agent_id,
+            {
+                "event": "sprites_updated",
+                "agent_id": agent_id,
+                "animations": existing,
+            },
+        )
 
     except Exception:
         logger.exception("Custom animation generation failed: %s for agent %s", animation_name, agent_id)
@@ -376,9 +355,7 @@ async def _activity_timer(
             initial energy/mood; fresh values are re-fetched before applying
             effects so concurrent updates are handled correctly).
     """
-    from core.services.management_api_client import ManagementApiClient
-
-    mgmt = ManagementApiClient()
+    mailbox = get_daemon_mailbox()
     service = TownService()
     gs_client = get_game_server_client()
 
@@ -408,7 +385,7 @@ async def _activity_timer(
                 activity.spot,
                 activity.name,
             )
-            _clear_activity_and_notify(service, mgmt, connection_id, agent_id, activity.name, "navigation_timeout")
+            _clear_activity_and_notify(service, mailbox, connection_id, agent_id, activity.name, "navigation_timeout")
             try:
                 await gs_client.send_command(agent_id, {"cmd": "set_activity", "activity": ""})
             except Exception:
@@ -420,7 +397,7 @@ async def _activity_timer(
             return
         except Exception as exc:
             logger.warning("Navigation error for agent %s activity %s: %s", agent_id, activity.name, exc)
-            _clear_activity_and_notify(service, mgmt, connection_id, agent_id, activity.name, "navigation_error")
+            _clear_activity_and_notify(service, mailbox, connection_id, agent_id, activity.name, "navigation_error")
             try:
                 await gs_client.send_command(agent_id, {"cmd": "set_activity", "activity": ""})
             except Exception:
@@ -489,36 +466,33 @@ async def _activity_timer(
 
     # --- Send outcome event to agent ---
     event_name = "activity_interrupted" if interrupted else "activity_complete"
-    try:
-        mgmt.send_message(
-            connection_id,
-            {
-                "event": event_name,
-                "activity": activity.name,
-                "mood_delta": new_mood - current_mood,
-                "energy_delta": new_energy - current_energy,
-                "new_mood": new_mood,
-                "new_energy": new_energy,
-                "interrupted": interrupted,
-            },
-        )
-        logger.info(
-            "Activity %s %s for agent %s (mood %d→%d, energy %d→%d)",
-            activity.name,
-            "interrupted" if interrupted else "complete",
-            agent_id,
-            current_mood,
-            new_mood,
-            current_energy,
-            new_energy,
-        )
-    except Exception as exc:
-        logger.warning("Failed to send %s to %s: %s", event_name, agent_id, exc)
+    mailbox.notify_connection(
+        connection_id,
+        {
+            "event": event_name,
+            "activity": activity.name,
+            "mood_delta": new_mood - current_mood,
+            "energy_delta": new_energy - current_energy,
+            "new_mood": new_mood,
+            "new_energy": new_energy,
+            "interrupted": interrupted,
+        },
+    )
+    logger.info(
+        "Activity %s %s for agent %s (mood %d→%d, energy %d→%d)",
+        activity.name,
+        "interrupted" if interrupted else "complete",
+        agent_id,
+        current_mood,
+        new_mood,
+        current_energy,
+        new_energy,
+    )
 
 
 def _clear_activity_and_notify(
     service: TownService,
-    mgmt,
+    mailbox,
     connection_id: str,
     agent_id: str,
     activity_name: str,
@@ -532,13 +506,10 @@ def _clear_activity_and_notify(
         service.update_agent_activity(agent_id, None, None)
     except Exception as exc:
         logger.warning("Failed to clear activity for %s: %s", agent_id, exc)
-    try:
-        mgmt.send_message(
-            connection_id,
-            {"event": "activity_rejected", "activity": activity_name, "reason": reason},
-        )
-    except Exception as exc:
-        logger.warning("Failed to send activity_rejected for navigation failure %s: %s", agent_id, exc)
+    mailbox.notify_connection(
+        connection_id,
+        {"event": "activity_rejected", "activity": activity_name, "reason": reason},
+    )
 
 
 async def complete_activity_from_startup(agent_id: str, activity, elapsed: float) -> None:

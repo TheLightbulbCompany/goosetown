@@ -805,7 +805,7 @@ def _push_to_owner_viewers(*, user_id: str, payload: dict) -> None:
     but do not abort the broadcast.
     """
     from core import dynamo
-    from core.services.management_api_client import ManagementApiClient
+    from core.services.daemon_mailbox import get_daemon_mailbox
 
     table = dynamo.connections_table()
     scan_kwargs: dict = {
@@ -828,19 +828,12 @@ def _push_to_owner_viewers(*, user_id: str, payload: dict) -> None:
     if not items:
         return
 
-    client = ManagementApiClient()
+    mailbox = get_daemon_mailbox()
     for item in items:
         connection_id = item.get("connectionId")
         if not connection_id:
             continue
-        try:
-            client.send_message(connection_id, payload)
-        except Exception as exc:
-            logger.warning(
-                "push_to_owner_viewers: failed cid=%s: %s",
-                connection_id,
-                exc,
-            )
+        mailbox.notify_connection(connection_id, payload)
 
 
 # ===========================================================================
@@ -1289,29 +1282,22 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
             agent = service.get_town_agent_by_id(agent_conn.agent_id)
             if agent is not None and int(agent.get("energy", 100) or 0) <= 0:
                 agent_conn.exhausted_rejections += 1
-                from core.services.management_api_client import ManagementApiClient
+                from core.services.daemon_mailbox import get_daemon_mailbox
 
-                mgmt = ManagementApiClient()
-                try:
-                    mgmt.send_message(
-                        request.connectionId,
-                        {
-                            "event": "exhausted",
-                            "action": action,
-                            "rejections": agent_conn.exhausted_rejections,
-                            "message": (
-                                "You are exhausted (energy=0). Use "
-                                "`town_disconnect <HH:MM>` to sleep. All other "
-                                "actions will be rejected until you do."
-                            ),
-                        },
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "Failed to send exhausted event to %s: %s",
-                        agent_conn.agent_id,
-                        exc,
-                    )
+                mailbox = get_daemon_mailbox()
+                mailbox.notify_connection(
+                    request.connectionId,
+                    {
+                        "event": "exhausted",
+                        "action": action,
+                        "rejections": agent_conn.exhausted_rejections,
+                        "message": (
+                            "You are exhausted (energy=0). Use "
+                            "`town_disconnect <HH:MM>` to sleep. All other "
+                            "actions will be rejected until you do."
+                        ),
+                    },
+                )
                 if agent_conn.exhausted_rejections >= 10:
                     logger.warning(
                         "Force-closing exhausted agent %s after %d rejections",
@@ -1332,32 +1318,17 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
                             agent_conn.agent_id,
                             exc,
                         )
-                    try:
-                        mgmt.close_connection(request.connectionId)
-                    except Exception as exc:
-                        logger.warning(
-                            "Failed to force-close exhausted connection %s: %s",
-                            request.connectionId,
-                            exc,
-                        )
+                    mailbox.disconnect(request.connectionId)
                 return {"statusCode": 200, "rejected": "exhausted"}
 
         # Reject ALL actions while a context transition is in progress.
         if agent_conn.location_context == "transitioning":
-            from core.services.management_api_client import ManagementApiClient
+            from core.services.daemon_mailbox import get_daemon_mailbox
 
-            mgmt = ManagementApiClient()
-            try:
-                mgmt.send_message(
-                    request.connectionId,
-                    {"event": "busy", "reason": "transitioning"},
-                )
-            except Exception as _exc:
-                logger.warning(
-                    "Failed to send busy:transitioning to %s: %s",
-                    agent_conn.agent_id,
-                    _exc,
-                )
+            get_daemon_mailbox().notify_connection(
+                request.connectionId,
+                {"event": "busy", "reason": "transitioning"},
+            )
             return {"statusCode": 200}
 
         gs_client = get_game_server_client()

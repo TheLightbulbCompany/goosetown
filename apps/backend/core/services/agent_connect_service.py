@@ -114,8 +114,10 @@ async def _handle_agent_connect(request, ws_manager):
     loose here to avoid a router → service import cycle. The only fields
     read are ``body`` (dict) and ``connectionId`` (str).
     """
-    from core.services.management_api_client import ManagementApiClient
+    from core.services.daemon_mailbox import get_daemon_mailbox
     from core.town_token import verify_town_token
+
+    mailbox = get_daemon_mailbox()
 
     body = request.body
     token = body.get("token", "")
@@ -157,16 +159,9 @@ async def _handle_agent_connect(request, ws_manager):
             old_conn_id[:12],
             request.connectionId[:12],
         )
-        try:
-            mgmt = ManagementApiClient()
-            mgmt.close_connection(old_conn_id)
-        except Exception as exc:
-            logger.warning(
-                "[agent:%s] Failed to close old connection %s: %s",
-                agent_id[:8],
-                old_conn_id[:12],
-                exc,
-            )
+        # DaemonMailbox.disconnect handles the GoneException + log-warn
+        # pattern that used to live inline here.
+        mailbox.disconnect(old_conn_id)
 
     # Register connection in ws_manager (replaces old registration in-memory)
     ws_manager.register(
@@ -211,8 +206,14 @@ async def _handle_agent_connect(request, ws_manager):
     # Seed the hot-path cache on AgentConnection so `_send_to_daemon` doesn't
     # re-read these fields from DynamoDB every 2s agent_state broadcast.
     # Source of truth is still DynamoDB; this mirror is maintained at the
-    # handful of lifecycle events that change either field.
-    ws_manager.update_onboarding_phase(agent_id, agent.get("onboardingPhase") or "alive")
+    # handful of lifecycle events that change either field. The phase
+    # mirror goes through ``restore_phase_from_db`` (NOT the monotonic
+    # ``advance_phase``) — DDB is the source of truth on connect, even if
+    # the cache happened to be warm with a different value from a prior
+    # session.
+    from core.services.phase_lattice import restore_phase_from_db
+
+    restore_phase_from_db(agent_id, agent.get("onboardingPhase") or "alive")
     ws_manager.update_conversation(agent_id, agent.get("currentConversationId") or "")
 
     # Connect agent to game server (shadow sprite fallback if no custom sprite)
@@ -239,26 +240,29 @@ async def _handle_agent_connect(request, ws_manager):
     except Exception as e:
         logger.warning("Failed to connect agent %s to game server: %s", agent_name, e)
 
-    # Send connected event back to the agent via Management API
-    try:
-        mgmt = ManagementApiClient()
-        mgmt.send_message(
-            request.connectionId,
-            {
-                "event": "connected",
-                "agent": {
-                    "id": agent_id,
-                    "name": agent.get("displayName", agent_name),
-                    "location": current_location,
-                    "locationContext": location_context,
-                    "mood": agent.get("mood", 0),
-                    "energy": agent.get("energy", 100),
-                    "spriteReady": agent.get("spriteReady", False),
-                },
+    # Send connected event back to the agent. Mailbox owns the
+    # try/except + log-warn pattern that used to wrap this block.
+    delivered = mailbox.notify_connection(
+        request.connectionId,
+        {
+            "event": "connected",
+            "agent": {
+                "id": agent_id,
+                "name": agent.get("displayName", agent_name),
+                "location": current_location,
+                "locationContext": location_context,
+                "mood": agent.get("mood", 0),
+                "energy": agent.get("energy", 100),
+                "spriteReady": agent.get("spriteReady", False),
             },
-        )
+        },
+    )
+    if delivered:
         logger.info("Sent connected event to agent %s", agent_name)
-    except Exception as e:
-        logger.error("Failed to send connected event to %s: %s", agent_name, e)
+    else:
+        # Mailbox already logged the WARNING with the underlying cause; this
+        # ERROR-level line preserves the original log signal for the
+        # successful-but-undelivered case (gone connection mid-handshake).
+        logger.error("Connected event to %s was not delivered", agent_name)
 
     return {"statusCode": 200}
