@@ -129,10 +129,10 @@ export class ComputeStack extends cdk.Stack {
           GAME_SERVER_URL: `ws://${props.gameServerUrl}:8080`,
         }),
         TOWN_WS_URL: env === "prod"
-          ? "wss://ws.goosetown.isol8.co"
+          ? "wss://ws-prod.goosetown.isol8.co"
           : "wss://ws-dev.goosetown.isol8.co",
         TOWN_API_URL: env === "prod"
-          ? "https://api.goosetown.isol8.co/api/v1"
+          ? "https://api-prod.goosetown.isol8.co/api/v1"
           : "https://api-dev.goosetown.isol8.co/api/v1",
         // Using the custom-domain string avoids an Fn.importValue cross-stack
         // reference from ComputeStack to ApiStack — which would be circular
@@ -141,7 +141,7 @@ export class ComputeStack extends cdk.Stack {
         // The ApiStack export (goosetown-${env}-management-api-url) is kept in
         // place for at least one week of clean prod runtime before removal.
         WS_MANAGEMENT_API_URL: env === "prod"
-          ? "https://ws.goosetown.isol8.co"
+          ? "https://ws-prod.goosetown.isol8.co"
           : "https://ws-dev.goosetown.isol8.co",
         // Operator step (one-time, post-merge): after creating Resend audiences
         // (one for dev, one for prod), replace these TBD strings and redeploy.

@@ -128,8 +128,8 @@ pipeline.addStageWithGitHubOptions(
             env: {
               ...vercelEnv,
               VITE_CLERK_PUBLISHABLE_KEY: "${{ secrets.VITE_CLERK_PUBLISHABLE_KEY_PROD }}",
-              VITE_BACKEND_URL: "https://api.goosetown.isol8.co/api/v1",
-              VITE_WS_URL: "wss://ws.goosetown.isol8.co",
+              VITE_BACKEND_URL: "https://api-prod.goosetown.isol8.co/api/v1",
+              VITE_WS_URL: "wss://ws-prod.goosetown.isol8.co",
             },
           },
           {
