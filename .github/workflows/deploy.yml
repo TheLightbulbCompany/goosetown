@@ -1872,8 +1872,8 @@ jobs:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
           VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.VITE_CLERK_PUBLISHABLE_KEY_PROD }}
-          VITE_BACKEND_URL: https://api.goosetown.isol8.co/api/v1
-          VITE_WS_URL: wss://ws.goosetown.isol8.co
+          VITE_BACKEND_URL: https://api-prod.goosetown.isol8.co/api/v1
+          VITE_WS_URL: wss://ws-prod.goosetown.isol8.co
       - name: Deploy to Vercel (Production)
         id: vercel-deploy-prod
         run: DEPLOY_URL=$(vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN) && echo
