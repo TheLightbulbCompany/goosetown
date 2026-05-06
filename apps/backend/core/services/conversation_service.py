@@ -528,12 +528,29 @@ async def _handle_say(connection_id: str, body: dict, agent_conn) -> None:
 
 
 async def _handle_join_conversation(connection_id: str, body: dict, agent_conn) -> None:
-    """Handle a join_conversation action — agent joins an existing active conversation."""
+    """Handle a join_conversation action — agent joins an existing active conversation.
+
+    Rejects with structured ``join_rejected`` events on:
+
+    * ``missing_conv_id`` — body has no conversation id.
+    * ``joiner_not_found`` — agent record missing from DDB.
+    * ``already_in_conversation`` / ``already_in_activity`` — joiner is busy.
+    * ``conversation_not_found`` — ``conv_id`` doesn't resolve.
+    * ``not_in_proximity`` — joiner is not at the conversation's location, or
+      is at the same location but >96px away from every existing participant.
+      Tier 1 #1.5: prevents an agent at the library from joining a
+      conversation at the cafe ("town is a place" pillar).
+    * ``conversation_not_joinable`` — service refused to add the joiner
+      (typically: conversation already finalized between read and write).
+    """
+    import math
+
     from core.services.daemon_mailbox import get_daemon_mailbox
 
     mailbox = get_daemon_mailbox()
     service = TownService()
     ws_manager = get_town_agent_ws_manager()
+    gs_client = get_game_server_client()
     joiner_id = agent_conn.agent_id
 
     def _reject(reason: str) -> None:
@@ -556,6 +573,57 @@ async def _handle_join_conversation(connection_id: str, body: dict, agent_conn) 
     if joiner.get("currentActivity"):
         _reject("already_in_activity")
         return
+
+    # Read the conversation BEFORE mutating — the proximity check below needs
+    # the existing participants list and the conversation's location, and we
+    # must reject without calling ``service.join_conversation`` so the
+    # participants list isn't dirtied.
+    conv = service.get_conversation_by_id(conv_id)
+    if not conv:
+        _reject("conversation_not_found")
+        return
+
+    # Proximity guard. Two layers:
+    #   1. Location-name equality. Conversations are bound to the location of
+    #      the initiator at creation time. Cross-location joins teleport an
+    #      agent into a private dialogue and break the spatial-presence model.
+    #   2. Within the same location, enforce the 96px / 3-tile radius rule
+    #      that ``_handle_chat`` uses. A location like ``plaza`` is large
+    #      enough that two agents can stand 5 tiles apart and not be in
+    #      audible range of each other's conversation.
+    #
+    # If cached x/y positions are available for the joiner AND at least one
+    # existing participant, we use them. Otherwise we fall back to location-
+    # name equality alone — same fail-OPEN-within-location / fail-CLOSED-
+    # across-location pattern as ``_handle_chat``.
+    joiner_location = joiner.get("currentLocation") or ""
+    conv_location = conv.get("location") or ""
+    if joiner_location != conv_location:
+        _reject("not_in_proximity")
+        return
+
+    existing_participants: list[str] = [pid for pid in conv.get("participants", []) if pid != joiner_id]
+    joiner_state = gs_client.get_cached_agent_state(joiner_id)
+    if joiner_state and existing_participants:
+        any_within_radius = False
+        any_participant_state_seen = False
+        jx = float(joiner_state.get("x", 0))
+        jy = float(joiner_state.get("y", 0))
+        for pid in existing_participants:
+            p_state = gs_client.get_cached_agent_state(pid)
+            if not p_state:
+                continue
+            any_participant_state_seen = True
+            dx = jx - float(p_state.get("x", 0))
+            dy = jy - float(p_state.get("y", 0))
+            if math.hypot(dx, dy) <= 96.0:  # PROXIMITY_THRESHOLD from agent_controller.gd
+                any_within_radius = True
+                break
+        if any_participant_state_seen and not any_within_radius:
+            _reject("not_in_proximity")
+            return
+        # If no participant cached state at all, the location-equality check
+        # above is the strongest guard available; fall through to join.
 
     updated = service.join_conversation(conv_id, joiner_id)
     if updated is None:

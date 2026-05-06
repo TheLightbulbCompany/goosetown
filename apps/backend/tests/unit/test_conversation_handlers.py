@@ -937,17 +937,216 @@ class TestHandleJoinConversation:
 
         sent: list = []
         svc_mock = MagicMock()
-        svc_mock.get_town_agent_by_id.return_value = _make_agent()
+        svc_mock.get_town_agent_by_id.return_value = _make_agent(current_location="cafe")
+        svc_mock.get_conversation_by_id.return_value = {
+            "id": "conv-1",
+            "location": "cafe",
+            "participants": ["agent-A", "agent-B"],
+            "status": "active",
+        }
         svc_mock.join_conversation.return_value = None  # service says nope
 
         with (
             patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
+            patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
         ):
             await _handle_join_conversation("conn-abc", {"conv_id": "conv-1"}, _make_agent_conn())
 
         assert sent[0][1]["reason"] == "conversation_not_joinable"
+
+    @pytest.mark.asyncio
+    async def test_cross_location_join_rejects(self):
+        """Joiner at a different location than the conversation must be
+        rejected with reason ``not_in_proximity``. Tier 1 #1.5 — the soak
+        finding was an agent at the library joining a conversation at the
+        cafe, which lets agents teleport into private dialogues and breaks
+        the "town is a place" pillar."""
+        from routers.town import _handle_join_conversation
+
+        sent: list = []
+        # Joiner is at the library; conversation is at the cafe.
+        joiner = _make_agent(agent_id="agent-C", current_location="library")
+        svc_mock = MagicMock()
+        svc_mock.get_town_agent_by_id.return_value = joiner
+        svc_mock.get_conversation_by_id.return_value = {
+            "id": "conv-1",
+            "location": "cafe",
+            "participants": ["agent-A", "agent-B"],
+            "status": "active",
+        }
+
+        with (
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
+            patch(SERVICE_PATH, return_value=svc_mock),
+            patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
+            patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
+        ):
+            await _handle_join_conversation(
+                "conn-C",
+                {"conv_id": "conv-1"},
+                _make_agent_conn(agent_id="agent-C"),
+            )
+
+        assert sent[0][1]["event"] == "join_rejected"
+        assert sent[0][1]["reason"] == "not_in_proximity"
+        # Critical: the conversation must NOT be mutated when the join is
+        # rejected — otherwise we add and need to remove.
+        svc_mock.join_conversation.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_same_location_but_far_away_rejects(self):
+        """Both joiner and existing participant are at the same location
+        marker (e.g. ``plaza``), but cached x/y positions are >96px apart.
+        The proximity radius rule has to apply on top of location equality
+        — locations are large enough that two agents can be in the same
+        zone but 5 tiles apart, well outside conversation range."""
+        from routers.town import _handle_join_conversation
+
+        sent: list = []
+        joiner = _make_agent(agent_id="agent-C", current_location="plaza")
+        svc_mock = MagicMock()
+        svc_mock.get_town_agent_by_id.return_value = joiner
+        svc_mock.get_conversation_by_id.return_value = {
+            "id": "conv-1",
+            "location": "plaza",
+            "participants": ["agent-A", "agent-B"],
+            "status": "active",
+        }
+
+        # Joiner at (0,0); both participants at (500,0) — way past 96px.
+        gs_mock = _make_gs_mock(
+            cached_states={
+                "agent-C": {"x": 0, "y": 0},
+                "agent-A": {"x": 500, "y": 0},
+                "agent-B": {"x": 500, "y": 64},
+            }
+        )
+
+        with (
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
+            patch(SERVICE_PATH, return_value=svc_mock),
+            patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
+            patch(GS_CLIENT_PATH, return_value=gs_mock),
+        ):
+            await _handle_join_conversation(
+                "conn-C",
+                {"conv_id": "conv-1"},
+                _make_agent_conn(agent_id="agent-C"),
+            )
+
+        assert sent[0][1]["reason"] == "not_in_proximity"
+        svc_mock.join_conversation.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_within_proximity_of_one_participant_succeeds(self):
+        """Joiner only needs to be within 96px of ONE existing participant —
+        joining a conversation in real life means walking up to one of the
+        speakers, not standing equidistant from all of them."""
+        from routers.town import _handle_join_conversation
+
+        sent: list = []
+        joiner = _make_agent(agent_id="agent-C", current_location="plaza", display_name="Charlie")
+        svc_mock = MagicMock()
+        svc_mock.get_town_agent_by_id.return_value = joiner
+        svc_mock.get_conversation_by_id.return_value = {
+            "id": "conv-1",
+            "location": "plaza",
+            "participants": ["agent-A", "agent-B"],
+            "status": "active",
+        }
+        svc_mock.join_conversation.return_value = {
+            "id": "conv-1",
+            "participants": ["agent-A", "agent-B", "agent-C"],
+        }
+
+        # Joiner near A, far from B — should succeed via A.
+        gs_mock = _make_gs_mock(
+            cached_states={
+                "agent-C": {"x": 0, "y": 0},
+                "agent-A": {"x": 64, "y": 0},  # ~64px → inside 96px
+                "agent-B": {"x": 5000, "y": 0},
+            }
+        )
+
+        with (
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
+            patch(SERVICE_PATH, return_value=svc_mock),
+            patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
+            patch(GS_CLIENT_PATH, return_value=gs_mock),
+        ):
+            await _handle_join_conversation(
+                "conn-C",
+                {"conv_id": "conv-1"},
+                _make_agent_conn(agent_id="agent-C", agent_name="Charlie"),
+            )
+
+        assert svc_mock.join_conversation.called
+        # No rejection event emitted.
+        assert not any(msg.get("event") == "join_rejected" for _, msg in sent)
+
+    @pytest.mark.asyncio
+    async def test_no_cached_positions_falls_back_to_location_equality(self):
+        """If cached positions are not available (e.g. game-server restart
+        before the next world_state broadcast), fall back to location-name
+        equality so the system fails OPEN within the same location and
+        CLOSED across locations. Mirrors the chat handler's fallback."""
+        from routers.town import _handle_join_conversation
+
+        sent: list = []
+        joiner = _make_agent(agent_id="agent-C", current_location="cafe", display_name="Charlie")
+        svc_mock = MagicMock()
+        svc_mock.get_town_agent_by_id.return_value = joiner
+        svc_mock.get_conversation_by_id.return_value = {
+            "id": "conv-1",
+            "location": "cafe",
+            "participants": ["agent-A", "agent-B"],
+            "status": "active",
+        }
+        svc_mock.join_conversation.return_value = {
+            "id": "conv-1",
+            "participants": ["agent-A", "agent-B", "agent-C"],
+        }
+
+        # No cached states — fall back to location equality. "cafe" == "cafe".
+        gs_mock = _make_gs_mock(cached_states={})
+
+        with (
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
+            patch(SERVICE_PATH, return_value=svc_mock),
+            patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
+            patch(GS_CLIENT_PATH, return_value=gs_mock),
+        ):
+            await _handle_join_conversation(
+                "conn-C",
+                {"conv_id": "conv-1"},
+                _make_agent_conn(agent_id="agent-C", agent_name="Charlie"),
+            )
+
+        assert svc_mock.join_conversation.called
+        assert not any(msg.get("event") == "join_rejected" for _, msg in sent)
+
+    @pytest.mark.asyncio
+    async def test_conversation_not_found_rejects(self):
+        """If the conv_id doesn't resolve, reject before any other checks."""
+        from routers.town import _handle_join_conversation
+
+        sent: list = []
+        svc_mock = MagicMock()
+        svc_mock.get_town_agent_by_id.return_value = _make_agent(current_location="cafe")
+        svc_mock.get_conversation_by_id.return_value = None
+
+        with (
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
+            patch(SERVICE_PATH, return_value=svc_mock),
+            patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
+            patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
+        ):
+            await _handle_join_conversation("conn-C", {"conv_id": "conv-1"}, _make_agent_conn())
+
+        assert sent[0][1]["reason"] == "conversation_not_found"
+        svc_mock.join_conversation.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_happy_path_notifies_others_and_acks_joiner(self):
@@ -956,7 +1155,15 @@ class TestHandleJoinConversation:
 
         sent: list = []
         svc_mock = MagicMock()
-        svc_mock.get_town_agent_by_id.return_value = _make_agent(agent_id="agent-C", display_name="Charlie")
+        svc_mock.get_town_agent_by_id.return_value = _make_agent(
+            agent_id="agent-C", display_name="Charlie", current_location="plaza"
+        )
+        svc_mock.get_conversation_by_id.return_value = {
+            "id": "conv-1",
+            "location": "plaza",
+            "participants": ["agent-A", "agent-B"],
+            "status": "active",
+        }
         svc_mock.join_conversation.return_value = {
             "id": "conv-1",
             "participants": ["agent-A", "agent-B", "agent-C"],
@@ -965,11 +1172,14 @@ class TestHandleJoinConversation:
         a_conn = SimpleNamespace(agent_id="agent-A", connection_id="conn-A")
         b_conn = SimpleNamespace(agent_id="agent-B", connection_id="conn-B")
         ws_mock = _make_ws_manager_mock({"agent-A": a_conn, "agent-B": b_conn})
+        # No cached positions → falls back to location equality (plaza==plaza).
+        gs_mock = _make_gs_mock(cached_states={})
 
         with (
             patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=ws_mock),
+            patch(GS_CLIENT_PATH, return_value=gs_mock),
         ):
             await _handle_join_conversation(
                 "conn-C",

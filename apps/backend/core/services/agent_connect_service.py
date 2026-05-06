@@ -206,8 +206,14 @@ async def _handle_agent_connect(request, ws_manager):
     # Seed the hot-path cache on AgentConnection so `_send_to_daemon` doesn't
     # re-read these fields from DynamoDB every 2s agent_state broadcast.
     # Source of truth is still DynamoDB; this mirror is maintained at the
-    # handful of lifecycle events that change either field.
-    ws_manager.update_onboarding_phase(agent_id, agent.get("onboardingPhase") or "alive")
+    # handful of lifecycle events that change either field. The phase
+    # mirror goes through ``restore_phase_from_db`` (NOT the monotonic
+    # ``advance_phase``) — DDB is the source of truth on connect, even if
+    # the cache happened to be warm with a different value from a prior
+    # session.
+    from core.services.phase_lattice import restore_phase_from_db
+
+    restore_phase_from_db(agent_id, agent.get("onboardingPhase") or "alive")
     ws_manager.update_conversation(agent_id, agent.get("currentConversationId") or "")
 
     # Connect agent to game server (shadow sprite fallback if no custom sprite)
