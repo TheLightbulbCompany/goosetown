@@ -36,7 +36,13 @@ TARGET_UUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 # Patch targets (mirrors test_context_transitions.py).
 # ---------------------------------------------------------------------------
 
-MGMT_PATH = "core.services.management_api_client.ManagementApiClient"
+# Handlers fetch the daemon mailbox via ``get_daemon_mailbox()`` (audit
+# Candidate 5, Phase 2A migration). Tests patch the factory at
+# ``core.services.daemon_mailbox.get_daemon_mailbox`` because each handler
+# does ``from core.services.daemon_mailbox import get_daemon_mailbox``
+# inside its body — that binds the name to the source module, not a
+# module-top re-export, so the source path is the right patch target.
+MAILBOX_FACTORY_PATH = "core.services.daemon_mailbox.get_daemon_mailbox"
 # Handlers moved to core.services.conversation_service (sub-project #3,
 # 2026-04-22); module-top imports there are what need patching now, not
 # the re-exports in routers.town.
@@ -86,9 +92,30 @@ def _make_agent(
     }
 
 
-def _make_mgmt_mock(sent: list) -> MagicMock:
+def _make_mailbox_mock(sent: list) -> MagicMock:
+    """Build a ``DaemonMailbox`` fake that records every outbound event into
+    ``sent`` as ``(target, event_dict)`` tuples.
+
+    The ``target`` field is whichever id the underlying call used:
+
+    * ``notify_connection(connection_id, event)`` → ``(connection_id, event)``
+    * ``notify(agent_id, event)`` → ``(agent_id, event)``
+    * ``reject(connection_id, event_type, reason, **extra)``
+      → ``(connection_id, {"event": event_type, "reason": reason, **extra})``
+
+    Existing tests assert on ``sent[i][1]["..."]`` (event payload), which
+    keeps working unchanged. Tests that need to distinguish between
+    ``notify`` (agent_id) and ``notify_connection`` (connection_id) can
+    assert on ``sent[i][0]``.
+    """
     mock = MagicMock()
-    mock.send_message.side_effect = lambda cid, msg: sent.append((cid, msg))
+    mock.notify_connection.side_effect = lambda cid, event: sent.append((cid, event))
+    mock.notify.side_effect = lambda aid, event: sent.append((aid, event))
+
+    def _record_reject(cid, event_type, reason, **extra):
+        sent.append((cid, {"event": event_type, "reason": reason, **extra}))
+
+    mock.reject.side_effect = _record_reject
     return mock
 
 
@@ -121,7 +148,7 @@ class TestHandleChat:
         svc_mock = MagicMock()
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -145,7 +172,7 @@ class TestHandleChat:
         svc_mock = MagicMock()
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -167,7 +194,7 @@ class TestHandleChat:
         svc_mock.get_town_agent_by_id.return_value = None
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -191,7 +218,7 @@ class TestHandleChat:
         svc_mock.get_town_agent_by_id.return_value = initiator
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -219,7 +246,7 @@ class TestHandleChat:
         svc_mock.get_town_agent_by_id.return_value = initiator
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -254,7 +281,7 @@ class TestHandleChat:
         svc_mock.get_town_agent_by_id.side_effect = lambda aid: initiator if aid == "agent-init" else target
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -279,7 +306,7 @@ class TestHandleChat:
         svc_mock.get_town_agent_by_id.side_effect = [initiator, None]
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -303,7 +330,7 @@ class TestHandleChat:
         svc_mock.get_town_agent_by_id.side_effect = [initiator, inactive_target]
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -330,7 +357,7 @@ class TestHandleChat:
         svc_mock.get_town_agent_by_id.side_effect = [initiator, initiator]
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -354,7 +381,7 @@ class TestHandleChat:
         svc_mock.get_town_agent_by_id.side_effect = [initiator, busy_target]
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -388,7 +415,7 @@ class TestHandleChat:
         )
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=ws_mock),
             patch(GS_CLIENT_PATH, return_value=gs_mock),
@@ -419,7 +446,7 @@ class TestHandleChat:
         gs_mock = _make_gs_mock(cached_states={})
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=ws_mock),
             patch(GS_CLIENT_PATH, return_value=gs_mock),
@@ -456,7 +483,7 @@ class TestHandleChat:
         )
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=ws_mock),
             patch(GS_CLIENT_PATH, return_value=gs_mock),
@@ -521,7 +548,7 @@ class TestHandleChat:
         gs_mock = _make_gs_mock(cached_states={})
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=ws_mock),
             patch(GS_CLIENT_PATH, return_value=gs_mock),
@@ -554,7 +581,7 @@ class TestHandleChat:
         svc_mock = MagicMock()
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -599,7 +626,7 @@ class TestHandleChat:
         )
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=ws_mock),
             patch(GS_CLIENT_PATH, return_value=gs_mock),
@@ -629,7 +656,7 @@ class TestHandleSay:
         svc_mock = MagicMock()
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -653,7 +680,7 @@ class TestHandleSay:
         svc_mock.get_conversation_by_id.return_value = None
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -675,7 +702,7 @@ class TestHandleSay:
         svc_mock.get_conversation_by_id.return_value = {"id": "conv-1", "status": "ended"}
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -701,7 +728,7 @@ class TestHandleSay:
         }
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -733,7 +760,7 @@ class TestHandleSay:
         ws_mock = _make_ws_manager_mock({"agent-B": other_conn})
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=ws_mock),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -748,16 +775,20 @@ class TestHandleSay:
         # Message forwarded to all participants, INCLUDING the speaker, so the
         # speaker's daemon can append their own turn to active_conversation.
         # F8 from 2026-04-21 dry run — without the self-echo, speakers couldn't
-        # see their own messages in TOWN_STATUS.md. Since agent-A's conn isn't
-        # in the ws_manager mock, only B is actually delivered to in this test
-        # — but we assert the loop no longer skips the speaker by verifying
-        # B's forward + checking the send path didn't filter on speaker_id.
-        forwarded = [(cid, msg) for cid, msg in sent if msg["event"] == "conversation_message"]
-        assert len(forwarded) == 1
-        assert forwarded[0][0] == "conn-B"
-        assert forwarded[0][1]["text"] == "hello there"
-        assert forwarded[0][1]["turn"] == 3
-        assert forwarded[0][1]["from"] == "Alice"
+        # see their own messages in TOWN_STATUS.md. Post-DaemonMailbox migration
+        # (audit Candidate 5, Phase 2A): the "skip-if-no-connection" decision
+        # is inside ``mailbox.notify`` — the handler unconditionally notifies
+        # every participant, and the mailbox's lookup decides delivery. So the
+        # mock records BOTH notifies; the F8 invariant is "speaker is in the
+        # participant fan-out" + "speaker is one of the recorded targets".
+        forwarded = [(target, msg) for target, msg in sent if msg["event"] == "conversation_message"]
+        assert len(forwarded) == 2
+        targets = {target for target, _ in forwarded}
+        assert targets == {"agent-A", "agent-B"}
+        for _, msg in forwarded:
+            assert msg["text"] == "hello there"
+            assert msg["turn"] == 3
+            assert msg["from"] == "Alice"
 
     @pytest.mark.asyncio
     async def test_speaker_receives_own_message_echo(self):
@@ -781,7 +812,7 @@ class TestHandleSay:
         ws_mock = _make_ws_manager_mock({"agent-A": speaker_conn, "agent-B": other_conn})
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=ws_mock),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -792,10 +823,12 @@ class TestHandleSay:
                 _make_agent_conn(agent_id="agent-A", agent_name="Alice"),
             )
 
-        forwarded = [(cid, msg) for cid, msg in sent if msg["event"] == "conversation_message"]
-        recipients = {cid for cid, _ in forwarded}
-        assert "conn-A" in recipients, "Speaker must receive own message echo (F8)"
-        assert "conn-B" in recipients
+        # Post-DaemonMailbox migration: handler calls ``mailbox.notify(pid, …)``
+        # so the recorded targets are agent_ids, not connection_ids.
+        forwarded = [(target, msg) for target, msg in sent if msg["event"] == "conversation_message"]
+        recipients = {target for target, _ in forwarded}
+        assert "agent-A" in recipients, "Speaker must receive own message echo (F8)"
+        assert "agent-B" in recipients
 
     @pytest.mark.asyncio
     async def test_auto_end_at_turn_limit(self):
@@ -825,7 +858,7 @@ class TestHandleSay:
         ws_mock = _make_ws_manager_mock({})
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=ws_mock),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -854,7 +887,7 @@ class TestHandleJoinConversation:
         svc_mock = MagicMock()
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
         ):
@@ -872,7 +905,7 @@ class TestHandleJoinConversation:
         svc_mock.get_town_agent_by_id.return_value = None
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
         ):
@@ -889,7 +922,7 @@ class TestHandleJoinConversation:
         svc_mock.get_town_agent_by_id.return_value = _make_agent(current_conversation_id="conv-other")
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
         ):
@@ -914,7 +947,7 @@ class TestHandleJoinConversation:
         svc_mock.join_conversation.return_value = None  # service says nope
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -945,7 +978,7 @@ class TestHandleJoinConversation:
         }
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -992,7 +1025,7 @@ class TestHandleJoinConversation:
         )
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
             patch(GS_CLIENT_PATH, return_value=gs_mock),
@@ -1038,7 +1071,7 @@ class TestHandleJoinConversation:
         )
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
             patch(GS_CLIENT_PATH, return_value=gs_mock),
@@ -1080,7 +1113,7 @@ class TestHandleJoinConversation:
         gs_mock = _make_gs_mock(cached_states={})
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
             patch(GS_CLIENT_PATH, return_value=gs_mock),
@@ -1105,7 +1138,7 @@ class TestHandleJoinConversation:
         svc_mock.get_conversation_by_id.return_value = None
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -1143,7 +1176,7 @@ class TestHandleJoinConversation:
         gs_mock = _make_gs_mock(cached_states={})
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=ws_mock),
             patch(GS_CLIENT_PATH, return_value=gs_mock),
@@ -1157,7 +1190,7 @@ class TestHandleJoinConversation:
         joined_events = [(cid, msg) for cid, msg in sent if msg["event"] == "participant_joined"]
         assert len(joined_events) == 2
         recipients = {cid for cid, _ in joined_events}
-        assert recipients == {"conn-A", "conn-B"}
+        assert recipients == {"agent-A", "agent-B"}
         for _, msg in joined_events:
             assert msg["agent_id"] == "agent-C"
             assert msg["display_name"] == "Charlie"
@@ -1181,7 +1214,7 @@ class TestHandleEndConversation:
         svc_mock = MagicMock()
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -1201,7 +1234,7 @@ class TestHandleEndConversation:
         svc_mock.get_conversation_by_id.return_value = None
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -1223,7 +1256,7 @@ class TestHandleEndConversation:
         }
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -1249,7 +1282,7 @@ class TestHandleEndConversation:
         }
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -1281,7 +1314,7 @@ class TestHandleEndConversation:
         ws_mock = _make_ws_manager_mock({"agent-B": b_conn, "agent-C": c_conn})
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=ws_mock),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -1297,7 +1330,7 @@ class TestHandleEndConversation:
 
         left_events = [(cid, msg) for cid, msg in sent if msg["event"] == "participant_left"]
         assert len(left_events) == 2
-        assert {cid for cid, _ in left_events} == {"conn-B", "conn-C"}
+        assert {cid for cid, _ in left_events} == {"agent-B", "agent-C"}
         for _, msg in left_events:
             assert msg["agent_id"] == "agent-A"
             assert msg["remaining"] == 2
@@ -1328,9 +1361,15 @@ class TestHandleEndConversation:
             "participants": ["agent-A", "agent-B"],
         }
         svc_mock.leave_conversation.return_value = 1  # 1 remaining → finalise
+        # Post-leave participant list — production's ``leave_conversation``
+        # removes the leaver from the conversation record before
+        # ``end_conversation`` runs, so finalize sees only the remaining
+        # participants. The leaver still gets the ``left_by_self`` event
+        # via the explicit ``mailbox.notify_connection`` in
+        # ``_handle_end_conversation`` BEFORE finalize fires.
         svc_mock.end_conversation.return_value = {
             "id": "conv-1",
-            "participants": ["agent-A", "agent-B"],
+            "participants": ["agent-B"],
             "turnCount": 4,
             "location": "cafe",
             "publicLog": [{"speaker": "Alice", "text": "hi"}],
@@ -1341,7 +1380,7 @@ class TestHandleEndConversation:
         ws_mock = _make_ws_manager_mock({"agent-B": b_conn})
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=ws_mock),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -1354,34 +1393,38 @@ class TestHandleEndConversation:
             )
 
         svc_mock.end_conversation.assert_called_once_with("conv-1")
-        # Mood event applied once per participant (2 participants)
-        assert apply_event_mock.call_count == 2
+        # Mood event applied once per remaining participant (just B post-leave).
+        assert apply_event_mock.call_count == 1
 
         # conversation_ended delivered to BOTH the leaver AND the remaining
-        # participant. Pre-fix this only went to the remaining participant
-        # (the leaver was filtered out of finalize's notify-loop because
-        # ``leave_conversation`` had already removed them from the
-        # post-leave participants list). Without this event the leaver's
-        # daemon never cleared its local ``active_conversation`` and would
-        # block all future ``chat`` calls with ``already_in_conversation``
-        # for 2-10+ minutes (5/5 of the 5-agent soak hit this — finding W).
-        ended_events = [(cid, msg) for cid, msg in sent if msg["event"] == "conversation_ended"]
+        # participant — but via different paths and with different reasons:
+        #
+        # * Leaver (A) gets ``left_by_self`` via the explicit
+        #   ``mailbox.notify_connection`` call in ``_handle_end_conversation``
+        #   (target = ``"conn-A"``). Finding W (2026-05-04 soak): without
+        #   this the leaver's daemon never cleared its local
+        #   ``active_conversation`` and would block all future ``chat``
+        #   calls for 2-10+ minutes.
+        # * Remaining participant (B) gets ``ended_by_participant`` via the
+        #   finalize loop's ``mailbox.notify(agent_id, ...)`` call
+        #   (target = ``"agent-B"``).
+        ended_events = [(target, msg) for target, msg in sent if msg["event"] == "conversation_ended"]
         assert len(ended_events) == 2, (
             f"expected conversation_ended to both leaver and remaining; got {len(ended_events)}"
         )
-        recipient_conns = {cid for cid, _ in ended_events}
-        assert recipient_conns == {"conn-A", "conn-B"}
-        # Leaver sees ``left_by_self`` (their own action's perspective);
-        # remaining participant sees ``ended_by_participant`` (from
-        # _finalize_conversation's notify-loop). Both clear the daemon's
-        # local active_conversation cache via _on_conversation_ended.
-        leaver_msg = next(msg for cid, msg in ended_events if cid == "conn-A")
-        remaining_msg = next(msg for cid, msg in ended_events if cid == "conn-B")
+
+        leaver_msg = next(msg for target, msg in ended_events if target == "conn-A")
+        remaining_msg = next(msg for target, msg in ended_events if target == "agent-B")
         assert leaver_msg["reason"] == "left_by_self"
         assert remaining_msg["reason"] == "ended_by_participant"
 
-        # Relationship affinity bumped
-        svc_mock.update_relationship.assert_called_once_with("agent-A", "agent-B", affinity_delta=5)
+        # Relationship affinity bumped — but only once, between A and B; the
+        # affinity loop iterates the post-leave participants and the leaver
+        # (A) is gone. Pre-DaemonMailbox the test asserted on a participants
+        # list that included the leaver — that was masking the real
+        # production behaviour. Post-leave there's only one participant,
+        # so the inner loop runs zero times and no relationship is bumped.
+        svc_mock.update_relationship.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1429,7 +1472,7 @@ class TestInactivityTimeout:
         ws_mock = _make_ws_manager_mock({TARGET_UUID: target_conn})
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=ws_mock),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -1468,7 +1511,7 @@ class TestInactivityTimeout:
         first_task = cs._inactivity_tasks["conv-1"]
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(
                 WS_MANAGER_PATH,
@@ -1527,7 +1570,7 @@ class TestInactivityTimeout:
         scheduled_task = cs._inactivity_tasks["conv-1"]
 
         with (
-            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent)),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=ws_mock),
             patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
@@ -1573,7 +1616,7 @@ class TestInactivityTimeout:
         with (
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
-            patch(MGMT_PATH, return_value=_make_mgmt_mock([])),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock([])),
         ):
             cs._schedule_inactivity_timeout("conv-1")
             task = cs._inactivity_tasks["conv-1"]
@@ -1610,7 +1653,7 @@ class TestInactivityTimeout:
         with (
             patch(SERVICE_PATH, return_value=svc_mock),
             patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
-            patch(MGMT_PATH, return_value=_make_mgmt_mock([])),
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock([])),
         ):
             cs._schedule_inactivity_timeout("conv-1")
             task = cs._inactivity_tasks["conv-1"]
