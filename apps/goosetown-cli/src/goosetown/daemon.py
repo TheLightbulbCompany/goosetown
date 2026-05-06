@@ -58,46 +58,35 @@ def _is_auth_failure(exc: BaseException) -> bool:
 # destination from `_pending_move_destination` when it's set.
 # ---------------------------------------------------------------------------
 
-_MARKER_NORMALIZE: frozenset[str] = frozenset({"player_spawn", "exit"})
+# Marker normalization + mood/activity formatters live in ``goosetown.render``
+# now (audit Candidates 1 + 10, Phase 1). Re-exported here so existing imports
+# from ``goosetown.daemon`` keep working — the public CLI surface didn't
+# change. Phase 2 will eventually move the four inline status templates here
+# too, at which point the daemon shrinks further.
+from goosetown.render import (  # noqa: E402, F401
+    MARKER_NORMALIZE as _MARKER_NORMALIZE,
+)
+from goosetown.render import (  # noqa: E402
+    mood_label,
+    normalize_marker,
+    render_activity,
+    render_mood,
+    render_nearby_text,
+    render_pending_messages,
+)
 
-
-def mood_label(mood: int) -> str:
-    """Convert numeric mood (-50..+50) to a human-readable label.
-
-    Mirrors ``apps/backend/core/services/town_mood_engine.mood_label``.
-    Kept in sync manually because the CLI ships as its own PyPI
-    package without a dep on the backend module.
-    """
-    if mood <= -30:
-        return "miserable"
-    if mood <= -10:
-        return "sad"
-    if mood <= 10:
-        return "neutral"
-    if mood <= 30:
-        return "happy"
-    return "elated"
-
-
-def render_mood(mood) -> str:  # noqa: ANN001 — accepts int OR pre-labeled string
-    """Render mood for TOWN_STATUS.md so agents see meaning, not raw numbers.
-
-    Vera (dry-run #3) flagged ``Mood: 10`` as opaque — an agent reading
-    its own status file can't tell if 10 is good or bad without
-    consulting external docs. Render as ``happy (10)``. Falls back to
-    the raw value as a string for non-numeric inputs (defensive).
-    """
-    if isinstance(mood, (int, float)):
-        return f"{mood_label(int(mood))} ({int(mood)})"
-    return str(mood) if mood else "neutral"
-
-
-def render_activity(activity) -> str:  # noqa: ANN001
-    """Render activity, defaulting blank/empty/None to ``"idle"`` so the
-    Activity field in TOWN_STATUS.md is never blank (Vera-finding R)."""
-    if not activity:
-        return "idle"
-    return str(activity)
+# Public aliases — keep the leading-underscore name available for any
+# external caller that imported it. The ``MARKER_NORMALIZE`` (no leading
+# underscore) name is the new canonical one in ``goosetown.render``.
+__all__ = [
+    "_MARKER_NORMALIZE",
+    "mood_label",
+    "normalize_marker",
+    "render_activity",
+    "render_mood",
+    "render_nearby_text",
+    "render_pending_messages",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +176,9 @@ class TownDaemon:
         # Owner DM state
         self._owner_messages_buffer: list[dict] = []
         self._owner_flush_handle = None  # asyncio scheduled handle
-        self._pending_owner_messages: list[dict] = []  # consumed by _handle_world_update
+        self._pending_owner_messages: list[
+            dict
+        ] = []  # consumed by _handle_world_update
 
     # ------------------------------------------------------------------
     # File I/O helpers
@@ -198,7 +189,7 @@ class TownDaemon:
         timestamp = datetime.now().strftime("%H:%M")
         self._events.append(f"[{timestamp}] {event_line}")
         if len(self._events) > self._max_events:
-            self._events = self._events[-self._max_events:]
+            self._events = self._events[-self._max_events :]
         self._write_events()
 
     def _write_events(self) -> None:
@@ -297,7 +288,9 @@ class TownDaemon:
         elif event == "error":
             import logging
 
-            logging.getLogger("town_daemon").warning("Server error: %s", data.get("message", "unknown"))
+            logging.getLogger("town_daemon").warning(
+                "Server error: %s", data.get("message", "unknown")
+            )
             self._append_event(f"ERROR {data.get('message', '?')}")
 
         self._write_state()
@@ -382,7 +375,9 @@ class TownDaemon:
             "participants": [with_display],
             "turns": [{"speaker": "you", "text": opening}] if opening else [],
         }
-        self._append_event(f'CHAT_STARTED with {with_display} — "{opening}" (conv_id: {conv_id})')
+        self._append_event(
+            f'CHAT_STARTED with {with_display} — "{opening}" (conv_id: {conv_id})'
+        )
         # If a `act chat` invocation is awaiting an outcome, settle the future.
         if self._chat_outcome is not None and not self._chat_outcome.done():
             self._chat_outcome.set_result(
@@ -430,7 +425,9 @@ class TownDaemon:
             self.state["active_conversation"] = {
                 "conv_id": conv_id,
                 "participants": [data.get("from", "?")],
-                "turns": [{"speaker": data.get("from", "?"), "text": data.get("message", "")}],
+                "turns": [
+                    {"speaker": data.get("from", "?"), "text": data.get("message", "")}
+                ],
             }
             self._append_event(
                 f'CHAT_INVITE from {data.get("from", "?")} — "{data.get("message", "")}" (conv_id: {conv_id})'
@@ -438,7 +435,9 @@ class TownDaemon:
         else:
             active = self.state.get("active_conversation", {})
             if active.get("conv_id") == conv_id:
-                active.setdefault("turns", []).append({"speaker": data.get("from", "?"), "text": data.get("text", "")})
+                active.setdefault("turns", []).append(
+                    {"speaker": data.get("from", "?"), "text": data.get("text", "")}
+                )
                 participants = active.setdefault("participants", [])
                 speaker = data.get("from")
                 if speaker and speaker not in participants:
@@ -447,7 +446,9 @@ class TownDaemon:
                 self.state["active_conversation"] = {
                     "conv_id": conv_id,
                     "participants": [data.get("from", "?")],
-                    "turns": [{"speaker": data.get("from", "?"), "text": data.get("text", "")}],
+                    "turns": [
+                        {"speaker": data.get("from", "?"), "text": data.get("text", "")}
+                    ],
                 }
             self._append_event(
                 f'CHAT_MESSAGE {data.get("from", "?")} — "{data.get("text", "")}" '
@@ -467,7 +468,9 @@ class TownDaemon:
         if not text:
             return
 
-        self._append_owner_message(text=text, timestamp=timestamp, message_id=message_id)
+        self._append_owner_message(
+            text=text, timestamp=timestamp, message_id=message_id
+        )
 
         self._owner_messages_buffer.append({"text": text, "timestamp": timestamp})
 
@@ -492,7 +495,9 @@ class TownDaemon:
         if self.state:
             self._handle_world_update(self.state)
 
-    def _append_owner_message(self, *, text: str, timestamp: int, message_id: str) -> None:
+    def _append_owner_message(
+        self, *, text: str, timestamp: int, message_id: str
+    ) -> None:
         """Append a single owner message to OWNER_MESSAGES.md, capped at last 50."""
         if not self._workspace_path or not self._workspace_path.exists():
             return
@@ -653,18 +658,18 @@ class TownDaemon:
         """
         reason = data.get("reason", data.get("event", "unknown"))
         reported_destination = data.get("destination", "?")
-        normalized_destination = reported_destination
-        if (
-            reported_destination in _MARKER_NORMALIZE
-            and self._pending_move_destination
-            and self._pending_move_destination not in _MARKER_NORMALIZE
-        ):
-            normalized_destination = self._pending_move_destination
+        normalized_destination = normalize_marker(
+            reported_destination, self._pending_move_destination
+        )
 
         self._append_event(f"MOVE_REJECTED {normalized_destination}: {reason}")
         if self._move_outcome is not None and not self._move_outcome.done():
             self._move_outcome.set_result(
-                {"status": "rejected", "reason": reason, "destination": normalized_destination}
+                {
+                    "status": "rejected",
+                    "reason": reason,
+                    "destination": normalized_destination,
+                }
             )
         if self._arrived_event is not None:
             self._arrived_event.set()
@@ -682,18 +687,13 @@ class TownDaemon:
         """
         reported_location = data.get("location", "")
         # Normalize internal navmesh markers (player_spawn, exit) to the
-        # user-requested destination — these are closest-marker artifacts,
-        # not meaningful location labels for an agent reading their state.
-        # Vera-finding N: arrival into the library reported `location: "exit"`
-        # because the library scene's nearest marker happens to be the exit
-        # marker.
-        normalized_location = reported_location
-        if (
-            reported_location in _MARKER_NORMALIZE
-            and self._pending_move_destination
-            and self._pending_move_destination not in _MARKER_NORMALIZE
-        ):
-            normalized_location = self._pending_move_destination
+        # user-requested destination — see ``goosetown.render.normalize_marker``
+        # for the 3-clause rule. Vera-finding N: arrival into the library
+        # reported ``location: "exit"`` because the library scene's
+        # nearest marker happens to be the exit marker.
+        normalized_location = normalize_marker(
+            reported_location, self._pending_move_destination
+        )
 
         if "agent" in self.state:
             self.state["agent"]["activity"] = "idle"
@@ -752,12 +752,16 @@ class TownDaemon:
             wake_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
             if now >= wake_dt:
-                print(f"[daemon] Alarm time passed ({wake_time_str} {tz_str}), waking up now")
+                print(
+                    f"[daemon] Alarm time passed ({wake_time_str} {tz_str}), waking up now"
+                )
                 alarm_path.unlink(missing_ok=True)
                 return
 
             sleep_seconds = (wake_dt - now).total_seconds()
-            print(f"[daemon] Sleeping until {wake_time_str} {tz_str} ({sleep_seconds:.0f}s remaining)")
+            print(
+                f"[daemon] Sleeping until {wake_time_str} {tz_str} ({sleep_seconds:.0f}s remaining)"
+            )
             await asyncio.sleep(sleep_seconds)
             alarm_path.unlink(missing_ok=True)
             print("[daemon] Alarm fired, waking up and reconnecting")
@@ -781,7 +785,9 @@ class TownDaemon:
         now = time.time()
 
         nearby = data.get("nearby_agents", [])
-        prev_nearby_ids = {a.get("agent_id") for a in self.state.get("nearby", []) if a.get("agent_id")}
+        prev_nearby_ids = {
+            a.get("agent_id") for a in self.state.get("nearby", []) if a.get("agent_id")
+        }
         curr_nearby_ids = {a.get("agent_id") for a in nearby if a.get("agent_id")}
         nearby_changed = curr_nearby_ids != prev_nearby_ids
 
@@ -850,12 +856,11 @@ class TownDaemon:
         if "you" in data:
             you = data["you"]
             reported_location = you.get("location", "") if isinstance(you, dict) else ""
-            if (
-                reported_location in _MARKER_NORMALIZE
-                and self._pending_move_destination
-                and self._pending_move_destination not in _MARKER_NORMALIZE
-            ):
-                you = {**you, "location": self._pending_move_destination}
+            normalized_location = normalize_marker(
+                reported_location, self._pending_move_destination
+            )
+            if normalized_location != reported_location and isinstance(you, dict):
+                you = {**you, "location": normalized_location}
             self.state["agent"] = you
         if "nearby_agents" in data:
             self.state["nearby"] = data["nearby_agents"]
@@ -880,30 +885,8 @@ class TownDaemon:
         # loop. `_handle_world_update` only fires when the agent is in the
         # world, so writing live status is correct regardless of phase.
 
-        if nearby:
-            nearby_text = ", ".join(
-                f"{a.get('display_name', a.get('name', '?'))} ({a.get('activity', 'idle')})" for a in nearby
-            )
-        else:
-            nearby_text = "no one"
-
-        if pending:
-            msg_lines = []
-            for msg in pending:
-                ev = msg.get("event", "")
-                if ev == "conversation_invite":
-                    msg_lines.append(
-                        f'- **{msg.get("from", "?")}** wants to chat: "{msg.get("message", "")}" '
-                        f"(conv_id: {msg.get('conv_id', '?')})"
-                    )
-                elif ev == "conversation_message":
-                    msg_lines.append(
-                        f'- **{msg.get("from", "?")}** says: "{msg.get("text", "")}" '
-                        f"(conv_id: {msg.get('conv_id', '?')}, turn {msg.get('turn', '?')})"
-                    )
-            pending_text = "\n".join(msg_lines) if msg_lines else "None"
-        else:
-            pending_text = "None"
+        nearby_text = render_nearby_text(nearby)
+        pending_text = render_pending_messages(pending)
 
         summary = data.get("context_summary", "")
 
@@ -952,7 +935,9 @@ class TownDaemon:
 
             owner_block = ""
             if self._pending_owner_messages:
-                quoted = "\n".join(f"> {m['text']}" for m in self._pending_owner_messages)
+                quoted = "\n".join(
+                    f"> {m['text']}" for m in self._pending_owner_messages
+                )
                 owner_block = (
                     "\n## Your owner just said:\n\n"
                     f"{quoted}\n\n"
@@ -989,9 +974,9 @@ class TownDaemon:
                     "- `goosetown act move exit` — Leave apartment and return to town\n\n"
                 )
 
-            available_activities = data.get("available_activities") or LOCATION_ACTIVITIES.get(
-                canonical_location(location), []
-            )
+            available_activities = data.get(
+                "available_activities"
+            ) or LOCATION_ACTIVITIES.get(canonical_location(location), [])
             if available_activities:
                 status += "**What you can do here:**\n"
                 for act in available_activities:
@@ -1005,7 +990,9 @@ class TownDaemon:
                         act_desc = act_name
                         act_duration = "?"
                         act_prompt = ""
-                    status += f"- `goosetown act {act_name}` — {act_desc} (~{act_duration}s)"
+                    status += (
+                        f"- `goosetown act {act_name}` — {act_desc} (~{act_duration}s)"
+                    )
                     if act_prompt:
                         status += f"\n  *{act_prompt}*"
                     status += "\n"
@@ -1018,9 +1005,7 @@ class TownDaemon:
                     agent_id = a.get("agent_id", "")
                     display = a.get("name", a.get("display_name", "unknown"))
                     if agent_id:
-                        nearby_chat_options += (
-                            f"- `goosetown act chat {agent_id} <message>` — Talk to {display}\n"
-                        )
+                        nearby_chat_options += f"- `goosetown act chat {agent_id} <message>` — Talk to {display}\n"
                 nearby_chat_options += "\n"
 
             nearby_convs: list = self.state.get("nearby_conversations", [])
@@ -1030,11 +1015,15 @@ class TownDaemon:
                 for nc in nearby_convs[:3]:
                     names = ", ".join(nc.get("participants", [])[:5])
                     last = nc.get("last_message", {})
-                    last_text = last.get("text", "")[:60] if isinstance(last, dict) else ""
+                    last_text = (
+                        last.get("text", "")[:60] if isinstance(last, dict) else ""
+                    )
                     nearby_conv_block += f"- {names} are chatting"
                     if last_text:
                         nearby_conv_block += f' — last: "{last_text}"'
-                    nearby_conv_block += f" — `goosetown act join_conversation {nc.get('conv_id')}`\n"
+                    nearby_conv_block += (
+                        f" — `goosetown act join_conversation {nc.get('conv_id')}`\n"
+                    )
                 nearby_conv_block += "\n"
 
             # The "Start a conversation" menu only renders when nearby is
@@ -1090,8 +1079,12 @@ class TownDaemon:
         mood = agent.get("mood")
         energy = agent.get("energy")
         if mood is not None and energy is not None:
-            if self._prev_mood is not None and (mood != self._prev_mood or energy != self._prev_energy):
-                self._append_event(f"MOOD {self._prev_mood} → {mood} | ENERGY {self._prev_energy} → {energy}")
+            if self._prev_mood is not None and (
+                mood != self._prev_mood or energy != self._prev_energy
+            ):
+                self._append_event(
+                    f"MOOD {self._prev_mood} → {mood} | ENERGY {self._prev_energy} → {energy}"
+                )
             self._prev_mood = mood
             self._prev_energy = energy
 
@@ -1107,7 +1100,9 @@ class TownDaemon:
         try:
             import websockets
         except ImportError:
-            log.error("websockets package not installed. Install with: pip install websockets")
+            log.error(
+                "websockets package not installed. Install with: pip install websockets"
+            )
             sys.exit(1)
 
         url = f"{self._ws_url}?type=agent&token={self._token}"
@@ -1119,10 +1114,14 @@ class TownDaemon:
         }
         auth_header = ("Authorization", f"Bearer {self._token}")
         try:
-            self.ws = await websockets.connect(url, additional_headers=[auth_header], **connect_kwargs)
+            self.ws = await websockets.connect(
+                url, additional_headers=[auth_header], **connect_kwargs
+            )
         except TypeError:
             try:
-                self.ws = await websockets.connect(url, extra_headers=[auth_header], **connect_kwargs)
+                self.ws = await websockets.connect(
+                    url, extra_headers=[auth_header], **connect_kwargs
+                )
             except Exception as exc:
                 if _is_auth_failure(exc):
                     raise AuthFailure(str(exc)) from exc
@@ -1157,7 +1156,9 @@ class TownDaemon:
                 try:
                     raw = await asyncio.wait_for(self.ws.recv(), timeout=recv_timeout)
                 except asyncio.TimeoutError:
-                    log.warning("No messages received in %.0fs — reconnecting", recv_timeout)
+                    log.warning(
+                        "No messages received in %.0fs — reconnecting", recv_timeout
+                    )
                     raise ConnectionError("Inactivity timeout")
                 try:
                     data = json.loads(raw)
@@ -1216,7 +1217,9 @@ class TownDaemon:
                 # Reject move synchronously so the agent's own decision
                 # loop doesn't have to know to gate on activity.
                 if self.state.get("active_conversation"):
-                    active_conv_id = self.state["active_conversation"].get("conv_id", "?")
+                    active_conv_id = self.state["active_conversation"].get(
+                        "conv_id", "?"
+                    )
                     return {
                         "status": "rejected",
                         "action": "move",
@@ -1312,7 +1315,9 @@ class TownDaemon:
                         }
                     )
                 )
-            self._alarm_file.write_text(json.dumps({"wake_time": wake_time, "timezone": tz}))
+            self._alarm_file.write_text(
+                json.dumps({"wake_time": wake_time, "timezone": tz})
+            )
             self._write_status(
                 "# GooseTown Status\n\n"
                 f"You are sleeping. Wake alarm: {wake_time} {tz}.\n"
@@ -1403,7 +1408,9 @@ class TownDaemon:
             try:
                 await asyncio.wait_for(self._initial_state_event.wait(), timeout=60.0)
             except asyncio.TimeoutError:
-                log.warning("Timeout waiting for initial connected event (60s) — will retry")
+                log.warning(
+                    "Timeout waiting for initial connected event (60s) — will retry"
+                )
                 ws_task.cancel()
                 return
 
@@ -1415,7 +1422,9 @@ class TownDaemon:
                 keepalive_task.cancel()
                 socket_task.cancel()
                 try:
-                    await asyncio.gather(keepalive_task, socket_task, return_exceptions=True)
+                    await asyncio.gather(
+                        keepalive_task, socket_task, return_exceptions=True
+                    )
                 except Exception:
                     pass
         finally:
@@ -1444,10 +1453,16 @@ def daemon_main() -> None:
     try:
         import websockets  # noqa: F401
     except ImportError:
-        print(json.dumps({"error": "websockets not installed. Run: pip install websockets"}))
+        print(
+            json.dumps(
+                {"error": "websockets not installed. Run: pip install websockets"}
+            )
+        )
         sys.exit(1)
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
+    )
     log = logging.getLogger("town_daemon")
 
     ws_url = os.environ.get("TOWN_WS_URL", "")
