@@ -462,10 +462,21 @@ class PixelLabService:
                 results[name] = job_ids
 
                 if job_ids:
+                    # Cap signup-animation polling at 5 min (30 × 10s) instead
+                    # of the default 10 min. The agent is already operational
+                    # in "static" phase by the time Phase C runs (Phase B
+                    # connects them to the game server with a static sprite),
+                    # so animations are a nice-to-have, not a blocker. A 10-min
+                    # wait left the user staring at "walk (1/3) 0/4 done" in
+                    # TOWN_STATUS.md when PixelLab itself was slow — surfaced
+                    # by the 2026-05-06 integration test (celeste + atlas
+                    # both stalled). If the cap expires, ``advance_phase`` to
+                    # "alive" still happens with the static sprite.
                     await self.wait_for_jobs(
                         job_ids,
                         on_progress=on_progress,
                         progress_label=progress_label,
+                        max_attempts=30,
                     )
             except Exception:
                 logger.exception(
