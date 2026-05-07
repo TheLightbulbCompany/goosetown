@@ -16,7 +16,13 @@ from core.dynamo import users_table
 from core.quota import QuotaExceeded
 
 AGENT_QUOTA: int = 5
-SPRITE_QUOTA_DAILY: int = 10
+# Bumped 10 → 30 on 2026-05-07 after the multi-agent integration test
+# session exhausted the 10/day cap inside a single evening with one user.
+# A power user with ~5 agents tweaking appearances or a small dev session
+# blows through 10 too easily. 30 still bounds PixelLab spend per user
+# while leaving headroom for legitimate iteration. Re-tune with launch
+# usage data.
+SPRITE_QUOTA_DAILY: int = 30
 SPRITE_QUOTA_WINDOW_MS: int = 24 * 60 * 60 * 1000
 
 

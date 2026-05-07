@@ -169,5 +169,6 @@ def test_quota_constants():
     from core.services.user_service import AGENT_QUOTA, SPRITE_QUOTA_DAILY, SPRITE_QUOTA_WINDOW_MS
 
     assert AGENT_QUOTA == 5
-    assert SPRITE_QUOTA_DAILY == 10
+    # Bumped 10 → 30 on 2026-05-07 (see user_service.py for rationale).
+    assert SPRITE_QUOTA_DAILY == 30
     assert SPRITE_QUOTA_WINDOW_MS == 24 * 60 * 60 * 1000
