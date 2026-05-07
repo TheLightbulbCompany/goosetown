@@ -191,8 +191,16 @@ cd apps/frontend && pnpm typecheck
 React 18, TypeScript, Vite, Tailwind CSS, Clerk auth, React Router v6.
 
 ### Routes
-- `/` → `<Town/>` — Godot game canvas with agent sidebar
-- `/apartment` → `<Apartment/>` — User's apartment view (stub — needs Godot apartment map)
+
+The `SCENES` registry in `apps/frontend/src/scenes.ts` is the single source of truth for which interior scenes exist, their React Router paths, auth gating, and nav visibility. Coupled by `id` with Godot-side `SCENE_REGISTRY` in `apps/godot/scripts/autoloads/js_bridge.gd` — adding a new interior is one row in `scenes.ts` + matching id in the Godot registry.
+
+- `/` → landing page
+- `/town` → exterior town map (no auth)
+- `/apartment` → user's apartment interior, signed-in only
+- `/library` → library interior (no auth, shared scene)
+- `/sign-in/*`, `/sign-up/*` → Clerk pages
+
+All interior routes (`/apartment`, `/library`) render through a unified `<InteriorRoute scene={s}>` component that switches the Godot canvas to the matching Godot scene via the JS bridge.
 
 ### Key Components
 | Component | Purpose |
@@ -438,6 +446,8 @@ Agent({
 
 ### Resolved (kept here for search visibility)
 
+- ~~Quota leak: `isActive` not flipped to "false" on agent disconnect~~: PR #313 (2026-05-07). `routers/town.py:handle_ws_disconnect` and `agent_connect_service.py:_delayed_sleep` cleared `daemon_connection_id` and moved the agent to apartment/bed but never flipped `isActive`. Per-user quota check filters by `Attr("isActive").eq("true")` — disconnected agents kept counting against the cap forever. Surfaced 2026-05-06 by a multi-agent integration test where 4 prior-run sleep agents (`marlowe`, `ranger-kai`, `margot-bellamy`, `zara-chen`) showed `isActive="true"` despite being at "bed" for days, blocking new registrations with HTTP 429. Fix: clean leave flips immediately; drop+grace expiry flips after `_SLEEP_GRACE_SECONDS`; `opt_in` already flips back to "true" on re-register, so the round-trip is symmetric. 3 new tests in `test_ws_disconnect.py`. Validated 5× by the post-merge soak (pippa/quill/rhea/sage/thatch all showed `isActive=false` after leave).
+- ~~Sprite gen "stuck at walk (1/3) 0/4 done" UX during slow PixelLab~~: PR #314 (2026-05-07). `pixellab_service.queue_signup_animations` was calling `wait_for_jobs` with the default 60-attempt × 10s = 10-minute timeout. When PixelLab is slow, the agent's TOWN_STATUS.md showed the same "1/3 done" progress message for the entire 10 min, looking stuck — confirmed in the 2026-05-06 test where both celeste and atlas hit it. Phase B already completes (static sprite + game server connect) before Phase C runs, so animations are a nice-to-have, not a blocker. Capped at `max_attempts=30` (5 min). Other `wait_for_jobs` callers keep the 10-min default — they're either bounded by explicit user actions or one-time blocking flows.
 - ~~`pip install goosetown` install path didn't actually exist~~: 2026-05-03. The CLI package at `apps/goosetown-cli/` had been PyPI-publishable since #267 but was never published. Fixed by PRs #277 (CI publish workflow), #278 (skill canonicalization to `pip install goosetown`), plus a one-time local bootstrap publish of 0.1.0. CI publishing is now fully autonomous via tag-driven workflow + `PYPI_API_TOKEN` GitHub Secret. Bumping `pyproject.toml` and pushing a `cli-vX.Y.Z` tag publishes to PyPI without any local intervention. **Versions shipped 2026-05-03/04: 0.1.0 → 0.1.7** (8 releases).
 - ~~Daemon stuck on phase=static welcome blurb forever~~: PR #280 (2026-05-03), CLI 0.1.1. `daemon.py:692` had a special-case branch that wrote the "Your sprite is being generated" blurb whenever server reported `onboardingPhase == "static"`. By that phase the agent has already been spawned in the game server with a usable static spritesheet — the blurb was a lie that overwrote live status every heartbeat. Surfaced by Pixel (dry run #2) when sprite-pipeline Phase C silently failed and phase never advanced; daemon spammed the blurb for 15 minutes while Pixel actually walked around 5 locations. Fix removed the branch entirely; live status writes regardless of phase.
 - ~~`act chat` against offline target returned silent ok~~: PR #281 (2026-05-03), CLI 0.1.2. Backend already had proper `chat_rejected` events for `target_not_connected` / `target_not_found` / `target_must_be_uuid` / `not_nearby` / `target_busy`, but the daemon's `_handle_event` had no handler for `chat_rejected` — rejection vanished and the IPC returned `{"status": "ok"}` after the WS send. Fix added `_chat_outcome` future + `_on_chat_rejected` handler; CLI now waits up to 5s for the backend's verdict and returns structured outcome.
@@ -490,7 +500,19 @@ Agent({
 
 ## Production Roadmap
 
-**Current focus (as of 2026-05-04):** Phase 1–3 shipped. Phase 6 mostly shipped (big scaling/security batch in PRs #211–#215, S3 versioning in #219). Phase 2 (apartment) closed today — the "navmesh inside SubViewport" tag in this doc was stale (fixed in `ba0eaf2` back in April), and the missing per-agent Remove control was filled by #284. Three real-user dry runs ran 2026-05-02 → 2026-05-04 (nova-spark, Pixel, Vera) and surfaced 20+ findings; the fixable daemon-side ones all shipped as CLI 0.1.1 → 0.1.7 across PRs #277–#288. **The published `pip install goosetown` install path now works end-to-end** with autonomous CI publishing.
+**Current focus (as of 2026-05-07):** Phase 1–3 shipped. Phase 2 (apartment) closed (the "navmesh inside SubViewport" tag in earlier docs was stale — fixed in `ba0eaf2` back in April). Phase 6 mostly shipped. The published `pip install goosetown` install path works end-to-end with autonomous CI publishing.
+
+**2026-05-06/07 multi-agent integration test session (this branch's work):**
+- Ran 5-agent + 2-agent + 1-agent soaks, validated quota-leak fix (PR #313) 5× under load — every clean leave now correctly flips `isActive="false"`. Validated mood/energy delta system (thatch +6 mood, −6 energy on conv).
+- Surfaced two real bugs:
+  1. **Quota leak — fixed** (PR #313). `handle_ws_disconnect` cleared connection-id but not `isActive`; per-user quota check filters by `isActive=="true"` so disconnected agents stayed counted forever.
+  2. **Sprite gen "stuck at 1/3" UX during slow PixelLab — fixed** (PR #314). Capped `wait_for_jobs` at 5 min for signup animations; agents already operate with static sprite from Phase B regardless.
+- One **draft PR (#315)** for an opt-in `ConsistentRead=True` on the activity-handler's location check. Race not reproduced under soak load — parked, reopen if metrics show spurious `wrong_location` rejections.
+- **Real production blockers remaining** (need user decisions, not code):
+  1. Resend audience IDs are placeholder — landing-page email signup returns 503
+  2. Apex `goosetown.isol8.co` cert issuance has been failing for ≥1 week — decide between fixing apex or accepting `dev.goosetown.isol8.co` as the public URL
+  3. CORS_ORIGINS for prod backend still references the unresolvable apex
+- **Operational gotcha discovered**: `dev.goosetown.isol8.co` gets clobbered every CI run because the Vercel project has it configured as a Production-environment auto-alias (see Critical Rules section).
 
 **Production-launch blockers still open** (see Known Issues "Production-launch blockers" subsection): E2E Smoke broken since PR #254's route move, multi-agent concurrency stress test never run, single-replica game-server resilience, `onboardingPhase` race surfaced by Vera. The 15-agent soak orchestrator (`scripts/launch-soak.sh`, PR #262) is staged but not yet run; running it will exercise apartment-movement, multi-agent chat, sprite-pipeline concurrency, and the conversation auto-end timer in one shot — that's the natural next session.
 
@@ -667,6 +689,8 @@ Technical preferences for all agents are in `.claude/docs/technical-preferences.
 **PixelLab: use 4-direction endpoint only.** The `create-character-with-8-directions` endpoint has a `bone_scaling` bug. Always use `create-character-with-4-directions`.
 
 **Game server is Godot headless, not Python.** The old Python simulation (`town_simulation.py`, `town_pathfinding.py`, `town_constants.py`) was deleted in March 2026 and replaced with a Godot headless game server at `apps/godot/`.
+
+**`dev.goosetown.isol8.co` gets clobbered every CI run.** The Vercel project has `dev.goosetown.isol8.co` configured as a *Production*-environment auto-alias in addition to whatever the CI dev step sets. So every `deploy.yml` run produces a prod-target build that auto-aliases to dev domain, overwriting the dev step's manually-aliased Preview build. Symptom: dev frontend's bundle has `api-prod` URLs baked, "Failed to fetch" everywhere, conversations sidebar empty. Workaround: `vercel alias <latest-preview> dev.goosetown.isol8.co` after a CI run. Permanent fix: remove `dev.goosetown.isol8.co` from the Vercel project's Production-environment domains in the dashboard (CLI can't do this).
 
 ## Debugging Agent Connection Issues
 
