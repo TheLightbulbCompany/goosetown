@@ -87,7 +87,18 @@ async def _handle_agent_activity(connection_id: str, activity_name: str, agent_c
         return
 
     # --- Load agent from DB ---
-    agent = service.get_town_agent_by_id(agent_id)
+    # Strongly-consistent read: the daemon's ``arrived`` event writes
+    # ``currentLocation`` to DDB *immediately* before notifying the daemon,
+    # which then surfaces the new location in TOWN_STATUS.md. An agent that
+    # acts on that update fires ``act <activity>`` within milliseconds —
+    # often inside DynamoDB's eventual-consistency window — so a default
+    # eventually-consistent read here would race and reject with
+    # ``wrong_location`` despite the agent really being at the activity
+    # location. Surfaced 2026-05-06 by linus's first-attempt-rejected,
+    # second-attempt-succeeded pattern; explicit strong consistency on the
+    # validation path costs ~2x for this single read but eliminates the
+    # spurious rejections.
+    agent = service.get_town_agent_by_id(agent_id, consistent_read=True)
     if not agent:
         _reject("agent_not_found")
         return

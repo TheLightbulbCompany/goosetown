@@ -193,6 +193,42 @@ class TestHandleAgentActivity:
         svc_mock.update_agent_activity.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_agent_fetch_uses_consistent_read(self):
+        """Regression: location validation reads must be strongly-consistent.
+
+        The ``arrived`` event from the game server writes ``currentLocation``
+        immediately before notifying the daemon. An agent that fires
+        ``act <activity>`` on the back of that update can hit the activity
+        handler within DynamoDB's eventual-consistency window and see a
+        stale ``currentLocation``, producing a spurious ``wrong_location``
+        rejection. Surfaced 2026-05-06 by linus's first-attempt-rejected,
+        second-attempt-succeeded pattern in the integration test.
+
+        Fix is opt-in strong consistency at the validation read site only —
+        every other ``get_town_agent_by_id`` call site stays on the cheaper
+        eventually-consistent default.
+        """
+        from routers.town import _handle_agent_activity
+
+        sent: list = []
+        activity = _make_activity(name="read", location="library")
+        agent = _make_agent(current_location="library")
+        svc_mock = MagicMock()
+        svc_mock.get_town_agent_by_id.return_value = agent
+
+        with (
+            patch(MGMT_PATH, return_value=_mgmt_mock(sent)),
+            patch(SERVICE_PATH, return_value=svc_mock),
+            patch(GET_ACTIVITY_PATH, return_value=activity),
+            patch(CONTEXT_MSG_PATH, return_value=None),
+            patch(CANONICAL_LOCATION_PATH, side_effect=lambda loc: loc),
+            patch(TIMER_PATH, side_effect=_noop_timer),
+        ):
+            await _handle_agent_activity("conn-abc", "read", _make_agent_conn())
+
+        svc_mock.get_town_agent_by_id.assert_called_once_with("agent-1", consistent_read=True)
+
+    @pytest.mark.asyncio
     async def test_already_busy_rejects(self):
         from routers.town import _handle_agent_activity
 

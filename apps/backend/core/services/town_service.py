@@ -88,10 +88,24 @@ class TownService:
             return None
         return _decimal_to_native(items[0])
 
-    def get_town_agent_by_id(self, agent_id: str) -> Optional[dict]:
-        """Get a town agent by its UUID."""
+    def get_town_agent_by_id(self, agent_id: str, *, consistent_read: bool = False) -> Optional[dict]:
+        """Get a town agent by its UUID.
+
+        Args:
+            agent_id: Agent UUID.
+            consistent_read: If True, perform a strongly-consistent DynamoDB
+                read. Default False (eventually consistent — half the cost,
+                used for non-validation paths). Pass True from request paths
+                that validate against an attribute the caller may have just
+                written (e.g. ``activity_service`` checking
+                ``currentLocation`` against the activity's required location
+                — the ``arrived`` event from the game server writes
+                ``currentLocation`` immediately before the daemon notifies the
+                agent, so an immediate ``act`` would race with eventual
+                consistency and produce a spurious ``wrong_location``).
+        """
         table = dynamo.agents_table()
-        resp = table.get_item(Key={"id": agent_id})
+        resp = table.get_item(Key={"id": agent_id}, ConsistentRead=consistent_read)
         item = resp.get("Item")
         if not item:
             return None
