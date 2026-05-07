@@ -100,24 +100,29 @@ export class GameServerStack extends cdk.Stack {
     this.serviceUrl = `gameserver.goosetown-${env}.local`;
 
     // Single-replica game server (sharding not yet designed). Alarm fires if
-    // RunningTaskCount drops below 1 for 5 consecutive minutes — at that point
-    // OpenClaw agents have exhausted their 5 reconnect attempts and have dropped
-    // permanently. Operator response: restart per RUNBOOK.md.
+    // the service stops publishing CPU datapoints for 5 consecutive minutes —
+    // at that point OpenClaw agents have exhausted their 5 reconnect attempts
+    // and have dropped permanently. Operator response: restart per RUNBOOK.md.
     if (props.alarmTopic) {
       const taskMissingAlarm = new cloudwatch.Alarm(this, "GameServerTaskMissing", {
         alarmName: `goosetown-${env}-gameserver-task-missing`,
-        // RunningTaskCount is only emitted under ECS/ContainerInsights (enabled
-        // on the cluster above). The default service.metric() helper hits
-        // AWS/ECS, where this metric does not exist, so the alarm would latch
-        // on ALARM with TreatMissingData=BREACHING.
+        // Container Insights is disabled on the shared cluster (cost — see
+        // ClusterStack), so ECS/ContainerInsights:RunningTaskCount is never
+        // published and any alarm on it latches BREACHING. Use AWS/ECS:
+        // CPUUtilization instead — Fargate publishes it every minute when at
+        // least one task is running; with statistic=SampleCount the metric
+        // value is 1 (datapoint present) per period when tasks run, and the
+        // datapoint is absent when zero tasks → TreatMissingData=BREACHING
+        // fires the alarm. Same shape as ComputeStack's BackendTaskMissing
+        // alarm (which uses ALB HealthyHostCount; gameserver has no ALB).
         metric: new cloudwatch.Metric({
-          namespace: "ECS/ContainerInsights",
-          metricName: "RunningTaskCount",
+          namespace: "AWS/ECS",
+          metricName: "CPUUtilization",
           dimensionsMap: {
             ClusterName: cluster.clusterName,
             ServiceName: service.serviceName,
           },
-          statistic: "Minimum",
+          statistic: "SampleCount",
           period: cdk.Duration.minutes(1),
         }),
         threshold: 1,
