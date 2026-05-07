@@ -102,7 +102,11 @@ describe("ObservabilityStack — PixelLab credits poller", () => {
       Environment: Match.objectLike({
         Variables: Match.objectLike({
           ENVIRONMENT: "dev",
-          PIXELLAB_API_KEY_SECRET_NAME: "goosetown-dev-pixellab-api-key",
+          // Slash-and-underscore form — matches AuthStack's convention for
+          // all five auth secrets. See observability-stack.ts comment for
+          // the regression history (hyphenated form silently broke the
+          // poller from creation until 2026-05-07).
+          PIXELLAB_API_KEY_SECRET_NAME: "goosetown/dev/pixellab_api_key",
         }),
       }),
     });
