@@ -54,11 +54,17 @@ export class ObservabilityStack extends cdk.Stack {
     // secret) and goosetown-stage's deploy ordering (Observability deploys
     // first because the SNS topic is consumed by Network/GameServer/Compute).
     // The secret name is deterministic; AuthStack creates it as
-    // ``goosetown-${env}-pixellab-api-key``.
+    // ``goosetown/${env}/pixellab_api_key`` (slash-and-underscore form, not
+    // hyphenated — matches the convention used by all five auth secrets, see
+    // ``auth-stack.ts``). Prior to 2026-05-07 this lookup used the hyphenated
+    // name, which never existed in Secrets Manager — every poller invocation
+    // failed with ``ResourceNotFoundException`` and the credit metric was
+    // missing rather than published, so the alarm latched on missing data
+    // and reported ``ALARM`` regardless of the real PixelLab balance.
     const pixelLabApiKey = secretsmanager.Secret.fromSecretNameV2(
       this,
       "PixelLabApiKey",
-      `goosetown-${env}-pixellab-api-key`,
+      `goosetown/${env}/pixellab_api_key`,
     );
 
     const pollerLogGroup = new logs.LogGroup(this, "PixelLabCreditsPollerLogs", {
