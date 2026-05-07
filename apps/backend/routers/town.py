@@ -1171,8 +1171,17 @@ async def handle_ws_disconnect(request: WsDisconnectRequest):
         # NOT teleport the agent home. If the daemon doesn't come back within
         # the grace, the delayed task moves them to bed then. See
         # _delayed_sleep / _schedule_sleep_grace below.
+        #
+        # Why also flip ``isActive=false`` here:
+        #   ``isActive`` gates the per-user agent quota
+        #   (``check_agent_quota`` filters by ``isActive == "true"``). If we
+        #   leave it "true" after the daemon goes away, sleeping agents
+        #   permanently occupy quota slots and re-registration eventually
+        #   fails with HTTP 429. Re-register flips it back to "true" via
+        #   ``opt_in`` so this is symmetric.
         if clean_leave:
             service.update_agent_context(agent_id, "apartment", "bed")
+            service.update_agent_state(agent_id, is_active="false")
         else:
             _schedule_sleep_grace(agent_id)
 

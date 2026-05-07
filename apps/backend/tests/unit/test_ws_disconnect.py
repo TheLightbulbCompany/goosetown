@@ -232,3 +232,99 @@ async def test_clean_leave_still_disconnects_from_game_server():
         await handle_ws_disconnect(WsDisconnectRequest(connectionId="conn-1"))
 
     gs_mock.disconnect_agent.assert_awaited_once_with("agent-1")
+
+
+@pytest.mark.asyncio
+async def test_clean_leave_flips_is_active_false_to_free_quota_slot():
+    """Quota-leak regression: clean leave must set ``isActive='false'`` so the
+    per-user agent quota releases.
+
+    Surfaced by the 2026-05-06 integration test — sleeping agents that had
+    cleanly disconnected days earlier still showed ``isActive="true"`` and
+    occupied quota slots, blocking new registrations with HTTP 429. The
+    register path (``opt_in``) flips the flag back to ``"true"`` on
+    re-registration so the round-trip is symmetric.
+    """
+    from routers.town import WsDisconnectRequest, handle_ws_disconnect
+
+    agent_conn = _make_agent_conn(leaving_cleanly=True)
+    svc_mock = MagicMock()
+
+    with (
+        patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock(agent_conn)),
+        patch(SERVICE_PATH, return_value=svc_mock),
+        patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
+    ):
+        await handle_ws_disconnect(WsDisconnectRequest(connectionId="conn-1"))
+
+    # ``update_agent_state`` is now called twice on clean leave:
+    #   1. clear daemon_connection_id (existing behaviour)
+    #   2. set is_active="false" (NEW — frees quota slot)
+    svc_mock.update_agent_state.assert_any_call("agent-1", is_active="false")
+
+
+@pytest.mark.asyncio
+async def test_grace_expiry_flips_is_active_false_to_free_quota_slot():
+    """Quota-leak regression on the drop path: when the grace window
+    expires without a reconnect, the delayed-sleep task must also set
+    ``isActive='false'`` for the same reason as the clean-leave path. A
+    drop that resolves into permanent disconnection is functionally
+    indistinguishable from an explicit leave.
+    """
+    from core.services import agent_connect_service
+    from routers import town
+    from routers.town import WsDisconnectRequest, handle_ws_disconnect
+
+    agent_conn = _make_agent_conn(leaving_cleanly=False)
+    svc_mock = MagicMock()
+    svc_mock.get_town_agent_by_id.return_value = {
+        "id": "agent-1",
+        "daemonConnectionId": "",
+    }
+
+    with (
+        patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock(agent_conn)),
+        patch(SERVICE_PATH, return_value=svc_mock),
+        patch(AGENT_CONNECT_SERVICE_PATH, return_value=svc_mock),
+        patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
+        patch.object(agent_connect_service, "_SLEEP_GRACE_SECONDS", 0.01),
+    ):
+        await handle_ws_disconnect(WsDisconnectRequest(connectionId="conn-1"))
+        task = town._pending_sleep_tasks.get("agent-1")
+        assert task is not None
+        await task
+
+    svc_mock.update_agent_state.assert_any_call("agent-1", is_active="false")
+
+
+@pytest.mark.asyncio
+async def test_reconnect_within_grace_does_not_flip_is_active():
+    """Negative case: a network flap that reconnects inside the grace
+    window must NOT flip ``isActive`` — from the quota's perspective the
+    agent never went away. This guards against a regression where the
+    grace task would race past ``_cancel_sleep_grace`` and mistakenly free
+    the slot under a still-connected daemon.
+    """
+    from routers import town
+    from routers.town import WsDisconnectRequest, handle_ws_disconnect
+
+    agent_conn = _make_agent_conn(leaving_cleanly=False)
+    svc_mock = MagicMock()
+
+    with (
+        patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock(agent_conn)),
+        patch(SERVICE_PATH, return_value=svc_mock),
+        patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
+        patch.object(town, "_SLEEP_GRACE_SECONDS", 0.5),
+    ):
+        await handle_ws_disconnect(WsDisconnectRequest(connectionId="conn-1"))
+        cancelled = town._cancel_sleep_grace("agent-1")
+
+    assert cancelled is True
+    # Let the cancelled coroutine raise CancelledError before we inspect calls.
+    await asyncio.sleep(0)
+
+    is_active_flips = [
+        call for call in svc_mock.update_agent_state.call_args_list if call.kwargs.get("is_active") == "false"
+    ]
+    assert is_active_flips == [], "in-grace reconnect must not flip is_active='false'"
