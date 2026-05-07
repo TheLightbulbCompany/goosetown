@@ -2,9 +2,13 @@
  * gameserver-stack.test.ts
  *
  * Asserts that the GameServerStack synthesizes a CloudWatch alarm that
- * monitors RunningTaskCount and fires after 5 consecutive minutes below
- * threshold. This alarm is critical because agents drop permanently if the
- * game server task restarts for > ~1 min (daemon reconnect caps at 5 attempts).
+ * detects when the gameserver service has zero running tasks for 5
+ * consecutive minutes. Container Insights is disabled cluster-wide (cost),
+ * so we cannot use ECS/ContainerInsights:RunningTaskCount; instead we alarm
+ * on AWS/ECS:CPUUtilization SampleCount — present (>=1) when 1+ tasks run,
+ * absent when zero tasks (TreatMissingData=BREACHING fires the alarm). This
+ * alarm is critical because agents drop permanently if the gameserver task
+ * restarts for > ~1 min (daemon reconnect caps at 5 attempts).
  */
 
 import * as cdk from "aws-cdk-lib";
@@ -58,18 +62,31 @@ describe("GameServerStack — CloudWatch restart alarm", () => {
     ({ template } = buildTestApp());
   });
 
-  test("alarm exists with MetricName RunningTaskCount", () => {
+  test("alarm exists with MetricName CPUUtilization (proxy for task presence)", () => {
+    // CPUUtilization is published per-service per-minute by Fargate when 1+
+    // tasks are running. We don't care about the actual CPU value — only
+    // whether the metric is being published at all (presence == tasks alive).
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      MetricName: "RunningTaskCount",
+      MetricName: "CPUUtilization",
     });
   });
 
-  test("alarm pulls from ECS/ContainerInsights namespace (not AWS/ECS)", () => {
-    // RunningTaskCount is published under ECS/ContainerInsights only; using
-    // the default AWS/ECS namespace produces an alarm that never sees data
-    // and latches on ALARM when TreatMissingData=BREACHING.
+  test("alarm pulls from AWS/ECS namespace (Container Insights is disabled)", () => {
+    // Container Insights is OFF on the shared cluster (cost reasons — see
+    // ClusterStack). Any alarm on ECS/ContainerInsights:RunningTaskCount
+    // would latch BREACHING because the metric is never published. Use the
+    // base AWS/ECS namespace, which is always populated for active services.
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      Namespace: "ECS/ContainerInsights",
+      Namespace: "AWS/ECS",
+    });
+  });
+
+  test("alarm uses SampleCount statistic (presence/absence detection)", () => {
+    // SampleCount=1 when ECS publishes a CPU datapoint; missing when zero
+    // tasks run. Average/Min/Max would also work, but SampleCount makes the
+    // intent (counting datapoints, not measuring CPU) explicit.
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      Statistic: "SampleCount",
     });
   });
 
