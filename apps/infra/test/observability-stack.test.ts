@@ -164,3 +164,90 @@ describe("ObservabilityStack — PixelLab credits poller", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// WorldGM CloudWatch alarms (Plan 3 — Phase E2)
+// ---------------------------------------------------------------------------
+
+describe("ObservabilityStack — WorldGM alarms", () => {
+  let template: Template;
+
+  beforeAll(() => {
+    ({ template } = buildTestApp("dev"));
+  });
+
+  test("LLM cost alarm fires on AWS/Bedrock InputTokenCount (Nova Lite)", () => {
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "goosetown-dev-worldgm-llm-cost-daily",
+      Namespace: "AWS/Bedrock",
+      MetricName: "InputTokenCount",
+      Dimensions: [{ Name: "ModelId", Value: "amazon.nova-lite-v1:0" }],
+      Statistic: "Sum",
+      // 1.5 M tokens/hr ≈ $0.20/hr ≈ $5/day at Nova Lite pricing
+      Threshold: 1_500_000,
+      ComparisonOperator: "GreaterThanThreshold",
+      // 6-of-24 hours to require sustained spend
+      EvaluationPeriods: 24,
+      DatapointsToAlarm: 6,
+      TreatMissingData: "notBreaching",
+    });
+  });
+
+  test("LLM cost alarm publishes to the shared SNS topic", () => {
+    const alarms = template.findResources("AWS::CloudWatch::Alarm", {
+      Properties: { AlarmName: "goosetown-dev-worldgm-llm-cost-daily" },
+    });
+    expect(Object.keys(alarms).length).toBe(1);
+    const alarm = Object.values(alarms)[0] as any;
+    expect(alarm.Properties.AlarmActions).toBeDefined();
+    expect(alarm.Properties.AlarmActions.length).toBe(1);
+  });
+
+  test("event-rate alarm fires on GooseTown/WorldGM EventsEmitted", () => {
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "goosetown-dev-worldgm-event-rate",
+      Namespace: "GooseTown/WorldGM",
+      MetricName: "EventsEmitted",
+      Dimensions: [{ Name: "Environment", Value: "dev" }],
+      Statistic: "Sum",
+      Threshold: 100,
+      ComparisonOperator: "GreaterThanThreshold",
+      EvaluationPeriods: 1,
+      TreatMissingData: "notBreaching",
+    });
+  });
+
+  test("event-rate alarm publishes to the shared SNS topic", () => {
+    const alarms = template.findResources("AWS::CloudWatch::Alarm", {
+      Properties: { AlarmName: "goosetown-dev-worldgm-event-rate" },
+    });
+    expect(Object.keys(alarms).length).toBe(1);
+    const alarm = Object.values(alarms)[0] as any;
+    expect(alarm.Properties.AlarmActions).toBeDefined();
+    expect(alarm.Properties.AlarmActions.length).toBe(1);
+  });
+
+  test("arc-rate alarm fires on GooseTown/WorldGM ArcsKickoff", () => {
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      AlarmName: "goosetown-dev-worldgm-arc-rate",
+      Namespace: "GooseTown/WorldGM",
+      MetricName: "ArcsKickoff",
+      Dimensions: [{ Name: "Environment", Value: "dev" }],
+      Statistic: "Sum",
+      Threshold: 10,
+      ComparisonOperator: "GreaterThanThreshold",
+      EvaluationPeriods: 1,
+      TreatMissingData: "notBreaching",
+    });
+  });
+
+  test("arc-rate alarm publishes to the shared SNS topic", () => {
+    const alarms = template.findResources("AWS::CloudWatch::Alarm", {
+      Properties: { AlarmName: "goosetown-dev-worldgm-arc-rate" },
+    });
+    expect(Object.keys(alarms).length).toBe(1);
+    const alarm = Object.values(alarms)[0] as any;
+    expect(alarm.Properties.AlarmActions).toBeDefined();
+    expect(alarm.Properties.AlarmActions.length).toBe(1);
+  });
+});

@@ -104,6 +104,16 @@ export class WorldgmStack extends cdk.Stack {
       }),
     );
 
+    // ─── IAM: CloudWatch — emit custom GooseTown/WorldGM metrics ─────────
+    // PutMetricData has no resource-level scoping in IAM; the namespace
+    // dimension (GooseTown/WorldGM) is enforced by convention only.
+    taskDef.taskRole.addToPrincipalPolicy(
+      new iam.PolicyStatement({
+        actions: ["cloudwatch:PutMetricData"],
+        resources: ["*"],
+      }),
+    );
+
     // ─── IAM: SQS — per-agent queue lifecycle ────────────────────────────
     // Per-agent queues are named `goosetown-{env}-agent-{agentId}`.
     // WorldGM needs send+create access; the backend drainer handles receive+delete.

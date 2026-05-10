@@ -145,5 +145,67 @@ export class ObservabilityStack extends cdk.Stack {
       treatMissingData: cloudwatch.TreatMissingData.BREACHING,
     });
     creditAlarm.addAlarmAction(new cw_actions.SnsAction(this.snsTopic));
+
+    // ─── WorldGM alarms ──────────────────────────────────────────────────
+
+    // Cost alarm: Nova Lite token spend > ~$5/day (≈1.5M input tokens/hr × 24h)
+    // Threshold of 1.5M tokens/hr ≈ $0.20/hr at Nova Lite pricing.
+    // Fires if 6 of any 24 consecutive 1-hour periods exceed the threshold.
+    const llmCostAlarm = new cloudwatch.Alarm(this, "WorldgmLlmCostDaily", {
+      alarmName: `goosetown-${env}-worldgm-llm-cost-daily`,
+      alarmDescription:
+        "WorldGM Bedrock spend exceeded $5/day. Investigate runaway arc loops.",
+      metric: new cloudwatch.Metric({
+        namespace: "AWS/Bedrock",
+        metricName: "InputTokenCount",
+        dimensionsMap: { ModelId: "amazon.nova-lite-v1:0" },
+        statistic: "Sum",
+        period: cdk.Duration.hours(1),
+      }),
+      threshold: 1_500_000, // ~$0.20/hr at Nova Lite — adjust once real baseline is known
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      evaluationPeriods: 24,
+      datapointsToAlarm: 6,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    llmCostAlarm.addAlarmAction(new cw_actions.SnsAction(this.snsTopic));
+
+    // Event-rate alarm: >100 events/hour suggests a runaway WorldGM loop
+    const eventRateAlarm = new cloudwatch.Alarm(this, "WorldgmEventRate", {
+      alarmName: `goosetown-${env}-worldgm-event-rate`,
+      alarmDescription:
+        "WorldGM event rate exceeded 100/hour. Possible runaway loop — check arc_orchestrator.",
+      metric: new cloudwatch.Metric({
+        namespace: "GooseTown/WorldGM",
+        metricName: "EventsEmitted",
+        dimensionsMap: { Environment: env },
+        statistic: "Sum",
+        period: cdk.Duration.hours(1),
+      }),
+      threshold: 100,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    eventRateAlarm.addAlarmAction(new cw_actions.SnsAction(this.snsTopic));
+
+    // Arc-rate alarm: >10 arc kickoffs in 24h suggests cooldown/random broken
+    const arcRateAlarm = new cloudwatch.Alarm(this, "WorldgmArcRate", {
+      alarmName: `goosetown-${env}-worldgm-arc-rate`,
+      alarmDescription:
+        "WorldGM kicked off >10 arcs in 24h. Cooldown or random-gate may be broken.",
+      metric: new cloudwatch.Metric({
+        namespace: "GooseTown/WorldGM",
+        metricName: "ArcsKickoff",
+        dimensionsMap: { Environment: env },
+        statistic: "Sum",
+        period: cdk.Duration.days(1),
+      }),
+      threshold: 10,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    arcRateAlarm.addAlarmAction(new cw_actions.SnsAction(this.snsTopic));
   }
 }
