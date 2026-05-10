@@ -10,6 +10,8 @@ import { ComputeStack } from "./stacks/compute-stack";
 import { GameServerStack } from "./stacks/gameserver-stack";
 import { ApiStack } from "./stacks/api-stack";
 import { ObservabilityStack } from "./stacks/observability-stack";
+import { EventingStack } from "./stacks/eventing-stack";
+import { WorldgmStack } from "./stacks/worldgm-stack";
 
 export interface GooseTownStageProps extends cdk.StageProps {
   environment: string;
@@ -104,6 +106,27 @@ export class GooseTownStage extends cdk.Stage {
       backendUrl: `https://api-${env}.goosetown.isol8.co`,
       certificate: dns.certificate,
       hostedZone: dns.hostedZone,
+    });
+
+    // EventBridge world bus — no deps on other stacks besides env.
+    // Deploys after ApiStack to avoid name collisions on the event bus name;
+    // functionally independent but logically belongs after the core services.
+    const eventing = new EventingStack(this, `goosetown-${env}-eventing`, {
+      stackName: `goosetown-${env}-eventing`,
+      environment: env,
+    });
+
+    // WorldGM service — depends on Cluster, Auth, Eventing.
+    // Deploys after Eventing (needs bus ARN) and after Database (tables must
+    // exist before the service starts draining them).
+    new WorldgmStack(this, `goosetown-${env}-worldgm`, {
+      stackName: `goosetown-${env}-worldgm`,
+      environment: env,
+      cluster: clusterStack.cluster,
+      vpc: network.vpc,
+      secrets: auth.secrets,
+      alarmTopic: observability.snsTopic,
+      worldBusArn: eventing.bus.eventBusArn,
     });
 
     cdk.Tags.of(this).add("Project", "goosetown");

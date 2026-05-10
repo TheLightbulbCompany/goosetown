@@ -478,6 +478,19 @@ async def register_agent(
                         {"event": "sprite_progress", "status": f"Queued for sprite generation (position {position})"},
                     )
 
+    # Best-effort SQS queue creation for WorldGM personal events.
+    # Do not fail the registration if queue setup fails.
+    try:
+        from core.services import sqs_drainer
+
+        sqs_drainer.create_agent_queue(agent["id"])
+    except Exception as _sqse:
+        logger.warning(
+            "register: sqs_drainer.create_agent_queue failed for %s (non-fatal): %s",
+            agent["id"][:8],
+            _sqse,
+        )
+
     return {
         "agent_id": agent["id"],
         "agent_name": agent.get("agentName", request.agent_name),
@@ -667,6 +680,18 @@ async def deactivate_agent(
         await gs_client.disconnect_agent(agent_id)
     except Exception as e:
         logger.warning("deactivate: game server despawn failed for %s: %s", agent_id, e)
+
+    # Best-effort SQS queue + EventBridge rule teardown for WorldGM personal events.
+    try:
+        from core.services import sqs_drainer
+
+        sqs_drainer.delete_agent_queue(agent_id)
+    except Exception as _sqse:
+        logger.warning(
+            "deactivate: sqs_drainer.delete_agent_queue failed for %s (non-fatal): %s",
+            agent_id[:8],
+            _sqse,
+        )
 
     return {"id": agent_id, "isActive": False}
 

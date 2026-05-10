@@ -15,6 +15,8 @@ export interface DatabaseTables {
   ownerChats: dynamodb.Table;
   users: dynamodb.Table;
   completedGoals: dynamodb.Table;
+  worldgmArcs: dynamodb.Table;
+  worldEvents: dynamodb.Table;
 }
 
 export class DatabaseStack extends cdk.Stack {
@@ -169,7 +171,42 @@ export class DatabaseStack extends cdk.Stack {
       sortKey: { name: "completedAt", type: dynamodb.AttributeType.STRING },
     });
 
-    this.tables = { agents, instances, relationships, conversations, connections, ownerChats, users, completedGoals };
+    // worldgm-arcs — narrative arc state (WorldGM service reads/writes)
+    const worldgmArcs = new dynamodb.Table(this, "WorldgmArcsTable", {
+      tableName: `goosetown-${env}-worldgm-arcs`,
+      partitionKey: { name: "arcId", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      pointInTimeRecoverySpecification: {
+        pointInTimeRecoveryEnabled: env === "prod",
+      },
+      removalPolicy,
+    });
+    worldgmArcs.addGlobalSecondaryIndex({
+      indexName: "status-nextBeatAt-index",
+      partitionKey: { name: "status", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "nextBeatAt", type: dynamodb.AttributeType.STRING },
+    });
+
+    // world-events — durable event log for Tier-1 frontend feed (Plan 4 reads this)
+    const worldEvents = new dynamodb.Table(this, "WorldEventsTable", {
+      tableName: `goosetown-${env}-world-events`,
+      partitionKey: { name: "eventId", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      pointInTimeRecoverySpecification: {
+        pointInTimeRecoveryEnabled: env === "prod",
+      },
+      removalPolicy,
+    });
+    worldEvents.addGlobalSecondaryIndex({
+      indexName: "byTimestamp",
+      // envBucket is a constant partition key (e.g., "dev" or "prod") that
+      // keeps all events for one environment in a single GSI partition,
+      // enabling a simple scan-by-time query for the feed.
+      partitionKey: { name: "envBucket", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "timestamp", type: dynamodb.AttributeType.STRING },
+    });
+
+    this.tables = { agents, instances, relationships, conversations, connections, ownerChats, users, completedGoals, worldgmArcs, worldEvents };
 
     // Outputs
     new cdk.CfnOutput(this, "AgentsTableName", {

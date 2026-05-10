@@ -1659,6 +1659,54 @@ class TownDaemon:
         self._handle_world_update(world_data)
 
     # ------------------------------------------------------------------
+    # World event handler (from WorldGM via SQS drainer)
+    # ------------------------------------------------------------------
+
+    def _icon_for_tag(self, tag: str) -> str:
+        """Map event tag prefix to a single-emoji icon."""
+        prefix_icons = {
+            "weather.": "\U0001f327",  # 🌧
+            "ambient.": "\U0001f4a1",  # 💡
+            "arc.": "\U0001f4dc",  # 📜
+            "social.": "\U0001f4e3",  # 📣
+            "personal.": "\U0001f514",  # 🔔
+        }
+        for prefix, icon in prefix_icons.items():
+            if tag.startswith(prefix):
+                return icon
+        return "•"  # bullet •
+
+    def _handle_world_event(self, payload: dict) -> None:
+        """Render an event from the world bus into TOWN_EVENTS.md.
+
+        LOG events append a line to TOWN_EVENTS.md. WAKE events also force
+        a think-prompt on TOWN_STATUS.md so the wake-on-status hook re-wakes
+        the agent's LLM.
+        """
+        event = payload.get("event", {})
+        wake = payload.get("wake", False)
+
+        tag = event.get("tag", "world.unknown")
+        summary = event.get("summary") or event.get("baseTag") or tag
+        location = event.get("location")
+
+        icon = self._icon_for_tag(tag)
+        location_suffix = f" (at {location})" if location else ""
+        line = f"{icon} {summary}{location_suffix}"
+
+        self._append_event(line)
+
+        if wake:
+            # Re-render TOWN_STATUS.md with think=true so the wake-on-status
+            # hook fires and the agent's LLM processes this event.
+            world_data = {
+                "you": self.state.get("agent", {}),
+                "nearby_agents": self.state.get("nearby", []),
+                "think": True,
+            }
+            self._handle_world_update(world_data)
+
+    # ------------------------------------------------------------------
     # World update handler
     # ------------------------------------------------------------------
 
@@ -2036,6 +2084,8 @@ class TownDaemon:
                             self._handle_event(data)
                     elif data.get("type") == "world_update":
                         self._handle_world_update(data)
+                    elif data.get("type") == "world_event":
+                        self._handle_world_event(data)
                 except json.JSONDecodeError:
                     log.warning("Invalid JSON from server: %s", str(raw)[:100])
         except Exception as exc:
