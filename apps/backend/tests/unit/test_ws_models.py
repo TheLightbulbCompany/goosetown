@@ -192,6 +192,58 @@ class TestTownAgentKeepalive:
         assert msg.type == "ping"
 
 
+class TestGoalActions:
+    def test_set_goal_requires_text(self) -> None:
+        with pytest.raises(ValidationError):
+            _adapter.validate_python(
+                {
+                    "type": "town_agent_act",
+                    "action": "set_goal",
+                }
+            )
+
+    def test_set_goal_with_text_validates(self) -> None:
+        msg = _adapter.validate_python(
+            {
+                "type": "town_agent_act",
+                "action": "set_goal",
+                "text": "find out why Bob has been distant",
+            }
+        )
+        assert msg.action == "set_goal"
+        assert msg.text == "find out why Bob has been distant"
+
+    def test_complete_goal_requires_reflection(self) -> None:
+        with pytest.raises(ValidationError):
+            _adapter.validate_python(
+                {
+                    "type": "town_agent_act",
+                    "action": "complete_goal",
+                }
+            )
+
+    def test_complete_goal_with_reflection_validates(self) -> None:
+        msg = _adapter.validate_python(
+            {
+                "type": "town_agent_act",
+                "action": "complete_goal",
+                "reflection": "we resolved it",
+            }
+        )
+        assert msg.action == "complete_goal"
+        assert msg.reflection == "we resolved it"
+
+    def test_set_goal_rejects_text_over_500_chars(self) -> None:
+        with pytest.raises(ValidationError):
+            _adapter.validate_python(
+                {
+                    "type": "town_agent_act",
+                    "action": "set_goal",
+                    "text": "x" * 501,
+                }
+            )
+
+
 class TestTopLevelValidation:
     def test_rejects_unknown_type(self) -> None:
         with pytest.raises(ValidationError):

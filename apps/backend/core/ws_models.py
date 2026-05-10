@@ -33,6 +33,8 @@ AgentAction = Literal[
     "context_transition",
     "activity",
     "reply_owner",
+    "set_goal",
+    "complete_goal",
 ]
 
 
@@ -53,8 +55,9 @@ class TownAgentAct(BaseModel):
     message: str | None = Field(default=None, max_length=500)  # chat (optional), say
     target_context: Literal["town", "apartment"] | None = None  # context_transition
     activity_id: str | None = None  # activity
-    text: str | None = Field(default=None, max_length=2000)  # reply_owner
+    text: str | None = Field(default=None, max_length=2000)  # reply_owner (max 2000); set_goal (max 500, enforced in validator)
     ref_message_id: str | None = None  # reply_owner (optional back-reference)
+    reflection: str | None = Field(default=None, max_length=2000)  # complete_goal
 
     @model_validator(mode="after")
     def _check_action_fields(self) -> "TownAgentAct":
@@ -70,6 +73,13 @@ class TownAgentAct(BaseModel):
             raise ValueError("activity action requires 'activity_id'")
         if self.action == "reply_owner" and not self.text:
             raise ValueError("reply_owner action requires 'text'")
+        if self.action == "set_goal":
+            if not self.text:
+                raise ValueError("'set_goal' requires 'text'")
+            if len(self.text) > 500:
+                raise ValueError("'set_goal' text must be <= 500 chars")
+        if self.action == "complete_goal" and not self.reflection:
+            raise ValueError("'complete_goal' requires 'reflection'")
         return self
 
 
