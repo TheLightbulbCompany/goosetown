@@ -34,6 +34,7 @@ from schemas.town import (
     ConversationTurn,
     TownConversationResponse,
     TownConversationsListResponse,
+    WorldEventEntry,
 )
 
 logger = logging.getLogger(__name__)
@@ -1134,6 +1135,42 @@ async def get_conversations(limit: int = 20):
         )
 
     return TownConversationsListResponse(conversations=responses)
+
+
+@router.get("/world-events", response_model=list[WorldEventEntry])
+async def list_world_events(limit: int = 50):
+    """Return the most recent N public world events.
+
+    Filters out ``personal.*`` events (those are private to each agent) and
+    returns in reverse-chronological order (newest first). Limit capped at 200.
+
+    Public endpoint — no auth required, matches the ``/conversations`` pattern.
+    """
+    from core import dynamo
+
+    limit = min(max(limit, 1), 200)
+    env = os.environ.get("ENVIRONMENT", "dev")
+    table = dynamo.world_events_table()
+    resp = table.query(
+        IndexName="byTimestamp",
+        KeyConditionExpression="envBucket = :env",
+        ExpressionAttributeValues={":env": env},
+        ScanIndexForward=False,  # newest first
+        Limit=limit * 2,  # over-fetch since we filter personal.*
+    )
+    items = resp.get("Items", [])
+    public = [
+        WorldEventEntry(
+            eventId=i["eventId"],
+            timestamp=i["timestamp"],
+            tag=i["tag"],
+            summary=i.get("summary"),
+            location=i.get("location"),
+        )
+        for i in items
+        if not i["tag"].startswith("personal.")
+    ]
+    return public[:limit]
 
 
 # ===========================================================================
