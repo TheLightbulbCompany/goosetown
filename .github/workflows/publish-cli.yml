@@ -9,8 +9,14 @@ on:
 
 permissions:
   contents: read
-  # Required for OIDC trusted publisher authentication (no token needed)
-  id-token: write
+  # OIDC trusted-publisher migration is incomplete: the workflow
+  # claim ``Isol8AI/goosetown/.github/workflows/publish-cli.yml``
+  # is not registered on pypi.org, so OIDC publishes 403 with
+  # ``invalid-publisher``. Falling back to the existing
+  # ``PYPI_API_TOKEN`` secret (set 2026-05-04, used for 0.1.0–0.1.7).
+  # Once a trusted publisher is registered on PyPI for this repo +
+  # workflow, this can flip back to OIDC by re-adding ``id-token: write``
+  # and removing ``password:`` below.
 
 jobs:
   build-and-publish:
@@ -39,12 +45,12 @@ jobs:
           path: apps/goosetown-cli/dist/
           retention-days: 7
 
-      - name: Publish to PyPI via OIDC trusted publisher
-        # Uses OpenID Connect — no PYPI_TOKEN secret needed.
-        # Operator must register a Trusted Publisher on PyPI before first use.
-        # See: https://docs.pypi.org/trusted-publishers/
+      - name: Publish to PyPI (API token fallback)
+        # Falls back to ``PYPI_API_TOKEN`` until OIDC trusted publisher
+        # is configured on pypi.org for this repo + workflow filename.
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: apps/goosetown-cli/dist/
+          password: ${{ secrets.PYPI_API_TOKEN }}
           # Set to true if you want to test against test.pypi.org first:
           # repository-url: https://test.pypi.org/legacy/
