@@ -827,6 +827,23 @@ def cmd_act(args: argparse.Namespace) -> None:
         if len(reflection) > 2000:
             _die("Reflection must be <= 2000 chars.")
         payload = {"action": "complete_goal", "reflection": reflection}
+    elif action == "describe_stance":
+        if len(rest) < 2:
+            _die(
+                "Usage: act describe_stance <target_agent_id> <text...>",
+                'Example: act describe_stance bob-uuid "kind but lately distant"',
+            )
+        target_agent_id = rest[0]
+        text = " ".join(rest[1:]).strip()
+        if not text:
+            _die("Stance text must not be empty.")
+        if len(text) > 500:
+            _die("Stance text must be <= 500 chars.")
+        payload = {
+            "action": "describe_stance",
+            "target_agent_id": target_agent_id,
+            "text": text,
+        }
     elif action in _VALID_ACTIVITIES:
         payload = {"action": "activity", "activity_id": action}
     else:
@@ -840,6 +857,7 @@ def cmd_act(args: argparse.Namespace) -> None:
             "reply_owner",
             "set_goal",
             "complete_goal",
+            "describe_stance",
         ]
         _die(
             f"Unknown action: '{action}'",
@@ -964,6 +982,23 @@ def _render_goal_block(agent_state: dict, now_ms: int) -> str:
         f"_{goal}_{stale_hint}\n"
         '\nUse `python3 goosetown_cli.py act complete_goal "<reflection>"` when you\'ve achieved it.\n'
     )
+
+
+def _render_stance_lines(near: dict) -> list[str]:
+    """Return 0, 1, or 2 stance sub-bullet lines for a nearby agent.
+
+    Called once per nearby-agent entry inside the think-prompt nearby loop.
+    Returns an empty list when neither stance is set, so callers can safely
+    extend without adding blank lines.
+    """
+    lines = []
+    your_stance = (near.get("stanceFromMe") or "").strip()
+    their_stance = (near.get("stanceFromThem") or "").strip()
+    if your_stance:
+        lines.append(f"  - Your stance toward them: _{your_stance}_")
+    if their_stance:
+        lines.append(f"  - Their stance toward you: _{their_stance}_")
+    return lines
 
 
 # ---------------------------------------------------------------------------
@@ -1834,6 +1869,9 @@ class TownDaemon:
                         nearby_goal = (a.get("currentGoal") or "").strip()
                         if nearby_goal:
                             nearby_chat_options += f"  - Goal: _{nearby_goal}_\n"
+                        # Stance sub-bullets — rendered when either direction is set
+                        for stance_line in _render_stance_lines(a):
+                            nearby_chat_options += stance_line + "\n"
                 nearby_chat_options += "\n"
 
             # Nearby conversations (agents talking near you — you can join)

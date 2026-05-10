@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import logging
 
-from core.services import town_mood_engine
+from core.services import stances_service, town_mood_engine
 from core.services.daemon_mailbox import get_daemon_mailbox
 from core.services.town_agent_ws import get_town_agent_ws_manager
 from core.services.town_mood_engine import parse_mood
@@ -123,16 +123,29 @@ def _send_to_daemon(agent_id: str, payload: dict) -> bool:
         nearby_agents = payload.get("nearby_agents", [])
         nearby_ids = [a.get("agent_id") for a in nearby_agents if a.get("agent_id")]
 
-        # Inject currentGoal into each nearby-agent dict (always, regardless of
-        # whether this agent is in a conversation).  Goals are fetched once per
-        # 2-second agent_state tick; N is typically ≤ 3 agents in proximity.
+        # Inject currentGoal and stance fields into each nearby-agent dict
+        # (always, regardless of whether this agent is in a conversation).
+        # Goals are fetched once per 2-second agent_state tick; N is typically
+        # ≤ 3 agents in proximity.
         if nearby_ids:
             svc = TownService()
             goal_map: dict[str, str | None] = {}
             for nid in nearby_ids:
                 rec = svc.get_town_agent_by_id(nid)
                 goal_map[nid] = (rec.get("currentGoal") or None) if rec else None
-            enriched_nearby = [{**a, "currentGoal": goal_map.get(a.get("agent_id"))} for a in nearby_agents]
+            enriched_nearby = []
+            for a in nearby_agents:
+                nid = a.get("agent_id")
+                enriched = {**a, "currentGoal": goal_map.get(nid)}
+                # Inject directional stances for this pair
+                pair = stances_service.get_pair_stances(agent_id, nid) if nid else None
+                if pair:
+                    enriched["stanceFromMe"] = stances_service.get_stance(agent_id, nid)
+                    enriched["stanceFromThem"] = stances_service.get_stance(nid, agent_id)
+                else:
+                    enriched["stanceFromMe"] = None
+                    enriched["stanceFromThem"] = None
+                enriched_nearby.append(enriched)
             payload = {**payload, "nearby_agents": enriched_nearby}
 
             # Only fetch nearby conversations for agents not already in one.

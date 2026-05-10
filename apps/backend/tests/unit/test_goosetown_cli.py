@@ -17,6 +17,7 @@ from goosetown_cli import (  # noqa: E402
     TownDaemon,
     _is_auth_failure,
     _render_goal_block,
+    _render_stance_lines,
 )
 
 # ---------------------------------------------------------------------------
@@ -793,3 +794,142 @@ class TestGoalInStatusRendering:
         # Carol is listed but no goal sub-line
         assert "Carol" in content
         assert "Goal:" not in content
+
+
+# ---------------------------------------------------------------------------
+# Tests for _render_stance_lines
+# ---------------------------------------------------------------------------
+
+
+class TestRenderStanceLines:
+    """_render_stance_lines returns formatted sub-bullet lines for nearby agents."""
+
+    def test_both_directions_present(self):
+        near = {
+            "stanceFromMe": "warm and curious",
+            "stanceFromThem": "reserved but friendly",
+        }
+        lines = _render_stance_lines(near)
+        assert len(lines) == 2
+        assert "Your stance toward them: _warm and curious_" in lines[0]
+        assert "Their stance toward you: _reserved but friendly_" in lines[1]
+
+    def test_only_my_stance_set(self):
+        near = {
+            "stanceFromMe": "kind but distant",
+            "stanceFromThem": None,
+        }
+        lines = _render_stance_lines(near)
+        assert len(lines) == 1
+        assert "Your stance toward them: _kind but distant_" in lines[0]
+
+    def test_only_their_stance_set(self):
+        near = {
+            "stanceFromMe": None,
+            "stanceFromThem": "enthusiastic and talkative",
+        }
+        lines = _render_stance_lines(near)
+        assert len(lines) == 1
+        assert "Their stance toward you: _enthusiastic and talkative_" in lines[0]
+
+    def test_neither_stance_set(self):
+        near = {
+            "stanceFromMe": None,
+            "stanceFromThem": None,
+        }
+        lines = _render_stance_lines(near)
+        assert lines == []
+
+    def test_neither_stance_keys_absent(self):
+        near = {"agent_id": "alice-1", "name": "Alice"}
+        lines = _render_stance_lines(near)
+        assert lines == []
+
+    def test_blank_strings_treated_as_absent(self):
+        near = {
+            "stanceFromMe": "   ",
+            "stanceFromThem": "",
+        }
+        lines = _render_stance_lines(near)
+        assert lines == []
+
+
+class TestStanceInStatusRendering:
+    """Stance sub-bullets appear in the think-prompt nearby-agent block."""
+
+    def test_stance_sub_bullets_rendered_in_status(self, daemon):
+        """When a nearby agent has stanceFromMe set, it appears under their chat line."""
+        daemon.state["agent"] = {"onboardingPhase": "alive", "location": "plaza"}
+        world_data = {
+            "you": {
+                "onboardingPhase": "alive",
+                "location": "plaza",
+                "mood": "neutral",
+                "energy": 80,
+            },
+            "nearby_agents": [
+                {
+                    "agent_id": "bob-uuid",
+                    "name": "Bob",
+                    "display_name": "Bob",
+                    "activity": "idle",
+                    "stanceFromMe": "thoughtful and a bit guarded",
+                    "stanceFromThem": None,
+                }
+            ],
+            "think": True,
+        }
+        daemon._handle_world_update(world_data)
+        content = _read_status(daemon)
+        assert "Your stance toward them: _thoughtful and a bit guarded_" in content
+
+    def test_their_stance_rendered(self, daemon):
+        """stanceFromThem appears when set."""
+        daemon.state["agent"] = {"onboardingPhase": "alive", "location": "plaza"}
+        world_data = {
+            "you": {
+                "onboardingPhase": "alive",
+                "location": "plaza",
+                "mood": "neutral",
+                "energy": 80,
+            },
+            "nearby_agents": [
+                {
+                    "agent_id": "carol-uuid",
+                    "name": "Carol",
+                    "display_name": "Carol",
+                    "activity": "idle",
+                    "stanceFromMe": None,
+                    "stanceFromThem": "cheerful and direct",
+                }
+            ],
+            "think": True,
+        }
+        daemon._handle_world_update(world_data)
+        content = _read_status(daemon)
+        assert "Their stance toward you: _cheerful and direct_" in content
+
+    def test_no_stance_lines_when_absent(self, daemon):
+        """No stance lines when both stances are absent."""
+        daemon.state["agent"] = {"onboardingPhase": "alive", "location": "plaza"}
+        world_data = {
+            "you": {
+                "onboardingPhase": "alive",
+                "location": "plaza",
+                "mood": "neutral",
+                "energy": 80,
+            },
+            "nearby_agents": [
+                {
+                    "agent_id": "dave-uuid",
+                    "name": "Dave",
+                    "display_name": "Dave",
+                    "activity": "idle",
+                }
+            ],
+            "think": True,
+        }
+        daemon._handle_world_update(world_data)
+        content = _read_status(daemon)
+        assert "Dave" in content
+        assert "stance" not in content.lower()
