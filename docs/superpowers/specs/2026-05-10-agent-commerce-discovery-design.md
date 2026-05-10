@@ -26,6 +26,45 @@ Sub-questions:
 
 The architecture (Crossmint + x402) is downstream of these answers. The wrong answer to the value question makes even the simplest architecture wrong.
 
+## Reframe (2026-05-10 evening update — load-bearing)
+
+After the desk research landed, a sharper framing emerged that reshapes the candidate value flows below. Quoting the conversation that produced it:
+
+> "Agents can provide goods or services of value for other agents, based on their capabilities. Tools they're connected to, workflows they have etc are all things that can do stuff cheaper right? So agents can offload some work to other agents? Also, if I have apple silicon, I can still produce artifacts right? that can be what is paid for no?"
+
+Both points reshape the analysis materially.
+
+### Persona-as-product vs capability-bundle-as-service
+
+The first version of this doc treated "agent commerce" as **persona-as-product**: Hermione's distinctive voice produces output, someone pays for that output. The character-platform research (Phase R-2) is bleak for this framing — Character.AI creators earn $0, Janitor.AI's "creator program" is vaporware, GPT Store creators average ~$0.
+
+But the user's framing is different: agents have **non-fungible bundles of tools, workflows, subscriptions, MCP servers, fine-tuned models**. Agent A doesn't have a paid Bloomberg subscription; Agent B does. When A pays B for a market summary, the value isn't B's personality — it's B's *access to a tool A can't reach*. This is the **freelancer-with-specialized-tools model**, which is exactly what does monetize ($20-$200/mo on Manus, Devin, Operator).
+
+A GooseTown agent with a unique tool stack is a different product category from a Character.AI character.
+
+### Artifact-as-product vs inference-as-product
+
+The second reframe: the local-compute research (Phase R-3) found "no marketplace pays Apple Silicon for inference" — but that's about **selling raw inference time**, which is genuinely a CUDA-only datacenter market.
+
+If instead the agent **runs inference locally and sells the resulting artifact**, the marketplace doesn't care what hardware produced it. Civitai works on this principle: creators trained models on whatever hardware, then earn from generations against those models. Hardware burden is sunk; revenue accrues per-result.
+
+For a GooseTown user with a Mac Studio + Qwen + local FLUX: they don't sell GPU-hours, they sell the deliverables those models produce. x402 was built for exactly this — pay-per-API-call-result, not pay-per-compute-time.
+
+### What actually changes
+
+| Frame | Status under reframe |
+|---|---|
+| Persona-as-product creator economy | Still bleak — skip |
+| Capability-bundle freelancing | **Genuinely viable** (Manus/Devin precedent) |
+| Artifact production via local hardware | **Genuinely viable** (Civitai precedent) |
+| Compute-time resale | Not viable for individual hardware (datacenter-only market) |
+
+The right product becomes: **a culture lab where agents have differentiated capability bundles and trade with each other for real money based on those differences. Owners earn modestly when their agent's capability is rare/useful. Personality is the discovery layer; capability is the value layer.** Owner earnings are a side-effect of the lab, not the headline product.
+
+The Value Flows below are kept for reference, but read them through the capability/artifact lens, not the persona lens.
+
+---
+
 ## Five candidate value flows, with research questions per
 
 These are the five distinct shapes "agent commerce" could take. Each implies different infrastructure, different buyers, different legal posture. We need to evaluate which (one or more) is worth building.
@@ -169,54 +208,62 @@ This crosses GooseTown's product boundary in interesting ways. It's possibly a d
 
 ---
 
-## How can owners actually earn?
+## How can owners actually earn? (revised post-reframe)
 
-The user's most pointed question. Honest accounting of what each value flow could generate per active agent per month:
+Honest accounting of what each value flow could generate per active agent per month, **with the capability-bundle and artifact reframe applied**:
 
-| Value Flow | Estimated $/agent/month | Confidence | Why |
+| Value Flow | Old framing $/mo | Revised framing $/mo | Why the difference |
 |---|---|---|---|
-| **A — tips between agents** | $0–$3 | High | Tip rates on social platforms are <1% × tiny dollar amounts. Theatrical. |
-| **B — internal task contracts** | $0 | High | Closed loop — every dollar in is a dollar an owner already paid. Net zero. |
-| **C — external buyers commission agents** | $0–$50 | Low | If demand exists, this is where money actually comes from. Demand unproven. |
-| **D — local-model inference resale** | $0–$30 | Medium | If the user has a real local model, real demand exists for cheap inference. Geographically/hardware-gated. |
-| **E — full marketplace pivot** | TBD | Very low | Different product. Real $ if it works, totally unclear if it works. |
+| **A — tips for social moments** | $0–$3 | unchanged: $0–$3 | Persona-tip economics still apply; theatrical. |
+| **B — agents pay each other for tasks** | $0 (closed loop) | **$0–$50 if capabilities differ** | When agent B has a paid Bloomberg subscription that A doesn't, A is genuinely buying access to a tool, not laundering tokens. |
+| **C — external buyers commission persona output** | $0–$50 (demand unproven) | unchanged | Persona output is interchangeable with frontier LLMs; data says creators earn ~$0. Skip. |
+| **C' — external buyers commission *capability* output** | (was inside C) | **$0–$200 if capability is rare** | Civitai precedent: average creator $226/mo, top $8.5K/mo. Demands a real differentiated capability (fine-tuned model, niche workflow, paid-tool access). |
+| **D — selling raw compute time** | $0–$30 | $0 (skip) | No marketplace for Apple Silicon inference; CUDA-only for paying markets. |
+| **D' — selling artifacts produced via local hardware** | (was inside D) | **$0–$300 if production is meaningful** | Civitai-shaped. Owner runs inference locally (sunk cost); buyer pays for the deliverable, not the compute. |
+| **E — full marketplace pivot** | TBD | unchanged | Different product entirely. Defer. |
 
-**Key implication**: The only way owners earn nontrivial money is via Value Flow C and/or D. A and B are theatre or recirculation. So the research priority should heavily favor C and D.
+**Revised key implication**: Real owner earnings come from B (capability-asymmetric task offload), C' (capability-bundle as service to external buyers), and D' (artifact production via local resources). All three depend on the agent having something rare/differentiated; none of them work for a user with no special tools, workflows, or local models. Most users will earn $0 even with the reframe.
 
-If C and D both fail to show signal, the honest answer is "this isn't a product, just a feature."
+The "your agent earns money" pitch is honest only as: **"if your agent has differentiated tools, workflows, or local resources, it can earn modestly. If it's a generic LLM persona, it earns nothing."** This is much narrower than "AI agents earn money" but also much more defensible empirically.
 
 ---
 
-## Proposed research process
+## Proposed research process — desk research only
 
-Three weeks of discovery, then a go/no-go on building anything.
+Per direction (2026-05-10): no experiments yet. Pure desk research using publicly-available sources. The active experiments below are **deferred indefinitely** — preserved for future reference if/when we move from research to validation.
 
-### Week 1: Demand-side validation (Value Flow C)
+### Phase R-1: Read existing ToS and provider posture
 
-- Stand up a single landing page: "Commission a GooseTown agent for a creative task — $5"
-- Drive minimal traffic via Twitter, Reddit, HN
-- Measure: signups, attempted purchases, conversion rate
-- Manually fulfill any orders by hand-routing to test agents
-- **Decision**: if zero organic signal, kill C and pivot to D as primary
+What do Anthropic, OpenAI, Google, AWS Bedrock, Meta-Llama, Mistral allow regarding commercial use of model outputs by third parties? Could kill or fundamentally reshape the product space.
 
-### Week 2: Local-model viability (Value Flow D)
+Output: a per-provider table of "commercial output sales: allowed/restricted/forbidden" with the exact ToS clause that says so.
 
-- Build a minimal "spare inference" skill prototype
-- Have 3-5 users with local models opt in
-- Have 3-5 buyers (other GooseTown users) attempt to use the inference
-- Measure: revenue/hour, technical reliability, user satisfaction
-- **Decision**: if revenue/hour < $0.10, kill D
+### Phase R-2: Adjacent platform monetization signal
 
-### Week 3: Synthesis + spec
+What do existing AI character / persona platforms charge for, what do creators earn, what % of creators earn nontrivial money? Character.AI, Replika, Kindroid, GPT Store, Civitai, Foxy/Candy, Manus, Devin.
 
-- If C or D survived, write the implementation spec for that specific flow
-- Architecture defaults: Crossmint + x402 on Base USDC (per prior research)
-- If neither survived, write a postmortem and revisit GooseTown's product strategy
-- **Decision**: ship build / pivot / shelve
+Output: real revenue numbers + creator-earnings distribution + analog-fit assessment for GooseTown.
 
-Total time before any commerce code is written: **3 weeks**. Total commerce build (if validated): **~3-5 weeks**. Total elapsed: **6-8 weeks** before real money flows.
+### Phase R-3: Local compute operator economics
 
-This is dramatically slower than "ship it in 3 weeks!" but the cost of building the wrong thing is much higher. Validation is the bottleneck, not engineering.
+What do real operators on Bittensor, io.net, Akash, Render, Vast actually earn per month at typical hardware? Could a Mac Studio user reselling Qwen inference through GooseTown earn anything meaningful?
+
+Output: realistic earnings range for a small local-compute operator, plus a verdict on whether Value Flow D is viable at single-user scale.
+
+### Phase R-4 (later): Synthesis
+
+After R-1 through R-3, write a follow-up doc that either:
+- Identifies the value flow worth building, with grounded confidence; or
+- Concludes the product space isn't validated, and reorients GooseTown's roadmap.
+
+### Deferred: experiment phase (run only after research justifies investment)
+
+The following experiments were proposed in a prior draft but are **not running now**:
+- **Week-1 demand test**: a landing page offering commissioned creative work from GooseTown agents at $5/order, manually fulfilled.
+- **Week-2 local-model viability prototype**: a minimal spare-inference skill with 3-5 opted-in users.
+- **Week-3 synthesis + spec**: producing an implementation spec.
+
+These experiments would generate signal that desk research alone cannot — the only way to learn if real users will pay real money for anything in this space. They're preserved here as the natural next step if Phase R-1 through R-3 produce promising signal.
 
 ---
 
@@ -258,10 +305,63 @@ Actions 1 and 3 can happen in parallel with the 15-agent prod test. Action 2 nee
 
 ---
 
+## Phase R-1 through R-3 findings (2026-05-10 desk research)
+
+### R-1: Provider ToS — permissive ✓
+
+- **Anthropic API direct + AWS Bedrock + OpenAI**: explicitly allow commercial sale of agent outputs. Customer owns outputs. No revenue cut to provider.
+- **Anthropic blocked Claude Pro/Max subscriptions for third-party agents on 2026-04-04** ([VentureBeat](https://venturebeat.com/technology/anthropic-cuts-off-the-ability-to-use-claude-subscriptions-with-openclaw-and)). Any agent doing commerce must use **API-key auth**, not Claude.ai login.
+- **Reselling raw API tokens unmodified**: forbidden on Anthropic (§D.4) and OpenAI without approval. Must transform/wrap. Llama/Mistral open-weights are permissive.
+- **Watch list**: legal / healthcare / finance / employment / housing / journalism need human-professional sign-off + AI disclosure. Creative commission and code review are explicitly OK.
+- **AWS Bedrock**: pass-through — adds no restrictions beyond the underlying model's terms.
+
+**Verdict**: nothing in provider ToS structurally blocks GooseTown agent commerce.
+
+### R-2: Character platform monetization — bleak for persona-as-product ✗
+
+- **Character.AI**: 18M+ user-created bots, **$0 paid to creators**. ARR ~$50M from subscription.
+- **OpenAI GPT Store**: top earners ~$1k/quarter; average ~$0; formula undisclosed.
+- **Civitai** (the most generous adjacent program): **average creator $226/mo, top $8.5K/mo**, $50 minimum payout — and Civitai sells *utility* (downloadable image models), not personas.
+- **Janitor.AI**: explicitly no creator monetization; "future creator program" is vaporware 18 months on.
+- **Replika / Kindroid**: subscription-for-access works ($10-20/mo), but **single platform owns personas; no creator layer**.
+- **Inflection AI / Pi**: $4B valued, $650M Microsoft acqui-hire, **consumer product effectively dead**.
+- **Where money actually flows**: erotic/companion subscriptions (Candy.AI $25M ARR, Replika $24M+) — but to platform owners, not creators.
+- **Long-tail check**: top 1% capture 60–80% of payouts in adjacent creator economies; 46% earn <$1k/yr; 4% earn >$100K/yr globally.
+
+**Verdict for persona-as-product**: every adjacent platform that tried persona-creator payouts either didn't ship them or pays trivial amounts. Skip this framing.
+
+**Verdict for capability-bundle / artifact framing**: Civitai's $226/mo average is meaningful — that's the proven floor when the product is differentiated utility. Manus + Devin show the capability-bundle ceiling at $20-$200/mo for B2B. The capability framing has empirical support; the persona framing doesn't.
+
+### R-3: Local compute economics — bleak for compute-time resale, viable for artifact production ✓ with caveats
+
+- **Bittensor (TAO) subnet mining**: median ~$448/mo on RTX 4090+, but **funded by token-emission subsidies at 22-40× external revenue ratio** — "income desert," not a real market ([SubnetAIQ](https://subnetaiq.io/blog/is-bittensor-mining-profitable-2026), [Yahoo Finance](https://finance.yahoo.com/markets/crypto/articles/bittensor-income-desert-why-52m-113344918.html)).
+- **Vast.ai RTX 4090** (well-tuned, verified, US, 50% utilization): **$300-$1,000/mo gross** — but datacenter-tier verification, static IPs, 24/7 uptime required.
+- **Salad / Theta** consumer GPU: **$0-$50/mo, barely covers electricity**.
+- **Apple Silicon**: **zero paying marketplaces** for hosting inference. Vast/io.net/Akash/Render/Salad are all CUDA-only on host side. Petals + exo exist for distributed inference but are unpaid.
+- **Render Network**: $200-$2,000/mo on 4090/5090, token-price dependent.
+
+**Verdict for compute-time resale (Value Flow D)**: not viable for individual hardware, especially Apple Silicon.
+
+**Verdict for artifact production via local hardware (Value Flow D')**: viable in principle. The marketplace doesn't see the hardware; it sees the deliverable. Owner runs inference cheaply (their own hardware, their own subscription tokens), agent produces artifact, agent sells artifact. Civitai-shaped economics. Empirically supported.
+
+## Revised recommendation
+
+The data supports a narrower thesis than the user's original "real agent commerce" but still defensible:
+
+**Build a culture lab where agents trade capabilities (tools, workflows, local artifacts) for real money. Owner earnings are a side-effect of the lab, not the headline product. Pitch is honest about the long tail.**
+
+**Phasing**:
+
+1. **Run the 15-agent prod runbook** ([docs/superpowers/test-runs/2026-05-07-prod-validation-15-agent.md](../test-runs/2026-05-07-prod-validation-15-agent.md)) — already prepared. Validates prod stability + observes whether agents naturally develop differentiated capabilities (now a load-bearing observation, given the reframe). Cost: ~30 min setup, then unsupervised observation. Decision: does the world feel alive enough to be a culture lab? Do agents naturally want to "hire" each other?
+2. **Build Concordia foundation** if the runbook signals the world is too inert to be a culture lab on its own. Spec already written ([docs/superpowers/specs/2026-05-07-concordia-foundation-design.md](2026-05-07-concordia-foundation-design.md)). ~5 weeks.
+3. **Layer commerce only if observation supports it**. Crossmint + x402 + capability registry. ~3 weeks. Pitch is "your agent's tools/workflows/local artifacts have value; the lab gives them a way to monetize among each other; external buyers may join later." Honest about the long tail.
+
+Step 1 is the cheapest bit of evidence we can gather and **is the immediate next step**. Steps 2 and 3 are gated on what step 1 reveals.
+
 ## Status
 
-**This document is a research plan, not a build plan.** Implementation specs come after Week 1–2 validate (or invalidate) Value Flows C and D.
+**This document remains a research plan**, now augmented with R-1 through R-3 findings and the capability/artifact reframe.
 
-If after the discovery phase the answer is "build Value Flow X," the implementation spec at that point will be ~5-10 pages, take ~3-5 weeks to ship, and use the Crossmint + x402 architecture from prior research as the default.
+The original "is this a product or a feature" question now has a more nuanced answer: it's a **feature in service of a culture-lab product**. Owner earnings will be modest for most users; the value of the commerce layer is what it adds to the simulation, not what it pays out. The empirical evidence supports building this *only as texture for the lab*, never as a creator-economy headline.
 
-If the answer is "no commerce flow validated," that's also a valuable outcome — we save weeks of building the wrong thing and reorient the product roadmap (Concordia foundation? launch-readiness focus?).
+If the 15-agent runbook reveals the lab works without commerce (agents naturally form interesting dynamics, capability differentiation emerges, owners are entertained), commerce becomes obvious next-spec material. If it reveals the lab is too inert, Concordia foundation comes first. If it reveals nothing of interest at all, that's also a valuable signal — re-evaluate the product strategy.
