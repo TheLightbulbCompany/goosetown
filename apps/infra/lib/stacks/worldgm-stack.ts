@@ -64,7 +64,11 @@ export class WorldgmStack extends cdk.Stack {
     taskDef.addContainer("WorldGm", {
       image: ecs.ContainerImage.fromDockerImageAsset(backendImage),
       // Override entrypoint to start the WorldGM service instead of uvicorn.
-      command: ["python", "-m", "apps.backend.worldgm"],
+      // The Docker WORKDIR is /app (set by apps/backend/Dockerfile); the
+      // ``worldgm/`` package lives directly under it, not under ``apps.backend.``.
+      // Use ``uv run`` to match the rest of the image's invocation pattern
+      // (the default CMD is ``uv run uvicorn ...``).
+      command: ["uv", "run", "python", "-m", "worldgm"],
       logging: ecs.LogDrivers.awsLogs({
         logGroup,
         streamPrefix: "worldgm",
