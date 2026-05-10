@@ -120,6 +120,7 @@ class ApartmentAgentState(BaseModel):
     current_spot: Optional[str] = None
     is_active: bool = True
     sprite_url: Optional[str] = None
+    currentGoal: Optional[str] = None
 
 
 class ApartmentActivityEvent(BaseModel):

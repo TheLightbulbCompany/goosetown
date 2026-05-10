@@ -875,6 +875,7 @@ async def get_apartment(
                 current_spot=item.get("currentLocation"),
                 is_active=item.get("isActive") == "true",
                 sprite_url=versioned_sprite_url(item.get("spriteUrl"), item) if item.get("spriteReady") else "",
+                currentGoal=item.get("currentGoal"),
             )
         )
 
