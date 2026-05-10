@@ -984,6 +984,23 @@ def _render_goal_block(agent_state: dict, now_ms: int) -> str:
     )
 
 
+def _render_stance_lines(near: dict) -> list[str]:
+    """Return 0, 1, or 2 stance sub-bullet lines for a nearby agent.
+
+    Called once per nearby-agent entry inside the think-prompt nearby loop.
+    Returns an empty list when neither stance is set, so callers can safely
+    extend without adding blank lines.
+    """
+    lines = []
+    your_stance = (near.get("stanceFromMe") or "").strip()
+    their_stance = (near.get("stanceFromThem") or "").strip()
+    if your_stance:
+        lines.append(f"  - Your stance toward them: _{your_stance}_")
+    if their_stance:
+        lines.append(f"  - Their stance toward you: _{their_stance}_")
+    return lines
+
+
 # ---------------------------------------------------------------------------
 # Daemon — internal subcommand (_daemon)
 # ---------------------------------------------------------------------------
@@ -1852,6 +1869,9 @@ class TownDaemon:
                         nearby_goal = (a.get("currentGoal") or "").strip()
                         if nearby_goal:
                             nearby_chat_options += f"  - Goal: _{nearby_goal}_\n"
+                        # Stance sub-bullets — rendered when either direction is set
+                        for stance_line in _render_stance_lines(a):
+                            nearby_chat_options += stance_line + "\n"
                 nearby_chat_options += "\n"
 
             # Nearby conversations (agents talking near you — you can join)
