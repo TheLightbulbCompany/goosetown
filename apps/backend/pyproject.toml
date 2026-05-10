@@ -15,6 +15,9 @@ dependencies = [
     # Pin transitive deps with known CVEs (see pip-audit output).
     # cryptography is pulled in via pyjwt[crypto]; pygments via rich (pip-audit dev dep).
     "cryptography>=46.0.7",
+    # Concordia: interrupt-driven GameMaster framework used by the WorldGM service.
+    # Latest stable is 2.4.0. The plan specified ^0.2.0 but the package is now 2.x.
+    "gdm-concordia>=2.0.0,<3.0.0",
 ]
 
 [dependency-groups]
