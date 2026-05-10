@@ -22,6 +22,7 @@ export interface ApartmentAgent {
   sprite_url: string | null;
   sprite_ready: boolean;
   created_at: number | null; // ms timestamp from backend
+  currentGoal: string | null;
 }
 
 export interface ActivityEvent {

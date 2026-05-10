@@ -153,6 +153,13 @@ export default function ApartmentCard({
         <p className="font-body text-xs text-clay-100 italic">"{agent.status_message}"</p>
       )}
 
+      {/* Current goal */}
+      {agent.currentGoal && (
+        <div className="font-body text-xs text-clay-300 italic truncate">
+          Goal: <span className="text-brown-200">{agent.currentGoal}</span>
+        </div>
+      )}
+
       {/* Mood + Energy */}
       <div className="flex items-center gap-4">
         <div className="font-body text-xs text-clay-300">
