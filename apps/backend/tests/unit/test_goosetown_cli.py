@@ -21,6 +21,18 @@ from goosetown_cli import (  # noqa: E402
 )
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _read_events(daemon: TownDaemon) -> str:
+    events_file = daemon._workspace_path / "TOWN_EVENTS.md"
+    if not events_file.exists():
+        return ""
+    return events_file.read_text()
+
+
+# ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
@@ -852,6 +864,180 @@ class TestRenderStanceLines:
         }
         lines = _render_stance_lines(near)
         assert lines == []
+
+
+# ===========================================================================
+# WorldGM world_event daemon handler (Phase E1)
+# ===========================================================================
+
+
+class TestIconForTag:
+    """_icon_for_tag maps tag prefixes to emoji icons."""
+
+    def test_weather_prefix_returns_cloud_rain(self, daemon):
+        assert daemon._icon_for_tag("weather.rain") == "\U0001f327"
+
+    def test_ambient_prefix_returns_bulb(self, daemon):
+        assert daemon._icon_for_tag("ambient.noise.market") == "\U0001f4a1"
+
+    def test_arc_prefix_returns_scroll(self, daemon):
+        assert daemon._icon_for_tag("arc.festival.started") == "\U0001f4dc"
+
+    def test_social_prefix_returns_megaphone(self, daemon):
+        assert daemon._icon_for_tag("social.announcement") == "\U0001f4e3"
+
+    def test_personal_prefix_returns_bell(self, daemon):
+        assert daemon._icon_for_tag("personal.agent-uuid.goal") == "\U0001f514"
+
+    def test_unknown_tag_returns_bullet(self, daemon):
+        assert daemon._icon_for_tag("system.heartbeat") == "•"
+
+    def test_empty_tag_returns_bullet(self, daemon):
+        assert daemon._icon_for_tag("") == "•"
+
+
+class TestHandleWorldEventLog:
+    """LOG world_event: appends to TOWN_EVENTS.md, does NOT modify TOWN_STATUS.md."""
+
+    def test_log_event_appends_to_events_file(self, daemon):
+        """A non-wake world_event must appear in TOWN_EVENTS.md."""
+        daemon.state["agent"] = {"onboardingPhase": "alive", "location": "plaza"}
+
+        payload = {
+            "type": "world_event",
+            "event": {
+                "tag": "weather.rain",
+                "summary": "A light rain begins to fall",
+                "location": "plaza",
+                "timestamp": "2026-05-10T10:00:00Z",
+            },
+            "wake": False,
+        }
+        daemon._handle_world_event(payload)
+
+        content = _read_events(daemon)
+        assert "A light rain begins to fall" in content
+        assert "at plaza" in content
+        assert "\U0001f327" in content  # 🌧
+
+    def test_log_event_does_not_write_status(self, daemon):
+        """A wake=False world_event must NOT create TOWN_STATUS.md (no think trigger)."""
+        daemon.state["agent"] = {"onboardingPhase": "alive", "location": "plaza"}
+        status_file = daemon._workspace_path / "TOWN_STATUS.md"
+
+        payload = {
+            "type": "world_event",
+            "event": {
+                "tag": "ambient.market.busy",
+                "summary": "Market bustle fills the plaza",
+                "location": "plaza",
+                "timestamp": "2026-05-10T10:00:00Z",
+            },
+            "wake": False,
+        }
+        daemon._handle_world_event(payload)
+
+        assert not status_file.exists()
+
+    def test_log_event_without_location_no_suffix(self, daemon):
+        """When location is None, the '(at X)' suffix must not appear."""
+        daemon.state["agent"] = {"onboardingPhase": "alive", "location": "library"}
+        payload = {
+            "type": "world_event",
+            "event": {
+                "tag": "arc.festival.started",
+                "summary": "The Goose Festival kicks off",
+                "location": None,
+                "timestamp": "2026-05-10T10:00:00Z",
+            },
+            "wake": False,
+        }
+        daemon._handle_world_event(payload)
+
+        content = _read_events(daemon)
+        assert "The Goose Festival kicks off" in content
+        assert "(at" not in content
+
+    def test_log_event_uses_basetag_when_summary_missing(self, daemon):
+        """Falls back to event.baseTag if summary is absent."""
+        daemon.state["agent"] = {"onboardingPhase": "alive", "location": "cafe"}
+        payload = {
+            "type": "world_event",
+            "event": {
+                "tag": "personal.agent-x.observed",
+                "baseTag": "ambient.birdsong",
+                "location": None,
+                "timestamp": "2026-05-10T10:01:00Z",
+            },
+            "wake": False,
+        }
+        daemon._handle_world_event(payload)
+
+        content = _read_events(daemon)
+        assert "ambient.birdsong" in content
+
+    def test_log_event_uses_tag_when_summary_and_basetag_missing(self, daemon):
+        """Falls back to raw tag if both summary and baseTag are absent."""
+        daemon.state["agent"] = {"onboardingPhase": "alive", "location": "cafe"}
+        payload = {
+            "type": "world_event",
+            "event": {
+                "tag": "social.festival.stage_open",
+                "timestamp": "2026-05-10T10:01:00Z",
+            },
+            "wake": False,
+        }
+        daemon._handle_world_event(payload)
+
+        content = _read_events(daemon)
+        assert "social.festival.stage_open" in content
+
+
+class TestHandleWorldEventWake:
+    """WAKE world_event: appends to TOWN_EVENTS.md AND writes think=True TOWN_STATUS.md."""
+
+    def test_wake_event_appends_to_events_file(self, daemon):
+        """wake=True still writes to TOWN_EVENTS.md."""
+        daemon.state["agent"] = {"onboardingPhase": "alive", "location": "plaza", "mood": "neutral", "energy": 90}
+        payload = {
+            "type": "world_event",
+            "event": {
+                "tag": "personal.agent-me.goal_opportunity",
+                "summary": "A goal opportunity has appeared",
+                "location": "library",
+                "timestamp": "2026-05-10T10:02:00Z",
+            },
+            "wake": True,
+        }
+        daemon._handle_world_event(payload)
+
+        content = _read_events(daemon)
+        assert "A goal opportunity has appeared" in content
+
+    def test_wake_event_writes_think_status(self, daemon):
+        """wake=True must write TOWN_STATUS.md with think content (action menu)."""
+        daemon.state["agent"] = {
+            "onboardingPhase": "alive",
+            "location": "plaza",
+            "mood": "neutral",
+            "energy": 90,
+        }
+        payload = {
+            "type": "world_event",
+            "event": {
+                "tag": "personal.agent-me.goal_opportunity",
+                "summary": "An opportunity aligned with your goal",
+                "location": None,
+                "timestamp": "2026-05-10T10:02:00Z",
+            },
+            "wake": True,
+        }
+        daemon._handle_world_event(payload)
+
+        content = _read_status(daemon)
+        # think=True triggers the action menu in _handle_world_update
+        assert "GooseTown Status" in content
+        assert "goosetown_cli.py act move" in content
 
 
 class TestStanceInStatusRendering:
