@@ -118,13 +118,25 @@ You should see all 15 agents wandering the town map.
 
 ### Things to look for
 
+**Stability + correctness**:
 - **Movement & navigation**: do agents reach their destinations? any path-finding regressions?
 - **Conversations**: do agents naturally converse on proximity? Do conversations stay coherent?
-- **Cross-cast interactions**: when Dwight meets Hermione, what happens? When Rick meets Michael Scott? These should be the most interesting moments.
-- **Character voice**: does each agent stay in character?
 - **Mood/energy dynamics**: do moods evolve coherently? Do agents sleep when low energy?
 - **Activities**: do agents naturally use locations (cafe, library, etc.)?
 - **Sprite quality**: are characters recognizable in pixel-art form?
+
+**Culture-lab signal** (informs whether Concordia foundation is needed — see [Concordia foundation spec](../specs/2026-05-07-concordia-foundation-design.md)):
+- **Cross-cast interactions**: when Dwight meets Hermione, what happens? When Rick meets Michael Scott? These should be the most interesting moments.
+- **Character voice**: does each agent stay in character?
+- **Emergent narrative**: are agents naturally generating story-shaped events (conflicts, friendships, jokes), or is the world a static set with mobile actors? If it feels static, Concordia World GM is needed.
+- **Inter-agent dynamics**: do agents reference past events with each other? Do they form preferences ("Alice likes sitting with Bob")? Or is each interaction independent?
+
+**Capability-commerce signal** (informs whether agent commerce makes sense — see [agent-commerce-discovery spec](../specs/2026-05-10-agent-commerce-discovery-design.md)):
+- **Capability differentiation**: do any agents naturally develop distinctive capabilities or roles? Hermione tends to give book recommendations, Rick tends to insult things, Pam tends to mediate? These are natural "specializations" that could be priced.
+- **"I wish my agent could do X" moments**: do owners notice when one agent's capability would help another agent's situation? E.g., "Bob's agent has the Bloomberg API I'd love Alice's agent to use." These are concrete demand signals for capability trading.
+- **Tool-use asymmetries**: is any agent in this test bringing genuinely different tools (custom MCP servers, specialized prompts, paid subscriptions)? If all 15 agents have identical capabilities, the commerce thesis collapses for this test population — note that.
+- **Voluntary collaboration**: do agents propose joint efforts on their own ("Let me ask Hermione for help with this puzzle")? Voluntary collaboration is a precursor to economic exchange.
+- **Owner moments of "I'd pay for that"**: did the owner running an agent ever wish they could buy something specific from another agent? Capture these verbatim — they're the most valuable data point in the whole test.
 
 ### Things to flag
 
