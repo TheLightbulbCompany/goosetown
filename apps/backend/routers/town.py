@@ -17,7 +17,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Requ
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from core.auth import AuthContext, get_current_user
-from core.services import goals_service, town_mood_engine
+from core.services import goals_service, stances_service, town_mood_engine
 from core.services.game_server_client import get_game_server_client
 from core.services.owner_chat_service import (
     OwnerChatService,
@@ -1421,6 +1421,15 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
         elif action == "complete_goal":
             reflection = body.get("reflection", "")
             result = goals_service.complete_goal(agent_id=agent_conn.agent_id, reflection=reflection)
+            return {"statusCode": 200, "body": result}
+        elif action == "describe_stance":
+            target_agent_id = body.get("target_agent_id", "")
+            text = body.get("text", "")
+            result = stances_service.describe_stance(
+                agent_id=agent_conn.agent_id,
+                target_agent_id=target_agent_id,
+                text=text,
+            )
             return {"statusCode": 200, "body": result}
         # ``idle`` and ``context_transition`` fall through with no extra work:
         # ``idle`` exists only to bypass the energy-exhaustion gate, and
