@@ -155,8 +155,8 @@ export class DatabaseStack extends cdk.Stack {
     // Completed goals table (history of goals an agent has finished)
     const completedGoals = new dynamodb.Table(this, "CompletedGoalsTable", {
       tableName: `goosetown-${env}-completed-goals`,
-      partitionKey: { name: "agent_id", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "goal_id", type: dynamodb.AttributeType.STRING },
+      partitionKey: { name: "agentId", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "goalId", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       pointInTimeRecoverySpecification: {
         pointInTimeRecoveryEnabled: env === "prod",
@@ -164,9 +164,9 @@ export class DatabaseStack extends cdk.Stack {
       removalPolicy,
     });
     completedGoals.addGlobalSecondaryIndex({
-      indexName: "agent_id-completed_at-index",
-      partitionKey: { name: "agent_id", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "completed_at", type: dynamodb.AttributeType.STRING },
+      indexName: "agentId-completedAt-index",
+      partitionKey: { name: "agentId", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "completedAt", type: dynamodb.AttributeType.STRING },
     });
 
     this.tables = { agents, instances, relationships, conversations, connections, ownerChats, users, completedGoals };

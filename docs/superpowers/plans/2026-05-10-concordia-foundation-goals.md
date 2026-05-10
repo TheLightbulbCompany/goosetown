@@ -20,7 +20,7 @@
 
 | File | Action | Responsibility |
 |---|---|---|
-| `apps/infra/lib/stacks/database-stack.ts` | Modify | Add `CompletedGoalsTable` (PK `agent_id`, SK `goal_id` ULID, GSI on `completed_at`). PITR for prod. |
+| `apps/infra/lib/stacks/database-stack.ts` | Modify | Add `CompletedGoalsTable` (PK `agentId`, SK `goalId` ULID, GSI on `completedAt`). PITR for prod. |
 | `apps/backend/core/dynamo.py` | Modify | Add `completed_goals_table()` accessor. |
 | `apps/backend/core/ws_models.py` | Modify | Add `set_goal` and `complete_goal` to the `TownAgentAct` action validator. |
 | `apps/backend/core/services/goals_service.py` | Create | Business logic: `set_goal(agent_id, text)`, `complete_goal(agent_id, reflection)`, `get_goal(agent_id)`. |
@@ -49,16 +49,16 @@ Net source LOC: ~+450 / -10. Net test LOC: ~+250.
 ```ts
 const completedGoals = new dynamodb.Table(this, "CompletedGoalsTable", {
   tableName: `goosetown-${env}-completed-goals`,
-  partitionKey: { name: "agent_id", type: dynamodb.AttributeType.STRING },
-  sortKey: { name: "goal_id", type: dynamodb.AttributeType.STRING },
+  partitionKey: { name: "agentId", type: dynamodb.AttributeType.STRING },
+  sortKey: { name: "goalId", type: dynamodb.AttributeType.STRING },
   billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
   pointInTimeRecovery: isProd,
   removalPolicy: isProd ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
 });
 completedGoals.addGlobalSecondaryIndex({
-  indexName: "agent_id-completed_at-index",
-  partitionKey: { name: "agent_id", type: dynamodb.AttributeType.STRING },
-  sortKey: { name: "completed_at", type: dynamodb.AttributeType.STRING },
+  indexName: "agentId-completedAt-index",
+  partitionKey: { name: "agentId", type: dynamodb.AttributeType.STRING },
+  sortKey: { name: "completedAt", type: dynamodb.AttributeType.STRING },
 });
 ```
 
@@ -229,10 +229,10 @@ def test_complete_goal_archives_then_clears_currentGoal(mock_town, mock_table):
 
     # archive write
     put_args = mock_table.return_value.put_item.call_args.kwargs["Item"]
-    assert put_args["agent_id"] == "alice-123"
-    assert put_args["goal_text"] == "find out why Bob has been distant"
+    assert put_args["agentId"] == "alice-123"
+    assert put_args["goalText"] == "find out why Bob has been distant"
     assert put_args["reflection"] == "we talked, all good"
-    assert "completed_at" in put_args
+    assert "completedAt" in put_args
 
     # clear current
     update_args = mock_town.return_value.update_agent_state.call_args.kwargs
@@ -334,12 +334,12 @@ def complete_goal(agent_id: str, reflection: str) -> dict[str, Any]:
     table = dynamo.completed_goals_table()
     table.put_item(
         Item={
-            "agent_id": agent_id,
-            "goal_id": goal_id,
-            "goal_text": goal_text,
+            "agentId": agent_id,        # camelCase key, snake_case Python var
+            "goalId": goal_id,
+            "goalText": goal_text,
             "reflection": reflection.strip()[:2000],
-            "set_at": set_at,
-            "completed_at": completed_at,
+            "setAt": set_at,
+            "completedAt": completed_at,
         }
     )
 
