@@ -1,8 +1,10 @@
 """Unit tests for goals_service."""
 
-from unittest.mock import patch
 import time
+from unittest.mock import patch
+
 import pytest
+
 from core.services import goals_service
 
 

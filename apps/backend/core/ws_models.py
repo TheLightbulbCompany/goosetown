@@ -55,7 +55,8 @@ class TownAgentAct(BaseModel):
     message: str | None = Field(default=None, max_length=500)  # chat (optional), say
     target_context: Literal["town", "apartment"] | None = None  # context_transition
     activity_id: str | None = None  # activity
-    text: str | None = Field(default=None, max_length=2000)  # reply_owner (max 2000); set_goal (max 500, enforced in validator)
+    # reply_owner (max 2000); set_goal (max 500, enforced in validator)
+    text: str | None = Field(default=None, max_length=2000)
     ref_message_id: str | None = None  # reply_owner (optional back-reference)
     reflection: str | None = Field(default=None, max_length=2000)  # complete_goal
 

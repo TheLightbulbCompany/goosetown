@@ -219,9 +219,7 @@ def test_multiple_nearby_agents_all_get_current_goal():
     assert nearby_out["carol-3"]["currentGoal"] == "find the cafe"
     # Exactly 3 DDB reads — one per nearby agent
     assert svc_mock.get_town_agent_by_id.call_count == 3
-    svc_mock.get_town_agent_by_id.assert_has_calls(
-        [call("alice-1"), call("bob-2"), call("carol-3")], any_order=True
-    )
+    svc_mock.get_town_agent_by_id.assert_has_calls([call("alice-1"), call("bob-2"), call("carol-3")], any_order=True)
 
 
 def test_no_nearby_agents_no_goal_lookup():

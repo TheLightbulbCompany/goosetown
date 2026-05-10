@@ -132,10 +132,7 @@ def _send_to_daemon(agent_id: str, payload: dict) -> bool:
             for nid in nearby_ids:
                 rec = svc.get_town_agent_by_id(nid)
                 goal_map[nid] = (rec.get("currentGoal") or None) if rec else None
-            enriched_nearby = [
-                {**a, "currentGoal": goal_map.get(a.get("agent_id"))}
-                for a in nearby_agents
-            ]
+            enriched_nearby = [{**a, "currentGoal": goal_map.get(a.get("agent_id"))} for a in nearby_agents]
             payload = {**payload, "nearby_agents": enriched_nearby}
 
             # Only fetch nearby conversations for agents not already in one.

@@ -9,10 +9,9 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -56,9 +55,12 @@ def handler_setup():
         patch("routers.town.get_town_agent_ws_manager", return_value=ws_manager),
         # Energy gate calls TownService; return an agent with energy > 0
         # so it doesn't block the path before the action dispatcher.
-        patch("routers.town.TownService", return_value=MagicMock(
-            **{"get_town_agent_by_id.return_value": {"energy": 80, "mood": 5}},
-        )),
+        patch(
+            "routers.town.TownService",
+            return_value=MagicMock(
+                **{"get_town_agent_by_id.return_value": {"energy": 80, "mood": 5}},
+            ),
+        ),
         patch("routers.town.goals_service", mock_goals),
         # game server client is looked up before the elif chain — give it a no-op.
         patch("routers.town.get_game_server_client", return_value=MagicMock()),
@@ -95,9 +97,7 @@ async def test_set_goal_dispatches_to_service(handler_setup):
     result = await handle_ws_message(request, raw)
 
     assert result["statusCode"] == 200
-    handler_setup.mock_goals.set_goal.assert_called_once_with(
-        agent_id="alice-123", text="test goal"
-    )
+    handler_setup.mock_goals.set_goal.assert_called_once_with(agent_id="alice-123", text="test goal")
 
 
 @pytest.mark.asyncio
@@ -124,9 +124,7 @@ async def test_complete_goal_dispatches_to_service(handler_setup):
     result = await handle_ws_message(request, raw)
 
     assert result["statusCode"] == 200
-    handler_setup.mock_goals.complete_goal.assert_called_once_with(
-        agent_id="alice-123", reflection="did it"
-    )
+    handler_setup.mock_goals.complete_goal.assert_called_once_with(agent_id="alice-123", reflection="did it")
 
 
 @pytest.mark.asyncio
@@ -205,9 +203,7 @@ async def test_set_goal_reflection_not_required_for_set(handler_setup):
     await handle_ws_message(request, raw)
 
     # Only text was forwarded — reflection must NOT appear in the call.
-    handler_setup.mock_goals.set_goal.assert_called_once_with(
-        agent_id="alice-123", text="test"
-    )
+    handler_setup.mock_goals.set_goal.assert_called_once_with(agent_id="alice-123", text="test")
 
 
 _ = asyncio  # referenced by pytest.mark.asyncio markers indirectly

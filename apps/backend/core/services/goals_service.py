@@ -86,7 +86,9 @@ def complete_goal(agent_id: str, reflection: str) -> dict[str, Any]:
     )
     logger.info(
         "[agent:%s] currentGoal completed: %s (reflection: %s)",
-        agent_id[:8], goal_text[:40], reflection[:40],
+        agent_id[:8],
+        goal_text[:40],
+        reflection[:40],
     )
     return {
         "status": "ok",

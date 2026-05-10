@@ -962,7 +962,7 @@ def _render_goal_block(agent_state: dict, now_ms: int) -> str:
     return (
         "\n## Your current goal\n"
         f"_{goal}_{stale_hint}\n"
-        "\nUse `python3 goosetown_cli.py act complete_goal \"<reflection>\"` when you've achieved it.\n"
+        '\nUse `python3 goosetown_cli.py act complete_goal "<reflection>"` when you\'ve achieved it.\n'
     )
 
 
@@ -1716,6 +1716,7 @@ class TownDaemon:
 
             # Goal block — shown near the top, after the identity/location header
             import time as _time
+
             status += _render_goal_block(agent, int(_time.time() * 1000))
 
             # Active conversation block (takes priority over navigation)
