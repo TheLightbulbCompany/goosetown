@@ -372,6 +372,8 @@ class TownService:
             "current_location": "currentLocation",
             "onboarding_phase": "onboardingPhase",
             "is_active": "isActive",
+            "current_goal": "currentGoal",
+            "goal_set_at": "goalSetAt",
         }
 
         update_parts = []

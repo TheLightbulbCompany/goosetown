@@ -44,3 +44,8 @@ def owner_chats_table():
 
 def users_table():
     return get_client().Table(table_name("users"))
+
+
+def completed_goals_table():
+    """DynamoDB table handle for completed_goals."""
+    return get_client().Table(table_name("completed-goals"))

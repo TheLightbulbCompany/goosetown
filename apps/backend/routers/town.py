@@ -17,7 +17,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Requ
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from core.auth import AuthContext, get_current_user
-from core.services import town_mood_engine
+from core.services import goals_service, town_mood_engine
 from core.services.game_server_client import get_game_server_client
 from core.services.owner_chat_service import (
     OwnerChatService,
@@ -875,6 +875,7 @@ async def get_apartment(
                 current_spot=item.get("currentLocation"),
                 is_active=item.get("isActive") == "true",
                 sprite_url=versioned_sprite_url(item.get("spriteUrl"), item) if item.get("spriteReady") else "",
+                currentGoal=item.get("currentGoal"),
             )
         )
 
@@ -1413,6 +1414,14 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
                 text=text,
                 ref_message_id=ref_message_id,
             )
+        elif action == "set_goal":
+            text = body.get("text", "")
+            result = goals_service.set_goal(agent_id=agent_conn.agent_id, text=text)
+            return {"statusCode": 200, "body": result}
+        elif action == "complete_goal":
+            reflection = body.get("reflection", "")
+            result = goals_service.complete_goal(agent_id=agent_conn.agent_id, reflection=reflection)
+            return {"statusCode": 200, "body": result}
         # ``idle`` and ``context_transition`` fall through with no extra work:
         # ``idle`` exists only to bypass the energy-exhaustion gate, and
         # ``context_transition`` is handled inside the ``move`` branch when the

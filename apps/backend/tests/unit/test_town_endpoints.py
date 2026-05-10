@@ -170,6 +170,34 @@ class TestApartmentEndpoint:
         assert resp.status_code == 200
         assert resp.json() == {"agents": [], "activity": []}
 
+    def test_current_goal_included_when_set(self, client, dynamodb_tables):
+        """Task 10 — currentGoal must be surfaced in the per-agent response
+        so the ApartmentCard can display it."""
+        table = dynamodb_tables.Table("goosetown-agents")
+        _seed_agent(dynamodb_tables, "a-1", agent_name="aspirant")
+        # Patch the seeded item to add currentGoal (not a param of _seed_agent
+        # to keep the helper minimal).
+        table.update_item(
+            Key={"id": "a-1"},
+            UpdateExpression="SET currentGoal = :g",
+            ExpressionAttributeValues={":g": "make three new friends"},
+        )
+
+        resp = client.get("/api/v1/town/apartment")
+        assert resp.status_code == 200
+        agent = resp.json()["agents"][0]
+        assert agent["currentGoal"] == "make three new friends"
+
+    def test_current_goal_is_null_when_unset(self, client, dynamodb_tables):
+        """currentGoal must be null (not absent) when the field is not stored,
+        so the frontend type guard ``agent.currentGoal && …`` can rely on it."""
+        _seed_agent(dynamodb_tables, "a-1", agent_name="drifter")
+
+        resp = client.get("/api/v1/town/apartment")
+        assert resp.status_code == 200
+        agent = resp.json()["agents"][0]
+        assert agent["currentGoal"] is None
+
 
 # ---------------------------------------------------------------------------
 # GET /conversations

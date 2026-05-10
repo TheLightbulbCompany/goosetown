@@ -83,13 +83,15 @@ def test_non_agent_state_does_no_db_reads():
     assert sent and sent[0][0] == "conn-abc"
 
 
-def test_agent_state_while_in_conversation_skips_nearby_fetch():
+def test_agent_state_while_in_conversation_skips_nearby_conv_fetch():
     """When the agent already has a current_conversation_id, nearby_conversations
-    is irrelevant — skip the DB call entirely."""
+    is irrelevant — skip that DB call.  However, get_town_agent_by_id IS called
+    per-nearby-agent to inject currentGoal."""
     from routers.town import _send_to_daemon
 
     sent: list = []
     svc_mock = MagicMock()
+    svc_mock.get_town_agent_by_id.return_value = {"id": "agent-2", "currentGoal": None}
     agent_conn = _make_agent_conn(current_conversation_id="conv-xyz")
 
     payload = {
@@ -104,17 +106,23 @@ def test_agent_state_while_in_conversation_skips_nearby_fetch():
         ok = _send_to_daemon("agent-1", payload)
 
     assert ok is True
-    svc_mock.get_town_agent_by_id.assert_not_called()
+    # get_town_agent_by_id is called once per nearby agent for currentGoal injection
+    assert svc_mock.get_town_agent_by_id.call_count == 2
+    # nearby_conversations is skipped because agent is in a conversation
     svc_mock.get_nearby_conversations.assert_not_called()
 
 
-def test_agent_state_no_own_conv_with_nearby_agents_calls_nearby_once():
-    """Sender not in a conv + has nearby agents → one `get_nearby_conversations`
-    call. Exactly one — not plus a redundant `get_town_agent_by_id`."""
+def test_agent_state_no_own_conv_with_nearby_agents_enriches_goals_and_convs():
+    """Sender not in a conv + has nearby agents → get_town_agent_by_id called
+    per-nearby-agent (for currentGoal), plus one get_nearby_conversations call."""
     from routers.town import _send_to_daemon
 
     sent: list = []
     svc_mock = MagicMock()
+    svc_mock.get_town_agent_by_id.side_effect = lambda aid: {
+        "agent-2": {"id": "agent-2", "currentGoal": "make a friend"},
+        "agent-3": {"id": "agent-3", "currentGoal": None},
+    }.get(aid)
     svc_mock.get_nearby_conversations.return_value = [
         {"conv_id": "c1", "participants": ["agent-2"], "last_message": {}, "location": "plaza"}
     ]
@@ -132,11 +140,18 @@ def test_agent_state_no_own_conv_with_nearby_agents_calls_nearby_once():
         ok = _send_to_daemon("agent-1", payload)
 
     assert ok is True
-    svc_mock.get_town_agent_by_id.assert_not_called()
+    # get_town_agent_by_id called once per nearby agent for currentGoal
+    assert svc_mock.get_town_agent_by_id.call_count == 2
     svc_mock.get_nearby_conversations.assert_called_once_with(["agent-2", "agent-3"])
     # Enrichment landed on the outgoing payload
     assert sent[0][1]["onboardingPhase"] == "alive"
     assert sent[0][1]["nearby_conversations"][0]["conv_id"] == "c1"
+    # currentGoal injected into nearby_agents
+    nearby_out = sent[0][1]["nearby_agents"]
+    agent2 = next(a for a in nearby_out if a["agent_id"] == "agent-2")
+    agent3 = next(a for a in nearby_out if a["agent_id"] == "agent-3")
+    assert agent2["currentGoal"] == "make a friend"
+    assert agent3["currentGoal"] is None
 
 
 def test_missing_from_ws_manager_returns_false_without_db():

@@ -26,6 +26,7 @@ function makeAgent(overrides: Partial<ApartmentAgent> = {}): ApartmentAgent {
     sprite_url: 'https://cdn.example/sprites/lucky/walk.png?v=1',
     sprite_ready: true,
     created_at: null,
+    currentGoal: null,
     ...overrides,
   };
 }
@@ -141,5 +142,16 @@ describe('ApartmentCard', () => {
     const btn = screen.getByText(/^Chat/i);
     fireEvent.click(btn);
     expect(onChatClick).toHaveBeenCalledWith('agent-1', 'Dwight');
+  });
+
+  it('renders currentGoal when present', () => {
+    renderCard(makeAgent({ currentGoal: 'make a friend' }));
+    expect(screen.getByText(/make a friend/)).toBeInTheDocument();
+    expect(screen.getByText(/Goal:/)).toBeInTheDocument();
+  });
+
+  it('does not render goal section when currentGoal is null', () => {
+    renderCard(makeAgent({ currentGoal: null }));
+    expect(screen.queryByText(/Goal:/)).not.toBeInTheDocument();
   });
 });

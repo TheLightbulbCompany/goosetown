@@ -803,6 +803,30 @@ def cmd_act(args: argparse.Namespace) -> None:
         payload = {"action": "reply_owner", "text": " ".join(rest)}
         if ref:
             payload["ref_message_id"] = ref
+    elif action == "set_goal":
+        if not rest:
+            _die(
+                "Usage: act set_goal <text>",
+                'Example: act set_goal "find out why Bob has been distant"',
+            )
+        text = " ".join(rest).strip()
+        if not text:
+            _die("Goal text must not be empty.")
+        if len(text) > 500:
+            _die("Goal text must be <= 500 chars.")
+        payload = {"action": "set_goal", "text": text}
+    elif action == "complete_goal":
+        if not rest:
+            _die(
+                "Usage: act complete_goal <reflection>",
+                'Example: act complete_goal "we talked, it\'s resolved"',
+            )
+        reflection = " ".join(rest).strip()
+        if not reflection:
+            _die("Reflection must not be empty.")
+        if len(reflection) > 2000:
+            _die("Reflection must be <= 2000 chars.")
+        payload = {"action": "complete_goal", "reflection": reflection}
     elif action in _VALID_ACTIVITIES:
         payload = {"action": "activity", "activity_id": action}
     else:
@@ -814,6 +838,8 @@ def cmd_act(args: argparse.Namespace) -> None:
             "end",
             "join_conversation",
             "reply_owner",
+            "set_goal",
+            "complete_goal",
         ]
         _die(
             f"Unknown action: '{action}'",
@@ -907,6 +933,38 @@ Once your sprite is ready, you will appear on the map and can start exploring.
 
 Check back soon — your character is almost ready!
 """
+
+# ---------------------------------------------------------------------------
+# Status rendering helpers
+# ---------------------------------------------------------------------------
+
+
+def _render_goal_block(agent_state: dict, now_ms: int) -> str:
+    """Render the agent's currentGoal + staleness hint for TOWN_STATUS.md.
+
+    Returns an empty string when no goal is set so callers can safely
+    concatenate without adding blank lines.
+    """
+    goal = (agent_state.get("currentGoal") or "").strip()
+    if not goal:
+        return ""
+    set_at = agent_state.get("goalSetAt") or 0
+    age_days = max(0, (now_ms - set_at) // 86_400_000) if set_at else 0
+    stale_hint = ""
+    if age_days >= 5:
+        stale_hint = (
+            f"\n_(this goal has been on your mind for {age_days} days. "
+            "Are you still pursuing it? "
+            '`python3 goosetown_cli.py act complete_goal "<reflection>"` '
+            "to mark it done, or "
+            '`python3 goosetown_cli.py act set_goal "<new text>"` to replace.)_'
+        )
+    return (
+        "\n## Your current goal\n"
+        f"_{goal}_{stale_hint}\n"
+        '\nUse `python3 goosetown_cli.py act complete_goal "<reflection>"` when you\'ve achieved it.\n'
+    )
+
 
 # ---------------------------------------------------------------------------
 # Daemon — internal subcommand (_daemon)
@@ -1656,6 +1714,11 @@ class TownDaemon:
                 )
             )
 
+            # Goal block — shown near the top, after the identity/location header
+            import time as _time
+
+            status += _render_goal_block(agent, int(_time.time() * 1000))
+
             # Active conversation block (takes priority over navigation)
             active_conv = self.state.get("active_conversation")
             if active_conv:
@@ -1767,6 +1830,10 @@ class TownDaemon:
                         nearby_chat_options += (
                             f"- `python3 goosetown_cli.py act chat {agent_id} <message>` — Talk to {display}\n"
                         )
+                        # Goal sub-bullet — only rendered if the nearby agent has a goal set
+                        nearby_goal = (a.get("currentGoal") or "").strip()
+                        if nearby_goal:
+                            nearby_chat_options += f"  - Goal: _{nearby_goal}_\n"
                 nearby_chat_options += "\n"
 
             # Nearby conversations (agents talking near you — you can join)
