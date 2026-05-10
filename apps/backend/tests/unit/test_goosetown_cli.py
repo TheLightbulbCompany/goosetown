@@ -16,6 +16,7 @@ from goosetown_cli import (  # noqa: E402
     AuthFailure,
     TownDaemon,
     _is_auth_failure,
+    _render_goal_block,
 )
 
 # ---------------------------------------------------------------------------
@@ -632,3 +633,163 @@ class TestAuthFailureSurface:
             raise AuthFailure("expired")
         except AuthFailure as exc:
             assert str(exc) == "expired"
+
+
+# ===========================================================================
+# _render_goal_block — unit tests for the goal helper
+# ===========================================================================
+
+
+class TestRenderGoalBlock:
+    """_render_goal_block renders currentGoal state into a markdown section."""
+
+    _NOW_MS = 1_700_000_000_000  # fixed "now" for deterministic age calculations
+
+    def test_returns_empty_when_no_goal(self):
+        """No currentGoal → empty string (nothing added to status)."""
+        assert _render_goal_block({}, self._NOW_MS) == ""
+
+    def test_returns_empty_when_goal_is_none(self):
+        assert _render_goal_block({"currentGoal": None}, self._NOW_MS) == ""
+
+    def test_returns_empty_when_goal_is_blank(self):
+        assert _render_goal_block({"currentGoal": "   "}, self._NOW_MS) == ""
+
+    def test_renders_goal_block_when_set(self):
+        """A set goal produces a ## Your current goal section."""
+        out = _render_goal_block({"currentGoal": "finish the library mural"}, self._NOW_MS)
+        assert "## Your current goal" in out
+        assert "_finish the library mural_" in out
+        assert "complete_goal" in out
+
+    def test_no_stale_hint_for_fresh_goal(self):
+        """A goal set 2 days ago must NOT show the stale hint."""
+        two_days_ago = self._NOW_MS - 2 * 86_400_000
+        out = _render_goal_block(
+            {"currentGoal": "meet everyone at the cafe", "goalSetAt": two_days_ago},
+            self._NOW_MS,
+        )
+        assert "days" not in out
+        assert "still pursuing" not in out
+
+    def test_stale_hint_appears_at_five_days(self):
+        """A goal that is exactly 5 days old triggers the stale hint."""
+        five_days_ago = self._NOW_MS - 5 * 86_400_000
+        out = _render_goal_block(
+            {"currentGoal": "explore every location", "goalSetAt": five_days_ago},
+            self._NOW_MS,
+        )
+        assert "5 days" in out
+        assert "still pursuing" in out
+        assert "set_goal" in out
+
+    def test_stale_hint_shows_correct_age(self):
+        """Age in the hint matches the actual elapsed days."""
+        ten_days_ago = self._NOW_MS - 10 * 86_400_000
+        out = _render_goal_block(
+            {"currentGoal": "write a novel", "goalSetAt": ten_days_ago},
+            self._NOW_MS,
+        )
+        assert "10 days" in out
+
+    def test_missing_goal_set_at_still_renders_without_stale(self):
+        """goalSetAt absent → renders goal block with no staleness hint."""
+        out = _render_goal_block({"currentGoal": "find a best friend"}, self._NOW_MS)
+        assert "## Your current goal" in out
+        assert "days" not in out
+
+
+# ===========================================================================
+# Goal rendering in TOWN_STATUS.md (integration via _handle_world_update)
+# ===========================================================================
+
+
+class TestGoalInStatusRendering:
+    """TOWN_STATUS.md includes the goal block when currentGoal is set."""
+
+    def test_goal_block_in_think_status(self, daemon):
+        """Goal block appears in the think-prompt output."""
+        world_data = {
+            "you": {
+                "onboardingPhase": "alive",
+                "location": "plaza",
+                "mood": "neutral",
+                "energy": 100,
+                "currentGoal": "explore every corner of town",
+            },
+            "nearby_agents": [],
+            "think": True,
+        }
+        daemon._handle_world_update(world_data)
+
+        content = _read_status(daemon)
+        assert "## Your current goal" in content
+        assert "_explore every corner of town_" in content
+
+    def test_no_goal_block_when_goal_absent(self, daemon):
+        """No goal block when currentGoal is not set."""
+        world_data = {
+            "you": {
+                "onboardingPhase": "alive",
+                "location": "plaza",
+                "mood": "neutral",
+                "energy": 100,
+            },
+            "nearby_agents": [],
+            "think": True,
+        }
+        daemon._handle_world_update(world_data)
+
+        content = _read_status(daemon)
+        assert "## Your current goal" not in content
+
+    def test_nearby_agent_goal_sub_bullet_rendered(self, daemon):
+        """Nearby agent with a goal shows a '- Goal: ...' sub-bullet."""
+        world_data = {
+            "you": {
+                "onboardingPhase": "alive",
+                "location": "cafe",
+                "mood": "happy",
+                "energy": 80,
+            },
+            "nearby_agents": [
+                {
+                    "agent_id": "agent-bob",
+                    "name": "Bob",
+                    "display_name": "Bob",
+                    "activity": "idle",
+                    "currentGoal": "make peace with Alice",
+                }
+            ],
+            "think": True,
+        }
+        daemon._handle_world_update(world_data)
+
+        content = _read_status(daemon)
+        assert "Goal: _make peace with Alice_" in content
+
+    def test_nearby_agent_without_goal_no_sub_bullet(self, daemon):
+        """Nearby agent with no goal must NOT show a goal sub-bullet."""
+        world_data = {
+            "you": {
+                "onboardingPhase": "alive",
+                "location": "cafe",
+                "mood": "neutral",
+                "energy": 100,
+            },
+            "nearby_agents": [
+                {
+                    "agent_id": "agent-carol",
+                    "name": "Carol",
+                    "display_name": "Carol",
+                    "activity": "idle",
+                }
+            ],
+            "think": True,
+        }
+        daemon._handle_world_update(world_data)
+
+        content = _read_status(daemon)
+        # Carol is listed but no goal sub-line
+        assert "Carol" in content
+        assert "Goal:" not in content
