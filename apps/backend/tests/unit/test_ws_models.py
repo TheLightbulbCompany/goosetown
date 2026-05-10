@@ -244,6 +244,47 @@ class TestGoalActions:
             )
 
 
+class TestStanceActions:
+    def test_describe_stance_requires_target_and_text(self) -> None:
+        body_no_target = {
+            "type": "town_agent_act",
+            "action": "describe_stance",
+            "text": "x",
+        }
+        body_no_text = {
+            "type": "town_agent_act",
+            "action": "describe_stance",
+            "target_agent_id": "bob",
+        }
+        for body in (body_no_target, body_no_text):
+            with pytest.raises(ValidationError):
+                _adapter.validate_python(body)
+
+    def test_describe_stance_validates_with_target_and_text(self) -> None:
+        msg = _adapter.validate_python(
+            {
+                "type": "town_agent_act",
+                "action": "describe_stance",
+                "target_agent_id": "bob",
+                "text": "kind colleague but lately distant",
+            }
+        )
+        assert msg.action == "describe_stance"
+        assert msg.target_agent_id == "bob"
+        assert msg.text == "kind colleague but lately distant"
+
+    def test_describe_stance_rejects_text_over_500_chars(self) -> None:
+        with pytest.raises(ValidationError):
+            _adapter.validate_python(
+                {
+                    "type": "town_agent_act",
+                    "action": "describe_stance",
+                    "target_agent_id": "bob",
+                    "text": "x" * 501,
+                }
+            )
+
+
 class TestTopLevelValidation:
     def test_rejects_unknown_type(self) -> None:
         with pytest.raises(ValidationError):

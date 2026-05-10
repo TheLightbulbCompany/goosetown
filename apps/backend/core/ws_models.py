@@ -35,6 +35,7 @@ AgentAction = Literal[
     "reply_owner",
     "set_goal",
     "complete_goal",
+    "describe_stance",
 ]
 
 
@@ -59,6 +60,7 @@ class TownAgentAct(BaseModel):
     text: str | None = Field(default=None, max_length=2000)
     ref_message_id: str | None = None  # reply_owner (optional back-reference)
     reflection: str | None = Field(default=None, max_length=2000)  # complete_goal
+    target_agent_id: str | None = Field(default=None, max_length=128)  # describe_stance
 
     @model_validator(mode="after")
     def _check_action_fields(self) -> "TownAgentAct":
@@ -81,6 +83,13 @@ class TownAgentAct(BaseModel):
                 raise ValueError("'set_goal' text must be <= 500 chars")
         if self.action == "complete_goal" and not self.reflection:
             raise ValueError("'complete_goal' requires 'reflection'")
+        if self.action == "describe_stance":
+            if not self.target_agent_id:
+                raise ValueError("'describe_stance' requires 'target_agent_id'")
+            if not self.text:
+                raise ValueError("'describe_stance' requires 'text'")
+            if len(self.text) > 500:
+                raise ValueError("'describe_stance' text must be <= 500 chars")
         return self
 
 
