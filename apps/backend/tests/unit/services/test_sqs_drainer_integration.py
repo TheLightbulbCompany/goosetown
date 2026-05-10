@@ -262,7 +262,7 @@ def test_handle_agent_connect_schedules_drain_task(
     request.connectionId = "conn-abc"
     request.body = {
         "type": "town_agent_connect",
-        "token": "tok",
+        "token": "tok",  # nosec B105 - test fixture
         "agent_name": "test-agent",
     }
 
