@@ -14,32 +14,11 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, call, patch
 
-import pytest
-
 # Module-level patch targets (same as test_send_to_daemon_cache.py)
 WS_MANAGER_PATH = "core.services.daemon_bridge.get_town_agent_ws_manager"
 SERVICE_PATH = "core.services.daemon_bridge.TownService"
 MAILBOX_FACTORY_PATH = "core.services.daemon_bridge.get_daemon_mailbox"
 STANCES_PATH = "core.services.daemon_bridge.stances_service"
-
-
-def _make_no_stances_mock() -> MagicMock:
-    """Return a stances_service mock that reports no relationship for all pairs."""
-    m = MagicMock()
-    m.get_pair_stances.return_value = None
-    return m
-
-
-@pytest.fixture(autouse=True)
-def stub_stances():
-    """Auto-patch stances_service so existing currentGoal tests don't hit DynamoDB.
-
-    Tests that need specific stance behaviour should pass ``patch(STANCES_PATH,
-    ...)`` explicitly inside the test — that inner context manager takes
-    precedence over this autouse fixture.
-    """
-    with patch(STANCES_PATH, _make_no_stances_mock()):
-        yield
 
 
 def _make_agent_conn(

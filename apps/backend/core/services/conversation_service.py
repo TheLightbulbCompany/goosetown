@@ -895,6 +895,36 @@ async def _finalize_conversation(
             },
         )
 
+    # LOG-only nudge: after finishing a conversation, prompt each participant
+    # to consider whether their stance toward the other(s) has changed.
+    # ``think`` is deliberately absent so the daemon only logs this to
+    # TOWN_EVENTS.md and does not interrupt the agent mid-flow.
+    other_names = {p: ws_manager.get_by_agent_id(p) for p in participants}
+    for agent_id in participants:
+        others = [p for p in participants if p != agent_id]
+        if not others:
+            continue
+        other_displays = []
+        for other_id in others:
+            conn = other_names.get(other_id)
+            display = getattr(conn, "agent_name", None) or other_id[:8]
+            other_displays.append(display)
+        mailbox.notify(
+            agent_id,
+            {
+                "event": "system.consider_stance",
+                "conv_id": conv_id,
+                "others": others,
+                "message": (
+                    f"You just finished a conversation with "
+                    f"{', '.join(other_displays)}. "
+                    "How do you feel about them now? "
+                    "Use `act describe_stance <agent_id> <text>` to record "
+                    "your impression."
+                ),
+            },
+        )
+
     logger.info(
         "Conversation %s finalised (%s, %d turns, location=%s, %d participants)",
         conv_id,
