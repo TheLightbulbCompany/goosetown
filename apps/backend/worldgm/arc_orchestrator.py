@@ -20,6 +20,7 @@ import uuid
 from core import dynamo
 
 from .arc_templates import ARC_TEMPLATES, find_template
+from .event_publisher import _emit_metric
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +146,8 @@ async def _kickoff_arc(state, template: dict) -> dict:
         preferred or "any",
     )
 
+    _emit_metric("ArcsKickoff")
+
     # Phase C4 (event_publisher) will handle the actual EventBridge publication.
     # For now, we just persist and return; tests can assert state was written.
     return arc
@@ -207,6 +210,7 @@ async def _resolve_arc(state, arc: dict, template: dict) -> None:
         ExpressionAttributeValues={":s": "resolved", ":r": _now_ms()},
     )
     logger.info("[arc:%s] resolved", arc["arcId"][:8])
+    _emit_metric("ArcsResolved")
 
 
 async def _abandon_arc(arc_id: str) -> None:
@@ -217,3 +221,4 @@ async def _abandon_arc(arc_id: str) -> None:
         ExpressionAttributeNames={"#status": "status"},
         ExpressionAttributeValues={":s": "abandoned"},
     )
+    _emit_metric("ArcsAbandoned")

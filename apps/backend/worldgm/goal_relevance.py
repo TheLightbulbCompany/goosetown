@@ -16,6 +16,18 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+# Import lazily inside goal_match to avoid a circular-import risk at module level
+# (event_publisher imports dynamo; goal_relevance is imported from arc_orchestrator
+# which imports event_publisher — keeping it local keeps the import graph clean).
+def _lazy_emit(name: str) -> None:
+    try:
+        from .event_publisher import _emit_metric  # noqa: PLC0415
+
+        _emit_metric(name)
+    except Exception:
+        logger.debug("goal_relevance: metric emit skipped (%s)", name)
+
+
 def _build_prompt(event_summary: str, witnesses_with_goals: list[tuple[str, str]]) -> str:
     """Build a structured prompt asking which goals are advanced by the event."""
     lines = [
@@ -77,4 +89,7 @@ def goal_match(
     except Exception:
         logger.exception("goal_relevance LLM call failed")
         return {}
-    return _parse_response(response)
+    result = _parse_response(response)
+    if result:
+        _lazy_emit("GoalOpportunities")
+    return result

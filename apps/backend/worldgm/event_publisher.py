@@ -23,6 +23,38 @@ logger = logging.getLogger(__name__)
 
 _BUS_NAME = os.environ.get("WORLD_BUS_NAME", "goosetown-dev-world")
 _ENV = os.environ.get("ENVIRONMENT", "dev")
+_REGION = os.environ.get("AWS_REGION", "us-east-1")
+
+# ---------------------------------------------------------------------------
+# CloudWatch metrics
+# ---------------------------------------------------------------------------
+
+_cw = None
+
+
+def _cloudwatch():
+    global _cw
+    if _cw is None:
+        _cw = boto3.client("cloudwatch", region_name=_REGION)
+    return _cw
+
+
+def _emit_metric(name: str, value: float = 1.0, dimensions: list[dict] | None = None) -> None:
+    """Emit a CloudWatch metric. Never raises — metric failure must not break the publish path."""
+    try:
+        _cloudwatch().put_metric_data(
+            Namespace="GooseTown/WorldGM",
+            MetricData=[
+                {
+                    "MetricName": name,
+                    "Value": value,
+                    "Unit": "Count",
+                    "Dimensions": dimensions or [{"Name": "Environment", "Value": _ENV}],
+                }
+            ],
+        )
+    except Exception:
+        logger.exception("CloudWatch metric emit failed for %s", name)
 
 
 _WAKE_DEFAULTS = {
@@ -111,6 +143,10 @@ def emit_world_event(
 
     # Persist to world_events table
     _persist_to_table(event_id, tag, timestamp, location, summary, witnesses, wake, detail)
+
+    # CloudWatch metrics — tag-dimensioned event count + wake/log split
+    _emit_metric("EventsEmitted", dimensions=[{"Name": "Tag", "Value": tag}])
+    _emit_metric("EventsWake" if wake else "EventsLog")
 
     logger.info(
         "Emitted event %s tag=%s witnesses=%d wake=%s",
