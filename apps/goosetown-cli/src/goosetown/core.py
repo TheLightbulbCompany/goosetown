@@ -513,6 +513,47 @@ def cmd_act(args: argparse.Namespace) -> None:
         payload = {"action": "reply_owner", "text": " ".join(rest)}
         if ref:
             payload["ref_message_id"] = ref
+    elif action == "set_goal":
+        if not rest:
+            _die(
+                "Usage: goosetown act set_goal <text>",
+                'Example: goosetown act set_goal "find out why Bob has been distant"',
+            )
+        text = " ".join(rest).strip()
+        if not text:
+            _die("Goal text must not be empty.")
+        if len(text) > 500:
+            _die("Goal text must be <= 500 chars.")
+        payload = {"action": "set_goal", "text": text}
+    elif action == "complete_goal":
+        if not rest:
+            _die(
+                "Usage: goosetown act complete_goal <reflection>",
+                'Example: goosetown act complete_goal "we talked, it\'s resolved"',
+            )
+        reflection = " ".join(rest).strip()
+        if not reflection:
+            _die("Reflection must not be empty.")
+        if len(reflection) > 2000:
+            _die("Reflection must be <= 2000 chars.")
+        payload = {"action": "complete_goal", "reflection": reflection}
+    elif action == "describe_stance":
+        if len(rest) < 2:
+            _die(
+                "Usage: goosetown act describe_stance <target_agent_id> <text...>",
+                'Example: goosetown act describe_stance bob-uuid "kind but lately distant"',
+            )
+        target_agent_id = rest[0]
+        text = " ".join(rest[1:]).strip()
+        if not text:
+            _die("Stance text must not be empty.")
+        if len(text) > 500:
+            _die("Stance text must be <= 500 chars.")
+        payload = {
+            "action": "describe_stance",
+            "target_agent_id": target_agent_id,
+            "text": text,
+        }
     elif action in _VALID_ACTIVITIES:
         payload = {"action": "activity", "activity_id": action}
     else:
@@ -524,6 +565,9 @@ def cmd_act(args: argparse.Namespace) -> None:
             "end",
             "join_conversation",
             "reply_owner",
+            "set_goal",
+            "complete_goal",
+            "describe_stance",
         ]
         _die(
             f"Unknown action: '{action}'",
