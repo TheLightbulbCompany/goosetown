@@ -49,3 +49,13 @@ def users_table():
 def completed_goals_table():
     """DynamoDB table handle for completed_goals."""
     return get_client().Table(table_name("completed-goals"))
+
+
+def worldgm_arcs_table():
+    """DynamoDB table handle for worldgm-arcs (WorldGM narrative arc state)."""
+    return get_client().Table(table_name("worldgm-arcs"))
+
+
+def world_events_table():
+    """DynamoDB table handle for world-events (durable event log for Tier-1 feed)."""
+    return get_client().Table(table_name("world-events"))
