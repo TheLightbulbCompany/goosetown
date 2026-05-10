@@ -195,6 +195,58 @@ def render_pending_messages(pending: list[dict]) -> str:
     return "\n".join(lines) if lines else "None"
 
 
+def render_goal_block(agent_state: dict, now_ms: int) -> str:
+    """Render the agent's currentGoal + staleness hint for TOWN_STATUS.md.
+
+    Returns an empty string when no goal is set so callers can safely
+    concatenate without adding blank lines.
+
+    Args:
+        agent_state: The agent dict from ``self.state["agent"]``.
+        now_ms: Current time in milliseconds (``int(time.time() * 1000)``).
+    """
+    goal = (agent_state.get("currentGoal") or "").strip()
+    if not goal:
+        return ""
+    set_at = agent_state.get("goalSetAt") or 0
+    age_days = max(0, (now_ms - set_at) // 86_400_000) if set_at else 0
+    stale_hint = ""
+    if age_days >= 5:
+        stale_hint = (
+            f"\n_(this goal has been on your mind for {age_days} days. "
+            "Are you still pursuing it? "
+            '`goosetown act complete_goal "<reflection>"` '
+            "to mark it done, or "
+            '`goosetown act set_goal "<new text>"` to replace.)_'
+        )
+    return (
+        "\n## Your current goal\n"
+        f"_{goal}_{stale_hint}\n"
+        '\nUse `goosetown act complete_goal "<reflection>"` when you\'ve achieved it.\n'
+    )
+
+
+def render_stance_lines(near: dict) -> list[str]:
+    """Return 0, 1, or 2 stance sub-bullet lines for a nearby agent entry.
+
+    Called once per nearby-agent entry inside the think-prompt nearby loop.
+    Returns an empty list when neither stance is set, so callers can safely
+    extend without adding blank lines.
+
+    Args:
+        near: One entry from ``nearby_agents`` — may have ``stanceFromMe``
+            and/or ``stanceFromThem`` string fields.
+    """
+    lines: list[str] = []
+    your_stance = (near.get("stanceFromMe") or "").strip()
+    their_stance = (near.get("stanceFromThem") or "").strip()
+    if your_stance:
+        lines.append(f"  - Your stance toward them: _{your_stance}_")
+    if their_stance:
+        lines.append(f"  - Their stance toward you: _{their_stance}_")
+    return lines
+
+
 def render_static_status(
     kind: str,
     *,

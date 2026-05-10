@@ -70,9 +70,11 @@ from goosetown.render import (  # noqa: E402
     mood_label,
     normalize_marker,
     render_activity,
+    render_goal_block,
     render_mood,
     render_nearby_text,
     render_pending_messages,
+    render_stance_lines,
     render_static_status,
 )
 
@@ -84,9 +86,11 @@ __all__ = [
     "mood_label",
     "normalize_marker",
     "render_activity",
+    "render_goal_block",
     "render_mood",
     "render_nearby_text",
     "render_pending_messages",
+    "render_stance_lines",
     "render_static_status",
 ]
 
@@ -778,6 +782,65 @@ class TownDaemon:
         self._handle_world_update(world_data)
 
     # ------------------------------------------------------------------
+    # World event handler (Concordia Foundation)
+    # ------------------------------------------------------------------
+
+    def _icon_for_tag(self, tag: str) -> str:
+        """Return a single Unicode icon character for a world-bus event tag.
+
+        Tag format is ``<category>.<specifics>`` (e.g. ``arc.started``,
+        ``social.conversation_ended``). The icon is chosen by category prefix
+        to keep the TOWN_EVENTS.md log visually scannable without being noisy.
+        """
+        prefix_icons: dict[str, str] = {
+            "world.": "\U0001f30d",  # 🌍
+            "ambient.": "\U0001f4a1",  # 💡
+            "arc.": "\U0001f4dc",  # 📜
+            "social.": "\U0001f4e3",  # 📣
+            "personal.": "\U0001f514",  # 🔔
+        }
+        for prefix, icon in prefix_icons.items():
+            if tag.startswith(prefix):
+                return icon
+        return "•"  # bullet •
+
+    def _handle_world_event(self, payload: dict) -> None:
+        """Render an event from the world bus into TOWN_EVENTS.md.
+
+        LOG events append a line to TOWN_EVENTS.md.  WAKE events also
+        force a think-prompt on TOWN_STATUS.md so the wake-on-status hook
+        re-wakes the agent's LLM.
+        """
+        import logging
+
+        log = logging.getLogger("town_daemon")
+
+        event = payload.get("event", {})
+        wake = payload.get("wake", False)
+
+        tag = event.get("tag", "world.unknown")
+        summary = event.get("summary") or event.get("baseTag") or tag
+        location = event.get("location")
+
+        icon = self._icon_for_tag(tag)
+        location_suffix = f" (at {location})" if location else ""
+        line = f"{icon} {summary}{location_suffix}"
+
+        self._append_event(line)
+        log.debug("world_event appended: %s (wake=%s)", line, wake)
+
+        if wake:
+            # Re-render TOWN_STATUS.md with think=true so the
+            # wake-on-status hook fires and the agent's LLM processes
+            # this event.
+            world_data = {
+                "you": self.state.get("agent", {}),
+                "nearby_agents": self.state.get("nearby", []),
+                "think": True,
+            }
+            self._handle_world_update(world_data)
+
+    # ------------------------------------------------------------------
     # World update handler
     # ------------------------------------------------------------------
 
@@ -849,6 +912,11 @@ class TownDaemon:
                     f"**Nearby:** {nearby_text}\n\n"
                 )
             )
+
+            # Goal block — shown near the top, after the identity/location header
+            import time as _time
+
+            status += render_goal_block(agent, int(_time.time() * 1000))
 
             active_conv = self.state.get("active_conversation")
             if active_conv:
@@ -953,6 +1021,13 @@ class TownDaemon:
                     display = a.get("name", a.get("display_name", "unknown"))
                     if agent_id:
                         nearby_chat_options += f"- `goosetown act chat {agent_id} <message>` — Talk to {display}\n"
+                        # Goal sub-bullet — only rendered if the nearby agent has a goal set
+                        nearby_goal = (a.get("currentGoal") or "").strip()
+                        if nearby_goal:
+                            nearby_chat_options += f"  - Goal: _{nearby_goal}_\n"
+                        # Stance sub-bullets — rendered when either direction is set
+                        for stance_line in render_stance_lines(a):
+                            nearby_chat_options += stance_line + "\n"
                 nearby_chat_options += "\n"
 
             nearby_convs: list = self.state.get("nearby_conversations", [])
@@ -1119,6 +1194,8 @@ class TownDaemon:
                             self._handle_event(data)
                     elif data.get("type") == "world_update":
                         self._handle_world_update(data)
+                    elif data.get("type") == "world_event":
+                        self._handle_world_event(data)
                 except json.JSONDecodeError:
                     log.warning("Invalid JSON from server: %s", str(raw)[:100])
         except Exception as exc:

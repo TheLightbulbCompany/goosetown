@@ -19,9 +19,11 @@ from goosetown.render import (
     mood_label,
     normalize_marker,
     render_activity,
+    render_goal_block,
     render_mood,
     render_nearby_text,
     render_pending_messages,
+    render_stance_lines,
     render_static_status,
 )
 
@@ -354,3 +356,90 @@ class TestRenderStaticStatus:
     def test_unknown_kind_raises(self):
         with pytest.raises(ValueError, match="unknown static status kind"):
             render_static_status("missing")
+
+
+# ---------------------------------------------------------------------------
+# render_goal_block — Concordia Foundation Plan 1
+# ---------------------------------------------------------------------------
+
+
+class TestRenderGoalBlock:
+    def test_returns_empty_string_when_no_goal(self):
+        """No currentGoal field → empty string; callers can concatenate safely."""
+        assert render_goal_block({}, now_ms=0) == ""
+
+    def test_returns_empty_string_for_empty_goal(self):
+        assert render_goal_block({"currentGoal": ""}, now_ms=0) == ""
+        assert render_goal_block({"currentGoal": "  "}, now_ms=0) == ""
+
+    def test_renders_goal_with_cta(self):
+        block = render_goal_block({"currentGoal": "find Bob"}, now_ms=0)
+        assert "## Your current goal" in block
+        assert "_find Bob_" in block
+        assert "goosetown act complete_goal" in block
+
+    def test_no_stale_hint_when_fresh(self):
+        """Goal set 1 day ago — no stale hint."""
+        now_ms = 10 * 86_400_000  # day 10
+        set_at = 9 * 86_400_000  # day 9 — 1 day old
+        block = render_goal_block(
+            {"currentGoal": "xyz", "goalSetAt": set_at}, now_ms=now_ms
+        )
+        assert "on your mind for" not in block
+
+    def test_stale_hint_when_old(self):
+        """Goal set 7 days ago — stale hint appears."""
+        now_ms = 10 * 86_400_000  # day 10
+        set_at = 3 * 86_400_000  # day 3 — 7 days old
+        block = render_goal_block(
+            {"currentGoal": "old goal", "goalSetAt": set_at}, now_ms=now_ms
+        )
+        assert "on your mind for 7 days" in block
+        assert "goosetown act set_goal" in block
+
+    def test_zero_set_at_no_stale(self):
+        """goalSetAt=0 (sentinel / unset) should not produce a stale hint."""
+        block = render_goal_block(
+            {"currentGoal": "test", "goalSetAt": 0}, now_ms=9999999999999
+        )
+        assert "on your mind for" not in block
+
+
+# ---------------------------------------------------------------------------
+# render_stance_lines — Concordia Foundation Plan 1
+# ---------------------------------------------------------------------------
+
+
+class TestRenderStanceLines:
+    def test_returns_empty_list_when_no_stances(self):
+        assert render_stance_lines({}) == []
+        assert render_stance_lines({"stanceFromMe": "", "stanceFromThem": ""}) == []
+
+    def test_renders_only_your_stance(self):
+        lines = render_stance_lines({"stanceFromMe": "warm and curious"})
+        assert len(lines) == 1
+        assert "Your stance toward them" in lines[0]
+        assert "_warm and curious_" in lines[0]
+
+    def test_renders_only_their_stance(self):
+        lines = render_stance_lines({"stanceFromThem": "guarded"})
+        assert len(lines) == 1
+        assert "Their stance toward you" in lines[0]
+        assert "_guarded_" in lines[0]
+
+    def test_renders_both_stances(self):
+        lines = render_stance_lines(
+            {
+                "stanceFromMe": "friendly",
+                "stanceFromThem": "distant",
+            }
+        )
+        assert len(lines) == 2
+        me_line = next(ln for ln in lines if "Your stance" in ln)
+        them_line = next(ln for ln in lines if "Their stance" in ln)
+        assert "_friendly_" in me_line
+        assert "_distant_" in them_line
+
+    def test_strips_whitespace(self):
+        lines = render_stance_lines({"stanceFromMe": "  hello  "})
+        assert "_hello_" in lines[0]
