@@ -739,6 +739,67 @@ class TownService:
 
         return _decimal_to_native(attrs)
 
+    def get_relationship(self, agent_a_id: str, agent_b_id: str) -> Optional[dict]:
+        """Return the relationship row for (agent_a_id, agent_b_id) or None.
+
+        The caller is responsible for passing IDs in canonical (lex-sorted)
+        order; this method uses the supplied ids directly as DDB keys.
+        """
+        table = dynamo.relationships_table()
+        resp = table.get_item(Key={"agentAId": agent_a_id, "agentBId": agent_b_id})
+        item = resp.get("Item")
+        if not item:
+            return None
+        return _decimal_to_native(item)
+
+    def upsert_relationship_stance(
+        self,
+        agent_a_id: str,
+        agent_b_id: str,
+        stance_a_to_b: Optional[str] = None,
+        stance_b_to_a: Optional[str] = None,
+        stance_updated_at: Optional[int] = None,
+    ) -> None:
+        """Write stance fields onto the relationship row, creating it if absent.
+
+        Only the supplied non-None stance fields are written; the other stance
+        field is left untouched. ``stanceUpdatedAt`` is always written when
+        provided.
+        """
+        field_map: dict[str, str] = {
+            "stance_a_to_b": "stanceAtoB",
+            "stance_b_to_a": "stanceBtoA",
+            "stance_updated_at": "stanceUpdatedAt",
+        }
+        kwargs = {
+            "stance_a_to_b": stance_a_to_b,
+            "stance_b_to_a": stance_b_to_a,
+            "stance_updated_at": stance_updated_at,
+        }
+        set_clauses = []
+        attr_values: dict = {}
+        for py_key, ddb_key in field_map.items():
+            val = kwargs[py_key]
+            if val is not None:
+                placeholder = f":{py_key}"
+                set_clauses.append(f"{ddb_key} = {placeholder}")
+                attr_values[placeholder] = val
+
+        if not set_clauses:
+            return  # nothing to write
+
+        table = dynamo.relationships_table()
+        # Ensure the row exists (create a bare row if absent) then update.
+        # We use update_item with a condition-free expression; if the row
+        # doesn't exist yet, DynamoDB creates it with only the PK/SK + the
+        # stance fields — this is fine; the full row is created on first
+        # interaction via get_or_create_relationship anyway.
+        table.update_item(
+            Key={"agentAId": agent_a_id, "agentBId": agent_b_id},
+            UpdateExpression="SET " + ", ".join(set_clauses),
+            ExpressionAttributeValues=attr_values,
+        )
+
     # ------------------------------------------------------------------
     # Conversations
     # ------------------------------------------------------------------
