@@ -7,6 +7,7 @@ import GameLayout from './components/GameLayout.tsx';
 import GodotCanvas from './components/GodotCanvas.tsx';
 import ApartmentCard from './components/ApartmentCard.tsx';
 import ConversationsLog from './components/ConversationsLog.tsx';
+import { WorldFeed } from './components/WorldFeed.tsx';
 import LoginButton from './components/buttons/LoginButton.tsx';
 import MusicButton from './components/buttons/MusicButton.tsx';
 import JoinTownModal from './components/JoinTownModal.tsx';
@@ -125,6 +126,7 @@ function AgentsSidebar({
         <SignedOut>
           <AnonymousViewerHint />
         </SignedOut>
+        <WorldFeed />
         <ConversationsLog />
         <QuotaIndicator />
       </>
@@ -181,6 +183,7 @@ function AgentsSidebar({
           </div>
         </div>
       )}
+      <WorldFeed />
       <ConversationsLog />
       <QuotaIndicator />
     </>
