@@ -120,13 +120,28 @@ def _send_to_daemon(agent_id: str, payload: dict) -> bool:
             **payload,
             "onboardingPhase": agent_conn.onboarding_phase or "alive",
         }
-        # Only fetch nearby conversations for agents not already in one.
-        own_conv = agent_conn.current_conversation_id
-        if not own_conv:
-            nearby_agents = payload.get("nearby_agents", [])
-            nearby_ids = [a.get("agent_id") for a in nearby_agents if a.get("agent_id")]
-            if nearby_ids:
-                nearby_convs = TownService().get_nearby_conversations(nearby_ids)
+        nearby_agents = payload.get("nearby_agents", [])
+        nearby_ids = [a.get("agent_id") for a in nearby_agents if a.get("agent_id")]
+
+        # Inject currentGoal into each nearby-agent dict (always, regardless of
+        # whether this agent is in a conversation).  Goals are fetched once per
+        # 2-second agent_state tick; N is typically ≤ 3 agents in proximity.
+        if nearby_ids:
+            svc = TownService()
+            goal_map: dict[str, str | None] = {}
+            for nid in nearby_ids:
+                rec = svc.get_town_agent_by_id(nid)
+                goal_map[nid] = (rec.get("currentGoal") or None) if rec else None
+            enriched_nearby = [
+                {**a, "currentGoal": goal_map.get(a.get("agent_id"))}
+                for a in nearby_agents
+            ]
+            payload = {**payload, "nearby_agents": enriched_nearby}
+
+            # Only fetch nearby conversations for agents not already in one.
+            own_conv = agent_conn.current_conversation_id
+            if not own_conv:
+                nearby_convs = svc.get_nearby_conversations(nearby_ids)
                 if nearby_convs:
                     payload = {**payload, "nearby_conversations": nearby_convs}
 
