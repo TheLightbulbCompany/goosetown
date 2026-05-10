@@ -14,10 +14,32 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, call, patch
 
+import pytest
+
 # Module-level patch targets (same as test_send_to_daemon_cache.py)
 WS_MANAGER_PATH = "core.services.daemon_bridge.get_town_agent_ws_manager"
 SERVICE_PATH = "core.services.daemon_bridge.TownService"
 MAILBOX_FACTORY_PATH = "core.services.daemon_bridge.get_daemon_mailbox"
+STANCES_PATH = "core.services.daemon_bridge.stances_service"
+
+
+def _make_no_stances_mock() -> MagicMock:
+    """Return a stances_service mock that reports no relationship for all pairs."""
+    m = MagicMock()
+    m.get_pair_stances.return_value = None
+    return m
+
+
+@pytest.fixture(autouse=True)
+def stub_stances():
+    """Auto-patch stances_service so existing currentGoal tests don't hit DynamoDB.
+
+    Tests that need specific stance behaviour should pass ``patch(STANCES_PATH,
+    ...)`` explicitly inside the test — that inner context manager takes
+    precedence over this autouse fixture.
+    """
+    with patch(STANCES_PATH, _make_no_stances_mock()):
+        yield
 
 
 def _make_agent_conn(
@@ -299,3 +321,119 @@ def test_currentGoal_injected_even_when_in_conversation():
     assert nearby_out[0]["currentGoal"] == "enjoy the cafe"
     # But nearby_conversations was NOT fetched (agent is in a conv)
     svc_mock.get_nearby_conversations.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Tests for stanceFromMe / stanceFromThem injection in nearby-agent dicts
+# ---------------------------------------------------------------------------
+
+STANCES_PATH = "core.services.daemon_bridge.stances_service"
+
+
+def test_nearby_agent_payload_includes_stances_when_relationship_has_stances():
+    """stanceFromMe and stanceFromThem are injected when a relationship with stances exists."""
+    from core.services.daemon_bridge import _send_to_daemon
+
+    sent: list = []
+    svc_mock = MagicMock()
+    svc_mock.get_town_agent_by_id.return_value = {"id": "alice-123", "currentGoal": None}
+    svc_mock.get_nearby_conversations.return_value = []
+
+    agent_conn = _make_agent_conn(agent_id="self-agent")
+    payload = {
+        "event": "agent_state",
+        "nearby_agents": [{"agent_id": "alice-123", "name": "Alice", "distance": 1.5}],
+    }
+
+    stances_mock = MagicMock()
+    stances_mock.get_pair_stances.return_value = {
+        "stance_a_to_b": "warm and curious",
+        "stance_b_to_a": "reserved but friendly",
+        "updated_at": 1234567890000,
+    }
+    stances_mock.get_stance.side_effect = lambda viewer, subject: (
+        "warm and curious" if viewer == "self-agent" else "reserved but friendly"
+    )
+
+    with (
+        patch(WS_MANAGER_PATH, return_value=_make_ws_mock(agent_conn)),
+        patch(SERVICE_PATH, return_value=svc_mock),
+        patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
+        patch(STANCES_PATH, stances_mock),
+    ):
+        ok = _send_to_daemon("self-agent", payload)
+
+    assert ok is True
+    nearby_out = sent[0][1]["nearby_agents"]
+    assert nearby_out[0]["stanceFromMe"] == "warm and curious"
+    assert nearby_out[0]["stanceFromThem"] == "reserved but friendly"
+
+
+def test_nearby_agent_stance_fields_none_when_no_relationship():
+    """stanceFromMe and stanceFromThem are None when no relationship row exists."""
+    from core.services.daemon_bridge import _send_to_daemon
+
+    sent: list = []
+    svc_mock = MagicMock()
+    svc_mock.get_town_agent_by_id.return_value = {"id": "bob-456", "currentGoal": None}
+    svc_mock.get_nearby_conversations.return_value = []
+
+    agent_conn = _make_agent_conn(agent_id="self-agent")
+    payload = {
+        "event": "agent_state",
+        "nearby_agents": [{"agent_id": "bob-456", "name": "Bob", "distance": 2.0}],
+    }
+
+    stances_mock = MagicMock()
+    stances_mock.get_pair_stances.return_value = None  # no relationship
+
+    with (
+        patch(WS_MANAGER_PATH, return_value=_make_ws_mock(agent_conn)),
+        patch(SERVICE_PATH, return_value=svc_mock),
+        patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
+        patch(STANCES_PATH, stances_mock),
+    ):
+        ok = _send_to_daemon("self-agent", payload)
+
+    assert ok is True
+    nearby_out = sent[0][1]["nearby_agents"]
+    assert nearby_out[0]["stanceFromMe"] is None
+    assert nearby_out[0]["stanceFromThem"] is None
+
+
+def test_nearby_agent_stance_fields_none_when_relationship_exists_but_stances_unset():
+    """Both stance fields are None when a relationship exists but neither stance is set."""
+    from core.services.daemon_bridge import _send_to_daemon
+
+    sent: list = []
+    svc_mock = MagicMock()
+    svc_mock.get_town_agent_by_id.return_value = {"id": "carol-789", "currentGoal": None}
+    svc_mock.get_nearby_conversations.return_value = []
+
+    agent_conn = _make_agent_conn(agent_id="self-agent")
+    payload = {
+        "event": "agent_state",
+        "nearby_agents": [{"agent_id": "carol-789", "name": "Carol", "distance": 2.5}],
+    }
+
+    stances_mock = MagicMock()
+    # Relationship exists but neither stance column is set
+    stances_mock.get_pair_stances.return_value = {
+        "stance_a_to_b": None,
+        "stance_b_to_a": None,
+        "updated_at": None,
+    }
+    stances_mock.get_stance.return_value = None
+
+    with (
+        patch(WS_MANAGER_PATH, return_value=_make_ws_mock(agent_conn)),
+        patch(SERVICE_PATH, return_value=svc_mock),
+        patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
+        patch(STANCES_PATH, stances_mock),
+    ):
+        ok = _send_to_daemon("self-agent", payload)
+
+    assert ok is True
+    nearby_out = sent[0][1]["nearby_agents"]
+    assert nearby_out[0]["stanceFromMe"] is None
+    assert nearby_out[0]["stanceFromThem"] is None
