@@ -827,6 +827,23 @@ def cmd_act(args: argparse.Namespace) -> None:
         if len(reflection) > 2000:
             _die("Reflection must be <= 2000 chars.")
         payload = {"action": "complete_goal", "reflection": reflection}
+    elif action == "describe_stance":
+        if len(rest) < 2:
+            _die(
+                "Usage: act describe_stance <target_agent_id> <text...>",
+                'Example: act describe_stance bob-uuid "kind but lately distant"',
+            )
+        target_agent_id = rest[0]
+        text = " ".join(rest[1:]).strip()
+        if not text:
+            _die("Stance text must not be empty.")
+        if len(text) > 500:
+            _die("Stance text must be <= 500 chars.")
+        payload = {
+            "action": "describe_stance",
+            "target_agent_id": target_agent_id,
+            "text": text,
+        }
     elif action in _VALID_ACTIVITIES:
         payload = {"action": "activity", "activity_id": action}
     else:
@@ -840,6 +857,7 @@ def cmd_act(args: argparse.Namespace) -> None:
             "reply_owner",
             "set_goal",
             "complete_goal",
+            "describe_stance",
         ]
         _die(
             f"Unknown action: '{action}'",
