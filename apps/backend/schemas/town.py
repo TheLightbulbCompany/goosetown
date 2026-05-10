@@ -123,6 +123,16 @@ class ApartmentAgentState(BaseModel):
     currentGoal: Optional[str] = None
 
 
+class WorldEventEntry(BaseModel):
+    """A single public world event from the WorldGM feed."""
+
+    eventId: str
+    timestamp: str  # ISO 8601
+    tag: str
+    summary: Optional[str] = None
+    location: Optional[str] = None
+
+
 class ApartmentActivityEvent(BaseModel):
     """Activity event in the apartment feed."""
 
