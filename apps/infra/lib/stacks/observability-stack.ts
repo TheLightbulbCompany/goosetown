@@ -83,11 +83,16 @@ export class ObservabilityStack extends cdk.Stack {
       environment: {
         ENVIRONMENT: env,
         PIXELLAB_API_KEY_SECRET_NAME: pixelLabApiKey.secretName,
-        // Defaults are baked into the handler. Override in env if PixelLab's
-        // shape ever changes — no Lambda redeploy required if you have
-        // ``aws lambda update-function-configuration`` access.
-        // PIXELLAB_BALANCE_URL: "https://api.pixellab.ai/v2/balance",
-        // PIXELLAB_BALANCE_JSON_PATH: "credits_remaining",
+        // PixelLab's /v2/balance response shape changed — it now returns:
+        //   { credits: { type: "usd", usd: 0.0 },
+        //     subscription: { type: "generations", generations: 4766.0,
+        //                     total: 5000.0 } }
+        // The handler's default ``credits_remaining`` path no longer exists.
+        // For GooseTown's monthly subscription model, the meaningful capacity
+        // is ``subscription.generations`` (remaining out of ``total``) — that's
+        // what gates sprite generation. Override here so the poller publishes
+        // the right number; alarm threshold (1000) is interpreted against this.
+        PIXELLAB_BALANCE_JSON_PATH: "subscription.generations",
       },
       code: lambda_.Code.fromAsset(
         path.join(__dirname, "..", "..", "lambda", "pixellab-credits-poller"),
