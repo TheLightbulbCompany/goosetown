@@ -269,4 +269,20 @@ async def _handle_agent_connect(request, ws_manager):
         # successful-but-undelivered case (gone connection mid-handshake).
         logger.error("Connected event to %s was not delivered", agent_name)
 
+    # Fire-and-forget SQS drain: deliver any WorldGM events that arrived while
+    # the daemon was offline. Runs in a background Task so the connect handshake
+    # is not delayed. If the queue doesn't exist (older agents registered before
+    # Phase D) the drainer no-ops safely.
+    try:
+        from core.services import sqs_drainer
+
+        asyncio.create_task(sqs_drainer.drain_for_agent(agent_id))
+        logger.debug("[agent:%s] SQS drain task scheduled on connect", agent_id[:8])
+    except Exception as _sqse:
+        logger.warning(
+            "[agent:%s] Failed to schedule SQS drain on connect (non-fatal): %s",
+            agent_id[:8],
+            _sqse,
+        )
+
     return {"statusCode": 200}
