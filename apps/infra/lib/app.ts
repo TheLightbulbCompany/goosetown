@@ -71,9 +71,14 @@ pipeline.addStageWithGitHubOptions(
             },
           },
           {
+            // Tag the Preview deploy with this workflow run's commit SHA so
+            // the prod-side re-alias step (see DeployVercelProd) can find
+            // *this exact* deploy via the Vercel metadata filter rather
+            // than picking up an unrelated Preview from a parallel PR or
+            // manual deploy.
             name: "Deploy to Vercel (Preview)",
             id: "vercel-deploy-dev",
-            run: 'DEPLOY_URL=$(vercel deploy --prebuilt --token=$VERCEL_TOKEN) && echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT',
+            run: 'DEPLOY_URL=$(vercel deploy --prebuilt --meta githubCommitSha=$GITHUB_SHA --token=$VERCEL_TOKEN) && echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT',
             env: vercelEnv,
           },
           {
@@ -161,9 +166,14 @@ pipeline.addStageWithGitHubOptions(
             // Preview is guaranteed to be the dev one we want.
             name: "Re-alias dev.goosetown.isol8.co (workaround for prod auto-alias clobber)",
             run: [
-              'DEV_PREVIEW=$(curl -fsS -H "Authorization: Bearer $VERCEL_TOKEN" "https://api.vercel.com/v6/deployments?projectId=$VERCEL_PROJECT_ID&teamId=$VERCEL_ORG_ID&target=preview&state=READY&limit=1" | jq -r ".deployments[0].url")',
-              'if [ -z "$DEV_PREVIEW" ] || [ "$DEV_PREVIEW" = "null" ]; then echo "no Preview deploy found"; exit 1; fi',
-              'echo "Re-aliasing dev.goosetown.isol8.co to https://$DEV_PREVIEW"',
+              // Filter by the metadata key the dev step stamped on the
+              // Preview deploy, so we pin to *this workflow run's* dev
+              // build — not whatever Preview happens to be newest at the
+              // Vercel project level (which could be from a parallel PR
+              // or manual deploy and would silently mis-alias dev).
+              'DEV_PREVIEW=$(curl -fsS -H "Authorization: Bearer $VERCEL_TOKEN" "https://api.vercel.com/v6/deployments?projectId=$VERCEL_PROJECT_ID&teamId=$VERCEL_ORG_ID&target=preview&state=READY&limit=1&meta-githubCommitSha=$GITHUB_SHA" | jq -r ".deployments[0].url")',
+              'if [ -z "$DEV_PREVIEW" ] || [ "$DEV_PREVIEW" = "null" ]; then echo "no Preview deploy found for commit $GITHUB_SHA"; exit 1; fi',
+              'echo "Re-aliasing dev.goosetown.isol8.co to https://$DEV_PREVIEW (commit $GITHUB_SHA)"',
               'vercel alias "https://$DEV_PREVIEW" dev.goosetown.isol8.co --token=$VERCEL_TOKEN',
             ].join("\n"),
             env: vercelEnv,
