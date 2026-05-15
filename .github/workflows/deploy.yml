@@ -2207,19 +2207,19 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      - name: Alias to goosetown.isol8.co
-        run: vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }}
-          goosetown.isol8.co --token=$VERCEL_TOKEN
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       - name: Re-alias dev.goosetown.isol8.co (workaround for prod auto-alias clobber)
         run: |-
           DEV_PREVIEW=$(curl -fsS -H "Authorization: Bearer $VERCEL_TOKEN" "https://api.vercel.com/v6/deployments?projectId=$VERCEL_PROJECT_ID&teamId=$VERCEL_ORG_ID&target=preview&state=READY&limit=1&meta-githubCommitSha=$GITHUB_SHA" | jq -r ".deployments[0].url")
           if [ -z "$DEV_PREVIEW" ] || [ "$DEV_PREVIEW" = "null" ]; then echo "no Preview deploy found for commit $GITHUB_SHA"; exit 1; fi
           echo "Re-aliasing dev.goosetown.isol8.co to https://$DEV_PREVIEW (commit $GITHUB_SHA)"
           vercel alias "https://$DEV_PREVIEW" dev.goosetown.isol8.co --token=$VERCEL_TOKEN
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      - name: Alias to goosetown.isol8.co
+        run: vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }}
+          goosetown.isol8.co --token=$VERCEL_TOKEN
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
