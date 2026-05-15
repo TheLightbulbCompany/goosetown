@@ -143,6 +143,31 @@ pipeline.addStageWithGitHubOptions(
             run: "vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} goosetown.isol8.co --token=$VERCEL_TOKEN",
             env: vercelEnv,
           },
+          {
+            // Root cause: `dev.goosetown.isol8.co` is registered on the
+            // Vercel project with `gitBranch=null`, which makes Vercel
+            // auto-alias it to every Production deploy. So the dev-target
+            // Preview built in DeployVercelDev (the right bundle for dev)
+            // gets silently overwritten by this Production deploy seconds
+            // later, leaving dev pointed at prod-target bundle with prod
+            // API URLs baked in. Symptom: "Failed to fetch" everywhere on
+            // dev, conversations sidebar empty, agents can't connect.
+            //
+            // Permanent fix is one Vercel API call to set `gitBranch` on
+            // the dev domain so prod deploys don't auto-alias it. Until
+            // that's done, this step re-pins dev back to the latest
+            // Preview deploy after the Production deploy has settled.
+            // DeployVercelProd `needs:` DeployVercelDev so the latest
+            // Preview is guaranteed to be the dev one we want.
+            name: "Re-alias dev.goosetown.isol8.co (workaround for prod auto-alias clobber)",
+            run: [
+              'DEV_PREVIEW=$(curl -fsS -H "Authorization: Bearer $VERCEL_TOKEN" "https://api.vercel.com/v6/deployments?projectId=$VERCEL_PROJECT_ID&teamId=$VERCEL_ORG_ID&target=preview&state=READY&limit=1" | jq -r ".deployments[0].url")',
+              'if [ -z "$DEV_PREVIEW" ] || [ "$DEV_PREVIEW" = "null" ]; then echo "no Preview deploy found"; exit 1; fi',
+              'echo "Re-aliasing dev.goosetown.isol8.co to https://$DEV_PREVIEW"',
+              'vercel alias "https://$DEV_PREVIEW" dev.goosetown.isol8.co --token=$VERCEL_TOKEN',
+            ].join("\n"),
+            env: vercelEnv,
+          },
         ],
       }),
     ],
