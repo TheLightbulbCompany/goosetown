@@ -71,9 +71,14 @@ pipeline.addStageWithGitHubOptions(
             },
           },
           {
+            // Tag the Preview deploy with this workflow run's commit SHA so
+            // the prod-side re-alias step (see DeployVercelProd) can find
+            // *this exact* deploy via the Vercel metadata filter rather
+            // than picking up an unrelated Preview from a parallel PR or
+            // manual deploy.
             name: "Deploy to Vercel (Preview)",
             id: "vercel-deploy-dev",
-            run: 'DEPLOY_URL=$(vercel deploy --prebuilt --token=$VERCEL_TOKEN) && echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT',
+            run: 'DEPLOY_URL=$(vercel deploy --prebuilt --meta githubCommitSha=$GITHUB_SHA --token=$VERCEL_TOKEN) && echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT',
             env: vercelEnv,
           },
           {
@@ -139,6 +144,44 @@ pipeline.addStageWithGitHubOptions(
             env: vercelEnv,
           },
           {
+            // Root cause: `dev.goosetown.isol8.co` is registered on the
+            // Vercel project with `gitBranch=null`, which makes Vercel
+            // auto-alias it to every Production deploy. So the dev-target
+            // Preview built in DeployVercelDev (the right bundle for dev)
+            // gets silently overwritten by the Production deploy that
+            // just ran above, leaving dev pointed at the prod-target
+            // bundle with prod API URLs baked in. Symptom: "Failed to
+            // fetch" everywhere on dev, conversations sidebar empty,
+            // agents can't connect.
+            //
+            // This step re-pins dev back to the Preview deploy from this
+            // workflow run. We run it BEFORE the apex alias step (which
+            // is known to fail intermittently on cert issuance — see
+            // docs/superpowers/test-runs/2026-05-06-prod-restoration-
+            // summary.md) so dev correctness doesn't depend on the prod
+            // apex alias succeeding.
+            //
+            // Permanent fix is one Vercel API call to set `gitBranch` on
+            // the dev domain so prod deploys don't auto-alias it.
+            name: "Re-alias dev.goosetown.isol8.co (workaround for prod auto-alias clobber)",
+            run: [
+              // Filter by the metadata key the dev step stamped on the
+              // Preview deploy, so we pin to *this workflow run's* dev
+              // build — not whatever Preview happens to be newest at the
+              // Vercel project level (which could be from a parallel PR
+              // or manual deploy and would silently mis-alias dev).
+              'DEV_PREVIEW=$(curl -fsS -H "Authorization: Bearer $VERCEL_TOKEN" "https://api.vercel.com/v6/deployments?projectId=$VERCEL_PROJECT_ID&teamId=$VERCEL_ORG_ID&target=preview&state=READY&limit=1&meta-githubCommitSha=$GITHUB_SHA" | jq -r ".deployments[0].url")',
+              'if [ -z "$DEV_PREVIEW" ] || [ "$DEV_PREVIEW" = "null" ]; then echo "no Preview deploy found for commit $GITHUB_SHA"; exit 1; fi',
+              'echo "Re-aliasing dev.goosetown.isol8.co to https://$DEV_PREVIEW (commit $GITHUB_SHA)"',
+              'vercel alias "https://$DEV_PREVIEW" dev.goosetown.isol8.co --token=$VERCEL_TOKEN',
+            ].join("\n"),
+            env: vercelEnv,
+          },
+          {
+            // Apex alias runs LAST so dev correctness above doesn't depend
+            // on this step succeeding. The apex alias has been known to
+            // fail intermittently on ACM cert issuance — see
+            // docs/superpowers/test-runs/2026-05-06-prod-restoration-summary.md.
             name: "Alias to goosetown.isol8.co",
             run: "vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} goosetown.isol8.co --token=$VERCEL_TOKEN",
             env: vercelEnv,
