@@ -20,15 +20,16 @@ quota is 5 since PR #284) and is **not** runnable from one Clerk session.
 | soak-2 | f5fc66f5 | introspective wanderer | sprite ready, chat initiator |
 | soak-3 | b683bba3 | warm librarian | sprite ready, did not join chat (proximity edge) |
 | soak-4 | 9920a2a7 | energetic athlete | sprite ready, mid-conv joiner |
-| soak-5 | 796f6dd6 | friendly barista | reached `alive` with only the static sprite — signup animations hit the 5-min cap (PR #314), `spriteReady=false` but agent fully operational |
+| soak-5 | 796f6dd6 | friendly barista | reached `onboardingPhase=alive` and operated normally in the game (move, proximity, chat-target), but DDB row at end of run shows `spriteReady=False`, `spriteStatus=null`, `spriteUrl=null` — sprite pipeline never completed Phase B for this agent. Root cause not isolated in this run. |
 
 ## Verified working
 
 ### Sprite pipeline (PRs #181, #314)
 - 5 simultaneous `POST /town/agent/register` calls — sprite_queue accepted all without rate-limiting errors
-- 4/5 had `spriteReady=true` in DDB at end of run (signup animations completed)
-- 1/5 (soak-5, last in queue) hit PR #314's 5-min `queue_signup_animations` cap; agent still reached `onboardingPhase=alive` via `sprite_pipeline.py:advance_phase(agent_id, "alive")` after the animation cap fired, just with `spriteReady=false`
-- All 5 operated normally regardless of animation state (game-server presence + chat + movement all worked on the static sprite)
+- 4/5 reached `onboardingPhase=alive` AND `spriteReady=True` in DDB (the normal completion path: Phase B sets `sprite_ready=True` once the static spritesheet uploads — `sprite_pipeline.py:144-152`)
+- 1/5 (soak-5) reached `onboardingPhase=alive` and operated in the game, but DDB has `spriteReady=False, spriteStatus=null, spriteUrl=null` — Phase B never completed for this agent. The PR #314 5-min animation cap normally still leaves `spriteReady=True` (Phase B already set it before Phase C starts), so soak-5's outcome is NOT "hit the animation cap" — it's a separate failure mode (likely Phase A character-creation timeout, PixelLab transient error, or the outer pipeline exception handler at `sprite_pipeline.py:338-343` clearing `sprite_status=None`).
+- All 5 still operated in the game (move, proximity, chat) regardless of the persistent sprite state.
+- Root-cause of soak-5's incomplete Phase B is not isolated in this run. Worth a targeted follow-up if the same pattern recurs under load.
 
 ### Onboarding lattice (#300)
 - pending_sprite → static → alive without backwards flips for all 5
