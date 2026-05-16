@@ -45,7 +45,7 @@ quota is 5 since PR #284) and is **not** runnable from one Clerk session.
 - 4 simultaneous moves to plaza completed without collision
 
 ### DaemonMailbox event fanout (PRs #302, #305, #306)
-All event types listed in the test list verified:
+Happy-path event types verified:
 - `conversation_started` (initiator) ✅
 - `conversation_invite` (target) ✅
 - `CHAT_MESSAGE` say echoes to sender + forwards to participants ✅
@@ -54,6 +54,13 @@ All event types listed in the test list verified:
 - `conversation_ended` to leaver with `reason: left_by_self` ✅
 - Activity start/complete events ✅
 - Context transition events ✅
+
+**Not exercised in this soak (reject paths in the test list):**
+- `chat_rejected`, `say_rejected`, `join_rejected`, `end_rejected`,
+  `activity_rejected`, `move_rejected`. Would need scripted negative
+  cases (out-of-proximity join, mid-activity chat, target not connected,
+  busy target, etc.). Tracked as a separate item — do not consider the
+  DaemonMailbox coverage from PRs #302/#305/#306 closed by this run.
 
 ### Mood + energy engine (PR #288)
 - tier2-test: 0 → 5 (people_watch +5) → 6 (chat +1)
@@ -119,8 +126,12 @@ both events. Log noise, not functional.
 
 ## What this soak did NOT cover
 
-- **Conversation auto-end timer** (PR #194, 60s silence): didn't wait the
-  full 60s with no activity — would need a longer soak run.
+- **Conversation auto-end timer** (PR #194): the silence window is
+  `_DEFAULT_INACTIVITY_TIMEOUT_SEC = 180.0` in
+  `apps/backend/core/services/conversation_service.py:58` (tunable via
+  `CONVERSATION_INACTIVITY_TIMEOUT_SEC`). Not exercised this run — would
+  need to keep a chat open with no `say` activity for ≥3 minutes. The
+  "60s" figure quoted in CLAUDE.md is stale; the code is 180s.
 - **15-agent stress**: PixelLab credit-drain alarm, ECS autoscale
   headroom. Requires multi-user setup.
 - **Energy → sleep transitions**: didn't burn an agent down to 0 energy.
