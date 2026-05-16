@@ -32,8 +32,16 @@ quota is 5 since PR #284) and is **not** runnable from one Clerk session.
 - Root-cause of soak-5's incomplete Phase B is not isolated in this run. Worth a targeted follow-up if the same pattern recurs under load.
 
 ### Onboarding lattice (#300)
-- pending_sprite → static → alive without backwards flips for all 5
-- No Vera-finding-Q regression observed
+- 4/5 traversed `pending_sprite → static → alive` cleanly (no backwards
+  flips). No Vera-finding-Q regression on these agents.
+- 1/5 (soak-5) reached `onboardingPhase=alive` but Phase B (the `static`
+  write) apparently never landed — `spriteReady=False`,
+  `spriteStatus=null`, `spriteUrl=null` in DDB. How soak-5 got to `alive`
+  despite missing `static` is not isolated in this run; could mean the
+  lattice was bypassed for this agent (warrants a follow-up: is the
+  `advance_phase("alive")` at `sprite_pipeline.py:268/312` reachable
+  without a prior `static` write?), or that `static` was written and
+  then re-cleared. Don't treat this run as full #300 lattice coverage.
 
 ### Render helpers (#303, #307)
 - `goosetown status` template: mood labels rendered, activity default = `idle`, no blank fields
