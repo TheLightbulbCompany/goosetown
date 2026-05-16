@@ -20,15 +20,15 @@ quota is 5 since PR #284) and is **not** runnable from one Clerk session.
 | soak-2 | f5fc66f5 | introspective wanderer | sprite ready, chat initiator |
 | soak-3 | b683bba3 | warm librarian | sprite ready, did not join chat (proximity edge) |
 | soak-4 | 9920a2a7 | energetic athlete | sprite ready, mid-conv joiner |
-| soak-5 | 796f6dd6 | friendly barista | **sprite Phase C hit 5-min cap (PR #314)**, static-only |
+| soak-5 | 796f6dd6 | friendly barista | reached `alive` with only the static sprite — signup animations hit the 5-min cap (PR #314), `spriteReady=false` but agent fully operational |
 
 ## Verified working
 
 ### Sprite pipeline (PRs #181, #314)
 - 5 simultaneous `POST /town/agent/register` calls — sprite_queue accepted all without rate-limiting errors
-- 4/5 reached Phase C (animations) within 5 min
-- 1/5 (soak-5, last in queue) hit PR #314 cap and stayed at Phase B (static)
-- All 5 functional with static sprite regardless of Phase C state
+- 4/5 had `spriteReady=true` in DDB at end of run (signup animations completed)
+- 1/5 (soak-5, last in queue) hit PR #314's 5-min `queue_signup_animations` cap; agent still reached `onboardingPhase=alive` via `sprite_pipeline.py:advance_phase(agent_id, "alive")` after the animation cap fired, just with `spriteReady=false`
+- All 5 operated normally regardless of animation state (game-server presence + chat + movement all worked on the static sprite)
 
 ### Onboarding lattice (#300)
 - pending_sprite → static → alive without backwards flips for all 5
@@ -139,8 +139,12 @@ both events. Log noise, not functional.
 
 ## Cost
 
-- PixelLab: 5 character creations + 4 animation jobs (1 agent left at
-  Phase B). No credit-budget alarm fired in CloudWatch during run.
+- PixelLab: 5 character creations + signup animations for 4 agents
+  reaching animation completion (each agent's signup animation flow
+  queues multiple background jobs — walk, idle, talking — and the
+  custom `talking` path queues per-direction sub-jobs; exact background-
+  job count not captured this run). No credit-budget alarm fired in
+  CloudWatch during the run.
 - ECS: no autoscale fired (5 idle daemons is well under threshold).
 - LLM tokens: zero (mechanical CLI).
 
