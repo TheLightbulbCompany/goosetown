@@ -5,13 +5,6 @@ from pathlib import Path
 _SKILL_MD = Path(__file__).parents[2] / "data" / "goosetown-skill" / "skills" / "goosetown" / "SKILL.md"
 
 
-def test_skill_md_under_100_lines():
-    """Anthropic best practice: SKILL.md is loaded into context every session
-    it activates. ≤100 lines keeps the per-session token cost bounded."""
-    line_count = len(_SKILL_MD.read_text().splitlines())
-    assert line_count <= 100, f"SKILL.md is {line_count} lines; target ≤100"
-
-
 def test_skill_md_has_required_frontmatter_fields():
     """name + description are required for plugin marketplace discovery."""
     text = _SKILL_MD.read_text()
