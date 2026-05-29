@@ -1,8 +1,10 @@
 """Tests for ResidentManager — launch, supervise, and stop resident daemons."""
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+import worldgm.residents.manager as manager_mod
 from worldgm.residents.manager import ResidentManager
 from worldgm.residents.personas import Persona
 
@@ -249,4 +251,54 @@ async def test_stop_deactivation_error_is_best_effort(monkeypatch, tmp_path):
     await mgr.start()
 
     # Must not raise even though update_agent_state blows up
+    await mgr.stop()
+
+
+# ---------------------------------------------------------------------------
+# Test 9: a daemon that crashes is re-provisioned and restarted after backoff
+# ---------------------------------------------------------------------------
+
+async def test_supervisor_restarts_daemon_after_crash(monkeypatch, tmp_path):
+    """If daemon.run() raises, the supervisor re-provisions + constructs a new
+    daemon after the backoff (proving the restart loop, not just clean exit)."""
+    # Collapse the backoff so the test doesn't wait 5s.
+    monkeypatch.setattr(manager_mod, "_RESTART_BACKOFF_SECONDS", 0.0)
+
+    construct_count = 0
+    second_daemon_running = asyncio.Event()
+
+    async def run_side_effect(*args, **kwargs):
+        # First daemon crashes; second one "stays up" until cancelled.
+        if construct_count == 1:
+            raise RuntimeError("ws drop")
+        second_daemon_running.set()
+        await asyncio.sleep(3600)
+
+    def fake_daemon_factory(**kw):
+        nonlocal construct_count
+        construct_count += 1
+        d = AsyncMock()
+        d.run = AsyncMock(side_effect=run_side_effect)
+        return d
+
+    monkeypatch.setattr(manager_mod, "TownDaemon", fake_daemon_factory)
+
+    fake_ts = _fake_town_service("agent-9")
+    fake_mint = MagicMock(return_value="tok")
+
+    mgr = ResidentManager(
+        personas=[_persona()],
+        town_service=fake_ts,
+        mint_token=fake_mint,
+        ws_url="wss://x",
+        base_dir=tmp_path,
+    )
+    await mgr.start()
+
+    # The restart path must construct a SECOND daemon after the first crashes.
+    await asyncio.wait_for(second_daemon_running.wait(), timeout=2.0)
+    assert construct_count >= 2
+    # Re-provisioning mints a fresh token / row each restart.
+    assert fake_ts.create_resident.call_count >= 2
+
     await mgr.stop()

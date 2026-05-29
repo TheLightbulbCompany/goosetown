@@ -23,7 +23,7 @@ _RESTART_BACKOFF_SECONDS = 5.0
 class _ResidentHandle:
     persona: Persona
     task: asyncio.Task | None = None
-    daemon: object | None = None       # TownDaemon instance (set per (re)launch)
+    daemon: TownDaemon | None = None    # set per (re)launch
     config: ResidentConfig | None = None
 
 
@@ -135,6 +135,7 @@ class ResidentManager:
         for handle in self.residents.values():
             if handle.config is not None:
                 try:
+                    # Sync boto3 call (TownService is not async) — no await.
                     self._town_service.update_agent_state(
                         handle.config.agent_id, is_active="false"
                     )
