@@ -28,7 +28,7 @@ def test_provision_creates_row_mints_token_and_builds_config():
     )
 
     assert isinstance(cfg, ResidentConfig)
-    assert cfg.token == "signed.token.value"
+    assert cfg.token == "signed.token.value"  # nosec B105 — test fixture, not a real secret
     assert cfg.agent_name == "tobias"
     assert cfg.agent_id == "agent-uuid-123"
     assert "/residents/" in str(cfg.workspace) and str(cfg.workspace).endswith("tobias")
