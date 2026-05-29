@@ -2,7 +2,8 @@
 
 from types import SimpleNamespace
 
-from core.services.town_service import TownService
+from core import dynamo
+from core.services.town_service import RESIDENT_USER_ID, TownService
 
 
 class TestOptIn:
@@ -285,6 +286,13 @@ class TestCreateResident:
             traits=["z"],
         )
         assert again["id"] == agent["id"]
+        # ...and no duplicate row was written under the happy path:
+        rows = [
+            i
+            for i in dynamo.agents_table().scan()["Items"]
+            if i.get("agentName") == "tobias"
+        ]
+        assert len(rows) == 1
 
     def test_create_resident_has_expected_fields(self, dynamodb_tables):
         svc = TownService()
@@ -309,7 +317,6 @@ class TestCreateResident:
     def test_create_resident_idempotent_reactivates_inactive(self, dynamodb_tables):
         """If a resident was deactivated (e.g. by opt_out), create_resident reactivates it."""
         svc = TownService()
-        from core.services.town_service import RESIDENT_USER_ID
 
         agent = svc.create_resident(
             name="remy",

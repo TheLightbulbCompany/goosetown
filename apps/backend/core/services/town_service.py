@@ -222,8 +222,10 @@ class TownService:
         existing = self._get_resident_by_name(name)
         if existing:
             if existing.get("isActive") != "true":
-                self.update_agent_state(existing["id"], is_active="true")
-                existing["isActive"] = "true"
+                # Return the authoritative post-update row (ReturnValues=ALL_NEW),
+                # not the pre-fetch snapshot, so callers get the reactivated state.
+                updated = self.update_agent_state(existing["id"], is_active="true")
+                return updated or existing
             return existing
 
         now = _now_iso()
