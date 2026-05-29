@@ -127,6 +127,7 @@ export class GooseTownStage extends cdk.Stage {
       secrets: auth.secrets,
       alarmTopic: observability.snsTopic,
       worldBusArn: eventing.bus.eventBusArn,
+      tables: database.tables,
     });
 
     cdk.Tags.of(this).add("Project", "goosetown");

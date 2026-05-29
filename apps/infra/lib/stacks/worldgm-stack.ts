@@ -10,6 +10,7 @@ import { DockerImageAsset, Platform } from "aws-cdk-lib/aws-ecr-assets";
 import * as path from "path";
 import { Construct } from "constructs";
 import { AuthSecrets } from "./auth-stack";
+import { DatabaseTables } from "./database-stack";
 
 export interface WorldgmStackProps extends cdk.StackProps {
   environment: string;
@@ -21,6 +22,8 @@ export interface WorldgmStackProps extends cdk.StackProps {
   alarmTopic?: sns.ITopic;
   /** EventBridge world bus ARN (from EventingStack). */
   worldBusArn: string;
+  /** DynamoDB tables (from DatabaseStack) the worldgm tick loop reads/writes. */
+  tables: DatabaseTables;
 }
 
 /**
@@ -153,6 +156,19 @@ export class WorldgmStack extends cdk.Stack {
         ],
       }),
     );
+
+    // ─── IAM: DynamoDB — the tick loop's table access ───────────────────
+    // Without these grants every tick fails with AccessDeniedException and
+    // the WorldGM is a silent no-op (the only failure mode that doesn't
+    // trip the task-missing alarm — the task stays "running" while doing
+    // nothing). Scoped to exactly what the tick loop touches:
+    //   - agents: read (sync_locations → get_active_agents queries the
+    //     isActive-joinedAt-index GSI; grantReadData covers table + /index/*)
+    //   - worldgm-arcs: read+write (arc_orchestrator query/scan/put/update)
+    //   - world-events: write (event_publisher put_item)
+    props.tables.agents.grantReadData(taskDef.taskRole);
+    props.tables.worldgmArcs.grantReadWriteData(taskDef.taskRole);
+    props.tables.worldEvents.grantWriteData(taskDef.taskRole);
 
     this.service = new ecs.FargateService(this, "Service", {
       serviceName: `goosetown-${env}-worldgm`,

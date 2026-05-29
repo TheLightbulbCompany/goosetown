@@ -1354,6 +1354,7 @@ jobs:
       - Assets-FileAsset18
       - Assets-DockerAsset2
       - dev-goosetown-dev-eventing-Deploy
+      - dev-goosetown-dev-database-Deploy
       - dev-goosetown-dev-auth-Deploy
       - dev-goosetown-dev-cluster-Deploy
       - dev-goosetown-dev-network-Deploy
@@ -2033,6 +2034,7 @@ jobs:
       - Assets-FileAsset30
       - Assets-DockerAsset2
       - prod-goosetown-prod-eventing-Deploy
+      - prod-goosetown-prod-database-Deploy
       - prod-goosetown-prod-auth-Deploy
       - prod-goosetown-prod-cluster-Deploy
       - prod-goosetown-prod-network-Deploy
