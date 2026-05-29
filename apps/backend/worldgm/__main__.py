@@ -210,29 +210,47 @@ async def _tick(state: GmState) -> None:
     # TODO(Phase C3): maybe_kickoff_arc, process_arc_beats
 
     # --- Resident brain ticks (RESIDENTS_ENABLED only) ---
+    #
+    # Brain ticks run CONCURRENTLY across residents — `step_resident_brain`
+    # awaits `daemon.handle_tool_command(...)` for moves, which blocks up to
+    # 120s on arrival. A sequential loop would serialize the entire cast
+    # (observed on dev with 20 residents: ticks taking minutes + inactivity
+    # timeouts thrashing daemons). Running them under `asyncio.gather` lets
+    # each daemon's move await its own arrival while the other 19 brains
+    # progress in parallel — the per-resident FSM still prevents that
+    # resident from double-issuing a move.
     if state.resident_manager is not None:
-        for name, handle in state.resident_manager.residents.items():
-            daemon = handle.daemon
-            if daemon is None or not getattr(daemon, "state", None):
-                continue  # not connected yet
-            status = read_status(daemon)
-            runtime = state.resident_runtimes.get(name)
-            if runtime is None:
-                runtime = ResidentRuntime(
-                    name=name,
-                    location=status["location"],
-                    state="idle",
-                    idle_ticks=0,
-                    hangout=handle.persona.hangout,
-                    location_context=status.get("location_context", "town"),
-                    sleep_hour=handle.persona.sleep_hour,
-                    wake_hour=handle.persona.wake_hour,
-                )
-                state.resident_runtimes[name] = runtime
-            try:
-                await step_resident_brain(daemon, runtime, status)
-            except Exception:
-                logger.exception("Resident brain tick failed for %s", name)
+        await asyncio.gather(
+            *(_tick_one_resident(state, name, handle) for name, handle in state.resident_manager.residents.items()),
+            return_exceptions=False,  # exceptions are swallowed inside the helper
+        )
+
+
+async def _tick_one_resident(state: GmState, name: str, handle) -> None:
+    """Brain tick for a single resident — extracted so they can run in
+    parallel under asyncio.gather. Exceptions are logged and swallowed so
+    one broken resident never breaks the gather (and therefore the tick)."""
+    daemon = handle.daemon
+    if daemon is None or not getattr(daemon, "state", None):
+        return  # not connected yet
+    status = read_status(daemon)
+    runtime = state.resident_runtimes.get(name)
+    if runtime is None:
+        runtime = ResidentRuntime(
+            name=name,
+            location=status["location"],
+            state="idle",
+            idle_ticks=0,
+            hangout=handle.persona.hangout,
+            location_context=status.get("location_context", "town"),
+            sleep_hour=handle.persona.sleep_hour,
+            wake_hour=handle.persona.wake_hour,
+        )
+        state.resident_runtimes[name] = runtime
+    try:
+        await step_resident_brain(daemon, runtime, status)
+    except Exception:
+        logger.exception("Resident brain tick failed for %s", name)
 
 
 async def main() -> None:
