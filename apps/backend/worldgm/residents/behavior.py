@@ -99,13 +99,25 @@ def next_action(runtime: ResidentRuntime, rng_value: float, now_utc_hour: int | 
             return dict(NOOP)
         return _move_cmd(_BED)
 
-    # Awake. Not at hangout (or asleep at bed and just woke) → drift to hangout.
-    if runtime.location != runtime.hangout:
+    # Awake. Are we at the hangout?
+    #
+    # Two cases are both "at hangout":
+    #   1. Flat town hangouts (plaza, cafe, activity_center, bank): the agent's
+    #      reported `location` equals the hangout name.
+    #   2. Interior-scene hangouts (library): the hangout has its own scene
+    #      with sub-locations. On arrival the agent's `location_context`
+    #      becomes the hangout name (e.g. "library") and `location` becomes
+    #      a sub-location like "exit". Without this branch the brain would
+    #      see location ("exit") != hangout ("library") and re-issue the
+    #      move forever, observed on dev as residents bouncing in and out
+    #      of the library every tick.
+    at_hangout = runtime.location == runtime.hangout or runtime.location_context == runtime.hangout
+    if not at_hangout:
         return _move_cmd(runtime.hangout)
 
     # Settled at hangout: occasional wander (rng_value < _WANDER_CHANCE).
     if rng_value < _WANDER_CHANCE:
-        others = [d for d in _VALID_DESTINATIONS if d != runtime.location]
+        others = [d for d in _VALID_DESTINATIONS if d != runtime.hangout]
         # Rescale rng_value from [0, _WANDER_CHANCE) to [0, 1) so the pick spans
         # ALL other destinations, not just the first one or two. Deterministic.
         idx = int((rng_value / _WANDER_CHANCE) * len(others)) % len(others)
