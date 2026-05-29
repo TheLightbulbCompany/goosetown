@@ -2,39 +2,37 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Keep GooseTown populated above a density floor with server-driven "resident" agents that recede as real agents arrive, so a newly-joined real agent always has someone to meet and chat with.
+**Goal:** A fixed set of always-present "resident" agents so a real agent always has someone to meet and chat with — implemented as real agents that GooseTown operates: each runs the actual `goosetown` daemon as a library inside the World GM service, with worldgm supplying only the brain.
 
-**Architecture:** Extend the worldgm service (single-replica, tick loop, Bedrock, DDB). Each tick: reconcile resident population to a dynamic floor, then scripted-move active residents. Residents connect to the Godot game server server-side via the existing `game_server_client`. Conversations with residents are LLM-backed (Bedrock) and event-driven on the backend. Residents are `agents` rows flagged `isResident=true` with a system `userId`; sprites are pre-generated once and cached.
+**Architecture:** worldgm imports the `goosetown` package and runs N `TownDaemon` instances in-process (each = a real agent body: WS + real `TOWN_*.md` + event handling). A per-resident "brain" reads the daemon-written `TOWN_STATUS.md` and drives the daemon via `handle_tool_command` (scripted movement; Bedrock for conversation replies). No recede logic, no bespoke conversation path, no new Bedrock IAM.
 
-**Tech Stack:** Python 3.12, FastAPI backend, `gdm-concordia` Bedrock model, DynamoDB (boto3), the Godot headless game server, pytest.
+**Tech Stack:** Python 3.12, the `goosetown` CLI/daemon package (`apps/goosetown-cli`), `gdm-concordia` Bedrock model, DynamoDB, the Godot game server, pytest.
 
 **Spec:** `docs/superpowers/specs/2026-05-29-seed-resident-agents-design.md`
 
-**STATUS NOTE (read before executing):** This plan was written autonomously overnight and **awaits the author's review of the spec**. Do not begin implementation until the user has reviewed `docs/superpowers/specs/2026-05-29-seed-resident-agents-design.md` and confirmed. It also touches prod-deployed services (worldgm, game server) — treat deploys with the usual care.
+**STATUS:** Spec revised per user (no recede; reuse the real daemon as a library). Awaits final user go-ahead before implementation. Touches prod-deployed services (worldgm); deploy with care; `RESIDENTS_ENABLED` default-off.
 
-**Prerequisite (DONE):** worldgm task role now has DynamoDB access (PR #330, verified 2026-05-29). The floor controller's `get_active_agents()` query works.
-
----
-
-## File structure
-
-- `apps/backend/worldgm/residents/__init__.py` — package
-- `apps/backend/worldgm/residents/personas.py` — the resident persona pool (data + loader)
-- `apps/backend/worldgm/residents/floor.py` — pure floor-target math + reconcile orchestration
-- `apps/backend/worldgm/residents/behavior.py` — scripted movement FSM
-- `apps/backend/worldgm/residents/conversation.py` — Bedrock-backed reply generation
-- `apps/backend/core/services/town_service.py` — add `create_resident()` + `isResident` handling (MODIFY)
-- `apps/backend/worldgm/__main__.py` — wire reconcile + step into `_tick` (MODIFY)
-- `apps/backend/core/services/conversation_service.py` — route resident replies to the conversation handler (MODIFY)
-- `apps/frontend/src/components/ApartmentCard.tsx` + town nameplate — "resident" label (MODIFY)
-- `scripts/seed-resident-sprites.py` — one-time sprite pre-generation (CREATE)
-- Tests under `apps/backend/tests/unit/worldgm/residents/`
+**Prerequisite (DONE):** worldgm has DynamoDB + Bedrock IAM (PR #330 + existing nova grants).
 
 ---
 
-## Phase 1 — Static residents (always-on, connected, scripted movement)
+## Phase 0 — verify the two seams (no code; 15 min)
 
-### Task 1: `isResident` flag + `create_resident()` in TownService
+Before building, confirm the two facts the architecture rests on. If either is false, stop and revise.
+
+- [ ] **Step 1: Confirm `handle_tool_command` cmd shape.** Read `apps/goosetown-cli/src/goosetown/daemon.py` around line 1210 and the `act` builder in `cli.py`/`core.py`. Record the exact dict keys (expected `{"action": "<move|say|...>", "args": [...]}`). Every `handle_tool_command(...)` call in this plan must use that exact shape — fix the calls if it differs.
+
+- [ ] **Step 2: Confirm `TownDaemon.__init__` signature.** Record the constructor params (token, agent_name, workspace/state_dir, ws_url, api_url, socket path). The resident manager (Task 5) builds this config; it must match.
+
+- [ ] **Step 3: Locate the system token mint.** Find the backend helper that signs a town_token (used by `POST /town/instance`) — likely `core/security/town_token.py` or `town_service.create_instance`. Record the function + how to mint one for `userId="system:resident"`. Task 4 calls it.
+
+No commit (investigation only). Capture findings inline in the PR description.
+
+---
+
+## Phase 1 — one resident, end-to-end (the de-risk)
+
+### Task 1: `create_resident()` in TownService
 
 **Files:**
 - Modify: `apps/backend/core/services/town_service.py`
@@ -43,511 +41,238 @@
 - [ ] **Step 1: Write the failing test**
 
 ```python
-def test_create_resident_sets_resident_flag_and_system_user(town_service, agents_table):
+def test_create_resident_is_system_owned_and_quota_invisible(town_service):
     agent = town_service.create_resident(
-        name="tobias",
-        display_name="Tobias",
-        personality="Retired lighthouse keeper who narrates his life in third person.",
-        appearance="Barrel-chested, salt-and-pepper beard, mustard raincoat.",
+        name="tobias", display_name="Tobias",
+        personality="Retired lighthouse keeper, narrates his life in third person.",
+        appearance="Barrel-chested old man, salt-and-pepper beard, mustard raincoat.",
         traits=["gruff", "observant", "nostalgic"],
     )
     assert agent["isResident"] is True
     assert agent["userId"] == "system:resident"
     assert agent["isActive"] == "true"
-    # Resident must NOT count against any real user's quota:
-    actives = town_service.get_active_agents_for_user("system:resident")
-    assert any(a["agentName"] == "tobias" for a in actives)
+    # invisible to a real user's quota:
+    assert town_service.get_active_agents_for_user("user_real") == []
+    # idempotent on name:
+    again = town_service.create_resident(name="tobias", display_name="Tobias",
+        personality="x", appearance="y", traits=["z"])
+    assert again["id"] == agent["id"]
 ```
 
-- [ ] **Step 2: Run it; expect FAIL** (`AttributeError: 'TownService' object has no attribute 'create_resident'`).
-Run: `cd apps/backend && uv run pytest tests/unit/test_town_service.py::test_create_resident_sets_resident_flag_and_system_user -v`
+- [ ] **Step 2: Run; expect FAIL** (`create_resident` missing).
+Run: `cd apps/backend && uv run pytest tests/unit/test_town_service.py -k create_resident -v`
 
-- [ ] **Step 3: Implement `create_resident`**
+- [ ] **Step 3: Implement** `create_resident()` + `_get_resident_by_name()` + `RESIDENT_USER_ID = "system:resident"` in `town_service.py`, mirroring the agent-row write in `opt_in` (no name-claim transaction needed — system-owned). Idempotent: if a resident row with that name exists, reactivate (`update_agent_state(id, is_active=True)`) and return it. Use the exact column names `opt_in` uses (agentName, displayName, personalitySummary, appearance field, traits, isActive="true", currentLocation, locationContext, mood, energy, spriteReady, joinedAt) + new `isResident: True`.
 
-In `town_service.py`, add (mirrors the agent-row creation in `opt_in`, but with a fixed system user and no name-claim transaction since residents are system-owned):
+- [ ] **Step 4: Run; expect PASS.**
+- [ ] **Step 5: Commit** `feat(town): create_resident — system-owned, quota-invisible resident rows`.
 
-```python
-RESIDENT_USER_ID = "system:resident"
-
-def create_resident(
-    self,
-    name: str,
-    display_name: str,
-    personality: str,
-    appearance: str,
-    traits: list[str],
-) -> dict:
-    """Create (or reactivate) a system-owned resident agent row.
-
-    Residents have a fixed system userId so they're invisible to per-user
-    quota checks. Idempotent on agentName: re-creating an existing resident
-    flips it back to active rather than duplicating.
-    """
-    existing = self._get_resident_by_name(name)
-    if existing:
-        self.update_agent_state(existing["id"], is_active=True)
-        return {**existing, "isActive": "true", "isResident": True}
-
-    import uuid
-    item = {
-        "id": str(uuid.uuid4()),
-        "userId": RESIDENT_USER_ID,
-        "agentName": name,
-        "displayName": display_name,
-        "personalitySummary": personality,
-        "appearanceDescription": appearance,
-        "traits": traits,
-        "isActive": "true",
-        "isResident": True,
-        "currentLocation": "plaza",
-        "locationContext": "town",
-        "mood": 0,
-        "energy": 100,
-        "spriteReady": False,
-        "joinedAt": _now_iso(),
-    }
-    self.agents_table().put_item(Item=item)
-    return item
-
-def _get_resident_by_name(self, name: str) -> dict | None:
-    resp = self.agents_table().query(
-        IndexName="userId-agentName-index",
-        KeyConditionExpression=Key("userId").eq(RESIDENT_USER_ID) & Key("agentName").eq(name),
-    )
-    items = resp.get("Items", [])
-    return _decimal_to_native(items[0]) if items else None
-```
-
-(Confirm `_now_iso()` / the timestamp helper name used elsewhere in the file; reuse it. If `appearanceDescription` isn't an existing column, match the column name `opt_in` uses for appearance.)
-
-- [ ] **Step 4: Run the test; expect PASS.**
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add apps/backend/core/services/town_service.py apps/backend/tests/unit/test_town_service.py
-git commit -m "feat(town): create_resident — system-owned resident agent rows"
-```
-
-### Task 2: Resident persona pool
+### Task 2: Make the `goosetown` daemon importable in the worldgm/backend image
 
 **Files:**
-- Create: `apps/backend/worldgm/residents/__init__.py` (empty)
-- Create: `apps/backend/worldgm/residents/personas.py`
-- Test: `apps/backend/tests/unit/worldgm/residents/test_personas.py`
+- Modify: `apps/backend/pyproject.toml` (add `goosetown` as a path/editable dep)
+- Modify: `apps/backend/Dockerfile` if needed (ensure the CLI source is in the build context / installed)
+- Test: `apps/backend/tests/unit/worldgm/residents/test_import.py`
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-from worldgm.residents.personas import RESIDENT_PERSONAS, Persona
-
-def test_persona_pool_is_valid_and_larger_than_floor():
-    assert len(RESIDENT_PERSONAS) >= 8  # more than RESIDENT_FLOOR(4) so runs vary
-    names = [p.name for p in RESIDENT_PERSONAS]
-    assert len(names) == len(set(names)), "persona names must be unique"
-    for p in RESIDENT_PERSONAS:
-        assert isinstance(p, Persona)
-        assert p.name and p.display_name and p.personality and p.appearance
-        assert 2 <= len(p.traits) <= 5
-        assert p.hangout in {"plaza", "library", "cafe", "activity_center", "bank", "residence"}
+def test_can_import_town_daemon():
+    from goosetown.daemon import TownDaemon  # noqa: F401
+    assert hasattr(TownDaemon, "run")
+    assert hasattr(TownDaemon, "handle_tool_command")
 ```
 
-- [ ] **Step 2: Run it; expect FAIL** (module not found).
+- [ ] **Step 2: Run; expect FAIL** (`ModuleNotFoundError: goosetown`).
 
-- [ ] **Step 3: Implement `personas.py`**
+- [ ] **Step 3: Add the dependency.** In `apps/backend/pyproject.toml`, add the local CLI package, e.g. (uv path dependency):
 
-```python
-"""Curated resident persona pool. More personas than RESIDENT_FLOOR so the
-town's resident cast varies. Each maps to a pre-generated sprite cached under
-sprites/resident-<name>/walk.png (see scripts/seed-resident-sprites.py)."""
-from __future__ import annotations
-from dataclasses import dataclass, field
+```toml
+[tool.uv.sources]
+goosetown = { path = "../goosetown-cli", editable = true }
 
-@dataclass(frozen=True)
-class Persona:
-    name: str            # machine name, lowercase, used as agentName + sprite key
-    display_name: str
-    personality: str
-    appearance: str
-    traits: tuple[str, ...]
-    hangout: str         # weighted destination location id
-
-RESIDENT_PERSONAS: tuple[Persona, ...] = (
-    Persona("tobias", "Tobias", "Retired lighthouse keeper who narrates his own life in the third person and distrusts anyone who walks too fast.", "Barrel-chested old man, salt-and-pepper beard, mustard-yellow raincoat, slow gait.", ("gruff", "observant", "nostalgic", "stubborn"), "plaza"),
-    Persona("margot", "Margot", "Sharp-eyed editor who reads everything twice and quotes the style guide unprompted.", "Tall woman, charcoal blazer, red pen behind one ear, half-moon glasses.", ("meticulous", "dry", "principled"), "library"),
-    Persona("rafa", "Rafa", "Cafe regular who has opinions about everyone's coffee order and offers unsolicited life advice.", "Wiry man, espresso-stained apron, perpetual five-o'clock shadow, quick hands.", ("warm", "nosy", "generous"), "cafe"),
-    Persona("ines", "Ines", "Botanist who treats the gardens like patients and talks to the plants.", "Short woman, dirt-smudged overalls, wide straw hat, gardening gloves.", ("gentle", "patient", "eccentric"), "activity_center"),
-    Persona("dmitri", "Dmitri", "Ex-banker turned philosopher who counts everything and trusts no one's arithmetic.", "Lean man, threadbare three-piece suit, pocket watch, suspicious eyebrows.", ("precise", "cynical", "lonely"), "bank"),
-    Persona("posy", "Posy", "Relentlessly cheerful busker who remembers every face and every name.", "Young person, patchwork coat, fingerless gloves, a battered ukulele.", ("extroverted", "scattered", "kind"), "plaza"),
-    Persona("hale", "Hale", "Night-shift type who only feels awake after dark and collects rumors.", "Pale figure, long dark coat, headphones around the neck, restless.", ("aloof", "curious", "wry"), "cafe"),
-    Persona("verena", "Verena", "Retired schoolteacher who corrects grammar mid-conversation and means well.", "Stately older woman, cardigan with brooches, reading chain on her glasses.", ("exacting", "maternal", "proud"), "library"),
-    Persona("cleo", "Cleo", "Tinkerer who is always mid-project and explains things you didn't ask about.", "Compact person, tool belt, goggles pushed up on forehead, grease on cheek.", ("inventive", "distractible", "earnest"), "activity_center"),
-    Persona("bram", "Bram", "Quiet bench-sitter who watches the town and occasionally drops a perfect one-liner.", "Heavyset man, flat cap, newspaper under arm, unhurried.", ("taciturn", "shrewd", "patient"), "plaza"),
-)
+[project]
+dependencies = [
+  # ...existing...
+  "goosetown",
+]
 ```
 
-- [ ] **Step 4: Run the test; expect PASS.**
+Ensure the Docker build context includes `apps/goosetown-cli` (the worldgm/backend image is built from `apps/backend`; if the CLI is a sibling, either adjust the build context to the repo root + Dockerfile path, OR vendor-copy `apps/goosetown-cli` into the build context). Pick whichever matches the existing Docker setup; document the choice. **Verify `uv sync` resolves it.**
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Run; expect PASS** (`uv run pytest ... test_import.py`).
+- [ ] **Step 5: Commit** `build(backend): make goosetown daemon importable for worldgm`.
 
-```bash
-git add apps/backend/worldgm/residents/__init__.py apps/backend/worldgm/residents/personas.py apps/backend/tests/unit/worldgm/residents/test_personas.py
-git commit -m "feat(worldgm): resident persona pool"
-```
-
-### Task 3: Pre-generate + cache resident sprites (one-time seed script)
+### Task 3: Optional — `TownDaemon.run(serve_socket=False)`
 
 **Files:**
-- Create: `scripts/seed-resident-sprites.py`
+- Modify: `apps/goosetown-cli/src/goosetown/daemon.py`
+- Test: `apps/goosetown-cli/tests/test_run_no_socket.py`
 
-- [ ] **Step 1: Implement the seed script** (no unit test — it's a one-shot operational script; it calls the real PixelLab pipeline and uploads to S3).
+- [ ] **Step 1: Write the failing test** — call `run(serve_socket=False)` (with WS mocked) and assert `run_socket_server` is NOT awaited; default (`serve_socket=True`) still starts it.
+- [ ] **Step 2: Run; expect FAIL.**
+- [ ] **Step 3: Add `serve_socket: bool = True` param to `run()`**; guard the `socket_task = asyncio.create_task(self.run_socket_server())` line behind it (skip + set `socket_task = None`, and guard the cancel in `finally`). Default True preserves CLI behavior exactly.
+- [ ] **Step 4: Run; expect PASS** + run the existing CLI daemon tests to confirm no regression (`cd apps/goosetown-cli && uv run pytest`).
+- [ ] **Step 5: Commit** `feat(cli): TownDaemon.run(serve_socket=False) for in-process embedding`.
 
-```python
-"""One-time: generate a sprite per resident persona via the existing PixelLab
-pipeline and cache it at sprites/resident-<name>/walk.png in the sprite bucket.
-Idempotent: skips personas whose sprite already exists in S3.
-
-Usage: cd apps/backend && uv run python ../../scripts/seed-resident-sprites.py [--env dev|prod]
-"""
-import argparse, asyncio, boto3
-from worldgm.residents.personas import RESIDENT_PERSONAS
-from core.services.pixellab_service import PixelLabService
-from core.services.sprite_storage import extract_walk_spritesheet
-from core import config
-
-async def main(env: str) -> None:
-    s3 = boto3.client("s3")
-    bucket = config.SPRITE_S3_BUCKET
-    pxl = PixelLabService(api_key=config.PIXELLAB_API_KEY)
-    for p in RESIDENT_PERSONAS:
-        key = f"sprites/resident-{p.name}/walk.png"
-        try:
-            s3.head_object(Bucket=bucket, Key=key)
-            print(f"skip {p.name} (exists)")
-            continue
-        except s3.exceptions.ClientError:
-            pass
-        print(f"generating {p.name} ...")
-        char_id, job_id = await pxl.create_character(p.appearance)
-        await pxl.wait_for_jobs([job_id])
-        await pxl.animate_character(char_id, "walk")
-        zip_bytes = await pxl.download_character_zip(char_id)
-        png = extract_walk_spritesheet(zip_bytes)
-        s3.put_object(Bucket=bucket, Key=key, Body=png, ContentType="image/png")
-        print(f"  uploaded {key}")
-
-if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--env", default="dev")
-    args = ap.parse_args()
-    asyncio.run(main(args.env))
-```
-
-(Verify the exact `PixelLabService` / `sprite_storage` method names against the current source; adjust to match. This mirrors the agent sprite pipeline described in CLAUDE.md.)
-
-- [ ] **Step 2: Manual run note** — this is run once per env by an operator with PixelLab creds + S3 access; not part of CI. Document in the PR that residents render as shadow placeholders until it's run.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add scripts/seed-resident-sprites.py
-git commit -m "feat(worldgm): one-time resident sprite seed script"
-```
-
-### Task 4: Scripted behavior FSM
+### Task 4: Resident token mint + daemon config builder
 
 **Files:**
-- Create: `apps/backend/worldgm/residents/behavior.py`
-- Test: `apps/backend/tests/unit/worldgm/residents/test_behavior.py`
+- Create: `apps/backend/worldgm/residents/__init__.py`
+- Create: `apps/backend/worldgm/residents/provision.py`
+- Test: `apps/backend/tests/unit/worldgm/residents/test_provision.py`
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing test** (mock the token module + town_service)
 
 ```python
-from worldgm.residents.behavior import next_action, ResidentRuntime
-
-def test_idle_resident_picks_a_move_toward_hangout_or_neighbor():
-    rt = ResidentRuntime(name="margot", location="plaza", state="idle", idle_ticks=0, hangout="library")
-    act = next_action(rt, rng_value=0.0)  # rng injected for determinism
-    assert act["type"] == "move"
-    assert act["destination"] in {"library", "plaza", "cafe", "activity_center", "bank", "residence"}
-
-def test_resident_idles_for_a_few_ticks_after_arriving():
-    rt = ResidentRuntime(name="margot", location="library", state="arrived", idle_ticks=0, hangout="library")
-    act = next_action(rt, rng_value=0.9)
-    assert act["type"] in {"activity", "idle"}
-
-def test_moving_resident_emits_no_action_until_arrival():
-    rt = ResidentRuntime(name="margot", location="plaza", state="moving", idle_ticks=0, hangout="library")
-    act = next_action(rt, rng_value=0.5)
-    assert act["type"] == "noop"
+from worldgm.residents.provision import provision_resident
+def test_provision_creates_row_mints_token_and_builds_config(monkeypatch):
+    cfg = provision_resident(persona, town_service=fake_ts, mint_token=fake_mint)
+    assert cfg.token and cfg.agent_name == persona.name
+    assert "/residents/" in str(cfg.workspace)
+    fake_ts.create_resident.assert_called_once()
 ```
 
 - [ ] **Step 2: Run; expect FAIL.**
+- [ ] **Step 3: Implement `provision_resident(persona, town_service, mint_token)`** — call `town_service.create_resident(...)`, mint a system token via the function found in Phase 0 Step 3, and return a `ResidentConfig` (token, agent_name, workspace=`/tmp/residents/<name>`, ws_url=`TOWN_WS_URL`, api_url=`TOWN_API_URL`) matching `TownDaemon.__init__` (Phase 0 Step 2).
+- [ ] **Step 4: Run; expect PASS.** **Step 5: Commit.**
 
-- [ ] **Step 3: Implement `behavior.py`** — a pure function `next_action(runtime, rng_value) -> dict` (no LLM, no I/O; rng injected so it's testable). FSM: `idle` → `move` (weighted to hangout, else a random location); `moving` → `noop`; `arrived` → `activity` or short `idle`. Keep it ~40 lines. The worldgm step layer (Task 6) maps the returned action dict to `town_agent_act` calls and updates `ResidentRuntime`.
-
-```python
-from __future__ import annotations
-from dataclasses import dataclass
-
-LOCATIONS = ("plaza", "library", "cafe", "activity_center", "bank", "residence")
-_IDLE_TICKS_AFTER_ARRIVE = 3
-
-@dataclass
-class ResidentRuntime:
-    name: str
-    location: str
-    state: str          # "idle" | "moving" | "arrived"
-    idle_ticks: int
-    hangout: str
-
-def next_action(rt: ResidentRuntime, rng_value: float) -> dict:
-    if rt.state == "moving":
-        return {"type": "noop"}
-    if rt.state == "arrived" and rt.idle_ticks < _IDLE_TICKS_AFTER_ARRIVE:
-        # mostly idle; occasionally do a location activity
-        return {"type": "activity"} if rng_value > 0.7 else {"type": "idle"}
-    # idle and rested → move: 60% to hangout, else a random location
-    if rng_value < 0.6:
-        dest = rt.hangout
-    else:
-        idx = int(rng_value * len(LOCATIONS)) % len(LOCATIONS)
-        dest = LOCATIONS[idx]
-    if dest == rt.location:
-        return {"type": "idle"}
-    return {"type": "move", "destination": dest}
-```
-
-- [ ] **Step 4: Run; expect PASS.**
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add apps/backend/worldgm/residents/behavior.py apps/backend/tests/unit/worldgm/residents/test_behavior.py
-git commit -m "feat(worldgm): scripted resident behavior FSM"
-```
-
-### Task 5: Server-side connect/despawn helper
+### Task 5: Single-resident manager (run one TownDaemon as a task)
 
 **Files:**
-- Create: `apps/backend/worldgm/residents/lifecycle.py`
-- Test: `apps/backend/tests/unit/worldgm/residents/test_lifecycle.py`
+- Create: `apps/backend/worldgm/residents/manager.py`
+- Test: `apps/backend/tests/unit/worldgm/residents/test_manager.py`
 
-- [ ] **Step 1: Write the failing test** (mock `game_server_client` + `town_service`)
+- [ ] **Step 1: Write the failing test** (mock `TownDaemon`)
 
 ```python
-import pytest
-from unittest.mock import AsyncMock, MagicMock
-from worldgm.residents import lifecycle
-
 @pytest.mark.asyncio
-async def test_spawn_resident_creates_row_then_connects_game_server():
-    ts = MagicMock()
-    ts.create_resident.return_value = {"id": "r1", "agentName": "tobias", "currentLocation": "plaza"}
-    gs = AsyncMock()
-    persona = MagicMock(name="tobias", display_name="Tobias", personality="p", appearance="a", traits=("gruff",))
-    persona.name = "tobias"
-    await lifecycle.spawn_resident(persona, town_service=ts, game_server=gs)
-    ts.create_resident.assert_called_once()
-    gs.connect_agent.assert_awaited_once()
-
-@pytest.mark.asyncio
-async def test_despawn_resident_disconnects_and_deactivates():
-    ts = MagicMock(); gs = AsyncMock()
-    await lifecycle.despawn_resident("r1", town_service=ts, game_server=gs)
-    gs.disconnect_agent.assert_awaited_once_with("r1")
-    ts.update_agent_state.assert_called_once()
+async def test_manager_starts_one_daemon_task(monkeypatch):
+    fake_daemon = AsyncMock()
+    monkeypatch.setattr("worldgm.residents.manager.TownDaemon", lambda **kw: fake_daemon)
+    mgr = ResidentManager(personas=[persona], town_service=fake_ts, mint_token=fake_mint)
+    await mgr.start()
+    assert len(mgr.residents) == 1
+    fake_daemon.run.assert_awaited()  # run scheduled as a task
+    await mgr.stop()
 ```
 
 - [ ] **Step 2: Run; expect FAIL.**
+- [ ] **Step 3: Implement `ResidentManager`** — `start()`: for each persona, `provision_resident(...)`, build `TownDaemon(**config, serve_socket=False)`, `asyncio.create_task(daemon.run())`, track `{name: (daemon, task, config)}`. Supervise: if a task exits, log + restart (re-provision token). `stop()`: cancel tasks, despawn (set isActive false). Keep the brain OUT of this task (Task 6).
+- [ ] **Step 4: Run; expect PASS.** **Step 5: Commit.**
 
-- [ ] **Step 3: Implement `lifecycle.py`** — `spawn_resident(persona, town_service, game_server)`: call `town_service.create_resident(...)`, then `await game_server.connect_agent(agent_id, ...)` with the resident's spawn location + cached sprite URL (`sprites/resident-<name>/walk.png` via the CDN base). `despawn_resident(agent_id, town_service, game_server)`: `await game_server.disconnect_agent(agent_id)` then `town_service.update_agent_state(agent_id, is_active=False)`. Match `connect_agent`'s real signature (check `game_server_client.py:49`).
-
-- [ ] **Step 4: Run; expect PASS.**
-
-- [ ] **Step 5: Commit.**
-
-### Task 6: Phase-1 wiring — always-on residents in the tick
+### Task 6: Movement-only brain + wire into worldgm tick
 
 **Files:**
-- Modify: `apps/backend/worldgm/__main__.py`
-- Create: `apps/backend/worldgm/residents/floor.py` (Phase-1 version: just "ensure all-personas-up-to-N are spawned", dynamic logic in Phase 2)
-- Test: `apps/backend/tests/unit/worldgm/residents/test_floor.py`
-
-- [ ] **Step 1: Write the failing test for the Phase-1 static reconcile**
-
-```python
-from worldgm.residents.floor import resident_target_count
-
-def test_phase1_static_target_is_constant_floor():
-    # Phase 1: ignore real-agent count, always target the floor.
-    assert resident_target_count(live_real_agents=0, floor=4, dynamic=False) == 4
-    assert resident_target_count(live_real_agents=10, floor=4, dynamic=False) == 4
-```
-
-- [ ] **Step 2: Run; expect FAIL.**
-
-- [ ] **Step 3: Implement `resident_target_count`** (the dynamic branch lands in Phase 2):
-
-```python
-def resident_target_count(live_real_agents: int, floor: int, dynamic: bool = True) -> int:
-    if not dynamic:
-        return floor
-    return max(0, min(floor, floor - live_real_agents))
-```
-
-- [ ] **Step 4: Run; expect PASS.**
-
-- [ ] **Step 5: Wire reconcile + step into `_tick`** in `__main__.py`. After `sync_locations`, add (behind a `RESIDENTS_ENABLED` env flag, default off so deploy is safe until Phase 1 is validated):
-
-```python
-if state.residents_enabled:
-    await reconcile_residents(state, live_real_agents=_count_real(state.last_known_locations))
-    await step_residents(state)  # maps next_action() → town_agent_act per active resident
-```
-
-Define `reconcile_residents` and `step_residents` in `worldgm/residents/floor.py` (orchestration) using `spawn_resident`/`despawn_resident` and `next_action`. `_count_real` counts non-resident agents in the synced locations.
-
-- [ ] **Step 6: Run full worldgm unit suite; expect PASS.**
-Run: `cd apps/backend && uv run pytest tests/unit/worldgm/ -v`
-
-- [ ] **Step 7: Commit.**
-
-### Task 7: Frontend "resident" label
-
-**Files:**
-- Modify: `apps/frontend/src/components/ApartmentCard.tsx` (+ the town nameplate component)
-- Test: `apps/frontend/src/components/ApartmentCard.test.tsx`
-
-- [ ] **Step 1: Write the failing test** — render an `ApartmentCard` for an agent with `isResident: true`; assert a "resident" badge renders; for a normal agent it does not.
-- [ ] **Step 2: Run; expect FAIL.**
-- [ ] **Step 3: Add the badge** — read `isResident` off the agent payload (ensure the backend `/apartment` + `/descriptions` responses include `isResident`); render a small muted "resident" chip.
-- [ ] **Step 4: Run; expect PASS.** Also `pnpm typecheck`.
-- [ ] **Step 5: Commit.**
-
----
-
-## Phase 2 — Dynamic floor (recede as reals arrive)
-
-### Task 8: Dynamic target + hysteresis
-
-**Files:**
-- Modify: `apps/backend/worldgm/residents/floor.py`
-- Test: `apps/backend/tests/unit/worldgm/residents/test_floor.py`
+- Create: `apps/backend/worldgm/residents/behavior.py` (scripted FSM, pure)
+- Create: `apps/backend/worldgm/residents/brain.py` (read TOWN_STATUS → action → handle_tool_command)
+- Modify: `apps/backend/worldgm/__main__.py` (start ResidentManager + tick the brains, behind `RESIDENTS_ENABLED`)
+- Test: `apps/backend/tests/unit/worldgm/residents/test_behavior.py`, `test_brain.py`
 
 - [ ] **Step 1: Write failing tests**
 
 ```python
-from worldgm.residents.floor import resident_target_count, should_despawn
+# behavior.py — pure FSM (rng injected)
+from worldgm.residents.behavior import next_action, ResidentRuntime
+def test_idle_resident_moves_toward_hangout():
+    rt = ResidentRuntime(name="tobias", location="cafe", state="idle", idle_ticks=3, hangout="plaza")
+    assert next_action(rt, rng_value=0.0) == {"action": "move", "args": ["plaza"]}
+def test_moving_resident_noops():
+    rt = ResidentRuntime(name="tobias", location="cafe", state="moving", idle_ticks=0, hangout="plaza")
+    assert next_action(rt, rng_value=0.5) == {"action": "noop"}
 
-def test_dynamic_target_recedes_as_reals_arrive():
-    assert resident_target_count(0, floor=4) == 4
-    assert resident_target_count(1, floor=4) == 3
-    assert resident_target_count(4, floor=4) == 0
-    assert resident_target_count(9, floor=4) == 0
-
-def test_despawn_requires_grace_period():
-    # above-floor for fewer than grace ticks → don't despawn yet
-    assert should_despawn(above_floor_ticks=2, grace=4) is False
-    assert should_despawn(above_floor_ticks=4, grace=4) is True
-```
-
-- [ ] **Step 2: Run; expect FAIL** (`should_despawn` missing; dynamic already implemented in Task 6).
-- [ ] **Step 3: Implement `should_despawn`** + thread an `above_floor_ticks` counter through the reconcile orchestration so despawns only fire after `DESPAWN_GRACE_TICKS` (default 4 ≈ 2 min) above floor — prevents flapping as real agents connect/disconnect.
-- [ ] **Step 4: Run; expect PASS.**
-- [ ] **Step 5: Flip `reconcile_residents` to dynamic** (`dynamic=True`) and use `should_despawn` before despawning surplus. Spawn-up is immediate (cold start matters); despawn is graced.
-- [ ] **Step 6: Commit.**
-
-### Task 9: Integration test — floor behavior end-to-end (mocked game server)
-
-**Files:**
-- Test: `apps/backend/tests/integration/test_resident_floor.py`
-
-- [ ] **Step 1: Write integration test** — with a mocked `game_server_client` and a real (moto) DDB: empty town → reconcile spawns 4 residents; inject 2 real active agents → after grace ticks, residents recede to 2; inject 4 reals → recede to 0. Assert `isActive` transitions and no `system:resident` rows count in a real user's quota query.
-- [ ] **Step 2: Run; expect FAIL then implement any gaps; PASS.**
-- [ ] **Step 3: Commit.**
-
----
-
-## Phase 3 — Conversation LLM
-
-### Task 10: Bedrock-backed resident replies
-
-**Files:**
-- Create: `apps/backend/worldgm/residents/conversation.py`
-- Test: `apps/backend/tests/unit/worldgm/residents/test_conversation.py`
-
-- [ ] **Step 1: Write failing test** (mock `BedrockLanguageModel`)
-
-```python
-import pytest
-from unittest.mock import AsyncMock
-from worldgm.residents.conversation import generate_reply
-
+# brain.py — maps a parsed TOWN_STATUS to a handle_tool_command call
 @pytest.mark.asyncio
-async def test_generate_reply_uses_persona_and_recent_turns():
-    model = AsyncMock()
-    model.generate.return_value = "The lighthouse keeps better hours than you, friend."
-    reply = await generate_reply(
-        persona_name="tobias",
-        recent_turns=[{"speaker": "nyx", "text": "what do you do around here?"}],
-        model=model,
-    )
-    assert reply
-    model.generate.assert_awaited_once()
-    # prompt must carry the persona + the incoming line
-    prompt = model.generate.call_args[0][0]
-    assert "Tobias" in prompt or "tobias" in prompt
-    assert "what do you do around here" in prompt
+async def test_brain_issues_move_when_idle(monkeypatch):
+    daemon = AsyncMock()
+    status = {"location": "cafe", "activity": "idle", "active_conversation": None}
+    await step_resident_brain(daemon, runtime=rt_idle, parsed_status=status)
+    daemon.handle_tool_command.assert_awaited_once()
+    assert daemon.handle_tool_command.call_args[0][0]["action"] in {"move", "idle", "activity"}
 ```
 
 - [ ] **Step 2: Run; expect FAIL.**
-- [ ] **Step 3: Implement `generate_reply`** — build a compact prompt from the persona (look up in `RESIDENT_PERSONAS`) + recent turns + a hard instruction to reply in-character in 1-2 sentences; call the injected Bedrock model; on exception, return a short canned persona fallback line (so the real agent isn't left hanging).
-- [ ] **Step 4: Run; expect PASS.**
-- [ ] **Step 5: Commit.**
+- [ ] **Step 3: Implement `behavior.next_action`** (FSM returning a `handle_tool_command`-shaped dict per Phase 0 Step 1) and **`brain.step_resident_brain(daemon, runtime, parsed_status)`** — Phase 1: conversation branch is a no-op stub; movement branch calls `next_action` → `await daemon.handle_tool_command(cmd)`; update runtime from the action + status. Add `brain.read_status(workspace)` that parses the resident's `TOWN_STATUS.md` (reuse the daemon's own parse/render helpers if exposed, else parse the known format).
+- [ ] **Step 4: Wire into `worldgm/__main__.py`** — behind `RESIDENTS_ENABLED` (default off): on startup `await ResidentManager.start()`; each tick, for each resident, `read_status` → `step_resident_brain`. Movement only this phase.
+- [ ] **Step 5: Run unit suite; expect PASS.** **Step 6: Commit.**
 
-### Task 11: Route resident conversation turns through the handler
+### Task 7: Phase-1 end-to-end proof on dev
 
-**Files:**
-- Modify: `apps/backend/core/services/conversation_service.py`
-- Test: `apps/backend/tests/unit/services/test_conversation_service.py`
+**Files:** none (verification). Requires deploy with `RESIDENTS_ENABLED=true` and ONE persona.
 
-- [ ] **Step 1: Write failing test** — when a real agent `say`s in a conversation whose other participant is a resident (`isResident=true`), the service generates a resident reply (mock `generate_reply`) and posts it as the resident's turn; when both participants are real, it does NOT auto-generate.
-- [ ] **Step 2: Run; expect FAIL.**
-- [ ] **Step 3: Implement the hook** — in the say/chat path, after recording a real agent's turn, if a participant is a resident and it's the resident's turn, call `generate_reply(...)` and dispatch it as the resident's `say` (reusing the existing turn-recording + broadcast path). Guard against resident↔resident loops (residents don't auto-reply to other residents). Respect the existing 180s inactivity auto-end.
-- [ ] **Step 4: Run; expect PASS.**
-- [ ] **Step 5: Commit.**
+- [ ] **Step 1:** Deploy; set `RESIDENTS_ENABLED=true` with a single persona (`tobias`).
+- [ ] **Step 2:** Verify in worldgm logs: daemon connects, `Locations updated` includes tobias.
+- [ ] **Step 3:** Verify the resident workspace has real files: exec into the worldgm task (or log them) and confirm `/tmp/residents/tobias/TOWN_STATUS.md` + `TOWN_EVENTS.md` exist and look like a real agent's.
+- [ ] **Step 4:** Open `dev.goosetown.isol8.co/town` — tobias appears and moves on its own.
+- [ ] **Step 5:** Join a real agent; walk up to tobias; send a `chat`. Confirm tobias *receives* it (conversation event in its `TOWN_EVENTS.md`) even though the reply brain isn't built yet (proves the conversation path reaches residents with zero conversation_service changes). Record in `docs/superpowers/test-runs/2026-05-29-resident-phase1.md`. **Commit the note.**
 
-### Task 12: Bedrock IAM for resident conversation model
-
-**Files:**
-- Modify: `apps/infra/lib/stacks/worldgm-stack.ts` (if a different model than nova-lite/micro is used) OR `compute-stack.ts` (if replies are generated in the backend, not worldgm)
-
-- [ ] **Step 1: Decide which service generates replies.** Conversations are event-driven on the **backend** (the `/ws-message` → `town_agent_act` → conversation_service path), not the worldgm tick. So the **backend (compute-stack)** task role needs `bedrock:InvokeModel`/`Converse` on the resident reply model. Check whether compute-stack already grants Bedrock; if not, add it scoped to the resident model ARN (e.g. `amazon.nova-lite-v1:0`).
-- [ ] **Step 2: `cdk synth`**; verify the backend role gains `bedrock:InvokeModel` on the model ARN.
-- [ ] **Step 3: Commit** (this is the infra change that lets Phase 3 actually work in deployed envs).
+**GATE:** If the library-driven daemon does NOT cleanly register/connect/write files in-process, STOP — this is the de-risk point. Fall back to managed-subprocess (still full reuse) and revise the plan rather than reimplementing the daemon.
 
 ---
 
-## Phase validation + rollout
+## Phase 2 — the fixed cast + sprites + label
 
-### Task 13: Soak + enablement
+### Task 8: Resident persona pool (fixed set)
 
-- [ ] **Step 1:** Deploy with `RESIDENTS_ENABLED=false`; confirm no behavior change (safety: residents off by default until validated).
-- [ ] **Step 2:** Run `scripts/seed-resident-sprites.py --env dev` once (operator with creds).
-- [ ] **Step 3:** Flip `RESIDENTS_ENABLED=true` on dev; watch worldgm logs: residents spawn to floor, appear on `dev.goosetown.isol8.co/town`, move around, render with their sprites.
-- [ ] **Step 4:** Join a real agent; confirm it can walk up to a resident and have an LLM-backed conversation; confirm residents recede after the grace period as more real agents join.
-- [ ] **Step 5:** Reuse the 5-agent soak harness with residents enabled; check no quota leakage, no PixelLab credit spend on resident cycling, no stuck conversations.
-- [ ] **Step 6:** Record findings in `docs/superpowers/test-runs/2026-05-29-resident-soak.md`. Then enable on prod.
+**Files:** Create `apps/backend/worldgm/residents/personas.py`; Test `.../test_personas.py`.
+
+- [ ] **Step 1: Failing test** — `RESIDENT_PERSONAS` has 4–6 unique-named `Persona`s, each with non-empty fields, 2–5 traits, a valid `hangout` location.
+- [ ] **Step 2: FAIL → Step 3: implement** the `Persona` dataclass + ~6 fixed personas (tobias, margot, rafa, ines, posy, bram — names/personalities/appearances/traits/hangout). **Step 4: PASS. Step 5: Commit.**
+
+### Task 9: Pre-generate + cache resident sprites
+
+**Files:** Create `scripts/seed-resident-sprites.py`.
+
+- [ ] **Step 1: Implement** the one-time script: for each persona, if `sprites/resident-<name>/walk.png` absent in S3, run the existing PixelLab pipeline (`PixelLabService.create_character` → wait → `animate_character` → `download_character_zip` → `extract_walk_spritesheet`) and upload. Idempotent (head_object skip). Verify method names against current `pixellab_service.py`/`sprite_storage.py`.
+- [ ] **Step 2:** Operator runs it once per env (creds required); residents render as placeholders until then. **Step 3: Commit.**
+
+### Task 10: Scale ResidentManager to the full cast
+
+**Files:** Modify `worldgm/residents/manager.py`; Test `test_manager.py`.
+
+- [ ] **Step 1: Failing test** — `ResidentManager(personas=RESIDENT_PERSONAS).start()` launches one daemon task per persona; `stop()` cancels all + deactivates rows.
+- [ ] **Step 2: FAIL → Step 3:** generalize start/stop to N (already structured for it in Task 5; just feed `RESIDENT_PERSONAS` and set each daemon's `sprite_url` to the cached resident sprite). **Step 4: PASS. Step 5: Commit.**
+
+### Task 11: Frontend `isResident` label
+
+**Files:** Modify `ApartmentCard.tsx` + town nameplate; Test `ApartmentCard.test.tsx`.
+
+- [ ] **Step 1: Failing test** — card for `isResident:true` shows a muted "resident" badge; normal agent does not. **Step 2: FAIL.**
+- [ ] **Step 3:** Ensure backend `/apartment` + `/descriptions` include `isResident`; render the badge. **Step 4: PASS + `pnpm typecheck`. Step 5: Commit.**
+
+---
+
+## Phase 3 — conversation brain (Bedrock replies)
+
+### Task 12: Bedrock-backed reply generation
+
+**Files:** Create `worldgm/residents/conversation.py`; Test `.../test_conversation.py`.
+
+- [ ] **Step 1: Failing test** (mock `BedrockLanguageModel`) — `generate_reply(persona_name, recent_turns, model)` builds a prompt carrying the persona + the incoming line, returns the model output; on model exception returns a short canned fallback.
+- [ ] **Step 2: FAIL → Step 3: implement** using the worldgm's existing `BedrockLanguageModel` (nova-lite). **Step 4: PASS. Step 5: Commit.**
+
+### Task 13: Wire conversation into the brain
+
+**Files:** Modify `worldgm/residents/brain.py`; Test `test_brain.py`.
+
+- [ ] **Step 1: Failing test** — when `parsed_status.active_conversation` shows a pending turn addressed to the resident, the brain calls `generate_reply(...)` then `daemon.handle_tool_command({"action":"say","args":[conv_id, reply]})`; when there's no pending turn it does NOT; resident↔resident conversations don't trigger auto-reply (loop guard).
+- [ ] **Step 2: FAIL → Step 3:** replace the Phase-1 conversation no-op with: parse `active_conversation` from the resident's `TOWN_STATUS.md`, detect a pending human turn, `generate_reply`, `say` via `handle_tool_command`. No `conversation_service` changes — the `say` flows through the daemon → existing path. **Step 4: PASS. Step 5: Commit.**
+
+### Task 14: End-to-end conversation proof + soak
+
+**Files:** `docs/superpowers/test-runs/2026-05-29-resident-soak.md`.
+
+- [ ] **Step 1:** Deploy; with `RESIDENTS_ENABLED=true` + full cast (sprites seeded), join a real agent and hold a multi-turn conversation with a resident; confirm in-character Bedrock replies via the normal conversation log.
+- [ ] **Step 2:** Soak: full cast + 2–3 real agents; confirm no quota leakage, no stuck conversations, no PixelLab spend, worldgm memory stable (watch the task — bump 1GB→2GB if needed). **Step 3:** Record findings. **Commit. Enable on prod.**
 
 ---
 
 ## Self-review
 
-**Spec coverage:** dynamic floor → Tasks 6/8/9; hybrid behavior (scripted move + LLM conversation) → Tasks 4/10/11; persona pool → Task 2; pre-generated sprites → Task 3; server-side connection → Task 5; data model `isResident`/system-user/no-quota → Task 1; honesty label → Task 7; phase-out (recede + `RESIDENTS_ENABLED`) → Tasks 8/13; cost (scripted $0, conversation-only LLM) → Tasks 4/10; testing (unit/integration/soak) → throughout + Tasks 9/13. Bedrock IAM for the conversation model → Task 12 (a real seam the spec implied but didn't call out — added). All spec sections covered.
+**Spec coverage:** fixed always-on set / no recede → no floor tasks exist (removed). Reuse real daemon as library → Tasks 2/3/5. create_resident system-owned/quota-invisible → Task 1. system token mint → Phase 0 + Task 4. brain reads TOWN_STATUS + handle_tool_command → Task 6/13. scripted movement → Task 6. Bedrock conversation reply (no conversation_service change, no new IAM) → Tasks 12/13. persona pool → Task 8. sprites → Task 9. frontend label → Task 11. Phase 1 single-resident de-risk → Task 7 (with explicit fallback gate). All spec sections covered.
 
-**Placeholder scan:** No TBD/TODO. Code shown for each implementing step. Two explicit "verify the exact method name against current source" notes (sprite pipeline, connect_agent signature) — these are *verification* instructions with the expected shape given, not placeholders.
+**Placeholder scan:** No TBD/TODO. Phase 0 + the "verify against current source" notes (handle_tool_command shape, TownDaemon ctor, token mint, pixellab method names) are explicit *verification* steps with expected shapes — the things that genuinely must be read from code, not guessed. Code shown for each implementing step.
 
-**Type consistency:** `Persona` fields (name/display_name/personality/appearance/traits/hangout) consistent across Tasks 2/4/5/10. `ResidentRuntime` fields consistent Tasks 4/6. `create_resident` signature consistent Tasks 1/5. `resident_target_count`/`should_despawn` consistent Tasks 6/8/9. `RESIDENT_USER_ID = "system:resident"` consistent Tasks 1/9.
+**Type consistency:** `Persona` fields consistent (Tasks 4/8/12). `ResidentConfig` (token/agent_name/workspace/ws_url/api_url) consistent (Tasks 4/5). `ResidentRuntime` (name/location/state/idle_ticks/hangout) consistent (Task 6). `handle_tool_command` cmd shape (`{"action","args"}`) consistent (Tasks 6/13) and pinned by Phase 0 Step 1. `RESIDENT_USER_ID="system:resident"` consistent (Task 1). `RESIDENTS_ENABLED` flag consistent (Tasks 6/7/14).
 
-**Staging note:** Phases 1→2→3 each leave the system working (Phase 1: residents exist + move; Phase 2: they recede; Phase 3: they converse). `RESIDENTS_ENABLED` default-off makes every deploy safe until a phase is validated.
+**Removed vs prior draft:** dynamic floor / `resident_target_count` / `should_despawn` / hysteresis (no recede); the bespoke `conversation_service` hook (conversations now flow through the daemon's real path); the Phase-3 Bedrock-IAM-for-backend task (the reply LLM runs in worldgm, which already has Bedrock grants); the `lifecycle.py` game_server_client spawn/despawn (residents connect via their daemon, not direct game-server calls).

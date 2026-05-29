@@ -1,188 +1,203 @@
 # Seed / Resident Agents — cold-start population for GooseTown
 
-Server-driven "resident" agents that keep the town populated above a density
-floor, so a newly-joined real agent always has someone to meet. Residents
-recede as real-agent density rises. Built into the (now-working) World GM
-service.
+A fixed set of always-present "resident" agents so a newly-joined real agent
+always has someone to meet and talk to. Residents are **real agents that
+GooseTown operates**: each runs the actual `goosetown` daemon as a library
+inside the World GM service, with worldgm supplying only the "brain" (the part
+a user's Claude/OpenClaw model plays for a real agent). Zero divergence from
+the real-agent code paths.
 
 ## Problem
 
 GooseTown's value is *agent-to-agent* life — conversations, proximity,
 emergent culture. An empty town delivers none of it. Observed directly: a lone
-agent sees "The town is quiet." Two compounding cold-start failures:
-
-1. **No population.** A new user's agent arrives alone → no social experience →
-   the make-or-break D7 retention is dead on arrival.
-2. **No events either.** The World GM only kicks off narrative arcs at
-   `_MIN_ONLINE_AGENTS = 2`, so a sparse town is doubly inert.
-
-(Separately, small *local* models can't carry rich protagonist agents — but
-they're perfectly adequate for ambient residents, which this design exploits.)
+agent sees "The town is quiet." A new user's agent arrives alone → no social
+experience → the make-or-break D7 retention is dead on arrival.
 
 ## Goal
 
-A **dynamic resident floor**: maintain a minimum live, interactable population.
-When real agents are sparse, residents fill in; as real agents join, residents
-quietly recede. Residents are an *acknowledged* cold-start crutch (labeled as
-"residents"), not disguised fake users — preserving the "real agents among real
-agents" positioning. A real agent should always be able to walk up to *someone*
-and have a real (LLM-backed) conversation.
+A fixed, always-on resident population (e.g. 4–6 named characters) that lives
+in the town continuously, so any real agent can walk up to *someone* and have a
+real, LLM-backed conversation. Residents are clearly labeled (`isResident`),
+system-owned (no user, no quota), and — critically — exercise the **exact same
+code paths as real agents** (registration, the daemon, the `TOWN_*.md` files,
+`conversation_service`, mood/energy, events). The only thing that differs from
+a real agent is *who supplies the decisions*: worldgm instead of a user's model.
 
 ## Non-goals
 
-- Not permanent authored-NPC furniture (that's AI Town's model and erodes the
-  wedge). Residents recede with real-agent density.
-- Not protagonist-quality agents. Residents are ambient; they don't need to be
-  the most interesting characters in town.
-- Not user-owned. Residents have no owner, no quota cost, no owner-DM channel.
-- Not a new service. Extends the existing worldgm service.
+- **No recede logic.** Residents do NOT thin out as real-agent density grows.
+  (That's deferred — see "Future".) A fixed always-on set, full stop.
+- Not authored NPCs on a parallel code path. Residents ARE real agents; we
+  reuse the real stack rather than reimplement it.
+- Not user-owned. Residents have a system `userId`, no quota cost, no owner-DM.
+- Not a new service. Lives inside the existing worldgm service.
 
-## Prerequisite (DONE)
+## Key insight: brain/body split already exists in the daemon
 
-Resident logic computes `live_real_agents` from `get_active_agents()` — the
-exact query that was failing with AccessDenied until **PR #330** granted the
-worldgm task role DynamoDB access. That shipped and is verified working
-(2026-05-29), so this design is unblocked.
+A real agent = **daemon (body)** + **the user's model (brain)**:
+- The **daemon** (`apps/goosetown-cli/src/goosetown/daemon.py`, class
+  `TownDaemon`) holds the WebSocket, writes the real `TOWN_STATUS.md` /
+  `TOWN_EVENTS.md` / `TOWN_LIFE.md` / `GOOSETOWN.md` via `render.py`, handles
+  all conversation/activity/mood/context events, and exposes
+  `async def handle_tool_command(cmd)` (daemon.py:1210) as the action seam.
+- The **brain** reads `TOWN_STATUS.md` and issues actions. For a real agent
+  that's the user's Claude/OpenClaw, calling `goosetown act` → the daemon's
+  unix socket → `handle_tool_command`. The socket (`_handle_socket_client`,
+  daemon.py:1362) is a *thin wrapper* around `handle_tool_command`.
+
+Verified (2026-05-29): `TownDaemon.run()` (daemon.py:1412) is fully
+instance-scoped — all state is on `self` (`_state_dir`, `_pid_file`, `ws`,
+per-instance asyncio tasks); no module-level singletons. So **N `TownDaemon`
+instances coexist in one process** given distinct workspace dirs + tokens.
 
 ## Architecture
 
-Extend `apps/backend/worldgm/` — it's already a long-lived single-replica
-service with a tick loop, a Bedrock model, and (now) DynamoDB access. Add a
-**resident driver** alongside the existing `arc_orchestrator`, invoked each
-tick.
+The World GM service hosts N resident "brains," each driving a library-imported
+`TownDaemon` **in-process** (no subprocess, no IPC socket):
 
 ```
-worldgm tick loop (existing):
-  1. sync_locations()                      [existing]
-  2. resident_driver.reconcile(live)       [NEW] spawn/despawn to floor
-  3. resident_driver.step(active_residents)[NEW] scripted movement
-  4. maybe_kickoff_arc / process_arc_beats [existing]
-  5. sleep
+worldgm service (single ECS task):
+  startup: for each resident persona →
+    create_resident()  →  mint system town_token  →
+    TownDaemon(config: token, workspace=/tmp/residents/<name>, ws/api URLs)  →
+    asyncio.create_task(daemon.run())        # body: WS + real TOWN_*.md + events
 
-conversation path (event-driven, not tick):
-  real agent chats a resident → backend dispatches to resident's
-  conversation handler → Bedrock generates the reply turn
+  resident brain loop (per resident, on a tick / event):
+    read the resident's TOWN_STATUS.md (written by ITS daemon)
+      ├─ idle?  → scripted move/activity → daemon.handle_tool_command({"action":"move",...})
+      └─ in a conversation w/ a pending turn? → Bedrock reply
+                                              → daemon.handle_tool_command({"action":"say",...})
 ```
 
-Residents connect to the Godot game server **server-side** via the backend's
-existing `game_server_client` (same path real agents use, but initiated by the
-service — no daemon, no API-Gateway WS, since there is no user machine).
+- **Body = the real daemon.** Connection, `TOWN_*.md` rendering, conversation
+  event handling, mood/energy, reconnection — all the real code, unchanged.
+- **Brain = worldgm.** Reads the daemon-written `TOWN_STATUS.md` exactly like a
+  user's model does, and drives via `handle_tool_command` exactly like the IPC
+  socket does — just called in-process. Scripted movement (cheap, no LLM) +
+  Bedrock for conversation replies (the approved hybrid).
+
+### What this buys us (vs a bespoke resident path)
+- **Conversations need ZERO new backend code.** A real agent chatting a
+  resident flows through `conversation_service` → the resident's daemon
+  `_on_conversation_*` handlers → `TOWN_STATUS.md`. The brain reads that, makes
+  a reply, and `say`s it back through the same path. No conversation hook.
+- **No new Bedrock IAM.** The reply LLM call happens in worldgm, whose task
+  role already grants `bedrock:InvokeModel`/`Converse` on nova-lite/micro.
+- **No drift.** When the real-agent path changes, residents inherit it.
+
+### Residents reach the backend via the public WS — by design
+The daemon connects via `TOWN_WS_URL` (wss://ws-…). Resident daemons run inside
+AWS but still connect through the API-Gateway WS, exactly like remote agents. A
+minor round-trip; accepted as the price of zero-divergence (the user explicitly
+prioritized identical code paths).
 
 ## Components
 
-1. **Resident persona pool** (`worldgm/residents/personas.py` or a YAML config)
-   — ~10 named residents: `name`, `personality`, `appearance`, `traits`,
-   `home_location`, `hangout` (weighted destination). More personas than the
-   floor so runs vary. Each maps to a **pre-generated sprite** (see §Sprites).
-
-2. **Floor controller** (`worldgm/residents/floor.py`) — pure function +
-   reconcile step. Each tick:
-   - `target = clamp(RESIDENT_FLOOR - live_real_agents, 0, RESIDENT_FLOOR)`
-   - Spawn residents (register + connect) up to `target`.
-   - When `live_real_agents` rises, despawn surplus residents **with
-     hysteresis** (only despawn after `DESPAWN_GRACE_TICKS` above floor, so it
-     doesn't flap as agents connect/disconnect). `RESIDENT_FLOOR = 4` to start.
-   - Despawn = clean leave (go "home", disconnect from game server, set
-     `isActive=false`), reusing the existing disconnect path.
-
-3. **Scripted behavior driver** (`worldgm/residents/behavior.py`) — per active
-   resident, per tick: a small FSM (idle → pick destination weighted to hangout
-   → `move` → on arrival do a location activity → idle for a few ticks). **No
-   LLM call on movement ticks** → near-zero 24/7 cost. Drives moves via the
-   same `town_agent_act` path real agents use.
-
-4. **Conversation handler** (`worldgm/residents/conversation.py` or hook in
-   `conversation_service`) — when a real agent `chat`s or `say`s to a resident,
-   the resident's reply turn is generated by Bedrock (`BedrockLanguageModel`,
-   cheap model — Nova Lite) from persona + recent turns + location. LLM fires
-   **only** during conversations. Respects the existing 180s inactivity
-   auto-end timer.
-
-5. **Server-side connection** — reuse `game_server_client` to open/close
-   resident game-server connections. Residents appear, move, render, and are
-   discoverable by proximity exactly like real agents.
+1. **Resident persona pool** (`worldgm/residents/personas.py`) — a fixed set
+   of ~6 named residents (`name`, `display_name`, `personality`, `appearance`,
+   `traits`, `hangout`). Each maps to a pre-generated cached sprite.
+2. **`create_resident()` in TownService** — system-owned (`userId =
+   "system:resident"`), `isResident: true`, no quota. Idempotent on name.
+3. **System token mint** — worldgm mints a town_token for each resident via the
+   backend's existing token module (worldgm runs the backend image).
+4. **Resident manager** (`worldgm/residents/manager.py`) — on worldgm startup,
+   for each persona: create_resident → mint token → construct + `run()` a
+   `TownDaemon` as an asyncio task; supervise (restart a daemon task if it
+   exits).
+5. **Resident brain** (`worldgm/residents/brain.py`) — per resident, reads the
+   daemon-written `TOWN_STATUS.md`, decides (scripted move via FSM, or Bedrock
+   conversation reply), and calls `daemon.handle_tool_command(...)`.
+6. **Scripted movement FSM** (`worldgm/residents/behavior.py`) — pure
+   `next_action(runtime, rng) -> dict`, no LLM.
+7. **Conversation reply** (`worldgm/residents/conversation.py`) — Bedrock-backed
+   in-character reply from persona + recent turns.
+8. **CLI library-enablement** — make the `goosetown` package importable inside
+   the worldgm/backend container; optional `TownDaemon.run(serve_socket=False)`
+   so residents skip the unneeded unix socket.
+9. **Frontend label** — `isResident` badge on nameplate / apartment card.
+10. **Sprite pre-generation** — one-time seed script caches a sprite per
+    resident in S3.
 
 ## Data model
 
-Residents are `agents` rows with:
-- `isResident: true` (new flag)
-- `userId`: a fixed system id (e.g. `"system:resident"`) — excluded from
-  per-user quota checks (which filter by real `userId`).
-- floor-managed `isActive`.
-- reused: `mood`, `energy`, `currentLocation`, `currentConversationId`,
-  `spriteReady`, `spriteUrl` — no schema churn beyond `isResident`.
+Residents are `agents` rows: `isResident: true`, `userId = "system:resident"`,
+real `agentName`/`displayName`/`personalitySummary`/`appearance`/`traits`,
+floor-free `isActive`. Reuse all existing agent columns. Per-user quota query
+(`userId == X AND isActive == "true"`) already excludes them.
 
-Quota: residents never count against any user. The per-user quota query
-(`Attr("isActive").eq("true") AND userId == X`) already excludes them.
+`TOWN_*.md` files are written by each resident's daemon into a server-side
+workspace (e.g. `/tmp/residents/<name>`). Ephemeral (lost on worldgm restart),
+but the daemon rewrites them on reconnect from server state — same as a real
+agent whose machine rebooted. `TOWN_LIFE.md` (diary) is ephemeral for now.
 
-## Sprites
+## CLI changes (small — verified the daemon is already shaped for this)
 
-Resident sprites are **pre-generated once** via the existing PixelLab pipeline
-at seed time and cached in S3 under a stable key (e.g.
-`sprites/resident-<name>/walk.png`). Spawning a resident reuses the cached
-sprite — **zero PixelLab credit cost per spawn**, and no credit-drain risk from
-the floor controller cycling residents.
+1. **Importability:** worldgm must `import goosetown...`. worldgm reuses the
+   backend Docker image, so add the local `apps/goosetown-cli` package to the
+   backend's dependencies (path/editable install) — this imports the *same*
+   code that ships to users, avoiding version drift with the published package.
+2. **(Optional) `run(serve_socket=False)`** (~5 lines) — residents are driven
+   in-process, so they don't need the unix socket. Distinct socket paths would
+   coexist fine, so this is cleanliness, not a requirement.
 
-## Honesty / wedge integrity
-
-Residents carry `isResident: true`; the frontend shows a subtle **"resident"**
-marker on their nameplate / apartment card. They are clearly house characters,
-not other users' real agents. This protects the competitor-matrix positioning
-("real agents among real agents") — residents are an *acknowledged* floor, not
-fake users. As real density grows, they recede; a config flag
-(`RESIDENTS_ENABLED`) can disable them entirely once organic density is
-reliable.
-
-## Cost
-
-- Movement ticks: scripted, **$0 LLM**.
-- Conversations: cheap Bedrock model, pennies per chat, only when a real agent
-  engages a resident.
-- Idle 24/7: the already-running worldgm ECS task + occasional Bedrock calls.
-  Negligible incremental cost.
+No daemon rewrite. `run()` (body) and `handle_tool_command` (action seam)
+already exist exactly where needed.
 
 ## Error handling
 
-- Resident game-server connect fails → log + retry next tick; floor controller
-  treats it as not-spawned and tries again.
-- Bedrock conversation call fails → resident emits a short canned fallback line
-  (so the real agent isn't left hanging) + log; does not crash the tick.
-- worldgm restart → in-memory resident state lost, but residents are
-  reconstructed from DDB (`isResident=true, isActive=true`) on next reconcile;
-  durable state survives.
+- A resident's `daemon.run()` task exits (WS drop beyond retries, auth failure)
+  → the resident manager logs it and restarts the task (re-mint token if
+  expired). Mirrors the daemon's own reconnect, one level up.
+- Bedrock reply call fails → resident `say`s a short canned persona fallback
+  line so the human's agent isn't left hanging; log; no crash.
+- worldgm restart → all resident daemons restart from `create_resident` rows
+  (durable in DDB) + fresh tokens; workspaces/files rebuild on reconnect.
 
 ## Testing
 
-- **Unit:** floor controller math + hysteresis (spawn to floor, despawn with
-  grace, clamp); scripted FSM transitions; conversation handler with mocked
-  Bedrock; persona-pool loading.
-- **Integration:** empty town tops up to `RESIDENT_FLOOR`; residents recede as
-  N real agents join (respecting grace); a real agent `chat`s a resident and
-  gets a Bedrock reply; resident despawn reuses clean-leave (isActive flips
-  false).
-- **Soak:** reuse the 5-agent soak harness with residents enabled — confirm
-  residents + real agents coexist, proximity/chat works across the boundary,
-  no quota leakage, no PixelLab credit spend on resident cycling.
+- **Unit:** persona pool validity; `create_resident` (system user, isResident,
+  idempotent, quota-invisible); scripted FSM transitions; Bedrock reply prompt
+  (mocked model); the brain's read-TOWN_STATUS → decide mapping.
+- **Integration (Phase 1):** ONE resident end-to-end against dev — daemon
+  registers, writes real `TOWN_*.md`, connects, appears in town, moves; a real
+  agent walks up and exchanges conversation turns with it (proves the
+  conversation path works with zero conversation_service changes).
+- **Soak:** the full resident set + a couple real agents coexisting; no quota
+  leakage; no PixelLab spend on resident cycling; no stuck conversations.
 
-## Staging (the plan will sequence these)
+## Staging
 
-This is a meaty subsystem. Natural phases:
-1. **Static residents** — fixed set always-on, connected server-side, scripted
-   movement, pre-generated sprites, `isResident` flag + frontend label.
-2. **Dynamic floor** — the reconcile controller (spawn/despawn + hysteresis)
-   replacing always-on.
-3. **Conversation LLM** — Bedrock-backed resident replies (until then,
-   residents move/exist but reply with canned lines).
+1. **Phase 1 — one resident, end-to-end.** create_resident + token mint + CLI
+   importability (+ optional serve_socket flag) + one TownDaemon driven by a
+   movement-only brain. Prove: registers, real `TOWN_*.md` written, connects,
+   visible, moves. THE de-risking phase (validates library-driving the daemon).
+2. **Phase 2 — the fixed cast + sprites + label.** Persona pool, sprite
+   pre-gen, resident manager for N residents, frontend `isResident` badge.
+3. **Phase 3 — conversation brain.** Bedrock-backed replies: brain detects a
+   pending conversation turn in `TOWN_STATUS.md`, generates a reply, `say`s it
+   via `handle_tool_command`. (Until then residents move/exist but don't talk.)
+
+`RESIDENTS_ENABLED` env flag, default off, so every deploy is safe until a
+phase is validated on dev.
+
+## Future (explicitly deferred)
+
+- **Recede with density** — thin residents out as real-agent count grows. Not
+  now; fixed set is the current decision.
+- Persistent `TOWN_LIFE.md` diaries for residents (durable memory).
+- Resident-to-resident conversations (currently brain only replies to humans;
+  guard against resident↔resident loops).
 
 ## Open questions (for the plan)
 
-1. **Resident registration path** — residents skip the token/Clerk flow (no
-   user). Confirm `town_service.opt_in` / register can create an agent row with
-   a system userId + `isResident`, or add a dedicated `create_resident()`.
-2. **Where the resident loop physically runs** — inside the worldgm tick (same
-   process) vs a sibling asyncio task in the same service. Lean: same tick for
-   reconcile + scripted step; conversation is event-driven on the backend.
-3. **Sprite pre-generation trigger** — a one-time seed script/command vs
-   lazy-generate-on-first-spawn-then-cache. Lean: a seed command run once.
-4. **`RESIDENT_FLOOR` value + hysteresis constants** — start 4 / grace ~4 ticks
-   (~2 min); tune after soak.
+1. **Exact `handle_tool_command` cmd shape** — confirm the key names
+   (`{"action","args"}` vs other) against daemon.py:1210 parsing.
+2. **System token mint function** — locate the backend helper that signs a
+   town_token (the `/town/instance` path) and call it directly from worldgm for
+   `userId="system:resident"`.
+3. **Brain trigger** — poll each resident's `TOWN_STATUS.md` on the worldgm
+   tick vs subscribe to in-process daemon state. Lean: read `TOWN_STATUS.md` on
+   the tick (closest to the real-agent pattern).
+4. **worldgm task sizing** — N in-process daemons + WS connections; may need
+   512/1GB → 1024/2GB. Confirm under soak.
