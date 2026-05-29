@@ -1409,8 +1409,16 @@ class TownDaemon:
                 except Exception:
                     break
 
-    async def run(self) -> None:
-        """Connect, run socket server, and listen until exit."""
+    async def run(self, serve_socket: bool = True) -> None:
+        """Connect, run socket server, and listen until exit.
+
+        Args:
+            serve_socket: Whether to start the unix-socket server that the CLI
+                uses to send commands to the daemon.  Set to ``False`` when
+                running many daemon instances in-process (resident agents) where
+                the socket server is unnecessary.  Defaults to ``True`` so the
+                CLI's behaviour is byte-for-byte unchanged.
+        """
         import asyncio
         import logging
 
@@ -1439,16 +1447,22 @@ class TownDaemon:
                 return
 
             keepalive_task = asyncio.create_task(self._keepalive_loop())
-            socket_task = asyncio.create_task(self.run_socket_server())
+            socket_task = (
+                asyncio.create_task(self.run_socket_server())
+                if serve_socket
+                else None
+            )
             try:
                 await ws_task
             finally:
                 keepalive_task.cancel()
-                socket_task.cancel()
+                if socket_task is not None:
+                    socket_task.cancel()
                 try:
-                    await asyncio.gather(
-                        keepalive_task, socket_task, return_exceptions=True
-                    )
+                    tasks = [keepalive_task]
+                    if socket_task is not None:
+                        tasks.append(socket_task)
+                    await asyncio.gather(*tasks, return_exceptions=True)
                 except Exception:
                     pass
         finally:
