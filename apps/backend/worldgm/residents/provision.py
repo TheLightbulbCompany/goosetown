@@ -44,6 +44,9 @@ def provision_resident(
         traits=list(persona.traits),
     )
     agent_id = agent["id"]
+    # Use the agent id as the token's instance_id (iid). Residents have no
+    # instances-table row — the WS connect path resolves the agent by
+    # (userId, agent_name), so iid is only a label, never looked up.
     token = mint_token(RESIDENT_USER_ID, agent_id)
     workspace = base_dir / persona.name
     return ResidentConfig(
