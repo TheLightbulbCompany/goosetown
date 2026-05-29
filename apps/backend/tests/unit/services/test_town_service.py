@@ -258,6 +258,101 @@ class TestUpdateAgentContext:
         assert fetched["currentLocation"] == "exit"
 
 
+class TestCreateResident:
+    def test_create_resident_is_system_owned_and_quota_invisible(self, dynamodb_tables):
+        svc = TownService()
+        agent = svc.create_resident(
+            name="tobias",
+            display_name="Tobias",
+            personality="Retired lighthouse keeper, narrates his life in third person.",
+            appearance="Barrel-chested old man, salt-and-pepper beard, mustard raincoat.",
+            traits=["gruff", "observant", "nostalgic"],
+        )
+
+        assert agent["isResident"] is True
+        assert agent["userId"] == "system:resident"
+        assert agent["isActive"] == "true"
+
+        # invisible to a real user's quota:
+        assert svc.get_active_agents_for_user("user_real") == []
+
+        # idempotent on name:
+        again = svc.create_resident(
+            name="tobias",
+            display_name="Tobias",
+            personality="x",
+            appearance="y",
+            traits=["z"],
+        )
+        assert again["id"] == agent["id"]
+
+    def test_create_resident_has_expected_fields(self, dynamodb_tables):
+        svc = TownService()
+        agent = svc.create_resident(
+            name="clara",
+            display_name="Clara",
+            personality="Curious botanist, always talking about plants.",
+            appearance="Petite woman with green hair and a flower crown.",
+            traits=["curious", "warm"],
+        )
+
+        assert agent["agentName"] == "clara"
+        assert agent["displayName"] == "Clara"
+        assert agent["personalitySummary"] == "Curious botanist, always talking about plants."
+        assert agent["isResident"] is True
+        assert agent["isActive"] == "true"
+        assert agent["currentLocation"] == "exit"
+        assert agent["locationContext"] == "apartment"
+        assert "id" in agent
+        assert "joinedAt" in agent
+
+    def test_create_resident_idempotent_reactivates_inactive(self, dynamodb_tables):
+        """If a resident was deactivated (e.g. by opt_out), create_resident reactivates it."""
+        svc = TownService()
+        from core.services.town_service import RESIDENT_USER_ID
+
+        agent = svc.create_resident(
+            name="remy",
+            display_name="Remy",
+            personality="Chef.",
+            appearance="Chef's hat, apron.",
+            traits=["focused"],
+        )
+        original_id = agent["id"]
+
+        # Deactivate the resident
+        svc.opt_out(RESIDENT_USER_ID, "remy")
+        deactivated = svc.get_town_agent_by_id(original_id)
+        assert deactivated["isActive"] == "false"
+
+        # create_resident should reactivate
+        reactivated = svc.create_resident(
+            name="remy",
+            display_name="Remy",
+            personality="Chef.",
+            appearance="Chef's hat, apron.",
+            traits=["focused"],
+        )
+        assert reactivated["id"] == original_id
+        assert reactivated["isActive"] == "true"
+
+    def test_residents_invisible_to_global_active_agents_for_real_user(self, dynamodb_tables):
+        """Residents must not appear in any real user's quota count."""
+        svc = TownService()
+        svc.create_resident(
+            name="nova",
+            display_name="Nova",
+            personality="Astronomer.",
+            appearance="Telescope and starmap.",
+            traits=["dreamy"],
+        )
+        svc.opt_in("user-real", "my-agent", "My Agent")
+
+        user_agents = svc.get_active_agents_for_user("user-real")
+        assert len(user_agents) == 1
+        assert user_agents[0]["agentName"] == "my-agent"
+
+
 class TestInstances:
     def test_create_and_get_instance(self, dynamodb_tables):
         svc = TownService()
