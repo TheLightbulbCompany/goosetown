@@ -106,7 +106,7 @@ async def test_brain_issues_move_when_idle():
     daemon.handle_tool_command.assert_awaited_once()
     sent = daemon.handle_tool_command.call_args[0][0]
     assert sent["action"] == "act"
-    assert sent["payload"]["action"] in {"move", "idle", "activity"}
+    assert sent["payload"]["action"] == "move"
 
 
 async def test_brain_move_cmd_destination_is_hangout_when_away():
@@ -133,13 +133,18 @@ async def test_brain_marks_runtime_moving_after_issuing_move():
     assert rt.idle_ticks == 0
 
 
-async def test_brain_noop_when_already_moving_in_status():
-    """If activity=='moving', runtime becomes moving and no cmd issued."""
+async def test_brain_ignores_unreliable_activity_field():
+    """The daemon never reports activity=='moving' (movement isn't surfaced in
+    daemon.state), so the brain must NOT treat the activity field as a movement
+    gate — it decides purely on dwell time + location. Here, idle and away from
+    the hangout, it issues a move even though activity says 'moving'."""
     daemon = AsyncMock()
     rt = _rt(location="cafe", state="idle", idle_ticks=3, hangout="plaza")
     status = {"location": "cafe", "activity": "moving", "active_conversation": None}
     await step_resident_brain(daemon, rt, status, rng=lambda: 0.0)
-    daemon.handle_tool_command.assert_not_awaited()
+    daemon.handle_tool_command.assert_awaited_once()
+    sent = daemon.handle_tool_command.call_args[0][0]
+    assert sent["payload"]["destination"] == "plaza"
     assert rt.state == "moving"
 
 

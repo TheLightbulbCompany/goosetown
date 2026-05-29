@@ -49,6 +49,8 @@ from typing import Any
 
 from .bedrock_model import BedrockLanguageModel
 from .location_sync import sync_locations
+from .residents.behavior import ResidentRuntime
+from .residents.brain import read_status, step_resident_brain
 
 TICK_INTERVAL_SECONDS = float(os.environ.get("WORLDGM_TICK_INTERVAL", "30"))
 RESIDENTS_ENABLED = os.environ.get("RESIDENTS_ENABLED", "false").lower() == "true"
@@ -222,9 +224,6 @@ async def _tick(state: GmState) -> None:
 
     # --- Resident brain ticks (RESIDENTS_ENABLED only) ---
     if state.resident_manager is not None:
-        from worldgm.residents.behavior import ResidentRuntime
-        from worldgm.residents.brain import read_status, step_resident_brain
-
         for name, handle in state.resident_manager.residents.items():
             daemon = handle.daemon
             if daemon is None or not getattr(daemon, "state", None):

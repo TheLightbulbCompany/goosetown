@@ -18,6 +18,9 @@ _VALID_DESTINATIONS = (
 # Number of idle ticks that must pass before the resident decides to move.
 _IDLE_TICKS_BEFORE_MOVE = 2
 
+# Probability (per eligible tick) that a settled resident wanders off-hangout.
+_WANDER_CHANCE = 0.25
+
 # Sentinel returned when no action should be taken this tick.
 NOOP: dict = {"action": "noop"}
 
@@ -66,10 +69,12 @@ def next_action(runtime: ResidentRuntime, rng_value: float) -> dict:
     if runtime.location != runtime.hangout:
         return _move_cmd(runtime.hangout)
 
-    # Settled at hangout: occasional wander (rng_value < 0.25).
-    if rng_value < 0.25:
+    # Settled at hangout: occasional wander (rng_value < _WANDER_CHANCE).
+    if rng_value < _WANDER_CHANCE:
         others = [d for d in _VALID_DESTINATIONS if d != runtime.location]
-        idx = int(rng_value * len(others)) % len(others)  # deterministic from rng_value
+        # Rescale rng_value from [0, _WANDER_CHANCE) to [0, 1) so the pick spans
+        # ALL other destinations, not just the first one or two. Deterministic.
+        idx = int((rng_value / _WANDER_CHANCE) * len(others)) % len(others)
         return _move_cmd(others[idx])
 
     return dict(NOOP)

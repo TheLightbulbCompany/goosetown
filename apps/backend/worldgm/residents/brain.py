@@ -64,23 +64,24 @@ async def step_resident_brain(
         return
 
     # --- Reconcile runtime with the daemon's reported state --- #
+    # NOTE: daemon.state exposes no reliable "currently walking" signal — the
+    # game server's is_moving flag is NOT propagated into daemon.state, and
+    # `activity` is "idle"/an activity name, never "moving". The movement gate
+    # is instead the blocking `handle_tool_command` move call below: it does not
+    # return until the agent arrives (or times out), so the brain physically
+    # cannot re-tick mid-walk and double-issue a move. We therefore treat every
+    # tick as a settled point and track dwell time at the reported location.
+    #
+    # Phase 2 / N residents: ticking brains sequentially here (each awaiting its
+    # blocking move) would serialize all resident movement and stall the worldgm
+    # tick loop. When scaling the manager to the full cast, run the brains
+    # concurrently (or fire-and-forget the move) rather than awaiting in a loop.
     location = parsed_status.get("location", "unknown")
-    activity = parsed_status.get("activity", "idle")
-    moving = activity == "moving"
-
-    if moving:
-        # Still in transit — mark runtime as moving and reset idle counter.
-        runtime.state = "moving"
-        runtime.idle_ticks = 0
-    else:
-        # Idle / arrived.  If the reported location changed, the agent just
-        # arrived somewhere new — reset the idle counter before incrementing.
-        if location != runtime.location:
-            runtime.idle_ticks = 0
-        runtime.state = "idle"
-        runtime.idle_ticks += 1
-
+    if location != runtime.location:
+        runtime.idle_ticks = 0  # just arrived somewhere new
     runtime.location = location
+    runtime.state = "idle"
+    runtime.idle_ticks += 1
 
     # --- Decide and act --- #
     rng_value = (rng or random.random)()
@@ -88,9 +89,7 @@ async def step_resident_brain(
     if cmd.get("action") == "noop":
         return
 
-    # Optimistically mark moving so we don't spam move commands while the
-    # next world_update hasn't arrived yet.
     runtime.state = "moving"
     runtime.idle_ticks = 0
-
+    # Blocks until arrival/timeout — this await is the movement gate.
     await daemon.handle_tool_command(cmd)
