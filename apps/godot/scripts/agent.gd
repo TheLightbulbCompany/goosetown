@@ -427,6 +427,18 @@ func _update_facing_from_velocity(vel: Vector2) -> void:
 
 
 func _update_sprite_frame() -> void:
+	# The @onready var `sprite` is only populated once the node enters the tree
+	# (after `add_child`). `setup()` is called BEFORE `add_child` by callers
+	# like `AgentController.spawn_agent` (agent_controller.gd:124 vs :140), which
+	# means setup → set_spritesheet → _update_sprite_frame can fire while
+	# `sprite` is still null. Observed on the headless game server as the
+	# `agent.gd:457 — assign 'texture' on Nil` script error that fired on every
+	# cross-context spawn for spriteless agents (Phase-1 residents), bouncing
+	# them out of interior scenes. _physics_process re-runs the frame update
+	# every frame once the node is alive, so returning early here is safe — the
+	# texture lands the moment @onready has populated.
+	if sprite == null:
+		return
 	var tex: Texture2D = _spritesheets.get(_current_animation)
 	if tex == null:
 		if _spritesheets.is_empty():
