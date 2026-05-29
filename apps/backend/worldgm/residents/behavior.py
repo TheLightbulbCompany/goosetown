@@ -15,6 +15,11 @@ _VALID_DESTINATIONS = (
     "residence",
 )
 
+# Apartment location residents go to when sleeping. The daemon handles the
+# town→apartment context transition transparently when the brain emits a
+# cross-context destination.
+_BED = "bed"
+
 # Number of idle ticks that must pass before the resident decides to move.
 _IDLE_TICKS_BEFORE_MOVE = 2
 
@@ -37,6 +42,9 @@ class ResidentRuntime:
     state: str  # "idle" | "moving"
     idle_ticks: int
     hangout: str  # the location the resident gravitates back to
+    location_context: str = "town"  # "town" | "apartment"
+    sleep_hour: int = 22  # UTC hour they go to sleep
+    wake_hour: int = 6  # UTC hour they wake up
 
 
 def _move_cmd(destination: str) -> dict:
@@ -44,18 +52,36 @@ def _move_cmd(destination: str) -> dict:
     return {"action": "act", "payload": {"action": "move", "destination": destination}}
 
 
-def next_action(runtime: ResidentRuntime, rng_value: float) -> dict:
+def is_in_sleep_window(hour: int, sleep_hour: int, wake_hour: int) -> bool:
+    """Return True if ``hour`` (0-23 UTC) is within the sleep window
+    ``[sleep_hour, wake_hour)``. Window wraps midnight when sleep_hour > wake_hour.
+
+    Boundaries: ``sleep_hour`` is inclusive (start of sleep), ``wake_hour`` is
+    exclusive (start of waking) so the boundary case ``hour == wake_hour`` is
+    awake. ``sleep_hour == wake_hour`` means "never sleeps".
+    """
+    if sleep_hour == wake_hour:
+        return False
+    if sleep_hour < wake_hour:
+        return sleep_hour <= hour < wake_hour
+    # Wraps midnight, e.g. sleep=22, wake=6 → asleep when hour ∈ [22,24) ∪ [0,6)
+    return hour >= sleep_hour or hour < wake_hour
+
+
+def next_action(runtime: ResidentRuntime, rng_value: float, now_utc_hour: int | None = None) -> dict:
     """Decide the resident's next action. Pure: same inputs → same output.
 
     Args:
-        runtime:   Current FSM state for this resident.
-        rng_value: A float in [0, 1) used only for the occasional wander roll
-                   when the resident is already settled at their hangout.
-                   Movement decisions are otherwise deterministic.
+        runtime:       Current FSM state for this resident.
+        rng_value:     Float in [0, 1) used for the occasional wander roll
+                       when the resident is settled at their hangout.
+        now_utc_hour:  Optional int 0-23 representing the current UTC hour. When
+                       provided, the FSM applies the sleep gate: in-window →
+                       go to bed; awake → normal hangout/wander logic. When
+                       None, sleep is ignored (used by some legacy tests).
 
     Returns:
-        A real handle_tool_command cmd dict, or a fresh copy of NOOP to do
-        nothing this tick.
+        A real handle_tool_command cmd dict, or a fresh copy of NOOP.
     """
     # Already en route — don't issue another command until arrival is reported.
     if runtime.state == "moving":
@@ -65,7 +91,15 @@ def next_action(runtime: ResidentRuntime, rng_value: float) -> dict:
     if runtime.idle_ticks < _IDLE_TICKS_BEFORE_MOVE:
         return dict(NOOP)
 
-    # Not at hangout → drift home.
+    # Sleep gate. If now_utc_hour is within the persona's sleep window, the
+    # resident either stays asleep at bed (noop) or heads home to bed. The
+    # daemon handles the cross-context transition transparently.
+    if now_utc_hour is not None and is_in_sleep_window(now_utc_hour, runtime.sleep_hour, runtime.wake_hour):
+        if runtime.location == _BED:
+            return dict(NOOP)
+        return _move_cmd(_BED)
+
+    # Awake. Not at hangout (or asleep at bed and just woke) → drift to hangout.
     if runtime.location != runtime.hangout:
         return _move_cmd(runtime.hangout)
 
