@@ -591,6 +591,18 @@ wheels = [
 ]
 
 [[package]]
+name = "goosetown"
+version = "0.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "websockets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/86/b7/3c5a75dc83e56d7d97832538e41041e93a7a55c390bfaf19ce5b15bd9df1/goosetown-0.2.0.tar.gz", hash = "sha256:2b18e45903fd57ea0187c6a4f50dad2c23d3a2cd8408855c6861ddc452677c1b", size = 63299, upload-time = "2026-05-10T17:27:18.938Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/63/fe/3aa9151a0a8737afdf890dfadb66e46264ccd2db7e5302e077c549f1cd24/goosetown-0.2.0-py3-none-any.whl", hash = "sha256:d215a48a6805415f4d9205ff581dd6105764ff32469d077527a4f00f67aa5246", size = 50098, upload-time = "2026-05-10T17:27:17.621Z" },
+]
+
+[[package]]
 name = "goosetown-backend"
 version = "0.1.0"
 source = { virtual = "." }
@@ -599,6 +611,7 @@ dependencies = [
     { name = "cryptography" },
     { name = "fastapi" },
     { name = "gdm-concordia" },
+    { name = "goosetown" },
     { name = "httpx" },
     { name = "pillow" },
     { name = "pyjwt", extra = ["crypto"] },
@@ -626,6 +639,7 @@ requires-dist = [
     { name = "cryptography", specifier = ">=46.0.7" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "gdm-concordia", specifier = ">=2.0.0,<3.0.0" },
+    { name = "goosetown", specifier = ">=0.2.0" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "pillow", specifier = ">=12.2" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.9" },
@@ -1270,7 +1284,7 @@ name = "pexpect"
 version = "4.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "ptyprocess" },
+    { name = "ptyprocess", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/42/92/cc564bf6381ff43ce1f4d06852fc19a2f11d180f23dc32d9588bee2f149d/pexpect-4.9.0.tar.gz", hash = "sha256:ee7d41123f3c9911050ea2c2dac107568dc43b2d3b0c7557a33212c398ead30f", size = 166450, upload-time = "2023-11-25T09:07:26.339Z" }
 wheels = [
