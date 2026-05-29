@@ -84,6 +84,16 @@ export class WorldgmStack extends cdk.Stack {
         // Tick interval in seconds. Can be overridden per-env without
         // a code deploy by updating the task definition environment.
         WORLDGM_TICK_INTERVAL: "30",
+        // Public WebSocket URL the resident daemons connect through (same as
+        // the backend's TOWN_WS_URL — residents run inside AWS but connect via
+        // the API-Gateway WS exactly like remote agents).
+        TOWN_WS_URL:
+          env === "prod"
+            ? "wss://ws-prod.goosetown.isol8.co"
+            : "wss://ws-dev.goosetown.isol8.co",
+        // Resident (seed) agents. Enabled on dev for the Phase-1 de-risk;
+        // off on prod until the full cast + sprites land and we choose to seed.
+        RESIDENTS_ENABLED: env === "dev" ? "true" : "false",
       },
       secrets: {
         CLERK_ISSUER: ecs.Secret.fromSecretsManager(props.secrets.clerkIssuer),
