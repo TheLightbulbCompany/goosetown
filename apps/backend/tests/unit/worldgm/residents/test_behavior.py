@@ -87,3 +87,88 @@ def test_noop_is_a_fresh_copy():
     result = next_action(rt, rng_value=0.0)
     assert result is not NOOP
     assert result == NOOP
+
+
+# ---------------------------------------------------------------------------
+# Sleep window helper
+# ---------------------------------------------------------------------------
+
+
+def test_is_in_sleep_window_non_wrapping():
+    from worldgm.residents.behavior import is_in_sleep_window
+
+    # Tesla-style window: 4 -> 8 (no midnight wrap).
+    assert is_in_sleep_window(5, 4, 8) is True
+    assert is_in_sleep_window(4, 4, 8) is True  # start inclusive
+    assert is_in_sleep_window(8, 4, 8) is False  # end exclusive (wake hour)
+    assert is_in_sleep_window(3, 4, 8) is False
+    assert is_in_sleep_window(12, 4, 8) is False
+
+
+def test_is_in_sleep_window_wraps_midnight():
+    from worldgm.residents.behavior import is_in_sleep_window
+
+    # Tobias-style window: 22 -> 6 (wraps midnight).
+    assert is_in_sleep_window(23, 22, 6) is True
+    assert is_in_sleep_window(0, 22, 6) is True
+    assert is_in_sleep_window(3, 22, 6) is True
+    assert is_in_sleep_window(22, 22, 6) is True  # start inclusive
+    assert is_in_sleep_window(6, 22, 6) is False  # wake exclusive
+    assert is_in_sleep_window(7, 22, 6) is False
+    assert is_in_sleep_window(12, 22, 6) is False
+
+
+def test_is_in_sleep_window_equal_hours_means_never_sleeps():
+    from worldgm.residents.behavior import is_in_sleep_window
+
+    assert is_in_sleep_window(5, 12, 12) is False
+    assert is_in_sleep_window(12, 12, 12) is False
+
+
+# ---------------------------------------------------------------------------
+# Sleep gate in next_action
+# ---------------------------------------------------------------------------
+
+
+def test_sleep_gate_in_window_sends_to_bed():
+    rt = _rt(location="plaza", state="idle", idle_ticks=3, hangout="plaza")
+    rt.sleep_hour = 22
+    rt.wake_hour = 6
+    result = next_action(rt, rng_value=0.0, now_utc_hour=23)
+    assert result["payload"]["destination"] == "bed"
+
+
+def test_sleep_gate_at_bed_in_window_noops():
+    rt = _rt(location="bed", state="idle", idle_ticks=3, hangout="plaza")
+    rt.sleep_hour = 22
+    rt.wake_hour = 6
+    result = next_action(rt, rng_value=0.0, now_utc_hour=2)
+    assert result["action"] == "noop"
+
+
+def test_sleep_gate_outside_window_uses_normal_logic():
+    rt = _rt(location="cafe", state="idle", idle_ticks=3, hangout="plaza")
+    rt.sleep_hour = 22
+    rt.wake_hour = 6
+    # Hour 12 is outside the sleep window → drift to hangout.
+    result = next_action(rt, rng_value=0.0, now_utc_hour=12)
+    assert result["payload"]["destination"] == "plaza"
+
+
+def test_sleep_gate_at_bed_outside_window_heads_to_hangout():
+    """Just woken up: at bed, wake hour passed → go to hangout."""
+    rt = _rt(location="bed", state="idle", idle_ticks=3, hangout="plaza")
+    rt.sleep_hour = 22
+    rt.wake_hour = 6
+    result = next_action(rt, rng_value=0.0, now_utc_hour=12)
+    assert result["payload"]["destination"] == "plaza"
+
+
+def test_sleep_gate_none_hour_ignores_sleep():
+    """Backward-compat: when now_utc_hour is None, sleep window is ignored."""
+    rt = _rt(location="plaza", state="idle", idle_ticks=3, hangout="plaza")
+    rt.sleep_hour = 22
+    rt.wake_hour = 6
+    # rng=0.9 → no wander; settled at hangout; no sleep override.
+    result = next_action(rt, rng_value=0.9, now_utc_hour=None)
+    assert result["action"] == "noop"

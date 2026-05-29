@@ -141,28 +141,19 @@ class GmState:
 
 
 # ---------------------------------------------------------------------------
-# Resident personas (Phase 1 — single resident)
+# Resident personas — the full Phase-2 cast lives in worldgm.residents.personas
 # ---------------------------------------------------------------------------
 
 
-def _phase1_personas():
-    """Return the single Phase-1 resident persona.
+def _resident_personas():
+    """Return the resident cast for this worldgm.
 
-    The full cast is populated in a later task.  Only one persona is defined
-    here to keep the initial rollout conservative and easy to verify.
+    Indirected through a function so tests / future env-based gating can swap
+    the slate (e.g. a dev-only subset) without touching __main__ control flow.
     """
-    from worldgm.residents.personas import Persona
+    from worldgm.residents.personas import RESIDENT_PERSONAS
 
-    return [
-        Persona(
-            name="tobias",
-            display_name="Tobias",
-            personality=("Retired lighthouse keeper who narrates his day in the third person."),
-            appearance=("Barrel-chested old man, salt-and-pepper beard, mustard raincoat."),
-            traits=("gruff", "observant", "nostalgic"),
-            hangout="plaza",
-        )
-    ]
+    return RESIDENT_PERSONAS
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +224,9 @@ async def _tick(state: GmState) -> None:
                     state="idle",
                     idle_ticks=0,
                     hangout=handle.persona.hangout,
+                    location_context=status.get("location_context", "town"),
+                    sleep_hour=handle.persona.sleep_hour,
+                    wake_hour=handle.persona.wake_hour,
                 )
                 state.resident_runtimes[name] = runtime
             try:
@@ -251,7 +245,7 @@ async def main() -> None:
         from worldgm.residents.manager import ResidentManager
 
         manager = ResidentManager(
-            personas=_phase1_personas(),
+            personas=_resident_personas(),
             town_service=state.town_service,
             mint_token=sign_town_token,
             ws_url=os.environ.get("TOWN_WS_URL"),
