@@ -172,11 +172,14 @@ export class WorldgmStack extends cdk.Stack {
     // the WorldGM is a silent no-op (the only failure mode that doesn't
     // trip the task-missing alarm — the task stays "running" while doing
     // nothing). Scoped to exactly what the tick loop touches:
-    //   - agents: read (sync_locations → get_active_agents queries the
-    //     isActive-joinedAt-index GSI; grantReadData covers table + /index/*)
+    //   - agents: read+write. Read: sync_locations → get_active_agents queries
+    //     the isActive-joinedAt-index GSI. Write: resident provisioning —
+    //     create_resident PutItem + update_agent_state UpdateItem (reactivate
+    //     on start / deactivate on stop). grantReadWriteData covers table +
+    //     /index/*. (Read-only here crash-loops resident daemons on PutItem.)
     //   - worldgm-arcs: read+write (arc_orchestrator query/scan/put/update)
     //   - world-events: write (event_publisher put_item)
-    props.tables.agents.grantReadData(taskDef.taskRole);
+    props.tables.agents.grantReadWriteData(taskDef.taskRole);
     props.tables.worldgmArcs.grantReadWriteData(taskDef.taskRole);
     props.tables.worldEvents.grantWriteData(taskDef.taskRole);
 
