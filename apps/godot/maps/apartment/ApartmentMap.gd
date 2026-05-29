@@ -1,50 +1,35 @@
 ## ApartmentMap — interior scene script for the per-user apartment.
 ##
-## Fixed camera view — the entire apartment is visible at once.
-## No dragging, no panning, no zoom controls. The room is centered
-## in the viewport with black bars filling any extra space (letterboxing).
+## Fixed camera view — the entire furnished room is visible at once.
+## No dragging, no panning, no zoom controls. The camera frames the
+## furniture's actual bounding box (computed at runtime from the
+## YSortedObjects sprites), so it stays centered regardless of canvas
+## size and self-corrects if the furniture layout changes. The painted
+## floor extends past the furniture; that surplus floor fills the edges
+## and any remaining space is letterboxed black.
 class_name ApartmentMap
 extends Node2D
 
-# Room bounds tuned to center the view evenly with black bars.
+# Fallback room bounds (used only if furniture bounds can't be computed,
+# and by get_location_position's last-resort fallback). The live camera
+# frames the furniture bbox instead — see _frame_camera().
 const ROOM_LEFT := 90
 const ROOM_TOP := -38
 const ROOM_RIGHT := 858
 const ROOM_BOTTOM := 474
 const TILE_SIZE := 32
 
-# Manual camera nudge applied on top of the room-centered position.
-# Negative X = shift the visible content LEFT (reveals more left-wall area,
-# crops the right-empty-floor area). Negative Y = shift UP. Tuned 2026-04-30
-# after PR #245 (canvasResizePolicy: 0) shrank the effective canvas from
-# 1728 CSS to 1408 CSS — the previous hand-tuning was for the wider canvas
-# and now leaves the bottom-right corner visibly empty.
-const CAMERA_OFFSET_X := -40
-const CAMERA_OFFSET_Y := -20
+# Breathing room (world px) added around the furniture bbox so items
+# aren't flush against the viewport edge.
+const FRAME_MARGIN := 24.0
 
 @onready var camera: Camera2D = $Camera2D
 @onready var locations: Node2D = $Locations
+@onready var ysorted: Node2D = $YSortedObjects
 
 
 func _ready() -> void:
-	# Center camera on the actual room center, then apply manual nudge.
-	var room_w: float = float(ROOM_RIGHT - ROOM_LEFT)
-	var room_h: float = float(ROOM_BOTTOM - ROOM_TOP)
-	camera.position = Vector2(
-		float(ROOM_LEFT) + room_w / 2.0 + CAMERA_OFFSET_X,
-		float(ROOM_TOP) + room_h / 2.0 + CAMERA_OFFSET_Y
-	)
-
-	# Calculate zoom to fit the entire room in the viewport.
-	# Use the SMALLER ratio so the full room is visible (letterboxed).
-	var vp_size: Vector2 = get_viewport_rect().size
-	if vp_size.x > 0 and vp_size.y > 0:
-		var zoom_x: float = vp_size.x / room_w
-		var zoom_y: float = vp_size.y / room_h
-		var fit_zoom: float = minf(zoom_x, zoom_y)
-		camera.zoom = Vector2(fit_zoom, fit_zoom)
-	else:
-		camera.zoom = Vector2(2.0, 2.0)
+	_frame_camera()
 
 	# Disable all camera limits — camera is fixed, no panning
 	camera.limit_left = -10000
@@ -53,7 +38,7 @@ func _ready() -> void:
 	camera.limit_bottom = 10000
 
 	# Recalculate on viewport resize (browser window resize)
-	get_viewport().size_changed.connect(_on_viewport_size_changed)
+	get_viewport().size_changed.connect(_frame_camera)
 
 	JsBridge.set_camera_requested.connect(_on_set_camera)
 
@@ -61,15 +46,75 @@ func _ready() -> void:
 	# No ViewerProtocol needed — React manages the WebSocket connection.
 
 
-func _on_viewport_size_changed() -> void:
-	var room_w: float = float(ROOM_RIGHT - ROOM_LEFT)
-	var room_h: float = float(ROOM_BOTTOM - ROOM_TOP)
+## Center + zoom the camera so the furniture bounding box fits the viewport.
+## Recomputed on ready and on every viewport resize, so it's correct for any
+## canvas size with no hand-tuned offsets.
+func _frame_camera() -> void:
+	var bounds: Rect2 = _compute_furniture_bounds()
+	if bounds.size.x <= 0.0 or bounds.size.y <= 0.0:
+		# Fallback: frame the static room rectangle.
+		bounds = Rect2(
+			float(ROOM_LEFT),
+			float(ROOM_TOP),
+			float(ROOM_RIGHT - ROOM_LEFT),
+			float(ROOM_BOTTOM - ROOM_TOP)
+		)
+
+	bounds = bounds.grow(FRAME_MARGIN)
+	camera.position = bounds.get_center()
+
 	var vp_size: Vector2 = get_viewport_rect().size
-	if vp_size.x > 0 and vp_size.y > 0:
-		var zoom_x: float = vp_size.x / room_w
-		var zoom_y: float = vp_size.y / room_h
-		var fit_zoom: float = minf(zoom_x, zoom_y)
+	if vp_size.x > 0.0 and vp_size.y > 0.0 and bounds.size.x > 0.0 and bounds.size.y > 0.0:
+		var fit_zoom: float = minf(vp_size.x / bounds.size.x, vp_size.y / bounds.size.y)
 		camera.zoom = Vector2(fit_zoom, fit_zoom)
+	else:
+		camera.zoom = Vector2(2.0, 2.0)
+
+
+## Union the global AABBs of every Sprite2D under YSortedObjects.
+## Returns a zero-size Rect2 if there are no textured sprites (caller falls
+## back to the static room rect).
+func _compute_furniture_bounds() -> Rect2:
+	var sprites: Array[Sprite2D] = []
+	_collect_sprites(ysorted, sprites)
+
+	var bounds: Rect2 = Rect2()
+	var have_any: bool = false
+	for sprite in sprites:
+		if sprite.texture == null:
+			continue
+		var local: Rect2 = sprite.get_rect()
+		var xf: Transform2D = sprite.get_global_transform()
+		# Transform all four corners (scale/rotation safe), then take the AABB.
+		var c0: Vector2 = xf * local.position
+		var c1: Vector2 = xf * Vector2(local.position.x + local.size.x, local.position.y)
+		var c2: Vector2 = xf * Vector2(local.position.x, local.position.y + local.size.y)
+		var c3: Vector2 = xf * (local.position + local.size)
+		var mn: Vector2 = Vector2(
+			minf(minf(c0.x, c1.x), minf(c2.x, c3.x)),
+			minf(minf(c0.y, c1.y), minf(c2.y, c3.y))
+		)
+		var mx: Vector2 = Vector2(
+			maxf(maxf(c0.x, c1.x), maxf(c2.x, c3.x)),
+			maxf(maxf(c0.y, c1.y), maxf(c2.y, c3.y))
+		)
+		var r: Rect2 = Rect2(mn, mx - mn)
+		if not have_any:
+			bounds = r
+			have_any = true
+		else:
+			bounds = bounds.merge(r)
+
+	if not have_any:
+		return Rect2()
+	return bounds
+
+
+func _collect_sprites(node: Node, out: Array[Sprite2D]) -> void:
+	for child in node.get_children():
+		if child is Sprite2D:
+			out.append(child)
+		_collect_sprites(child, out)
 
 
 func _on_set_camera(_x: float, _y: float, _zoom: float) -> void:
