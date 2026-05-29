@@ -19,8 +19,9 @@ dependencies = [
     # Latest stable is 2.4.0. The plan specified ^0.2.0 but the package is now 2.x.
     "gdm-concordia>=2.0.0,<3.0.0",
     # The goosetown CLI/daemon, imported as a library so the WorldGM service can
-    # run resident agents in-process. PyPI 0.2.0 == apps/goosetown-cli source.
-    "goosetown>=0.2.0",
+    # run resident agents in-process. 0.2.1 adds TownDaemon.run(serve_socket=False),
+    # which ResidentManager passes — required before RESIDENTS_ENABLED is flipped on.
+    "goosetown>=0.2.1",
 ]
 
 [dependency-groups]

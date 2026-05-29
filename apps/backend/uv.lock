@@ -592,14 +592,14 @@ wheels = [
 
 [[package]]
 name = "goosetown"
-version = "0.2.0"
+version = "0.2.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/86/b7/3c5a75dc83e56d7d97832538e41041e93a7a55c390bfaf19ce5b15bd9df1/goosetown-0.2.0.tar.gz", hash = "sha256:2b18e45903fd57ea0187c6a4f50dad2c23d3a2cd8408855c6861ddc452677c1b", size = 63299, upload-time = "2026-05-10T17:27:18.938Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2e/7f/1d974d69007ccb9b3ce58a3901ab1c04926eda6772c965ac6bfbc372f682/goosetown-0.2.1.tar.gz", hash = "sha256:5bb5ceec07945ae9e8f6cb46619bcbb1264e77e2c3d08d34ded9174bd4fc87e2", size = 64723, upload-time = "2026-05-29T18:42:33.347Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/63/fe/3aa9151a0a8737afdf890dfadb66e46264ccd2db7e5302e077c549f1cd24/goosetown-0.2.0-py3-none-any.whl", hash = "sha256:d215a48a6805415f4d9205ff581dd6105764ff32469d077527a4f00f67aa5246", size = 50098, upload-time = "2026-05-10T17:27:17.621Z" },
+    { url = "https://files.pythonhosted.org/packages/06/84/5faf18c0dc151747a5486e9ebaa5d4b2c67c1b45d54aa4bc93c8de357568/goosetown-0.2.1-py3-none-any.whl", hash = "sha256:48aca8e96b59eef9d69633b88d40934750086826ed0c92838605e1af1c7be96d", size = 50312, upload-time = "2026-05-29T18:42:32.38Z" },
 ]
 
 [[package]]
@@ -639,7 +639,7 @@ requires-dist = [
     { name = "cryptography", specifier = ">=46.0.7" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "gdm-concordia", specifier = ">=2.0.0,<3.0.0" },
-    { name = "goosetown", specifier = ">=0.2.0" },
+    { name = "goosetown", specifier = ">=0.2.1" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "pillow", specifier = ">=12.2" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.9" },
