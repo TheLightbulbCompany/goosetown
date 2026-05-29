@@ -251,6 +251,7 @@ _SKILL_BUNDLE_FILES = (
     "TOWN_EVENTS.md",
     "TOWN_LIFE.md",
     "hooks/check-town-status.sh",
+    "references/character.md",
 )
 
 
