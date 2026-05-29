@@ -51,6 +51,7 @@ from .bedrock_model import BedrockLanguageModel
 from .location_sync import sync_locations
 
 TICK_INTERVAL_SECONDS = float(os.environ.get("WORLDGM_TICK_INTERVAL", "30"))
+RESIDENTS_ENABLED = os.environ.get("RESIDENTS_ENABLED", "false").lower() == "true"
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -133,6 +134,37 @@ class GmState:
     gm: Any
     town_service: Any
     last_known_locations: dict[str, str] = field(default_factory=dict)
+    resident_manager: Any = None
+    resident_runtimes: dict = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Resident personas (Phase 1 — single resident)
+# ---------------------------------------------------------------------------
+
+
+def _phase1_personas():
+    """Return the single Phase-1 resident persona.
+
+    The full cast is populated in a later task.  Only one persona is defined
+    here to keep the initial rollout conservative and easy to verify.
+    """
+    from worldgm.residents.personas import Persona
+
+    return [
+        Persona(
+            name="tobias",
+            display_name="Tobias",
+            personality=(
+                "Retired lighthouse keeper who narrates his day in the third person."
+            ),
+            appearance=(
+                "Barrel-chested old man, salt-and-pepper beard, mustard raincoat."
+            ),
+            traits=("gruff", "observant", "nostalgic"),
+            hangout="plaza",
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -188,11 +220,52 @@ async def _tick(state: GmState) -> None:
     )
     # TODO(Phase C3): maybe_kickoff_arc, process_arc_beats
 
+    # --- Resident brain ticks (RESIDENTS_ENABLED only) ---
+    if state.resident_manager is not None:
+        from worldgm.residents.behavior import ResidentRuntime
+        from worldgm.residents.brain import read_status, step_resident_brain
+
+        for name, handle in state.resident_manager.residents.items():
+            daemon = handle.daemon
+            if daemon is None or not getattr(daemon, "state", None):
+                continue  # not connected yet
+            status = read_status(daemon)
+            runtime = state.resident_runtimes.get(name)
+            if runtime is None:
+                runtime = ResidentRuntime(
+                    name=name,
+                    location=status["location"],
+                    state="idle",
+                    idle_ticks=0,
+                    hangout=handle.persona.hangout,
+                )
+                state.resident_runtimes[name] = runtime
+            try:
+                await step_resident_brain(daemon, runtime, status)
+            except Exception:
+                logger.exception("Resident brain tick failed for %s", name)
+
 
 async def main() -> None:
     logger.info("Starting WorldGM service (tick=%.1fs)", TICK_INTERVAL_SECONDS)
     state = _bootstrap_gm()
     logger.info("Concordia GM bootstrapped")
+
+    if RESIDENTS_ENABLED:
+        from core.town_token import sign_town_token
+        from worldgm.residents.manager import ResidentManager
+
+        manager = ResidentManager(
+            personas=_phase1_personas(),
+            town_service=state.town_service,
+            mint_token=sign_town_token,
+            ws_url=os.environ.get("TOWN_WS_URL"),
+        )
+        await manager.start()
+        state.resident_manager = manager
+        logger.info("ResidentManager started (%d resident(s))", len(manager.residents))
+    else:
+        logger.info("RESIDENTS_ENABLED=false — resident system is off")
 
     while not _should_exit:
         try:
@@ -200,6 +273,10 @@ async def main() -> None:
         except Exception:
             logger.exception("Tick failed; continuing")
         await asyncio.sleep(TICK_INTERVAL_SECONDS)
+
+    if state.resident_manager is not None:
+        logger.info("Stopping ResidentManager...")
+        await state.resident_manager.stop()
 
     logger.info("WorldGM service exiting cleanly")
 
