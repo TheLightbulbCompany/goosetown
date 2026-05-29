@@ -172,3 +172,59 @@ def test_sleep_gate_none_hour_ignores_sleep():
     # rng=0.9 → no wander; settled at hangout; no sleep override.
     result = next_action(rt, rng_value=0.9, now_utc_hour=None)
     assert result["action"] == "noop"
+
+
+# ---------------------------------------------------------------------------
+# Interior-scene hangouts (the "library bounce" fix)
+# ---------------------------------------------------------------------------
+
+
+def test_interior_hangout_recognized_via_location_context():
+    """When a resident is inside the library scene, location is a sub-location
+    like 'exit' and location_context is 'library'. The brain must treat this
+    as 'at hangout' or it will re-issue move-to-library every tick (observed
+    on dev as residents bouncing in and out of the library)."""
+    rt = _rt(location="exit", state="idle", idle_ticks=3, hangout="library")
+    rt.location_context = "library"
+    # rng=0.9 → no wander; should noop (settled).
+    result = next_action(rt, rng_value=0.9)
+    assert result["action"] == "noop"
+
+
+def test_interior_hangout_wander_excludes_the_hangout_itself():
+    """When wandering from inside an interior-scene hangout, the wander target
+    must not be the hangout (we're already there). Without this fix the
+    wander filter `d != runtime.location` would let 'library' through because
+    runtime.location is 'exit' for an interior-scene hangout."""
+    rt = _rt(location="exit", state="idle", idle_ticks=3, hangout="library")
+    rt.location_context = "library"
+    # rng=0.0 forces the wander branch; destination must NOT be the hangout.
+    result = next_action(rt, rng_value=0.0)
+    assert result["payload"]["destination"] != "library"
+
+
+def test_flat_hangout_still_works_unchanged():
+    """The flat-town hangout case (plaza, cafe, etc.) is unaffected — the
+    location == hangout check still matches."""
+    rt = _rt(location="plaza", state="idle", idle_ticks=3, hangout="plaza")
+    # rng=0.9 → no wander; noop because settled at flat hangout.
+    result = next_action(rt, rng_value=0.9)
+    assert result["action"] == "noop"
+
+
+def test_interior_hangout_at_sub_location_other_than_exit():
+    """Any sub-location inside the interior context counts as 'at hangout',
+    not just 'exit' (e.g. the library could have 'desk', 'bookshelf', etc.)."""
+    rt = _rt(location="desk", state="idle", idle_ticks=3, hangout="library")
+    rt.location_context = "library"
+    result = next_action(rt, rng_value=0.9)
+    assert result["action"] == "noop"
+
+
+def test_in_apartment_not_at_library_hangout_drifts_to_library():
+    """Wake-up case: library-hangout resident is at bed in the apartment;
+    location_context is 'apartment', not 'library' — must move to library."""
+    rt = _rt(location="bed", state="idle", idle_ticks=3, hangout="library")
+    rt.location_context = "apartment"
+    result = next_action(rt, rng_value=0.0)
+    assert result["payload"]["destination"] == "library"
