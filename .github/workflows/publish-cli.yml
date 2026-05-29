@@ -1,9 +1,17 @@
 name: Publish CLI to PyPI
 
-# Triggered by a tag push matching cli-v*
-# Example: git tag cli-v0.1.0 && git push origin cli-v0.1.0
+# Two ways to publish the `goosetown` CLI (apps/goosetown-cli):
+#   1. Automatic — a push to `main` that bumps the version in
+#      apps/goosetown-cli/pyproject.toml. The `check` job publishes only when
+#      that exact version is not already on PyPI, so ordinary main merges that
+#      don't touch the version are no-ops.
+#   2. Manual override — push a tag matching `cli-v*`
+#      (e.g. `git tag cli-v0.2.1 && git push origin cli-v0.2.1`), which always
+#      publishes the current pyproject version.
 on:
   push:
+    branches:
+      - main
     tags:
       - "cli-v*"
 
@@ -13,14 +21,59 @@ permissions:
   # claim ``Isol8AI/goosetown/.github/workflows/publish-cli.yml``
   # is not registered on pypi.org, so OIDC publishes 403 with
   # ``invalid-publisher``. Falling back to the existing
-  # ``PYPI_API_TOKEN`` secret (set 2026-05-04, used for 0.1.0–0.1.7).
+  # ``PYPI_API_TOKEN`` secret (set 2026-05-04, used for 0.1.0–0.2.0).
   # Once a trusted publisher is registered on PyPI for this repo +
   # workflow, this can flip back to OIDC by re-adding ``id-token: write``
   # and removing ``password:`` below.
 
 jobs:
+  # Decide whether to publish. A tag push always publishes; a branch push
+  # publishes only when the pyproject version is not yet on PyPI. This keeps
+  # every main merge safe — no duplicate-version upload, no manual tag needed
+  # for a genuine version bump.
+  check:
+    name: Decide whether to publish
+    runs-on: ubuntu-latest
+    outputs:
+      should_publish: ${{ steps.decide.outputs.should_publish }}
+      version: ${{ steps.decide.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine version and whether it's new on PyPI
+        id: decide
+        run: |
+          set -euo pipefail
+          VERSION=$(grep -m1 '^version' apps/goosetown-cli/pyproject.toml | sed -E 's/.*"(.*)".*/\1/')
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not parse version from apps/goosetown-cli/pyproject.toml"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Parsed CLI version: $VERSION"
+
+          # A deliberate tag push always publishes.
+          if [[ "${GITHUB_REF:-}" == refs/tags/cli-v* ]]; then
+            echo "Tag push detected — will publish $VERSION."
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Branch push: publish only if this exact version is not already on
+          # PyPI. The per-version JSON endpoint returns 200 if it exists, 404
+          # if not (-f makes curl exit non-zero on 404).
+          if curl -fsSL "https://pypi.org/pypi/goosetown/$VERSION/json" >/dev/null 2>&1; then
+            echo "goosetown $VERSION already on PyPI — nothing to publish."
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "goosetown $VERSION is not on PyPI — will publish."
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build-and-publish:
     name: Build wheel and publish to PyPI
+    needs: check
+    if: needs.check.outputs.should_publish == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -48,9 +101,12 @@ jobs:
       - name: Publish to PyPI (API token fallback)
         # Falls back to ``PYPI_API_TOKEN`` until OIDC trusted publisher
         # is configured on pypi.org for this repo + workflow filename.
+        # ``skip-existing`` is belt-and-suspenders against a race where the
+        # version landed on PyPI between the check job and this upload.
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: apps/goosetown-cli/dist/
           password: ${{ secrets.PYPI_API_TOKEN }}
+          skip-existing: true
           # Set to true if you want to test against test.pypi.org first:
           # repository-url: https://test.pypi.org/legacy/
