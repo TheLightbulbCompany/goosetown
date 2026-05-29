@@ -13,6 +13,11 @@ from core.town_token import sign_town_token
 
 logger = logging.getLogger(__name__)
 
+# userId used for all system-owned resident agents.
+# Residents share this sentinel so they're invisible to every per-user quota
+# check (get_active_agents_for_user filters by the real user's userId).
+RESIDENT_USER_ID = "system:resident"
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -176,6 +181,88 @@ class TownService:
             KeyConditionExpression=Key("isActive").eq("true"),
         )
         return [_decimal_to_native(item) for item in resp.get("Items", [])]
+
+    # ------------------------------------------------------------------
+    # Resident agents (system-owned)
+    # ------------------------------------------------------------------
+
+    def _get_resident_by_name(self, name: str) -> Optional[dict]:
+        """Look up a resident agent by name (uses RESIDENT_USER_ID as userId)."""
+        return self._get_town_agent(RESIDENT_USER_ID, name)
+
+    def create_resident(
+        self,
+        name: str,
+        display_name: str,
+        personality: str,
+        appearance: str,
+        traits: list[str],
+    ) -> dict:
+        """Create (or reactivate) a system-owned resident agent.
+
+        Residents use ``RESIDENT_USER_ID`` (``"system:resident"``) as their
+        ``userId`` so they're invisible to every per-user quota check.
+        Unlike ``opt_in`` there is no name-claim transaction — residents
+        are provisioned serially by the World GM at startup, not concurrently
+        by end users, so a plain idempotent put is correct (YAGNI).
+
+        Idempotent: if a resident row with ``name`` already exists, reactivate
+        it (via ``update_agent_state``) and return it unchanged.
+
+        Args:
+            name: Canonical slug name (e.g. ``"tobias"``).
+            display_name: Human-readable display name.
+            personality: Personality description / summary.
+            appearance: Visual appearance description (passed to PixelLab).
+            traits: List of trait strings (e.g. ``["gruff", "nostalgic"]``).
+
+        Returns:
+            The agent row as a plain dict (same shape as ``opt_in``).
+        """
+        existing = self._get_resident_by_name(name)
+        if existing:
+            if existing.get("isActive") != "true":
+                # Return the authoritative post-update row (ReturnValues=ALL_NEW),
+                # not the pre-fetch snapshot, so callers get the reactivated state.
+                updated = self.update_agent_state(existing["id"], is_active="true")
+                return updated or existing
+            return existing
+
+        now = _now_iso()
+        agent_id = str(uuid.uuid4())
+
+        item = {
+            "id": agent_id,
+            "userId": RESIDENT_USER_ID,
+            "agentName": name,
+            "displayName": display_name,
+            "personalitySummary": personality,
+            "appearance": appearance,
+            "traits": traits,
+            "isResident": True,
+            "homeLocation": "apartment",
+            "isActive": "true",
+            "joinedAt": now,
+            "lastActiveAt": now,
+            "spriteReady": False,
+            "spriteUrl": None,
+            "character": None,
+            # Location defaults — same as opt_in
+            "currentLocation": "exit",
+            "locationContext": "apartment",
+            "currentConversationId": None,
+            "lastHeartbeatAt": None,
+            "mood": "neutral",
+            "energy": Decimal("100"),
+            "statusMessage": None,
+            "lastConversationAt": None,
+        }
+
+        table = dynamo.agents_table()
+        table.put_item(Item=item)
+
+        logger.info("Resident '%s' ('%s') created in GooseTown", name, display_name)
+        return _decimal_to_native(item)
 
     def opt_in(
         self,

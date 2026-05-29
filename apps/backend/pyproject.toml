@@ -18,6 +18,9 @@ dependencies = [
     # Concordia: interrupt-driven GameMaster framework used by the WorldGM service.
     # Latest stable is 2.4.0. The plan specified ^0.2.0 but the package is now 2.x.
     "gdm-concordia>=2.0.0,<3.0.0",
+    # The goosetown CLI/daemon, imported as a library so the WorldGM service can
+    # run resident agents in-process. PyPI 0.2.0 == apps/goosetown-cli source.
+    "goosetown>=0.2.0",
 ]
 
 [dependency-groups]
