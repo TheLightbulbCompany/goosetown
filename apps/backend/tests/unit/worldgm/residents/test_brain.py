@@ -256,8 +256,13 @@ async def test_brain_at_bed_during_wake_window_heads_to_hangout():
     assert sent["payload"]["destination"] == "plaza"
 
 
-async def test_brain_default_now_utc_hour_uses_real_clock():
-    """When now_utc_hour is omitted, the brain calls the real clock helper."""
+async def test_brain_default_now_utc_hour_uses_real_clock(monkeypatch):
+    """When now_utc_hour is omitted, the brain calls the real clock helper.
+
+    Uses pytest's monkeypatch so the original _now_utc_hour is properly
+    restored after the test — a hand-rolled try/finally that re-imported
+    the (already-rebound) module attribute would not actually restore it.
+    """
     import worldgm.residents.brain as brain_mod
 
     daemon = AsyncMock()
@@ -270,14 +275,8 @@ async def test_brain_default_now_utc_hour_uses_real_clock():
         called.append(1)
         return 12  # awake for default sleep 22-6
 
-    brain_mod._now_utc_hour = fake_hour  # type: ignore[assignment]
-    try:
-        await step_resident_brain(daemon, rt, status, rng=lambda: 0.0)
-    finally:
-        # Restore the real helper so other tests aren't affected.
-        from worldgm.residents.brain import (  # noqa: F401
-            _now_utc_hour as _real_hour,
-        )
+    monkeypatch.setattr(brain_mod, "_now_utc_hour", fake_hour)
+    await step_resident_brain(daemon, rt, status, rng=lambda: 0.0)
 
     assert called == [1]
     sent = daemon.handle_tool_command.call_args[0][0]
