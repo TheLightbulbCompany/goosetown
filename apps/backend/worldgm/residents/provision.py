@@ -15,8 +15,8 @@ class ResidentConfig:
     agent_name: str
     token: str
     ws_url: str
-    workspace: Path     # TownDaemon workspace_path — holds TOWN_*.md
-    state_dir: Path     # TownDaemon state_dir — holds state.json/pid/sock
+    workspace: Path  # TownDaemon workspace_path — holds TOWN_*.md
+    state_dir: Path  # TownDaemon state_dir — holds state.json/pid/sock
 
 
 def provision_resident(

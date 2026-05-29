@@ -34,9 +34,9 @@ class ResidentRuntime:
 
     name: str
     location: str
-    state: str        # "idle" | "moving"
+    state: str  # "idle" | "moving"
     idle_ticks: int
-    hangout: str      # the location the resident gravitates back to
+    hangout: str  # the location the resident gravitates back to
 
 
 def _move_cmd(destination: str) -> dict:

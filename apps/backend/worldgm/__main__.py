@@ -157,12 +157,8 @@ def _phase1_personas():
         Persona(
             name="tobias",
             display_name="Tobias",
-            personality=(
-                "Retired lighthouse keeper who narrates his day in the third person."
-            ),
-            appearance=(
-                "Barrel-chested old man, salt-and-pepper beard, mustard raincoat."
-            ),
+            personality=("Retired lighthouse keeper who narrates his day in the third person."),
+            appearance=("Barrel-chested old man, salt-and-pepper beard, mustard raincoat."),
             traits=("gruff", "observant", "nostalgic"),
             hangout="plaza",
         )

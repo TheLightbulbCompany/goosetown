@@ -7,9 +7,7 @@ from worldgm.residents.brain import read_status, step_resident_brain
 
 
 def _rt(*, name="tobias", location="cafe", state="idle", idle_ticks=3, hangout="plaza"):
-    return ResidentRuntime(
-        name=name, location=location, state=state, idle_ticks=idle_ticks, hangout=hangout
-    )
+    return ResidentRuntime(name=name, location=location, state=state, idle_ticks=idle_ticks, hangout=hangout)
 
 
 # ---------------------------------------------------------------------------

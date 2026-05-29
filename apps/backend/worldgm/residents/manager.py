@@ -23,7 +23,7 @@ _RESTART_BACKOFF_SECONDS = 5.0
 class _ResidentHandle:
     persona: Persona
     task: asyncio.Task | None = None
-    daemon: TownDaemon | None = None    # set per (re)launch
+    daemon: TownDaemon | None = None  # set per (re)launch
     config: ResidentConfig | None = None
 
 
@@ -61,9 +61,7 @@ class ResidentManager:
         for persona in self._personas:
             handle = _ResidentHandle(persona=persona)
             self.residents[persona.name] = handle
-            handle.task = asyncio.create_task(
-                self._supervise(handle), name=f"resident-{persona.name}"
-            )
+            handle.task = asyncio.create_task(self._supervise(handle), name=f"resident-{persona.name}")
         # Yield to the event loop so the supervisor tasks begin executing and
         # daemon.run() is actually awaited before callers inspect state.
         await asyncio.sleep(0)
@@ -97,9 +95,7 @@ class ResidentManager:
                 handle.daemon = daemon
                 logger.info("Resident '%s' daemon starting", handle.persona.name)
                 await daemon.run(serve_socket=False)
-                logger.warning(
-                    "Resident '%s' daemon run() returned unexpectedly", handle.persona.name
-                )
+                logger.warning("Resident '%s' daemon run() returned unexpectedly", handle.persona.name)
             except asyncio.CancelledError:
                 # stop() cancelled us — propagate, do not restart.
                 raise
@@ -136,10 +132,6 @@ class ResidentManager:
             if handle.config is not None:
                 try:
                     # Sync boto3 call (TownService is not async) — no await.
-                    self._town_service.update_agent_state(
-                        handle.config.agent_id, is_active="false"
-                    )
+                    self._town_service.update_agent_state(handle.config.agent_id, is_active="false")
                 except Exception:
-                    logger.exception(
-                        "Failed to deactivate resident '%s'", handle.persona.name
-                    )
+                    logger.exception("Failed to deactivate resident '%s'", handle.persona.name)

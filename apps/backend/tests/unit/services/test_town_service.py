@@ -287,11 +287,7 @@ class TestCreateResident:
         )
         assert again["id"] == agent["id"]
         # ...and no duplicate row was written under the happy path:
-        rows = [
-            i
-            for i in dynamo.agents_table().scan()["Items"]
-            if i.get("agentName") == "tobias"
-        ]
+        rows = [i for i in dynamo.agents_table().scan()["Items"] if i.get("agentName") == "tobias"]
         assert len(rows) == 1
 
     def test_create_resident_has_expected_fields(self, dynamodb_tables):

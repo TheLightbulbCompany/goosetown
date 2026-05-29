@@ -4,9 +4,7 @@ from worldgm.residents.behavior import NOOP, ResidentRuntime, next_action
 
 
 def _rt(*, name="tobias", location="cafe", state="idle", idle_ticks=0, hangout="plaza"):
-    return ResidentRuntime(
-        name=name, location=location, state=state, idle_ticks=idle_ticks, hangout=hangout
-    )
+    return ResidentRuntime(name=name, location=location, state=state, idle_ticks=idle_ticks, hangout=hangout)
 
 
 # ---------------------------------------------------------------------------

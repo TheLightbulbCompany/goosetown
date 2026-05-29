@@ -30,6 +30,7 @@ def _fake_town_service(agent_id="agent-1"):
 # Test 1: start() creates exactly one supervisor task and run() is awaited
 # ---------------------------------------------------------------------------
 
+
 async def test_manager_starts_one_daemon_task(monkeypatch, tmp_path):
     fake_daemon = AsyncMock()
     monkeypatch.setattr("worldgm.residents.manager.TownDaemon", lambda **kw: fake_daemon)
@@ -57,6 +58,7 @@ async def test_manager_starts_one_daemon_task(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 # Test 2: stop() cancels the supervisor task and it finishes cleanly
 # ---------------------------------------------------------------------------
+
 
 async def test_stop_cancels_supervisor_task(monkeypatch, tmp_path):
     """After stop(), the supervisor task is done (cancelled or finished)."""
@@ -88,6 +90,7 @@ async def test_stop_cancels_supervisor_task(monkeypatch, tmp_path):
 # Test 3: workspace and state_dir are created on disk
 # ---------------------------------------------------------------------------
 
+
 async def test_workspace_and_state_dir_created(monkeypatch, tmp_path):
     fake_daemon = AsyncMock()
     monkeypatch.setattr("worldgm.residents.manager.TownDaemon", lambda **kw: fake_daemon)
@@ -114,6 +117,7 @@ async def test_workspace_and_state_dir_created(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 # Test 4: daemon is constructed with correct kwargs
 # ---------------------------------------------------------------------------
+
 
 async def test_daemon_constructed_with_correct_kwargs(monkeypatch, tmp_path):
     received_kwargs: dict = {}
@@ -148,6 +152,7 @@ async def test_daemon_constructed_with_correct_kwargs(monkeypatch, tmp_path):
 # Test 5: daemon.run() is called with serve_socket=False
 # ---------------------------------------------------------------------------
 
+
 async def test_daemon_run_called_with_serve_socket_false(monkeypatch, tmp_path):
     fake_daemon = AsyncMock()
     monkeypatch.setattr("worldgm.residents.manager.TownDaemon", lambda **kw: fake_daemon)
@@ -171,6 +176,7 @@ async def test_daemon_run_called_with_serve_socket_false(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 # Test 6: multiple personas each get their own supervisor task and handle
 # ---------------------------------------------------------------------------
+
 
 async def test_multiple_personas_each_get_a_handle(monkeypatch, tmp_path):
     fake_daemon_a = AsyncMock()
@@ -215,6 +221,7 @@ async def test_multiple_personas_each_get_a_handle(monkeypatch, tmp_path):
 # Test 7: stop() is idempotent (safe to call on a not-yet-started manager)
 # ---------------------------------------------------------------------------
 
+
 async def test_stop_before_start_is_safe(tmp_path):
     fake_ts = _fake_town_service()
     fake_mint = MagicMock(return_value="tok")
@@ -232,6 +239,7 @@ async def test_stop_before_start_is_safe(tmp_path):
 # ---------------------------------------------------------------------------
 # Test 8: deactivation failure in stop() does not raise
 # ---------------------------------------------------------------------------
+
 
 async def test_stop_deactivation_error_is_best_effort(monkeypatch, tmp_path):
     fake_daemon = AsyncMock()
@@ -257,6 +265,7 @@ async def test_stop_deactivation_error_is_best_effort(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 # Test 9: a daemon that crashes is re-provisioned and restarted after backoff
 # ---------------------------------------------------------------------------
+
 
 async def test_supervisor_restarts_daemon_after_crash(monkeypatch, tmp_path):
     """If daemon.run() raises, the supervisor re-provisions + constructs a new
