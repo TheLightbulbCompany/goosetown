@@ -170,3 +170,18 @@ def test_get_sprite_queue_returns_singleton():
     b = sq.get_sprite_queue()
     assert a is b
     sq._sprite_queue = None
+
+
+def test_singleton_throttles_to_one_concurrent_job():
+    """Regression guard: the production singleton must serialize pipelines.
+
+    PixelLab Tier 2 caps at 10 concurrent background jobs; a single in-flight
+    sprite pipeline already issues 4 jobs per animation phase, so anything >1
+    runs over the cap and silently abandons agents mid-pipeline.
+    """
+    from core.services import sprite_queue as sq
+
+    sq._sprite_queue = None
+    q = sq.get_sprite_queue()
+    assert q._semaphore._value == 1
+    sq._sprite_queue = None
