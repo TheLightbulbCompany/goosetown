@@ -206,3 +206,109 @@ async def test_connect_returns_404_when_agent_not_found():
     assert result["statusCode"] == 404
     assert result["error"] == "agent_not_found"
     fake_mailbox.notify_connection.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Auto-sprite kick for out-of-band rows (residents)
+# ---------------------------------------------------------------------------
+
+_PIPELINE_PATH = "core.services.sprite_pipeline._sprite_pipeline_task"
+
+
+def _spriteless_resident_record() -> dict:
+    """A row shaped like ``town_service.create_resident`` writes."""
+    return {
+        "id": "agent-resident-uuid",
+        "displayName": "Tobias",
+        "appearance": "Barrel-chested old man, mustard raincoat.",
+        "currentLocation": "exit",
+        "locationContext": "apartment",
+        "spriteUrl": None,
+        "spriteAnimations": {},
+        "spriteReady": False,
+        "spriteStatus": None,
+        "pixellabCharacterId": None,
+        "mood": "neutral",
+        "energy": 100,
+    }
+
+
+async def _run_connect_with(agent_record: dict, pipeline_mock):
+    """Helper: run _handle_agent_connect against a synthesized agent row."""
+    from core.services.agent_connect_service import _handle_agent_connect
+
+    fake_mailbox = MagicMock()
+    fake_mailbox.notify_connection.return_value = True
+    svc_mock = MagicMock()
+    svc_mock.get_agent_by_name.return_value = agent_record
+    gs_mock = MagicMock()
+    gs_mock.connect_agent = AsyncMock()
+    ws_mock = _make_ws_manager_mock()
+    with (
+        patch(TOKEN_VERIFY_PATH, return_value={"uid": "u-1", "iid": "i-1"}),
+        patch(TOWN_SERVICE_PATH, return_value=svc_mock),
+        patch(GS_CLIENT_PATH, return_value=gs_mock),
+        patch(MAILBOX_FACTORY_PATH, return_value=fake_mailbox),
+        patch(_PIPELINE_PATH, pipeline_mock),
+    ):
+        await _handle_agent_connect(_make_request(), ws_mock)
+
+
+@pytest.mark.asyncio
+async def test_connect_auto_kicks_sprite_pipeline_for_spriteless_row():
+    """Resident row written out-of-band with appearance + no sprite state
+    must trigger the same `_sprite_pipeline_task` the register endpoint
+    fires — otherwise residents would never get sprites."""
+    pipeline = MagicMock(return_value=AsyncMock()())  # coroutine that completes
+    await _run_connect_with(_spriteless_resident_record(), pipeline)
+    pipeline.assert_called_once()
+    kwargs = pipeline.call_args.kwargs
+    assert kwargs["agent_id"] == "agent-resident-uuid"
+    assert kwargs["display_name"] == "Tobias"
+    assert kwargs["appearance"].startswith("Barrel-chested")
+
+
+@pytest.mark.asyncio
+async def test_connect_does_not_kick_when_sprite_already_ready():
+    """An agent whose row already has spriteReady=true must NOT re-trigger
+    the pipeline — no duplicate PixelLab calls, no clobbering."""
+    pipeline = MagicMock()
+    record = _spriteless_resident_record()
+    record["spriteReady"] = True
+    record["spriteUrl"] = "https://cdn/x.png"
+    await _run_connect_with(record, pipeline)
+    pipeline.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_connect_does_not_kick_when_pipeline_in_flight():
+    """Pipeline already running (spriteStatus set) — reconnect must skip,
+    not start a second pipeline in parallel."""
+    pipeline = MagicMock()
+    record = _spriteless_resident_record()
+    record["spriteStatus"] = "creating"
+    await _run_connect_with(record, pipeline)
+    pipeline.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_connect_does_not_kick_when_pixellab_character_id_set():
+    """Existing PixelLab character means the pipeline already started — the
+    backend's startup recovery path (main.py resume_sprite_generation) handles
+    that case. This handler must skip to avoid double-billing PixelLab."""
+    pipeline = MagicMock()
+    record = _spriteless_resident_record()
+    record["pixellabCharacterId"] = "char-abc"
+    await _run_connect_with(record, pipeline)
+    pipeline.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_connect_does_not_kick_when_no_appearance():
+    """Legacy user rows without an appearance field must not crash or kick.
+    The /town/agent/register HTTP path already handles their sprites."""
+    pipeline = MagicMock()
+    record = _spriteless_resident_record()
+    record["appearance"] = None
+    await _run_connect_with(record, pipeline)
+    pipeline.assert_not_called()

@@ -244,6 +244,38 @@ async def _handle_agent_connect(request, ws_manager):
     except Exception as e:
         logger.warning("Failed to connect agent %s to game server: %s", agent_name, e)
 
+    # ── Auto-kick the sprite pipeline for agents that need one ─────────
+    # The /town/agent/register HTTP path enqueues sprite generation right
+    # after service.opt_in writes the row. Agents whose rows were created
+    # out-of-band — today that's residents via town_service.create_resident
+    # called from the WorldGM service — never went through that endpoint,
+    # so without this fallback they'd connect with no sprite and stay
+    # permanent placeholders. Mirror the same `_sprite_pipeline_task` call
+    # here when the connecting agent's row has an appearance, no
+    # spriteReady flag, and no in-flight pipeline. Idempotent: the very
+    # first thing _sprite_pipeline_task does is set spriteStatus="creating",
+    # so subsequent reconnects (or daemon flap) skip this branch.
+    appearance = agent.get("appearance")
+    if (
+        appearance
+        and not agent.get("spriteReady")
+        and agent.get("spriteStatus") is None
+        and not agent.get("pixellabCharacterId")
+    ):
+        from core.services.sprite_pipeline import _sprite_pipeline_task
+
+        logger.info(
+            "[agent:%s] auto-kicking sprite pipeline (out-of-band row, no sprite)",
+            agent_id[:8],
+        )
+        asyncio.create_task(
+            _sprite_pipeline_task(
+                agent_id=agent_id,
+                display_name=agent.get("displayName", agent_name),
+                appearance=appearance,
+            )
+        )
+
     # Send connected event back to the agent. Mailbox owns the
     # try/except + log-warn pattern that used to wrap this block.
     delivered = mailbox.notify_connection(
