@@ -262,18 +262,23 @@ async def _handle_agent_connect(request, ws_manager):
         and agent.get("spriteStatus") is None
         and not agent.get("pixellabCharacterId")
     ):
-        from core.services.sprite_pipeline import _sprite_pipeline_task
+        # Route through SpriteQueue (not a raw asyncio.create_task) so we
+        # inherit its bounded concurrency, per-agent dedup, and retry/backoff
+        # — same shape the register endpoint uses. 20 residents reconnecting
+        # simultaneously would otherwise fire 20 PixelLab create_character
+        # calls in parallel.
+        from core.services.sprite_queue import get_sprite_queue
 
-        logger.info(
-            "[agent:%s] auto-kicking sprite pipeline (out-of-band row, no sprite)",
-            agent_id[:8],
+        queue = get_sprite_queue()
+        position = queue.enqueue(
+            agent_id,
+            agent.get("displayName", agent_name),
+            appearance,
         )
-        asyncio.create_task(
-            _sprite_pipeline_task(
-                agent_id=agent_id,
-                display_name=agent.get("displayName", agent_name),
-                appearance=appearance,
-            )
+        logger.info(
+            "[agent:%s] auto-enqueued sprite pipeline (no sprite, position=%d)",
+            agent_id[:8],
+            position,
         )
 
     # Send connected event back to the agent. Mailbox owns the
