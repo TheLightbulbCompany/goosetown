@@ -109,7 +109,10 @@ _sprite_queue: SpriteQueue | None = None
 
 
 def get_sprite_queue() -> SpriteQueue:
+    # max_concurrent=1: PixelLab Tier 2 caps at 10 concurrent background jobs total.
+    # One in-flight pipeline already issues 4 jobs per animation phase (walk/idle/talking),
+    # so allowing >1 pipeline concurrently hits 429s mid-run and silently abandons agents.
     global _sprite_queue
     if _sprite_queue is None:
-        _sprite_queue = SpriteQueue(max_concurrent=3)
+        _sprite_queue = SpriteQueue(max_concurrent=1)
     return _sprite_queue
