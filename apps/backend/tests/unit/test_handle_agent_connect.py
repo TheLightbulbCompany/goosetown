@@ -206,3 +206,115 @@ async def test_connect_returns_404_when_agent_not_found():
     assert result["statusCode"] == 404
     assert result["error"] == "agent_not_found"
     fake_mailbox.notify_connection.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Auto-sprite kick for out-of-band rows (residents)
+# ---------------------------------------------------------------------------
+
+_QUEUE_PATH = "core.services.sprite_queue.get_sprite_queue"
+
+
+def _spriteless_resident_record() -> dict:
+    """A row shaped like ``town_service.create_resident`` writes."""
+    return {
+        "id": "agent-resident-uuid",
+        "displayName": "Tobias",
+        "appearance": "Barrel-chested old man, mustard raincoat.",
+        "currentLocation": "exit",
+        "locationContext": "apartment",
+        "spriteUrl": None,
+        "spriteAnimations": {},
+        "spriteReady": False,
+        "spriteStatus": None,
+        "pixellabCharacterId": None,
+        "mood": "neutral",
+        "energy": 100,
+    }
+
+
+async def _run_connect_with(agent_record: dict, queue_mock):
+    """Helper: run _handle_agent_connect against a synthesized agent row.
+
+    ``queue_mock`` stands in for ``get_sprite_queue()`` — its ``enqueue``
+    attribute receives the call we care about.
+    """
+    from core.services.agent_connect_service import _handle_agent_connect
+
+    fake_mailbox = MagicMock()
+    fake_mailbox.notify_connection.return_value = True
+    svc_mock = MagicMock()
+    svc_mock.get_agent_by_name.return_value = agent_record
+    gs_mock = MagicMock()
+    gs_mock.connect_agent = AsyncMock()
+    ws_mock = _make_ws_manager_mock()
+    with (
+        patch(TOKEN_VERIFY_PATH, return_value={"uid": "u-1", "iid": "i-1"}),
+        patch(TOWN_SERVICE_PATH, return_value=svc_mock),
+        patch(GS_CLIENT_PATH, return_value=gs_mock),
+        patch(MAILBOX_FACTORY_PATH, return_value=fake_mailbox),
+        patch(_QUEUE_PATH, return_value=queue_mock),
+    ):
+        await _handle_agent_connect(_make_request(), ws_mock)
+
+
+@pytest.mark.asyncio
+async def test_connect_auto_enqueues_sprite_for_spriteless_row():
+    """Resident row written out-of-band with appearance + no sprite state
+    must enqueue on the same SpriteQueue the register endpoint uses —
+    inheriting its bounded concurrency, dedup, and retry."""
+    queue = MagicMock()
+    queue.enqueue.return_value = 0
+    await _run_connect_with(_spriteless_resident_record(), queue)
+    queue.enqueue.assert_called_once_with(
+        "agent-resident-uuid",
+        "Tobias",
+        "Barrel-chested old man, mustard raincoat.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_connect_does_not_enqueue_when_sprite_already_ready():
+    """An agent whose row already has spriteReady=true must NOT enqueue
+    — no duplicate PixelLab calls, no clobbering."""
+    queue = MagicMock()
+    record = _spriteless_resident_record()
+    record["spriteReady"] = True
+    record["spriteUrl"] = "https://cdn/x.png"
+    await _run_connect_with(record, queue)
+    queue.enqueue.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_connect_does_not_enqueue_when_pipeline_in_flight():
+    """Pipeline already running (spriteStatus set) — reconnect must skip,
+    not enqueue a second job. (The queue's own dedup is a backstop, but
+    this handler's check avoids even hitting the queue for the common case.)"""
+    queue = MagicMock()
+    record = _spriteless_resident_record()
+    record["spriteStatus"] = "creating"
+    await _run_connect_with(record, queue)
+    queue.enqueue.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_connect_does_not_enqueue_when_pixellab_character_id_set():
+    """Existing PixelLab character means the pipeline already started — the
+    backend's startup recovery path (main.py resume_sprite_generation) handles
+    that case. This handler must skip to avoid double-billing PixelLab."""
+    queue = MagicMock()
+    record = _spriteless_resident_record()
+    record["pixellabCharacterId"] = "char-abc"
+    await _run_connect_with(record, queue)
+    queue.enqueue.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_connect_does_not_enqueue_when_no_appearance():
+    """Legacy user rows without an appearance field must not crash or enqueue.
+    The /town/agent/register HTTP path already handles their sprites."""
+    queue = MagicMock()
+    record = _spriteless_resident_record()
+    record["appearance"] = None
+    await _run_connect_with(record, queue)
+    queue.enqueue.assert_not_called()
