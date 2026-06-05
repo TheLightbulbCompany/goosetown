@@ -34,11 +34,11 @@ Subsystem **#2 of 3** (after #1 the agentic brain, before #3 memory):
 ```
 worldgm tick (30s)
   ├─ sync_locations(...)                                  [existing]
-  ├─ GM arc step  (once per tick, sync I/O offloaded):
-  │     • active = await _read_active_arcs()              (one read; offloaded)
-  │     • new_arc = await maybe_kickoff_arc(state, active)   → arc dict or None (+ emit)
-  │     • resolved_ids = await process_arc_beats(state, active)  → beats/resolve (+ emit)
-  │     • state.active_arcs = (active ∪ {new_arc}) − resolved_ids   (no second read)
+  ├─ GM arc step  (once per tick; slow Bedrock/EventBridge calls offloaded):
+  │     • await maybe_kickoff_arc(state)        → may persist an arc + emit (Bedrock/emit offloaded)
+  │     • await process_arc_beats(state)        → fire due beats / resolve + emit (offloaded)
+  │     • state.active_arcs = await _read_active_arcs()   (single read AFTER processing → always fresh:
+  │                                                        includes a just-kicked-off arc, excludes resolved)
   └─ asyncio.gather over residents:                       [from #1]
         └─ _tick_one_resident:
               storyline = _arc_text_for_location(state.active_arcs, resident_location)
@@ -50,7 +50,7 @@ worldgm tick (30s)
 
 ### In-process delivery (residents)
 
-- **`GmState` gains `active_arcs: list[dict]`** — assembled each tick from the single `_read_active_arcs()` result, plus any arc `maybe_kickoff_arc` just returned, minus any `process_arc_beats` just resolved/abandoned (no second DDB read; a just-kicked-off arc reaches residents the same tick). Each entry carries at least `{arcId, location, narrative}` where `location` is the arc's `preferred_location` (may be `None`) and `narrative` is the most recent text (`lastBeatText` if present, else `narrativeKickoff`). `process_arc_beats` returns the set of resolved/abandoned arc IDs so the cache can exclude them.
+- **`GmState` gains `active_arcs: list[dict]`** — set each tick from a single `_read_active_arcs()` call made *after* `maybe_kickoff_arc` + `process_arc_beats` run. Reading after processing means the cache is always fresh: a just-kicked-off arc is included (it was persisted) and a just-resolved arc is excluded (its status flipped). The existing `maybe_kickoff_arc`/`process_arc_beats` signatures and `process_arc_beats`'s `int` return are unchanged. The few small GSI queries per tick are negligible. Each cached entry is the raw arc dict; the resident-facing helper reads `arc["preferred_location"]` (may be absent → town-wide) and the narrative (`arc.get("lastBeatText") or arc.get("narrativeKickoff")`).
 - **`_tick_one_resident`** resolves the storyline for its resident: the narrative of an active arc whose `location` equals the resident's current location. An arc with **no** `preferred_location` is town-wide and delivered to every resident. If multiple match, the most recently updated wins. Result (a string or `None`) is passed as `storyline` to `step_resident_brain`.
 - **`step_resident_brain(..., storyline=None)`** forwards it to `build_decision_context`. (Subsystem #1 left exactly this seam.)
 - **`build_decision_context(persona, parsed_status, *, storyline=None)`** sets `DecisionContext.active_storyline`. **`build_prompt`** renders a `- Something is happening here: {storyline}` line in the "Current moment" block. Legal actions are unchanged — the storyline only informs; the LLM decides whether to chat about it, investigate, or ignore it.
@@ -100,8 +100,8 @@ Mock Bedrock (fake `narrative_resolver`), DDB (existing `test_arc_orchestrator.p
 
 ## Files
 
-- **Modify:** `worldgm/__main__.py` — replace the `# TODO(Phase C3)` block in `_tick` with the GM arc step + `state.active_arcs` cache; `_tick_one_resident` resolves + passes `storyline`; add `active_arcs: list[dict]` to `GmState`.
-- **Modify:** `worldgm/arc_orchestrator.py` — `emit_world_event` calls in `_kickoff_arc` / `_fire_beat` / `_resolve_arc` (best-effort); offload sync Bedrock/DDB via `to_thread`; accept a passed-in active-arcs list to avoid redundant reads.
+- **Modify:** `worldgm/__main__.py` — replace the `# TODO(Phase C3)` block in `_tick` with the GM arc step + `state.active_arcs` cache; `_tick_one_resident` resolves the arc-at-location and passes `storyline`; add `active_arcs: list[dict]` to `GmState`; add the pure `_arc_text_for_location` helper.
+- **Modify:** `worldgm/arc_orchestrator.py` — add best-effort `emit_world_event` calls in `_kickoff_arc` / `_fire_beat` / `_resolve_arc`; offload the slow sync calls (`narrative_resolver.resolve` Bedrock + `emit_world_event`) via `to_thread` so they don't freeze the resident daemons' shared event loop. Signatures unchanged; small DDB reads stay inline.
 - **Modify:** `worldgm/residents/brain.py` — `step_resident_brain(..., storyline=None)` forwards to `build_decision_context`.
 - **Modify:** `worldgm/residents/agentic_brain.py` — `build_decision_context(..., storyline=None)` → `DecisionContext.active_storyline`; `build_prompt` renders the storyline line.
 - **Create:** `tests/unit/worldgm/test_tick_arcs.py`; extend `test_arc_orchestrator.py`, `test_agentic_brain.py`, `test_brain_agentic.py`.
