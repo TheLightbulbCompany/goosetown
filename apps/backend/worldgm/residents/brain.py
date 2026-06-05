@@ -16,7 +16,8 @@ import datetime
 import logging
 import random
 
-from worldgm.residents.behavior import ResidentRuntime, next_action
+from worldgm.residents.agentic_brain import build_decision_context, decide, to_command
+from worldgm.residents.behavior import _BED, ResidentRuntime, is_in_sleep_window, next_action
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,8 @@ def read_status(daemon) -> dict:
         location_context   str   "town" | "apartment" (default "town")
         activity           str   current activity string (or "idle")
         active_conversation  dict | None
+        nearby             list  nearby agents [{agent_id, name/display_name}]
+        pending_messages   list  unread incoming conversation turns
     """
     state = getattr(daemon, "state", None) or {}
     agent = state.get("agent") or {}
@@ -40,6 +43,8 @@ def read_status(daemon) -> dict:
         "location_context": agent.get("location_context", "town"),
         "activity": agent.get("activity", "idle"),
         "active_conversation": state.get("active_conversation"),
+        "nearby": state.get("nearby", []),
+        "pending_messages": state.get("pending_messages", []),
     }
 
 
@@ -53,57 +58,96 @@ async def step_resident_brain(
     runtime: ResidentRuntime,
     parsed_status: dict,
     *,
+    model=None,
+    persona=None,
     rng=None,
     now_utc_hour: int | None = None,
 ) -> None:
     """One brain tick for one resident: update runtime from status, decide, act.
 
+    With ``model`` (and ``persona``) supplied, the LLM decides the action each
+    tick from the town state — choosing move / chat / say / end / activity /
+    idle. Without a model (or on any failure upstream), the deterministic FSM
+    drives movement + sleep, preserving the legacy behavior so a Bedrock outage
+    degrades gracefully.
+
+    Deterministic pre-gates skip the LLM on non-decision ticks: asleep (go to
+    bed), mid-move (the move await gates re-entry), and in-conversation-but-not-
+    my-turn (wait for the other speaker). See the design spec.
+
     Args:
         daemon:        The resident's TownDaemon (handle_tool_command is async).
         runtime:       Mutable FSM state — updated in-place each tick.
         parsed_status: Output of read_status(daemon) for this tick.
+        model:         Optional LLM (BedrockLanguageModel). None → FSM fallback.
+        persona:       Optional Persona, required for the agentic prompt.
         rng:           Optional zero-arg callable returning float in [0,1).
                        Defaults to random.random.  Injectable for tests.
-        now_utc_hour:  Optional int 0-23. Defaults to the current UTC hour. The
-                       FSM uses this to decide sleep vs wake. Injectable so
-                       tests don't need freezegun.
+        now_utc_hour:  Optional int 0-23. Defaults to the current UTC hour.
+                       Injectable so tests don't need freezegun.
     """
+    hour = now_utc_hour if now_utc_hour is not None else _now_utc_hour()
+
     # ------------------------------------------------------------------ #
-    # Phase 1 conversation stub: if in a conversation, do nothing.        #
-    # A later phase will wire Bedrock-backed replies here.                #
+    # No model: deterministic FSM fallback (verbatim legacy behavior).    #
     # ------------------------------------------------------------------ #
-    if parsed_status.get("active_conversation"):
+    if model is None or persona is None:
+        if parsed_status.get("active_conversation"):
+            return
+        location = parsed_status.get("location", "unknown")
+        if location != runtime.location:
+            runtime.idle_ticks = 0  # just arrived somewhere new
+        runtime.location = location
+        runtime.location_context = parsed_status.get("location_context", "town")
+        runtime.state = "idle"
+        runtime.idle_ticks += 1
+        cmd = next_action(runtime, (rng or random.random)(), now_utc_hour=hour)
+        if cmd.get("action") == "noop":
+            return
+        runtime.state = "moving"
+        runtime.idle_ticks = 0
+        # Blocks until arrival/timeout — this await is the movement gate.
+        await daemon.handle_tool_command(cmd)
         return
 
-    # --- Reconcile runtime with the daemon's reported state --- #
-    # NOTE: daemon.state exposes no reliable "currently walking" signal — the
-    # game server's is_moving flag is NOT propagated into daemon.state, and
-    # `activity` is "idle"/an activity name, never "moving". The movement gate
-    # is instead the blocking `handle_tool_command` move call below: it does not
-    # return until the agent arrives (or times out), so the brain physically
-    # cannot re-tick mid-walk and double-issue a move. We therefore treat every
-    # tick as a settled point and track dwell time at the reported location.
-    #
-    # Phase 2 / N residents: ticking brains sequentially here (each awaiting its
-    # blocking move) would serialize all resident movement and stall the worldgm
-    # tick loop. When scaling the manager to the full cast, run the brains
-    # concurrently (or fire-and-forget the move) rather than awaiting in a loop.
+    # ------------------------------------------------------------------ #
+    # Agentic path: the LLM decides.                                      #
+    # ------------------------------------------------------------------ #
+    # Reconcile runtime with reported state (dwell tracking).
     location = parsed_status.get("location", "unknown")
     if location != runtime.location:
         runtime.idle_ticks = 0  # just arrived somewhere new
     runtime.location = location
     runtime.location_context = parsed_status.get("location_context", "town")
+
+    # Pre-gate: mid-move. The blocking move await gates re-entry; do nothing.
+    if runtime.state == "moving":
+        return
+
     runtime.state = "idle"
     runtime.idle_ticks += 1
 
-    # --- Decide and act --- #
-    rng_value = (rng or random.random)()
-    hour = now_utc_hour if now_utc_hour is not None else _now_utc_hour()
-    cmd = next_action(runtime, rng_value, now_utc_hour=hour)
-    if cmd.get("action") == "noop":
+    # Pre-gate: sleep window (deterministic, no LLM spend).
+    if is_in_sleep_window(hour, runtime.sleep_hour, runtime.wake_hour):
+        if runtime.location == _BED:
+            return
+        runtime.state = "moving"
+        runtime.idle_ticks = 0
+        await daemon.handle_tool_command({"action": "act", "payload": {"action": "move", "destination": _BED}})
         return
 
-    runtime.state = "moving"
-    runtime.idle_ticks = 0
-    # Blocks until arrival/timeout — this await is the movement gate.
+    # Pre-gate: in a conversation but it isn't my turn → wait (no LLM spend).
+    if parsed_status.get("active_conversation") and not parsed_status.get("pending_messages"):
+        return
+
+    # Decide via the LLM, then dispatch.
+    ctx = build_decision_context(persona, parsed_status)
+    action = await decide(model, ctx)
+    cmd = to_command(action)
+    if cmd is None:
+        return  # idle
+    if cmd["payload"]["action"] == "move":
+        runtime.state = "moving"
+        runtime.idle_ticks = 0
+    # Blocks until arrival/verdict — this await gates re-entry for moves/chats.
     await daemon.handle_tool_command(cmd)
