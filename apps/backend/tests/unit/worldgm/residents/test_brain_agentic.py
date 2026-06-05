@@ -81,14 +81,20 @@ async def test_sleep_window_goes_to_bed_without_llm():
     assert d.commands == [{"action": "act", "payload": {"action": "move", "destination": "bed"}}]
 
 
-async def test_mid_move_noops_without_llm():
+async def test_stale_moving_state_does_not_freeze_resident():
+    """The blocking handle_tool_command await is the real movement gate, not
+    runtime.state. A resident whose state was left "moving" by a prior
+    *completed* move must still decide on the next tick — otherwise it would
+    freeze forever after its first move (state stays "moving" once the
+    finished move's await returns)."""
     d = _FakeDaemon(_state())
-    model = _FakeModel()
+    model = _FakeModel('{"action": "chat", "target": "Nikola Tesla", "message": "Hello!"}')
     rt = _runtime()
-    rt.state = "moving"
+    rt.state = "moving"  # left over from a prior, already-completed move
     await step_resident_brain(d, rt, read_status(d), model=model, persona=_PERSONA, now_utc_hour=12)
-    assert model.calls == 0
-    assert d.commands == []
+    assert model.calls == 1
+    assert d.commands == [{"action": "act", "payload": {"action": "chat", "target": "uuid-tesla", "message": "Hello!"}}]
+    assert rt.state == "idle"  # reset at top; chat is not a move
 
 
 async def test_in_conversation_no_pending_noops_without_llm():

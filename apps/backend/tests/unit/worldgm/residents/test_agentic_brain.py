@@ -144,6 +144,20 @@ def test_validate_idle_always_ok():
     assert validate_action({"action": "idle"}, _ctx()) == {"action": "idle"}
 
 
+def test_validate_say_truncates_to_500_chars():
+    ctx = _ctx(
+        active_conversation={"conv_id": "c1", "participants": ["Ada Lovelace"], "turns": []},
+        legal_actions=frozenset({"say", "end"}),
+    )
+    out = validate_action({"action": "say", "message": "x" * 800}, ctx)
+    assert len(out["message"]) == 500
+
+
+def test_validate_chat_truncates_message_to_500_chars():
+    out = validate_action({"action": "chat", "target": "Ada Lovelace", "message": "y" * 800}, _ctx())
+    assert len(out["message"]) == 500
+
+
 def test_validate_illegal_action_kind_becomes_idle():
     # say is not in legal_actions for a non-conversation context.
     ctx = _ctx(legal_actions=frozenset({"move", "idle"}))

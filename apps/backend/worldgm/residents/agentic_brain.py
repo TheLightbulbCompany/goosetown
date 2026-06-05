@@ -27,6 +27,11 @@ _TOWN_DESTINATIONS = frozenset({"plaza", "library", "cafe", "activity_center", "
 
 _IDLE: dict = {"action": "idle"}
 
+# Spoken-line cap. The backend's TownAgentAct validator caps `message` at 500
+# chars (core/ws_models.py); an over-long line would 422 and silently drop the
+# turn, so we truncate here to stay under the limit.
+_MAX_MSG_CHARS = 500
+
 # Decision sampling knobs.
 _MAX_TOKENS = 200
 _TEMPERATURE = 0.8
@@ -109,12 +114,16 @@ def validate_action(action: dict, ctx: DecisionContext) -> dict:
         agent_id = _resolve_nearby_id(action.get("target", ""), ctx.nearby)
         if not agent_id:
             return dict(_IDLE)
-        return {"action": "chat", "_agent_id": agent_id, "message": str(action.get("message", ""))}
+        return {
+            "action": "chat",
+            "_agent_id": agent_id,
+            "message": str(action.get("message", ""))[:_MAX_MSG_CHARS],
+        }
 
     if kind == "say":
         if not ctx.active_conversation:
             return dict(_IDLE)
-        msg = str(action.get("message", "")).strip()
+        msg = str(action.get("message", "")).strip()[:_MAX_MSG_CHARS]
         if not msg:
             return dict(_IDLE)
         return {"action": "say", "message": msg}

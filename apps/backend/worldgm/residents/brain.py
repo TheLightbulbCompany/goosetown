@@ -113,17 +113,18 @@ async def step_resident_brain(
     # ------------------------------------------------------------------ #
     # Agentic path: the LLM decides.                                      #
     # ------------------------------------------------------------------ #
-    # Reconcile runtime with reported state (dwell tracking).
+    # Reconcile runtime with reported state (dwell tracking). The blocking
+    # handle_tool_command await below is the REAL movement gate: the worldgm
+    # tick awaits each resident's brain to completion, so it cannot re-enter
+    # this resident until the prior move/chat returns. We therefore reset
+    # state to "idle" every tick rather than gating on state=="moving" — a
+    # mid-move gate would freeze the resident after its first move, since
+    # state stays "moving" once the (completed) move's await returns.
     location = parsed_status.get("location", "unknown")
     if location != runtime.location:
         runtime.idle_ticks = 0  # just arrived somewhere new
     runtime.location = location
     runtime.location_context = parsed_status.get("location_context", "town")
-
-    # Pre-gate: mid-move. The blocking move await gates re-entry; do nothing.
-    if runtime.state == "moving":
-        return
-
     runtime.state = "idle"
     runtime.idle_ticks += 1
 
