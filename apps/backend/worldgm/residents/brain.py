@@ -146,6 +146,18 @@ async def step_resident_brain(
     action = await decide(model, ctx)
     cmd = to_command(action)
     if cmd is None:
+        # Mid-conversation the only legal actions are say/end, so an idle here
+        # means the model produced nothing usable. Don't re-bill the LLM every
+        # tick waiting for it to recover — end the conversation deterministically
+        # (the backend's inactivity timer would do this eventually anyway).
+        active_conv = parsed_status.get("active_conversation")
+        if active_conv:
+            await daemon.handle_tool_command(
+                {
+                    "action": "act",
+                    "payload": {"action": "end_conversation", "conv_id": active_conv.get("conv_id", "")},
+                }
+            )
         return  # idle
     if cmd["payload"]["action"] == "move":
         runtime.state = "moving"

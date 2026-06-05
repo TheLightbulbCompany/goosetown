@@ -144,3 +144,18 @@ async def test_model_none_falls_back_to_fsm():
         d, _runtime(location="cafe"), read_status(d), model=None, persona=_PERSONA, now_utc_hour=12
     )
     assert d.commands == [{"action": "act", "payload": {"action": "move", "destination": "library"}}]
+
+
+async def test_wedged_model_mid_conversation_ends_deterministically():
+    """If the model returns unusable output while it's the resident's turn
+    (legal actions are only say/end), the brain must NOT re-bill the LLM every
+    tick — it ends the conversation deterministically."""
+    state = _state(
+        active_conversation={"conv_id": "c7", "participants": ["Nikola Tesla"], "turns": []},
+        pending_messages=[{"from": "Nikola Tesla", "text": "Well?"}],
+    )
+    d = _FakeDaemon(state)
+    model = _FakeModel("the model rambles without valid JSON")
+    await step_resident_brain(d, _runtime(), read_status(d), model=model, persona=_PERSONA, now_utc_hour=12)
+    assert model.calls == 1
+    assert d.commands == [{"action": "act", "payload": {"action": "end_conversation", "conv_id": "c7"}}]

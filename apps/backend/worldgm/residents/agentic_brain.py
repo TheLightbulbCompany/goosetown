@@ -60,10 +60,12 @@ class DecisionContext:
 
 
 def parse_action(raw: str) -> dict:
-    """Extract the first JSON object from an LLM response.
+    """Extract a JSON action object from an LLM response.
 
-    Robust by design: any failure (no JSON, bad JSON, missing/non-string
-    ``action``) returns a safe ``{"action": "idle"}``. Never raises.
+    Scans from the first ``{`` to the last ``}`` and parses that span — robust
+    for a clean single-object reply (the expected case), with prose before or
+    after it. Any failure (no JSON, bad JSON, missing/non-string ``action``)
+    returns a safe ``{"action": "idle"}``. Never raises.
     """
     if not raw:
         return dict(_IDLE)
