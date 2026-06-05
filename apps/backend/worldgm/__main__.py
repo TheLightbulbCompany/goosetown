@@ -248,7 +248,13 @@ async def _tick_one_resident(state: GmState, name: str, handle) -> None:
         )
         state.resident_runtimes[name] = runtime
     try:
-        await step_resident_brain(daemon, runtime, status)
+        await step_resident_brain(
+            daemon,
+            runtime,
+            status,
+            model=getattr(state, "model_lite", None),
+            persona=handle.persona,
+        )
     except Exception:
         logger.exception("Resident brain tick failed for %s", name)
 
