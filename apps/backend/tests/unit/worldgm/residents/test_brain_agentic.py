@@ -120,9 +120,7 @@ async def test_awake_settled_nearby_calls_llm_and_chats():
     model = _FakeModel('{"action": "chat", "target": "Nikola Tesla", "message": "Hello!"}')
     await step_resident_brain(d, _runtime(), read_status(d), model=model, persona=_PERSONA, now_utc_hour=12)
     assert model.calls == 1
-    assert d.commands == [
-        {"action": "act", "payload": {"action": "chat", "target": "uuid-tesla", "message": "Hello!"}}
-    ]
+    assert d.commands == [{"action": "act", "payload": {"action": "chat", "target": "uuid-tesla", "message": "Hello!"}}]
 
 
 async def test_llm_idle_dispatches_nothing():

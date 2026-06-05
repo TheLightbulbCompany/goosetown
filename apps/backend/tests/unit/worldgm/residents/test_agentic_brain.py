@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from worldgm.residents.agentic_brain import (
     DecisionContext,
     build_decision_context,

@@ -184,9 +184,7 @@ def _activities_here(location: str, location_context: str) -> list[str]:
     own context-legality check)."""
     key = canonical_location(location)
     return [
-        a.name
-        for a in LOCATION_ACTIVITIES.get(key, [])
-        if get_context_mismatch_message(a, location_context) is None
+        a.name for a in LOCATION_ACTIVITIES.get(key, []) if get_context_mismatch_message(a, location_context) is None
     ]
 
 
@@ -290,9 +288,7 @@ async def decide(model, ctx: DecisionContext) -> dict:
     """
     prompt = build_prompt(ctx)
     try:
-        raw = await asyncio.to_thread(
-            model.sample_text, prompt, max_tokens=_MAX_TOKENS, temperature=_TEMPERATURE
-        )
+        raw = await asyncio.to_thread(model.sample_text, prompt, max_tokens=_MAX_TOKENS, temperature=_TEMPERATURE)
     except Exception:
         logger.warning("decide: model call failed for %s; idling this tick", ctx.name, exc_info=True)
         return dict(_IDLE)
