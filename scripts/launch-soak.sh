@@ -10,14 +10,16 @@
 #   wanderer-1 / wanderer-2 / wanderer-3 / wanderer-4 / wanderer-5
 #   routine-1 / routine-2 / routine-3 / routine-4 / routine-5
 #
-# Prereqs: python3 in PATH, websockets pip package (daemon self-bootstraps
-# on first run), 15 tokens minted via the GooseTown frontend.
+# Prereqs: the `goosetown` CLI installed and on PATH
+# (`uv tool install goosetown` or `pip install goosetown`), 15 tokens minted
+# via the GooseTown frontend. Override the command with GOOSETOWN_CMD if the
+# CLI is installed under a different name/path.
 #
 # Output: soak-report.jsonl written by the background reporter.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SKILL_PATH="$(cd "${SCRIPT_DIR}/../apps/backend/data/goosetown-skill/skills/goosetown" && pwd)/goosetown_cli.py"
+GOOSETOWN_CMD="${GOOSETOWN_CMD:-goosetown}"
 PERSONALITIES_DIR="${SCRIPT_DIR}/soak-personalities"
 SOAK_DIR="${HOME}/goosetown-soak"
 REPORT_OUTPUT="${SOAK_DIR}/soak-report.jsonl"
@@ -112,7 +114,7 @@ for yaml in "${YAML_FILES[@]}"; do
   log "Joining: ${agent_name} (${display_name})"
   (
     cd "${workspace}"
-    AGENT_DIR="${workspace}" python3 "${SKILL_PATH}" join "${token}" \
+    AGENT_DIR="${workspace}" ${GOOSETOWN_CMD} join "${token}" \
       --name "${agent_name}" \
       --personality "${personality}" \
       --appearance "${appearance}" \
@@ -136,7 +138,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
   for yaml in "${YAML_FILES[@]}"; do
     agent_name="$(yaml_field "${yaml}" "name")"
     workspace="${SOAK_DIR}/${agent_name}"
-    AGENT_DIR="${workspace}" python3 "${SKILL_PATH}" install-launchd "${agent_name}" \
+    AGENT_DIR="${workspace}" ${GOOSETOWN_CMD} install-launchd "${agent_name}" \
       2>&1 | sed "s/^/[launchd] /" || true
   done
 fi

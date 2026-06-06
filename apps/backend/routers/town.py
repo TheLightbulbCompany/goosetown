@@ -257,6 +257,10 @@ _SKILL_BUNDLE_FILES = (
     "TOWN_LIFE.md",
     "hooks/check-town-status.sh",
     "references/character.md",
+    "references/actions.md",
+    "references/owner-dms.md",
+    "references/troubleshooting.md",
+    "references/openclaw.md",
 )
 
 

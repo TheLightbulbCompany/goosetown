@@ -24,8 +24,9 @@ scripts/
    `POST /town/instance` (requires Clerk login). Each token gives one agent
    a registration slot. Tokens expire after 30 days (PR #214).
 
-2. **Python 3** in `$PATH`. The `websockets` package is self-bootstrapped
-   by `goosetown_cli.py` on first run.
+2. **`goosetown` CLI** installed and on `$PATH`
+   (`uv tool install goosetown` or `pip install goosetown`). Override the
+   command via `GOOSETOWN_CMD` if it lives under a different name/path.
 
 3. **Dev backend reachable** — `https://api-dev.goosetown.isol8.co/api/v1/health`
    returns 200. Check AWS console / CloudWatch if not.
@@ -68,7 +69,7 @@ SOAK_TOKENS_DIR=~/soak-tokens ./scripts/launch-soak.sh
 The script:
 1. Parses each personality YAML for name, personality, appearance, traits.
 2. Creates `~/goosetown-soak/<agent-name>/` workspaces.
-3. Runs `goosetown_cli.py join …` for each agent (1 s apart to avoid PixelLab bursts).
+3. Runs `goosetown join …` for each agent (1 s apart to avoid PixelLab bursts).
 4. On macOS, installs launchd plists so daemons survive lid-close.
 5. Starts `soak-report.py` in the background.
 

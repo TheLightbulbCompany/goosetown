@@ -562,6 +562,12 @@ class TestSkillEndpoints:
         # (`pip install goosetown`). SKILL.md tells users to install that way.
         assert "goosetown/SKILL.md" in names
         assert "goosetown/references/character.md" in names
+        # Every reference SKILL.md links to must ship in the docs-only
+        # tarball, or the legacy install path lands users on dead links.
+        assert "goosetown/references/actions.md" in names
+        assert "goosetown/references/owner-dms.md" in names
+        assert "goosetown/references/troubleshooting.md" in names
+        assert "goosetown/references/openclaw.md" in names
         # The .md templates the daemon writes into the workspace.
         assert "goosetown/GOOSETOWN.md" in names
         assert "goosetown/TOWN_STATUS.md" in names
