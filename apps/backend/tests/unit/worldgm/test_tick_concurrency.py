@@ -69,11 +69,14 @@ async def _fake_sync_locations(*_args, **_kwargs):
 
 @pytest.fixture(autouse=True)
 def _stub_sync_locations(monkeypatch):
-    """``_tick`` calls sync_locations at the top — stub it so the test
-    isolates the resident-brain dispatch path."""
+    """``_tick`` calls sync_locations + the GM arc step at the top — stub them
+    so the test isolates the resident-brain dispatch path (no real DDB)."""
     import worldgm.__main__ as main_mod
 
     monkeypatch.setattr(main_mod, "sync_locations", _fake_sync_locations)
+    monkeypatch.setattr(main_mod, "maybe_kickoff_arc", AsyncMock(return_value=None))
+    monkeypatch.setattr(main_mod, "process_arc_beats", AsyncMock(return_value=0))
+    monkeypatch.setattr(main_mod, "_read_active_arcs", AsyncMock(return_value=[]))
 
 
 @pytest.mark.asyncio
