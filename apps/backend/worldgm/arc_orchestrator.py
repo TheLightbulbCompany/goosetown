@@ -12,6 +12,7 @@ and publishes events.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 import time
@@ -20,7 +21,7 @@ import uuid
 from core import dynamo
 
 from .arc_templates import ARC_TEMPLATES, find_template
-from .event_publisher import _emit_metric
+from .event_publisher import _emit_metric, emit_world_event
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,23 @@ _RANDOM_KICKOFF_CHANCE = 0.05  # per tick after cooldown
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+async def _emit_arc_event(*, tag: str, arc: dict, summary: str, location: str | None, witnesses: list[str]) -> None:
+    """Publish an arc event to EventBridge/world-events. Best-effort: a failure
+    is logged and swallowed so the arc (already persisted) is unaffected. Runs
+    in a thread because emit_world_event does sync EventBridge + DDB puts."""
+    try:
+        await asyncio.to_thread(
+            emit_world_event,
+            tag=tag,
+            detail={"arcId": arc["arcId"], "templateId": arc.get("templateId", "")},
+            witnesses=witnesses,
+            location=location,
+            summary=summary,
+        )
+    except Exception:
+        logger.exception("[arc:%s] emit_world_event failed for %s", arc["arcId"][:8], tag)
 
 
 async def maybe_kickoff_arc(state) -> dict | None:
@@ -114,7 +132,7 @@ async def _kickoff_arc(state, template: dict) -> dict:
     arc_id = str(uuid.uuid4())
     now = _now_ms()
 
-    narrative_text = state.narrative_resolver.resolve(template["kickoff_prompt"])
+    narrative_text = await asyncio.to_thread(state.narrative_resolver.resolve, template["kickoff_prompt"])
 
     # Determine witnesses: agents at the preferred_location, or all online if no preferred
     witnesses = []
@@ -148,8 +166,11 @@ async def _kickoff_arc(state, template: dict) -> dict:
 
     _emit_metric("ArcsKickoff")
 
-    # Phase C4 (event_publisher) will handle the actual EventBridge publication.
-    # For now, we just persist and return; tests can assert state was written.
+    # Publish to EventBridge + world-events (durable feed log + external agents).
+    # Best-effort: a publish failure can't abort the already-persisted arc.
+    await _emit_arc_event(
+        tag="arc.kickoff", arc=arc, summary=narrative_text, location=preferred, witnesses=witnesses
+    )
     return arc
 
 
@@ -184,7 +205,7 @@ async def _fire_beat(state, arc: dict) -> None:
     beat_prompt = (
         f"Continue this narrative arc:\n{arc.get('narrativeKickoff', '')}\n\nWhat happens next, in one short paragraph?"
     )
-    beat_text = state.narrative_resolver.resolve(beat_prompt)
+    beat_text = await asyncio.to_thread(state.narrative_resolver.resolve, beat_prompt)
 
     # Update arc with next beat
     table = dynamo.worldgm_arcs_table()
@@ -199,6 +220,14 @@ async def _fire_beat(state, arc: dict) -> None:
     )
     logger.info("[arc:%s] beat fired", arc["arcId"][:8])
 
+    await _emit_arc_event(
+        tag="arc.beat",
+        arc=arc,
+        summary=beat_text,
+        location=template.get("preferred_location"),
+        witnesses=arc.get("witnessIds", []),
+    )
+
 
 async def _resolve_arc(state, arc: dict, template: dict) -> None:
     """Mark arc resolved + emit a final 'arc.resolved' event."""
@@ -211,6 +240,14 @@ async def _resolve_arc(state, arc: dict, template: dict) -> None:
     )
     logger.info("[arc:%s] resolved", arc["arcId"][:8])
     _emit_metric("ArcsResolved")
+
+    await _emit_arc_event(
+        tag="arc.resolved",
+        arc=arc,
+        summary=arc.get("lastBeatText") or arc.get("narrativeKickoff", ""),
+        location=template.get("preferred_location"),
+        witnesses=arc.get("witnessIds", []),
+    )
 
 
 async def _abandon_arc(arc_id: str) -> None:
