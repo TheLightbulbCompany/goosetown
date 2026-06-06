@@ -116,11 +116,12 @@ def validate_action(action: dict, ctx: DecisionContext) -> dict:
         agent_id = _resolve_nearby_id(action.get("target", ""), ctx.nearby)
         if not agent_id:
             return dict(_IDLE)
-        return {
-            "action": "chat",
-            "_agent_id": agent_id,
-            "message": str(action.get("message", ""))[:_MAX_MSG_CHARS],
-        }
+        # The backend (_handle_chat) rejects a blank opening message, so an
+        # empty one would dispatch and bounce — treat it as a safe idle instead.
+        msg = str(action.get("message", "")).strip()[:_MAX_MSG_CHARS]
+        if not msg:
+            return dict(_IDLE)
+        return {"action": "chat", "_agent_id": agent_id, "message": msg}
 
     if kind == "say":
         if not ctx.active_conversation:
@@ -128,7 +129,8 @@ def validate_action(action: dict, ctx: DecisionContext) -> dict:
         msg = str(action.get("message", "")).strip()[:_MAX_MSG_CHARS]
         if not msg:
             return dict(_IDLE)
-        return {"action": "say", "message": msg}
+        # conv_id is required by the backend (_handle_say) — carry it through.
+        return {"action": "say", "message": msg, "_conv_id": ctx.active_conversation.get("conv_id", "")}
 
     if kind == "end":
         if not ctx.active_conversation:
@@ -163,7 +165,10 @@ def to_command(action: dict) -> dict | None:
             "payload": {"action": "chat", "target": action["_agent_id"], "message": action.get("message", "")},
         }
     if kind == "say":
-        return {"action": "act", "payload": {"action": "say", "message": action["message"]}}
+        return {
+            "action": "act",
+            "payload": {"action": "say", "message": action["message"], "conv_id": action["_conv_id"]},
+        }
     if kind == "end":
         return {"action": "act", "payload": {"action": "end_conversation", "conv_id": action["_conv_id"]}}
     if kind == "move":

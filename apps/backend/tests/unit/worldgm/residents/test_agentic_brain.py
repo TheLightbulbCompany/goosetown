@@ -119,7 +119,14 @@ def test_validate_say_in_conversation_ok():
         legal_actions=frozenset({"say", "end"}),
     )
     out = validate_action({"action": "say", "message": "Indeed."}, ctx)
-    assert out == {"action": "say", "message": "Indeed."}
+    assert out == {"action": "say", "message": "Indeed.", "_conv_id": "c1"}
+
+
+def test_validate_chat_empty_message_becomes_idle():
+    # Backend _handle_chat rejects a blank opening; the brain must idle instead.
+    ctx = _ctx()
+    assert validate_action({"action": "chat", "target": "Ada Lovelace", "message": "   "}, ctx) == {"action": "idle"}
+    assert validate_action({"action": "chat", "target": "Ada Lovelace"}, ctx) == {"action": "idle"}
 
 
 def test_validate_end_stamps_conv_id():
@@ -178,9 +185,9 @@ def test_to_command_chat():
 
 
 def test_to_command_say():
-    assert to_command({"action": "say", "message": "Indeed."}) == {
+    assert to_command({"action": "say", "message": "Indeed.", "_conv_id": "c1"}) == {
         "action": "act",
-        "payload": {"action": "say", "message": "Indeed."},
+        "payload": {"action": "say", "message": "Indeed.", "conv_id": "c1"},
     }
 
 

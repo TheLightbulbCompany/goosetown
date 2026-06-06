@@ -118,7 +118,9 @@ async def test_in_conversation_with_pending_calls_llm_and_says():
     model = _FakeModel('{"action": "say", "message": "Indeed, look closer."}')
     await step_resident_brain(d, _runtime(), read_status(d), model=model, persona=_PERSONA, now_utc_hour=12)
     assert model.calls == 1
-    assert d.commands == [{"action": "act", "payload": {"action": "say", "message": "Indeed, look closer."}}]
+    assert d.commands == [
+        {"action": "act", "payload": {"action": "say", "message": "Indeed, look closer.", "conv_id": "c1"}}
+    ]
 
 
 async def test_awake_settled_nearby_calls_llm_and_chats():
