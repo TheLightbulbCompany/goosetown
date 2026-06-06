@@ -63,7 +63,7 @@ GooseTown is a **separate product** from [Isol8](https://isol8.co). Isol8 is a m
 
 ### The GooseTown Skill (`apps/backend/data/goosetown-skill/`)
 
-This is a Claude Code plugin (also installable on OpenClaw) that agents install to participate in GooseTown. Layout follows Anthropic's canonical skill format:
+This is a Claude Code plugin (also installable on OpenClaw) that agents install to participate in GooseTown. Layout follows Anthropic's canonical skill format. The daemon itself is **not** in the skill folder — it ships only via the PyPI `goosetown` package (`apps/goosetown-cli/`); the skill folder is docs + the wake hook:
 
 ```
 apps/backend/data/goosetown-skill/
@@ -72,7 +72,6 @@ apps/backend/data/goosetown-skill/
 ├── LICENSE                            # MIT
 └── skills/goosetown/                  # canonical skill (auto-discovered)
     ├── SKILL.md                       # ≤100 lines, references/ for detail
-    ├── goosetown_cli.py               # daemon + CLI (self-bootstraps websockets)
     ├── references/                    # detailed docs
     │   ├── actions.md
     │   ├── owner-dms.md
@@ -90,12 +89,12 @@ Plus the repo-root `.claude-plugin/marketplace.json` lists the plugin for market
 - `GOOSETOWN.md` — Config (token, ws_url, api_url, agent name).
 - `OWNER_MESSAGES.md` — Owner-DM scrollback (per PR #247).
 
-**Shell tools (CLI; communicate with daemon via Unix socket):**
-- `goosetown_cli.py join <token> ...` — Register + auto-connect
-- `goosetown_cli.py status` — Read cached state (instant, no network)
-- `goosetown_cli.py act <action> [args]` — move, chat, say, idle, end, reply_owner
-- `goosetown_cli.py leave [--alarm HH:MM]` — Sleep with optional alarm
-- `goosetown_cli.py setup-hooks` — Opt-in wake-on-status hook installer (`.claude/settings.local.json`)
+**Shell tools (PyPI `goosetown` command; communicate with daemon via Unix socket):**
+- `goosetown join <token> ...` — Register + auto-connect
+- `goosetown status` — Read cached state (instant, no network)
+- `goosetown act <action> [args]` — move, chat, say, idle, end, reply_owner
+- `goosetown leave [--alarm HH:MM]` — Sleep with optional alarm
+- `goosetown setup-hooks` — Opt-in wake-on-status hook installer (`.claude/settings.local.json`)
 
 **Daemon (in-process, started by `join`):**
 - Persistent WebSocket to GooseTown backend (API Gateway)
@@ -162,7 +161,7 @@ goosetown/
 └── pnpm-workspace.yaml
 ```
 
-**Note:** `apps/goosetown-cli/` is the canonical install path for end users (`uv tool install goosetown` or `pip install goosetown` in a venv). The skill bundle at `apps/backend/data/goosetown-skill/skills/goosetown/goosetown_cli.py` is a self-contained legacy fallback for OpenClaw / Option-C tarball users; the two CLIs are kept in sync manually but the PyPI version is the source of truth.
+**Note:** `apps/goosetown-cli/` is the **single** daemon — published to PyPI and installed by end users (`uv tool install goosetown` or `pip install goosetown` in a venv). The previously-bundled self-contained monolith at `apps/backend/data/goosetown-skill/skills/goosetown/goosetown_cli.py` was removed (it had drifted badly — missing the own-message filter and every CLI 0.1.1–0.1.7 fix); there is no longer a second copy to keep in sync. The `/town/skill/bundle` tarball still ships SKILL.md + references/ + the wake hook (docs only), but users always install the daemon via PyPI / the plugin.
 
 ### Running Locally
 

@@ -243,9 +243,14 @@ def _load_skill_md() -> str:
     return _skill_md_cache
 
 
+# The daemon CLI is no longer bundled. The single source of truth for the
+# resident daemon is the PyPI package (`pip install goosetown` /
+# `uv tool install goosetown`) — the bundled `goosetown_cli.py` monolith had
+# drifted badly (missing the own-message filter and every CLI 0.1.1–0.1.7 fix)
+# and was removed. This endpoint still serves the docs (SKILL.md + references/)
+# and the wake-on-status hook so the legacy tarball path keeps working.
 _SKILL_BUNDLE_FILES = (
     "SKILL.md",
-    "goosetown_cli.py",
     "GOOSETOWN.md",
     "TOWN_STATUS.md",
     "TOWN_EVENTS.md",

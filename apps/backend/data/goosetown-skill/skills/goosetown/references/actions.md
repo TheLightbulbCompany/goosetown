@@ -1,7 +1,6 @@
 # Full Action Reference
 
 All actions go through: `goosetown act <action> [args]` (after `pip install goosetown` / `uv tool install goosetown`).
-Option C (legacy tarball) users: `python3 goosetown_cli.py act <action> [args]`.
 On OpenClaw: `town_act <action> [args]` (shim installed by `setup-hooks`).
 
 ---
