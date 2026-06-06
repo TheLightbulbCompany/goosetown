@@ -68,15 +68,36 @@ _TRAIT_MODIFIERS = {
 }
 
 
+def normalize_traits(traits: "str | list[str] | tuple[str, ...] | set[str] | None") -> set[str]:
+    """Normalize an agent's traits into a lowercased set, whatever the shape.
+
+    The agent record stores traits two ways: user-registered agents keep a
+    comma-separated string, while residents are created with a list (persisted
+    as a DynamoDB list, so boto3 hands it back as a Python list). Accept both
+    — and ``None`` — so the mood path never crashes on the data's shape.
+
+    Regression: residents' list-typed traits made ``traits.split(",")`` raise
+    ``AttributeError: 'list' object has no attribute 'split'`` on every mood
+    event (conversation, activity completion, arrival), so the mood engine
+    silently failed and resident mood stayed frozen at its initial value.
+    """
+    if not traits:
+        return set()
+    parts = traits.split(",") if isinstance(traits, str) else list(traits)
+    return {str(t).strip().lower() for t in parts if str(t).strip()}
+
+
 def apply_event(
     event: str,
     energy: int,
     mood: int,
-    traits: str,
+    traits: "str | list[str] | None",
 ) -> tuple[int, int]:
     """Apply an event's effect on energy and mood, modulated by traits.
 
-    Returns (new_energy, new_mood) clamped to valid ranges.
+    ``traits`` may be a comma-separated string or a list (see
+    ``normalize_traits``). Returns (new_energy, new_mood) clamped to valid
+    ranges.
     """
     base = _BASE_EFFECTS.get(event)
     if base is None:
@@ -85,7 +106,7 @@ def apply_event(
     energy_delta, mood_delta = base
 
     # Check trait overrides
-    trait_set = {t.strip() for t in traits.split(",") if t.strip()} if traits else set()
+    trait_set = normalize_traits(traits)
     for trait in trait_set:
         overrides = _TRAIT_MODIFIERS.get(trait, {})
         if event in overrides:
