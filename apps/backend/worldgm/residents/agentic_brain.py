@@ -11,13 +11,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 
 from core.services.activity_registry import (
     LOCATION_ACTIVITIES,
     canonical_location,
     get_context_mismatch_message,
 )
+from core.services.town_mood_engine import mood_label
 from worldgm.residents.personas import Persona
 
 logger = logging.getLogger(__name__)
@@ -36,6 +38,19 @@ _MAX_MSG_CHARS = 500
 _MAX_TOKENS = 200
 _TEMPERATURE = 0.8
 
+# Cap concurrent Bedrock decisions so 20 residents firing at once don't saturate
+# the small worldgm task's CPU/GIL and starve the in-process daemons' WS loops.
+_MAX_CONCURRENT_DECISIONS = int(os.environ.get("WORLDGM_MAX_CONCURRENT_DECISIONS", "4"))
+_decide_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_decide_semaphore() -> asyncio.Semaphore:
+    """Lazily build the decision semaphore (so it binds to the running loop)."""
+    global _decide_semaphore
+    if _decide_semaphore is None:
+        _decide_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_DECISIONS)
+    return _decide_semaphore
+
 
 @dataclass
 class DecisionContext:
@@ -53,6 +68,9 @@ class DecisionContext:
     available_activities: list[str]
     legal_actions: frozenset[str]
     active_storyline: str | None = None
+    mood: str = "neutral"
+    energy: int = 100
+    recent_events: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -205,14 +223,20 @@ def _activities_here(location: str, location_context: str) -> list[str]:
     ]
 
 
+def _render_mood(raw) -> str:
+    """Render a raw mood value (int / label / None) the way TOWN_STATUS.md does,
+    so the resident sees meaning, not a bare number."""
+    if isinstance(raw, (int, float)):
+        return f"{mood_label(int(raw))} ({int(raw)})"
+    return str(raw) if raw else "neutral"
+
+
 def build_decision_context(persona: Persona, parsed_status: dict) -> DecisionContext:
     """Assemble the decision view from a persona + the perceived world snapshot.
 
-    ``parsed_status`` is the resident's world view for this tick: daemon-sourced
-    fields (location, nearby, conversation) plus any GM-injected
-    ``active_storyline`` — the narrative of a town arc the resident can perceive
-    at its current location. Storyline is read here like every other world fact,
-    not via a bespoke channel.
+    ``parsed_status`` is the resident's world view for this tick — the same
+    picture an external agent reads from the town files: location, mood, energy,
+    nearby, recent events, activities, plus any GM-injected ``active_storyline``.
     """
     location = parsed_status.get("location", "unknown")
     location_context = parsed_status.get("location_context", "town")
@@ -243,6 +267,9 @@ def build_decision_context(persona: Persona, parsed_status: dict) -> DecisionCon
         available_activities=available_activities,
         legal_actions=legal_actions,
         active_storyline=parsed_status.get("active_storyline"),
+        mood=_render_mood(parsed_status.get("mood")),
+        energy=int(_energy if (_energy := parsed_status.get("energy")) is not None else 100),
+        recent_events=list(parsed_status.get("recent_events", [])),
     )
 
 
@@ -258,34 +285,45 @@ _ACTION_SCHEMAS: dict[str, str] = {
 
 
 def build_prompt(ctx: DecisionContext) -> str:
-    """Render the in-character decision prompt. Only legal-action schemas are
-    shown, which both shrinks the prompt and steers the model."""
+    """Render the in-character decision prompt over the same world picture an
+    external agent reads from the town files — mood, energy, nearby, recent
+    events, activities — so the model reasons holistically, not blind."""
     lines = [
         f"You are {ctx.display_name}, a resident of the small town of GooseTown.",
         f"Personality: {ctx.personality}",
         f"Your traits: {', '.join(ctx.traits)}",
         "",
-        "Current moment:",
-        f"- You are at: {ctx.location}",
+        f"How you feel: {ctx.mood}, energy {ctx.energy}/100.",
+        f"Where you are: {ctx.location}.",
     ]
     if ctx.nearby:
-        lines.append("- Nearby: " + ", ".join(p["display_name"] for p in ctx.nearby))
+        lines.append("Nearby: " + ", ".join(p["display_name"] for p in ctx.nearby) + ".")
     else:
-        lines.append("- Nearby: no one is nearby")
+        lines.append("Nearby: no one — you're on your own right now.")
 
     if ctx.active_storyline:
-        lines.append(f"- Something is happening here: {ctx.active_storyline}")
+        lines.append(f"Something is happening here: {ctx.active_storyline}")
+
+    if ctx.recent_events:
+        lines.append("Recently:")
+        lines += [f"  - {e}" for e in ctx.recent_events]
 
     if ctx.active_conversation:
         participants = ", ".join(ctx.active_conversation.get("participants", []) or ["someone"])
-        lines.append(f"- You are talking with {participants}. Conversation so far:")
+        lines.append(f"You are talking with {participants}. Conversation so far:")
         for turn in ctx.active_conversation.get("turns", []):
             lines.append(f"    {turn.get('speaker', '?')}: {turn.get('text', '')}")
 
     if ctx.available_activities:
-        lines.append("- Things you can do here: " + ", ".join(ctx.available_activities))
+        lines.append("Things you can do here: " + ", ".join(ctx.available_activities) + ".")
 
     lines += [
+        "",
+        "You live by your own personality, mood, and energy — like a real person "
+        "with a day to fill, not a task to complete. If you're social and no one's "
+        "around, go where people gather (the plaza, café, library, or activity "
+        "center). If your energy is low, rest or head home. Follow what someone "
+        "like you would actually want right now — don't just sit in one place.",
         "",
         "Choose ONE action. Reply with a single JSON object and nothing else.",
         "Allowed actions right now:",
@@ -312,11 +350,15 @@ async def decide(model, ctx: DecisionContext) -> dict:
 
     ``model.sample_text`` is a synchronous boto3 call, so it runs in a thread
     to avoid blocking the other residents' brains under ``asyncio.gather``.
-    Any model error degrades to a safe idle.
+    Concurrent calls are capped (``_decide_semaphore``) so 20 residents firing
+    Bedrock at once don't saturate the CPU/GIL on the small worldgm task and
+    starve the in-process daemons' WebSocket loops (observed reconnect churn at
+    wake-up). Any model error degrades to a safe idle.
     """
     prompt = build_prompt(ctx)
     try:
-        raw = await asyncio.to_thread(model.sample_text, prompt, max_tokens=_MAX_TOKENS, temperature=_TEMPERATURE)
+        async with _get_decide_semaphore():
+            raw = await asyncio.to_thread(model.sample_text, prompt, max_tokens=_MAX_TOKENS, temperature=_TEMPERATURE)
     except Exception:
         logger.warning("decide: model call failed for %s; idling this tick", ctx.name, exc_info=True)
         return dict(_IDLE)

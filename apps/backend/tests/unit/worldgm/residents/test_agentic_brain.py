@@ -272,6 +272,39 @@ def test_build_prompt_omits_storyline_when_absent():
     assert "happening here" not in prompt.lower()
 
 
+def test_context_carries_mood_energy_events():
+    ctx = build_decision_context(
+        _PERSONA, _status(mood=-20, energy=35, recent_events=["You finished reading.", "Ada arrived."])
+    )
+    assert ctx.mood == "sad (-20)"  # rendered like TOWN_STATUS.md
+    assert ctx.energy == 35
+    assert ctx.recent_events == ["You finished reading.", "Ada arrived."]
+
+
+def test_context_mood_defaults_to_neutral_when_absent():
+    ctx = build_decision_context(_PERSONA, _status())  # no mood key
+    assert ctx.mood == "neutral"
+    assert ctx.energy == 100
+
+
+def test_build_prompt_shows_mood_energy_and_social_framing():
+    ctx = build_decision_context(_PERSONA, _status(mood=-15, energy=20, nearby=[]))
+    prompt = build_prompt(ctx)
+    assert "sad (-15)" in prompt
+    assert "energy 20/100" in prompt
+    # Alone → the prompt nudges going where people gather, and the LLM can move.
+    assert "no one" in prompt.lower()
+    assert "where people gather" in prompt.lower()
+    assert '"action": "move"' in prompt
+
+
+def test_build_prompt_renders_recent_events():
+    ctx = build_decision_context(_PERSONA, _status(recent_events=["A merchant set up a stall."]))
+    prompt = build_prompt(ctx)
+    assert "A merchant set up a stall." in prompt
+    assert "recently" in prompt.lower()
+
+
 def test_build_prompt_includes_persona_and_legal_actions_only():
     status = _status(
         active_conversation={

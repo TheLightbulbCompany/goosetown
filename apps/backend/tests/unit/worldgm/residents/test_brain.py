@@ -31,10 +31,44 @@ def test_read_status_extracts_from_daemon_state():
         "location": "library",
         "location_context": "town",
         "activity": "reading",
+        "mood": None,
+        "energy": 100,
         "active_conversation": {"conv_id": "c2"},
         "nearby": [],
         "pending_messages": [],
+        "recent_events": [],
     }
+
+
+def test_read_status_surfaces_mood_energy_and_event_tail(tmp_path):
+    (tmp_path / "TOWN_EVENTS.md").write_text(
+        "# Events\n\n"
+        "- 10:00 You woke up\n"
+        "- 10:05 Ada arrived at the cafe\n"
+        "not an event line\n"
+        "- 10:06 You ordered coffee\n"
+    )
+
+    class D:
+        state = {"agent": {"location": "cafe", "activity": "idle", "mood": 12, "energy": 70}}
+        _workspace_path = tmp_path
+
+    out = read_status(D())
+    assert out["mood"] == 12
+    assert out["energy"] == 70
+    # Only "- " event lines, last few, stripped of the bullet.
+    assert out["recent_events"] == ["10:00 You woke up", "10:05 Ada arrived at the cafe", "10:06 You ordered coffee"]
+
+
+def test_read_status_tolerates_missing_events_file():
+    class D:
+        state = {"agent": {"location": "cafe"}}
+        _workspace_path = None
+
+    out = read_status(D())
+    assert out["recent_events"] == []
+    assert out["energy"] == 100
+    assert out["mood"] is None
 
 
 def test_read_status_defaults_location_context_to_town():
