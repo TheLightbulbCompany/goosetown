@@ -316,10 +316,13 @@ describe("ComputeStack — WS_MANAGEMENT_API_URL env var is a literal string", (
     expect(templateJson).toContain("ws-dev.goosetown.isol8.co");
   });
 
-  test("prod WS_MANAGEMENT_API_URL resolves to ws custom domain string", () => {
+  test("prod WS_MANAGEMENT_API_URL resolves to ws-prod custom domain string", () => {
     const { template } = buildTestApp("prod");
     const templateJson = JSON.stringify(template.toJSON());
-    expect(templateJson).toContain("ws.goosetown.isol8.co");
+    // Env-suffixed custom-domain literal (ws-prod, matching the dev case),
+    // not a CF intrinsic import. compute-stack.ts builds
+    // "https://ws-prod.goosetown.isol8.co" for prod.
+    expect(templateJson).toContain("ws-prod.goosetown.isol8.co");
   });
 });
 

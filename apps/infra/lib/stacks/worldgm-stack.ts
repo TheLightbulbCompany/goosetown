@@ -60,8 +60,15 @@ export class WorldgmStack extends cdk.Stack {
     });
 
     const taskDef = new ecs.FargateTaskDefinition(this, "TaskDef", {
-      cpu: 512,
-      memoryLimitMiB: 1024,
+      // 1 vCPU (was 0.5): the agentic resident brain runs ~20 concurrent Bedrock
+      // calls per tick in the same process as the 20 in-process resident
+      // daemons. On 0.5 vCPU the boto3 CPU work under the GIL starved the
+      // daemons' WebSocket loops, causing inactivity-timeout reconnect churn
+      // (which interrupted activities so mood never updated). 1 vCPU + 2 GB
+      // gives the event loop headroom. Brain concurrency is also capped via
+      // WORLDGM_MAX_CONCURRENT_DECISIONS.
+      cpu: 1024,
+      memoryLimitMiB: 2048,
     });
 
     taskDef.addContainer("WorldGm", {
