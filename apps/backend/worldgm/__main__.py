@@ -47,6 +47,7 @@ import signal
 from dataclasses import dataclass, field
 from typing import Any
 
+from .arc_orchestrator import maybe_kickoff_arc, process_arc_beats
 from .bedrock_model import BedrockLanguageModel
 from .location_sync import sync_locations
 from .residents.behavior import ResidentRuntime
@@ -54,6 +55,9 @@ from .residents.brain import read_status, step_resident_brain
 
 TICK_INTERVAL_SECONDS = float(os.environ.get("WORLDGM_TICK_INTERVAL", "30"))
 RESIDENTS_ENABLED = os.environ.get("RESIDENTS_ENABLED", "false").lower() == "true"
+# Kill switch for the GM narrative-arc step (kickoff/beats + storyline delivery).
+# Default on; set WORLDGM_ARCS_ENABLED=false to disable without a code revert.
+ARCS_ENABLED = os.environ.get("WORLDGM_ARCS_ENABLED", "true").lower() == "true"
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -138,6 +142,7 @@ class GmState:
     last_known_locations: dict[str, str] = field(default_factory=dict)
     resident_manager: Any = None
     resident_runtimes: dict = field(default_factory=dict)
+    active_arcs: list = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +212,24 @@ async def _tick(state: GmState) -> None:
         state.location_filter,
         state.last_known_locations,
     )
-    # TODO(Phase C3): maybe_kickoff_arc, process_arc_beats
+    # --- GM arc step: kick off / advance town storylines, then cache the
+    # active arcs so residents at an arc's location perceive it THIS tick. The
+    # arc helpers offload their own slow Bedrock/EventBridge calls. Best-effort:
+    # a failure must not break the resident gather below — residents just see no
+    # storyline that tick.
+    if ARCS_ENABLED:
+        try:
+            new_arc = await maybe_kickoff_arc(state)
+            # process_arc_beats returns the in-memory active set AFTER its writes
+            # (fresh lastBeatText, resolved arcs dropped) — no eventually-consistent
+            # GSI re-read. Merge in any just-kicked-off arc (kickoff ran before the
+            # beat read, and a brand-new arc has its first beat an hour out).
+            active = await process_arc_beats(state)
+            if new_arc and not any(a.get("arcId") == new_arc.get("arcId") for a in active):
+                active.append(new_arc)
+            state.active_arcs = active
+        except Exception:
+            logger.exception("GM arc step failed; continuing with stale arcs")
 
     # --- Resident brain ticks (RESIDENTS_ENABLED only) ---
     #
@@ -226,6 +248,24 @@ async def _tick(state: GmState) -> None:
         )
 
 
+def _arc_text_for_location(active_arcs: list[dict], location: str) -> str | None:
+    """Return the narrative of an active arc the resident at ``location`` can
+    perceive, or None. An arc with no ``preferred_location`` is town-wide and
+    matches everywhere. With multiple matching arcs the last in ``active_arcs``
+    wins; ordering follows ``_read_active_arcs`` (GSI sort by ``nextBeatAt``)
+    so the tiebreak is arbitrary — fine because the kickoff guard normally
+    keeps at most one active arc at a time."""
+    match: str | None = None
+    for arc in active_arcs:
+        arc_loc = arc.get("preferred_location")
+        if arc_loc is not None and arc_loc != location:
+            continue
+        narrative = arc.get("lastBeatText") or arc.get("narrativeKickoff")
+        if narrative:
+            match = narrative  # later matches override earlier ones
+    return match
+
+
 async def _tick_one_resident(state: GmState, name: str, handle) -> None:
     """Brain tick for a single resident — extracted so they can run in
     parallel under asyncio.gather. Exceptions are logged and swallowed so
@@ -234,6 +274,10 @@ async def _tick_one_resident(state: GmState, name: str, handle) -> None:
     if daemon is None or not getattr(daemon, "state", None):
         return  # not connected yet
     status = read_status(daemon)
+    # Merge the GM-sourced storyline into the resident's perceived world
+    # snapshot, alongside the daemon-sourced location/nearby/conversation. The
+    # brain reads it like any other world fact — no bespoke channel.
+    status["active_storyline"] = _arc_text_for_location(state.active_arcs, status.get("location", "unknown"))
     runtime = state.resident_runtimes.get(name)
     if runtime is None:
         runtime = ResidentRuntime(

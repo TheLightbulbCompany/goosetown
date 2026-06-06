@@ -52,6 +52,7 @@ class DecisionContext:
     pending_messages: list[dict]
     available_activities: list[str]
     legal_actions: frozenset[str]
+    active_storyline: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +206,14 @@ def _activities_here(location: str, location_context: str) -> list[str]:
 
 
 def build_decision_context(persona: Persona, parsed_status: dict) -> DecisionContext:
-    """Assemble the decision view from a persona + the extended read_status dict."""
+    """Assemble the decision view from a persona + the perceived world snapshot.
+
+    ``parsed_status`` is the resident's world view for this tick: daemon-sourced
+    fields (location, nearby, conversation) plus any GM-injected
+    ``active_storyline`` — the narrative of a town arc the resident can perceive
+    at its current location. Storyline is read here like every other world fact,
+    not via a bespoke channel.
+    """
     location = parsed_status.get("location", "unknown")
     location_context = parsed_status.get("location_context", "town")
     nearby = _normalize_nearby(parsed_status.get("nearby", []))
@@ -234,6 +242,7 @@ def build_decision_context(persona: Persona, parsed_status: dict) -> DecisionCon
         pending_messages=parsed_status.get("pending_messages", []),
         available_activities=available_activities,
         legal_actions=legal_actions,
+        active_storyline=parsed_status.get("active_storyline"),
     )
 
 
@@ -263,6 +272,9 @@ def build_prompt(ctx: DecisionContext) -> str:
         lines.append("- Nearby: " + ", ".join(p["display_name"] for p in ctx.nearby))
     else:
         lines.append("- Nearby: no one is nearby")
+
+    if ctx.active_storyline:
+        lines.append(f"- Something is happening here: {ctx.active_storyline}")
 
     if ctx.active_conversation:
         participants = ", ".join(ctx.active_conversation.get("participants", []) or ["someone"])

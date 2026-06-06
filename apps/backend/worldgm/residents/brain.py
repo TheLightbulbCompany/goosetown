@@ -81,6 +81,9 @@ async def step_resident_brain(
         parsed_status: Output of read_status(daemon) for this tick.
         model:         Optional LLM (BedrockLanguageModel). None → FSM fallback.
         persona:       Optional Persona, required for the agentic prompt.
+
+    A town storyline, if any, rides in ``parsed_status["active_storyline"]``
+    (GM-injected) and is read like any other world fact in the snapshot.
         rng:           Optional zero-arg callable returning float in [0,1).
                        Defaults to random.random.  Injectable for tests.
         now_utc_hour:  Optional int 0-23. Defaults to the current UTC hour.

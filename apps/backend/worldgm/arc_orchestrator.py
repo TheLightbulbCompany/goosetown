@@ -12,6 +12,7 @@ and publishes events.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 import time
@@ -20,7 +21,7 @@ import uuid
 from core import dynamo
 
 from .arc_templates import ARC_TEMPLATES, find_template
-from .event_publisher import _emit_metric
+from .event_publisher import _emit_metric, emit_world_event
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,23 @@ _RANDOM_KICKOFF_CHANCE = 0.05  # per tick after cooldown
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+async def _emit_arc_event(*, tag: str, arc: dict, summary: str, location: str | None, witnesses: list[str]) -> None:
+    """Publish an arc event to EventBridge/world-events. Best-effort: a failure
+    is logged and swallowed so the arc (already persisted) is unaffected. Runs
+    in a thread because emit_world_event does sync EventBridge + DDB puts."""
+    try:
+        await asyncio.to_thread(
+            emit_world_event,
+            tag=tag,
+            detail={"arcId": arc["arcId"], "templateId": arc.get("templateId", "")},
+            witnesses=witnesses,
+            location=location,
+            summary=summary,
+        )
+    except Exception:
+        logger.exception("[arc:%s] emit_world_event failed for %s", arc["arcId"][:8], tag)
 
 
 async def maybe_kickoff_arc(state) -> dict | None:
@@ -114,7 +132,7 @@ async def _kickoff_arc(state, template: dict) -> dict:
     arc_id = str(uuid.uuid4())
     now = _now_ms()
 
-    narrative_text = state.narrative_resolver.resolve(template["kickoff_prompt"])
+    narrative_text = await asyncio.to_thread(state.narrative_resolver.resolve, template["kickoff_prompt"])
 
     # Determine witnesses: agents at the preferred_location, or all online if no preferred
     witnesses = []
@@ -124,7 +142,10 @@ async def _kickoff_arc(state, template: dict) -> dict:
     if not witnesses:
         witnesses = list(state.last_known_locations.keys())
 
-    # Persist arc state
+    # Persist arc state. preferred_location is copied from the template onto the
+    # row so the resident-facing _arc_text_for_location (which reads the DDB row,
+    # not the template) can target the arc by location. A None value means the
+    # arc is town-wide.
     arc = {
         "arcId": arc_id,
         "templateId": template["id"],
@@ -132,6 +153,7 @@ async def _kickoff_arc(state, template: dict) -> dict:
         "startedAt": now,
         "expiresAt": now + template["duration_hours"] * 3_600_000,
         "narrativeKickoff": narrative_text,
+        "preferred_location": preferred,
         "witnessIds": witnesses,
         "nextBeatAt": str(now + 3_600_000),  # next beat in 1h
     }
@@ -148,56 +170,83 @@ async def _kickoff_arc(state, template: dict) -> dict:
 
     _emit_metric("ArcsKickoff")
 
-    # Phase C4 (event_publisher) will handle the actual EventBridge publication.
-    # For now, we just persist and return; tests can assert state was written.
+    # Publish to EventBridge + world-events (durable feed log + external agents).
+    # Best-effort: a publish failure can't abort the already-persisted arc.
+    await _emit_arc_event(tag="arc.kickoff", arc=arc, summary=narrative_text, location=preferred, witnesses=witnesses)
     return arc
 
 
-async def process_arc_beats(state) -> int:
-    """Fire any arc beats whose nextBeatAt has elapsed. Returns count fired."""
+async def process_arc_beats(state) -> list[dict]:
+    """Fire any due beats / resolutions and return the arcs STILL active after
+    processing (in-memory, fresh).
+
+    Returning the in-memory list lets the caller cache it directly instead of
+    re-reading the ``status-nextBeatAt-index`` GSI right after writing to it —
+    that GSI is eventually consistent, so a same-tick re-read could miss a
+    just-written ``lastBeatText`` or still show a just-resolved arc as active.
+    """
     active = await _read_active_arcs()
-    fired = 0
     now = _now_ms()
+    still_active: list[dict] = []
     for arc in active:
         next_at = int(arc.get("nextBeatAt", 0))
         if next_at <= now:
-            await _fire_beat(state, arc)
-            fired += 1
-    return fired
+            resolved = await _fire_beat(state, arc)
+            if resolved:
+                continue  # resolved/abandoned — drop from the active set
+        still_active.append(arc)
+    return still_active
 
 
-async def _fire_beat(state, arc: dict) -> None:
-    """Generate next beat for an arc; persist updates."""
+async def _fire_beat(state, arc: dict) -> bool:
+    """Generate the next beat for an arc; persist updates and update ``arc``
+    in place so the caller's in-memory copy is fresh. Returns True when the arc
+    was resolved or abandoned (so the caller drops it from the active set)."""
     template = find_template(arc["templateId"])
     if not template:
         logger.warning("[arc:%s] template %s not found, abandoning", arc["arcId"][:8], arc["templateId"])
         await _abandon_arc(arc["arcId"])
-        return
+        return True
 
     # If past expiresAt, resolve the arc
     now = _now_ms()
     if int(arc.get("expiresAt", 0)) <= now:
         await _resolve_arc(state, arc, template)
-        return
+        return True
 
     # Generate a continuation beat
     beat_prompt = (
         f"Continue this narrative arc:\n{arc.get('narrativeKickoff', '')}\n\nWhat happens next, in one short paragraph?"
     )
-    beat_text = state.narrative_resolver.resolve(beat_prompt)
+    beat_text = await asyncio.to_thread(state.narrative_resolver.resolve, beat_prompt)
 
     # Update arc with next beat
+    next_beat_at = str(now + 3_600_000)
     table = dynamo.worldgm_arcs_table()
     table.update_item(
         Key={"arcId": arc["arcId"]},
         UpdateExpression="SET nextBeatAt = :n, lastBeatAt = :l, lastBeatText = :t",
         ExpressionAttributeValues={
-            ":n": str(now + 3_600_000),
+            ":n": next_beat_at,
             ":l": now,
             ":t": beat_text,
         },
     )
+    # Mirror the write into the in-memory copy so the cached active list the
+    # caller builds is fresh without a GSI re-read.
+    arc["lastBeatText"] = beat_text
+    arc["lastBeatAt"] = now
+    arc["nextBeatAt"] = next_beat_at
     logger.info("[arc:%s] beat fired", arc["arcId"][:8])
+
+    await _emit_arc_event(
+        tag="arc.beat",
+        arc=arc,
+        summary=beat_text,
+        location=template.get("preferred_location"),
+        witnesses=arc.get("witnessIds", []),
+    )
+    return False
 
 
 async def _resolve_arc(state, arc: dict, template: dict) -> None:
@@ -211,6 +260,14 @@ async def _resolve_arc(state, arc: dict, template: dict) -> None:
     )
     logger.info("[arc:%s] resolved", arc["arcId"][:8])
     _emit_metric("ArcsResolved")
+
+    await _emit_arc_event(
+        tag="arc.resolved",
+        arc=arc,
+        summary=arc.get("lastBeatText") or arc.get("narrativeKickoff", ""),
+        location=template.get("preferred_location"),
+        witnesses=arc.get("witnessIds", []),
+    )
 
 
 async def _abandon_arc(arc_id: str) -> None:

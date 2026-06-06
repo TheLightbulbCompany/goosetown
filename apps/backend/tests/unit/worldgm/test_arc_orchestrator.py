@@ -3,6 +3,15 @@
 import asyncio
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _stub_emit_metric(monkeypatch):
+    """_emit_metric builds a real boto3 CloudWatch client; stub it so unit tests
+    never touch the network (and don't stall on a no-credentials CI runner)."""
+    monkeypatch.setattr("worldgm.arc_orchestrator._emit_metric", lambda *a, **k: None)
+
 
 def _state_with(online=None, narrative_text="kickoff text"):
     state = MagicMock()
@@ -31,9 +40,10 @@ def test_maybe_kickoff_arc_no_op_when_active_arc_exists(mock_table):
     assert result is None
 
 
+@patch("worldgm.arc_orchestrator.emit_world_event")
 @patch("worldgm.arc_orchestrator.random.random", return_value=0.0)  # always kickoff
 @patch("worldgm.arc_orchestrator.dynamo.worldgm_arcs_table")
-def test_maybe_kickoff_arc_picks_template_and_persists(mock_table, mock_rand):
+def test_maybe_kickoff_arc_picks_template_and_persists(mock_table, mock_rand, mock_emit):
     from worldgm.arc_orchestrator import maybe_kickoff_arc
 
     mock_table.return_value.query.return_value = {"Items": []}
@@ -47,8 +57,9 @@ def test_maybe_kickoff_arc_picks_template_and_persists(mock_table, mock_rand):
     mock_table.return_value.put_item.assert_called_once()
 
 
+@patch("worldgm.arc_orchestrator.emit_world_event")
 @patch("worldgm.arc_orchestrator.dynamo.worldgm_arcs_table")
-def test_process_arc_beats_resolves_expired_arc(mock_table):
+def test_process_arc_beats_resolves_expired_arc(mock_table, mock_emit):
     import time
 
     from worldgm.arc_orchestrator import process_arc_beats
@@ -63,16 +74,17 @@ def test_process_arc_beats_resolves_expired_arc(mock_table):
     }
     mock_table.return_value.query.return_value = {"Items": [expired_arc]}
     state = _state_with({"alice": "cafe", "bob": "library"})
-    fired = asyncio.run(process_arc_beats(state))
-    assert fired == 1
-    # The arc should have been resolved
+    still_active = asyncio.run(process_arc_beats(state))
+    # The expired arc was resolved → dropped from the returned active set.
+    assert still_active == []
     update_calls = mock_table.return_value.update_item.call_args_list
     resolved_call = next(c for c in update_calls if "resolved" in str(c.kwargs.get("ExpressionAttributeValues", {})))
     assert resolved_call is not None
 
 
+@patch("worldgm.arc_orchestrator.emit_world_event")
 @patch("worldgm.arc_orchestrator.dynamo.worldgm_arcs_table")
-def test_process_arc_beats_fires_continuation_beat(mock_table):
+def test_process_arc_beats_fires_continuation_beat(mock_table, mock_emit):
     import time
 
     from worldgm.arc_orchestrator import process_arc_beats
@@ -88,10 +100,86 @@ def test_process_arc_beats_fires_continuation_beat(mock_table):
     }
     mock_table.return_value.query.return_value = {"Items": [active_arc]}
     state = _state_with({"alice": "cafe", "bob": "library"}, narrative_text="next beat text")
-    fired = asyncio.run(process_arc_beats(state))
-    assert fired == 1
+    still_active = asyncio.run(process_arc_beats(state))
+    # The arc is still active and carries the fresh beat text in-memory (so the
+    # caller can cache it without a stale GSI re-read).
+    assert len(still_active) == 1
+    assert still_active[0]["lastBeatText"] == "next beat text"
     state.narrative_resolver.resolve.assert_called()
     # arc was updated with new beat text
     update_calls = mock_table.return_value.update_item.call_args_list
     beat_call = next(c for c in update_calls if "lastBeatText" in str(c.kwargs.get("UpdateExpression", "")))
     assert beat_call is not None
+
+
+@patch("worldgm.arc_orchestrator.emit_world_event")
+@patch("worldgm.arc_orchestrator.random.random", return_value=0.0)
+@patch("worldgm.arc_orchestrator.dynamo.worldgm_arcs_table")
+def test_kickoff_emits_world_event(mock_table, mock_rand, mock_emit):
+    from worldgm.arc_orchestrator import maybe_kickoff_arc
+
+    mock_table.return_value.query.return_value = {"Items": []}
+    mock_table.return_value.scan.return_value = {"Items": []}
+    state = _state_with({"alice": "library", "bob": "library"})
+    arc = asyncio.run(maybe_kickoff_arc(state))
+    assert arc is not None
+    mock_emit.assert_called_once()
+    kwargs = mock_emit.call_args.kwargs
+    assert kwargs["tag"] == "arc.kickoff"
+    assert kwargs["summary"] == "kickoff text"
+
+
+@patch("worldgm.arc_orchestrator.emit_world_event")
+@patch("worldgm.arc_orchestrator.random.random", return_value=0.0)
+@patch("worldgm.arc_orchestrator.dynamo.worldgm_arcs_table")
+def test_kickoff_persists_preferred_location(mock_table, mock_rand, mock_emit):
+    """The persisted arc row must carry preferred_location — the resident-facing
+    _arc_text_for_location reads it off the DDB row (not the template), so its
+    absence would make every arc town-wide. Regression guard for that blocker."""
+    from worldgm.arc_orchestrator import maybe_kickoff_arc
+
+    mock_table.return_value.query.return_value = {"Items": []}
+    mock_table.return_value.scan.return_value = {"Items": []}
+    state = _state_with({"alice": "library", "bob": "library"})
+    arc = asyncio.run(maybe_kickoff_arc(state))
+    put_item = mock_table.return_value.put_item.call_args.kwargs["Item"]
+    assert "preferred_location" in put_item
+    assert put_item["preferred_location"] == arc["preferred_location"]
+
+
+@patch("worldgm.arc_orchestrator.emit_world_event", side_effect=RuntimeError("bus down"))
+@patch("worldgm.arc_orchestrator.random.random", return_value=0.0)
+@patch("worldgm.arc_orchestrator.dynamo.worldgm_arcs_table")
+def test_kickoff_survives_emit_failure(mock_table, mock_rand, mock_emit):
+    """A publish failure must NOT prevent the arc from being persisted."""
+    from worldgm.arc_orchestrator import maybe_kickoff_arc
+
+    mock_table.return_value.query.return_value = {"Items": []}
+    mock_table.return_value.scan.return_value = {"Items": []}
+    state = _state_with({"alice": "library", "bob": "library"})
+    arc = asyncio.run(maybe_kickoff_arc(state))
+    assert arc is not None
+    mock_table.return_value.put_item.assert_called_once()  # arc still persisted
+
+
+@patch("worldgm.arc_orchestrator.emit_world_event")
+@patch("worldgm.arc_orchestrator.dynamo.worldgm_arcs_table")
+def test_resolve_emits_world_event(mock_table, mock_emit):
+    import time
+
+    from worldgm.arc_orchestrator import process_arc_beats
+
+    now = int(time.time() * 1000)
+    expired = {
+        "arcId": "x",
+        "templateId": "traveling_merchant",
+        "status": "active",
+        "expiresAt": now - 1000,
+        "nextBeatAt": str(now - 100),
+        "narrativeKickoff": "k",
+    }
+    mock_table.return_value.query.return_value = {"Items": [expired]}
+    state = _state_with({"alice": "cafe", "bob": "library"})
+    asyncio.run(process_arc_beats(state))
+    tags = [c.kwargs["tag"] for c in mock_emit.call_args_list]
+    assert "arc.resolved" in tags

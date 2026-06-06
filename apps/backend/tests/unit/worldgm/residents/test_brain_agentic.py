@@ -139,6 +139,26 @@ async def test_llm_idle_dispatches_nothing():
     assert d.commands == []
 
 
+async def test_storyline_in_snapshot_reaches_the_model_prompt():
+    """A storyline carried in the perceived world snapshot (active_storyline)
+    must appear in the model's prompt — no bespoke arg needed."""
+    d = _FakeDaemon(_state())
+
+    class _CapturingModel:
+        def __init__(self):
+            self.prompt = None
+
+        def sample_text(self, prompt, **kw):
+            self.prompt = prompt
+            return '{"action": "idle"}'
+
+    model = _CapturingModel()
+    status = read_status(d)
+    status["active_storyline"] = "A traveling merchant set up a stall."
+    await step_resident_brain(d, _runtime(), status, model=model, persona=_PERSONA, now_utc_hour=12)
+    assert "A traveling merchant set up a stall." in model.prompt
+
+
 async def test_model_none_falls_back_to_fsm():
     # Awake, settled, not at hangout -> FSM moves toward hangout (library). No LLM.
     d = _FakeDaemon(_state())
