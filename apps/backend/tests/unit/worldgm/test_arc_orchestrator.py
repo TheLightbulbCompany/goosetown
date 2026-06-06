@@ -3,6 +3,15 @@
 import asyncio
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _stub_emit_metric(monkeypatch):
+    """_emit_metric builds a real boto3 CloudWatch client; stub it so unit tests
+    never touch the network (and don't stall on a no-credentials CI runner)."""
+    monkeypatch.setattr("worldgm.arc_orchestrator._emit_metric", lambda *a, **k: None)
+
 
 def _state_with(online=None, narrative_text="kickoff text"):
     state = MagicMock()
@@ -115,6 +124,24 @@ def test_kickoff_emits_world_event(mock_table, mock_rand, mock_emit):
     kwargs = mock_emit.call_args.kwargs
     assert kwargs["tag"] == "arc.kickoff"
     assert kwargs["summary"] == "kickoff text"
+
+
+@patch("worldgm.arc_orchestrator.emit_world_event")
+@patch("worldgm.arc_orchestrator.random.random", return_value=0.0)
+@patch("worldgm.arc_orchestrator.dynamo.worldgm_arcs_table")
+def test_kickoff_persists_preferred_location(mock_table, mock_rand, mock_emit):
+    """The persisted arc row must carry preferred_location — the resident-facing
+    _arc_text_for_location reads it off the DDB row (not the template), so its
+    absence would make every arc town-wide. Regression guard for that blocker."""
+    from worldgm.arc_orchestrator import maybe_kickoff_arc
+
+    mock_table.return_value.query.return_value = {"Items": []}
+    mock_table.return_value.scan.return_value = {"Items": []}
+    state = _state_with({"alice": "library", "bob": "library"})
+    arc = asyncio.run(maybe_kickoff_arc(state))
+    put_item = mock_table.return_value.put_item.call_args.kwargs["Item"]
+    assert "preferred_location" in put_item
+    assert put_item["preferred_location"] == arc["preferred_location"]
 
 
 @patch("worldgm.arc_orchestrator.emit_world_event", side_effect=RuntimeError("bus down"))

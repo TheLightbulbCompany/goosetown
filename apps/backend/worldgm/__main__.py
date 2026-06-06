@@ -219,9 +219,15 @@ async def _tick(state: GmState) -> None:
     # resident gather below — residents just see no storyline that tick.
     if ARCS_ENABLED:
         try:
-            await maybe_kickoff_arc(state)
+            new_arc = await maybe_kickoff_arc(state)
             await process_arc_beats(state)
-            state.active_arcs = await _read_active_arcs()
+            active = await _read_active_arcs()
+            # The status-index GSI is eventually consistent: a just-kicked-off
+            # arc may be absent from this same-tick re-query. Merge it in so
+            # residents perceive it now rather than ~30s late.
+            if new_arc and not any(a.get("arcId") == new_arc.get("arcId") for a in active):
+                active.append(new_arc)
+            state.active_arcs = active
         except Exception:
             logger.exception("GM arc step failed; continuing with stale arcs")
 
@@ -245,8 +251,10 @@ async def _tick(state: GmState) -> None:
 def _arc_text_for_location(active_arcs: list[dict], location: str) -> str | None:
     """Return the narrative of an active arc the resident at ``location`` can
     perceive, or None. An arc with no ``preferred_location`` is town-wide and
-    matches everywhere. The most recently updated matching arc wins (later in
-    the list, since ``_read_active_arcs`` preserves table order)."""
+    matches everywhere. With multiple matching arcs the last in ``active_arcs``
+    wins; ordering follows ``_read_active_arcs`` (GSI sort by ``nextBeatAt``)
+    so the tiebreak is arbitrary — fine because the kickoff guard normally
+    keeps at most one active arc at a time."""
     match: str | None = None
     for arc in active_arcs:
         arc_loc = arc.get("preferred_location")

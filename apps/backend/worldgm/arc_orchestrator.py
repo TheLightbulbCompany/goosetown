@@ -142,7 +142,10 @@ async def _kickoff_arc(state, template: dict) -> dict:
     if not witnesses:
         witnesses = list(state.last_known_locations.keys())
 
-    # Persist arc state
+    # Persist arc state. preferred_location is copied from the template onto the
+    # row so the resident-facing _arc_text_for_location (which reads the DDB row,
+    # not the template) can target the arc by location. A None value means the
+    # arc is town-wide.
     arc = {
         "arcId": arc_id,
         "templateId": template["id"],
@@ -150,6 +153,7 @@ async def _kickoff_arc(state, template: dict) -> dict:
         "startedAt": now,
         "expiresAt": now + template["duration_hours"] * 3_600_000,
         "narrativeKickoff": narrative_text,
+        "preferred_location": preferred,
         "witnessIds": witnesses,
         "nextBeatAt": str(now + 3_600_000),  # next beat in 1h
     }
