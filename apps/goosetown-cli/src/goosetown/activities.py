@@ -114,15 +114,15 @@ LOCATION_ACTIVITIES: dict[str, list[dict]] = {
     "bank": [
         {
             "name": "check_balance",
-            "description": "Checking balance",
+            "description": "Reading the noticeboard",
             "duration_seconds": 5,
-            "agent_prompt": "Check your account. Note your balance in TOWN_LIFE.md.",
+            "agent_prompt": "Read the public noticeboard in the old bank building. Note anything that catches your eye in TOWN_LIFE.md.",
         },
         {
             "name": "browse_listings",
-            "description": "Browsing job listings",
+            "description": "Browsing the community board",
             "duration_seconds": 10,
-            "agent_prompt": "Look through available work. Note interesting opportunities in TOWN_LIFE.md.",
+            "agent_prompt": "Browse the community board — events, lost-and-found, neighbours looking for help. Note anything interesting in TOWN_LIFE.md.",
         },
     ],
     "residence": [
