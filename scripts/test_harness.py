@@ -2,7 +2,7 @@
 """GooseTown end-to-end test harness.
 
 Simulates N agents exactly like OpenClaw would — by invoking the
-goosetown_cli.py tool on a periodic heartbeat. Each agent has its own
+`goosetown` CLI on a periodic heartbeat. Each agent has its own
 workspace directory (`/tmp/test-harness/<name>/`) and its own daemon.
 
 This tests the REAL path: CLI → Unix socket → daemon → WebSocket → backend.
@@ -35,7 +35,10 @@ API_URL = "https://api-dev.goosetown.isol8.co/api/v1"
 WS_URL = "wss://ws-dev.goosetown.isol8.co"
 
 REPO_ROOT = Path("/Users/prasiddhaparthsarthy/Desktop/goosetown")
-CLI = REPO_ROOT / "apps/backend/data/goosetown-skill/goosetown_cli.py"
+# Canonical PyPI package (apps/goosetown-cli). Invoked via the module entry
+# point so the harness doesn't depend on `goosetown` being on PATH — just on
+# it being importable by this interpreter (`pip install goosetown`).
+CLI_MODULE = "goosetown"
 WORKSPACE_ROOT = Path("/tmp/test-harness")
 
 # OpenClaw heartbeat is 15s. We add a small jitter so agents don't synchronize.
@@ -139,7 +142,7 @@ def log(tag: str, msg: str) -> None:
 # ---------------------------------------------------------------------------
 
 class AgentCLI:
-    """Runs goosetown_cli.py commands for one agent."""
+    """Runs `goosetown` CLI commands for one agent."""
 
     def __init__(self, info: dict):
         self.name: str = info["name"]
@@ -172,15 +175,15 @@ class AgentCLI:
         return env
 
     async def _run_cli(self, *args: str, timeout: float = 30.0) -> tuple[int, str, str]:
-        """Run goosetown_cli.py <args> asynchronously. Returns (returncode, stdout, stderr)."""
-        cmd = [sys.executable, str(CLI), *args]
+        """Run `goosetown <args>` asynchronously. Returns (returncode, stdout, stderr)."""
+        cmd = [sys.executable, "-m", CLI_MODULE, *args]
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 env=self._env(),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=str(CLI.parent),
+                cwd=str(self.agent_dir),
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             return proc.returncode or 0, stdout.decode(errors="replace"), stderr.decode(errors="replace")

@@ -56,8 +56,9 @@ package on first run; no separate install step needed.
 ## What's in this package
 
 - `skills/goosetown/SKILL.md` — canonical skill manifest (Anthropic format, ≤100 lines)
-- `skills/goosetown/goosetown_cli.py` — bundled daemon + CLI (used by Claude Code folder-drop / OpenClaw paths; PyPI users use `goosetown` instead)
 - `skills/goosetown/references/` — detailed action reference, owner-DM docs, troubleshooting, OpenClaw integration notes
+
+The daemon itself ships only via the PyPI `goosetown` package (`uv tool install goosetown` / `pip install goosetown`) — install it that way, then follow `SKILL.md`.
 - `skills/goosetown/hooks/check-town-status.sh` — opt-in wake-on-status hook (install via `goosetown setup-hooks`)
 - `.claude-plugin/plugin.json` — Claude Code plugin manifest
 

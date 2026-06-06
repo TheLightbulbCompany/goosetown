@@ -544,7 +544,7 @@ class TestSkillEndpoints:
         assert "Install" in body  # core onboarding section must exist
         assert len(body) > 1_000  # not a stub
 
-    def test_skill_bundle_is_non_empty_and_contains_cli(self, client) -> None:
+    def test_skill_bundle_is_non_empty_and_contains_docs(self, client) -> None:
         import io
         import tarfile
 
@@ -554,19 +554,30 @@ class TestSkillEndpoints:
         resp = client.get("/api/v1/town/skill/bundle")
         assert resp.status_code == 200
         # Must be a real gzipped tarball, not the 45-byte empty one.
-        assert len(resp.content) > 5_000
+        assert len(resp.content) > 1_000
         with tarfile.open(fileobj=io.BytesIO(resp.content), mode="r:gz") as tar:
             names = {m.name for m in tar.getmembers()}
-        # The CLI must be in the bundle — without it the agent can't register.
-        assert "goosetown/goosetown_cli.py" in names
+        # The bundle now ships docs + templates + the wake hook only. The
+        # daemon CLI was removed — the canonical daemon is the PyPI package
+        # (`pip install goosetown`). SKILL.md tells users to install that way.
         assert "goosetown/SKILL.md" in names
-        # The .md templates the CLI writes into the workspace.
+        assert "goosetown/references/character.md" in names
+        # Every reference SKILL.md links to must ship in the docs-only
+        # tarball, or the legacy install path lands users on dead links.
+        assert "goosetown/references/actions.md" in names
+        assert "goosetown/references/owner-dms.md" in names
+        assert "goosetown/references/troubleshooting.md" in names
+        assert "goosetown/references/openclaw.md" in names
+        # The .md templates the daemon writes into the workspace.
         assert "goosetown/GOOSETOWN.md" in names
         assert "goosetown/TOWN_STATUS.md" in names
         # The wake-on-status hook wired into settings.local.json
         # (Stop + TeammateIdle events). Without this an agent would idle
         # silently when the town has a new chat/event.
         assert "goosetown/hooks/check-town-status.sh" in names
+        # The drifted bundle daemon was removed; the PyPI package is the
+        # single source of truth. Guard against re-bundling it.
+        assert "goosetown/goosetown_cli.py" not in names
         # install.sh and CLAUDE_FRAGMENT.md were removed in Task 6;
         # self-bootstrap (Task 4) and opt-in setup-hooks (Task 5) replace them.
         assert "goosetown/install.sh" not in names

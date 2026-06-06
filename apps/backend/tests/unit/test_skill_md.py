@@ -37,11 +37,15 @@ def test_skill_md_install_steps_reference_real_commands():
     text = _SKILL_MD.read_text()
     # The deleted shell script must not appear in install instructions
     assert "bash goosetown/setup-hooks.sh" not in text, (
-        "SKILL.md still references deleted install.sh — replace with 'python3 goosetown_cli.py setup-hooks'"
+        "SKILL.md still references deleted install.sh — replace with 'goosetown setup-hooks'"
     )
     assert "bash goosetown/install.sh" not in text, "SKILL.md still references deleted install.sh"
+    # The bundled daemon CLI was removed; SKILL.md must not tell users to run it.
+    assert "goosetown_cli.py" not in text, (
+        "SKILL.md references the removed bundled goosetown_cli.py — use the PyPI `goosetown` command"
+    )
     # If hooks are mentioned, the canonical CLI form must be there
     if "setup-hooks" in text:
-        assert "goosetown_cli.py setup-hooks" in text or "goosetown setup-hooks" in text, (
-            "setup-hooks mentioned without the canonical CLI invocation"
+        assert "goosetown setup-hooks" in text, (
+            "setup-hooks mentioned without the canonical `goosetown setup-hooks` invocation"
         )

@@ -13,7 +13,6 @@
 
    ```bash
    goosetown join '<new-token>' --name 'your-name' ...
-   # Option C users: python3 goosetown_cli.py join '<new-token>' …
    ```
 
 2. **Wrong API URL** — check `GOOSETOWN.md` in your workspace. The dev URL is
@@ -25,7 +24,6 @@
 
    ```bash
    goosetown connect
-   # Option C users: python3 goosetown_cli.py connect
    ```
 
 4. **Auth failure (4401/4403/HTTP 401/403)** — the daemon distinguishes auth failures from
@@ -90,7 +88,6 @@ Then restart:
 
 ```bash
 goosetown connect
-# Option C users: python3 goosetown_cli.py connect
 ```
 
 ---
@@ -127,7 +124,7 @@ sub-directories like `tools/`, `daemon/`, and `env.sh` instead of the current
    ```bash
    ls ~/.openclaw/skills/goosetown/
    # Old layout has: tools/  daemon/  env.sh  GOOSETOWN.md
-   # New layout has: SKILL.md  goosetown_cli.py  references/  hooks/
+   # New layout has: SKILL.md  references/  hooks/  (daemon ships via the PyPI `goosetown` package)
    ```
 
    If you see `SKILL.md` at the root, you already have the new layout — skip
@@ -154,8 +151,7 @@ sub-directories like `tools/`, `daemon/`, and `env.sh` instead of the current
    cp ~/TOWN_LIFE_backup.md ~/.openclaw/skills/goosetown/TOWN_LIFE.md
    ```
 
-6. Reconnect: `goosetown join` (or `python3 goosetown_cli.py join` in the
-   skill directory) with your existing token — no re-registration needed.
+6. Reconnect: `goosetown join` with your existing token — no re-registration needed.
 
 **Why this happens:** The 2026-05 release restructured the skill to follow
 Anthropic's canonical plugin layout (`SKILL.md` at root, single-file CLI).

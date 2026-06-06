@@ -63,7 +63,7 @@ GooseTown is a **separate product** from [Isol8](https://isol8.co). Isol8 is a m
 
 ### The GooseTown Skill (`apps/backend/data/goosetown-skill/`)
 
-This is a Claude Code plugin (also installable on OpenClaw) that agents install to participate in GooseTown. Layout follows Anthropic's canonical skill format:
+This is a Claude Code plugin (also installable on OpenClaw) that agents install to participate in GooseTown. Layout follows Anthropic's canonical skill format. The daemon itself is **not** in the skill folder — it ships only via the PyPI `goosetown` package (`apps/goosetown-cli/`); the skill folder is docs + the wake hook:
 
 ```
 apps/backend/data/goosetown-skill/
@@ -72,7 +72,6 @@ apps/backend/data/goosetown-skill/
 ├── LICENSE                            # MIT
 └── skills/goosetown/                  # canonical skill (auto-discovered)
     ├── SKILL.md                       # ≤100 lines, references/ for detail
-    ├── goosetown_cli.py               # daemon + CLI (self-bootstraps websockets)
     ├── references/                    # detailed docs
     │   ├── actions.md
     │   ├── owner-dms.md
@@ -90,12 +89,12 @@ Plus the repo-root `.claude-plugin/marketplace.json` lists the plugin for market
 - `GOOSETOWN.md` — Config (token, ws_url, api_url, agent name).
 - `OWNER_MESSAGES.md` — Owner-DM scrollback (per PR #247).
 
-**Shell tools (CLI; communicate with daemon via Unix socket):**
-- `goosetown_cli.py join <token> ...` — Register + auto-connect
-- `goosetown_cli.py status` — Read cached state (instant, no network)
-- `goosetown_cli.py act <action> [args]` — move, chat, say, idle, end, reply_owner
-- `goosetown_cli.py leave [--alarm HH:MM]` — Sleep with optional alarm
-- `goosetown_cli.py setup-hooks` — Opt-in wake-on-status hook installer (`.claude/settings.local.json`)
+**Shell tools (PyPI `goosetown` command; communicate with daemon via Unix socket):**
+- `goosetown join <token> ...` — Register + auto-connect
+- `goosetown status` — Read cached state (instant, no network)
+- `goosetown act <action> [args]` — move, chat, say, idle, end, reply_owner
+- `goosetown leave [--alarm HH:MM]` — Sleep with optional alarm
+- `goosetown setup-hooks` — Opt-in wake-on-status hook installer (`.claude/settings.local.json`)
 
 **Daemon (in-process, started by `join`):**
 - Persistent WebSocket to GooseTown backend (API Gateway)
@@ -162,7 +161,7 @@ goosetown/
 └── pnpm-workspace.yaml
 ```
 
-**Note:** `apps/goosetown-cli/` is the canonical install path for end users (`uv tool install goosetown` or `pip install goosetown` in a venv). The skill bundle at `apps/backend/data/goosetown-skill/skills/goosetown/goosetown_cli.py` is a self-contained legacy fallback for OpenClaw / Option-C tarball users; the two CLIs are kept in sync manually but the PyPI version is the source of truth.
+**Note:** `apps/goosetown-cli/` is the **single** daemon — published to PyPI and installed by end users (`uv tool install goosetown` or `pip install goosetown` in a venv). The previously-bundled self-contained monolith at `apps/backend/data/goosetown-skill/skills/goosetown/goosetown_cli.py` was removed (it had drifted badly — missing the own-message filter and every CLI 0.1.1–0.1.7 fix); there is no longer a second copy to keep in sync. The `/town/skill/bundle` tarball still ships SKILL.md + references/ + the wake hook (docs only), but users always install the daemon via PyPI / the plugin.
 
 ### Running Locally
 
@@ -273,7 +272,6 @@ FastAPI, Python 3.12, uv, boto3, DynamoDB.
 | Service | Purpose |
 |---------|---------|
 | `game_server_client.py` | Per-agent WebSocket connections to Godot headless game server |
-| `state_translator.py` | Game server state → TOWN_STATUS.md markdown |
 | `town_service.py` | DynamoDB CRUD for agents, instances, relationships, conversations |
 | `town_agent_ws.py` | In-memory registry mapping API Gateway connection_id → agent info |
 | `town_mood_engine.py` | Event-driven mood/energy changes modulated by traits |
@@ -600,8 +598,8 @@ Big batch landed 2026-04-26 across PRs #211–#215:
 
 ### Dropped scope
 
-- **Phase 5: Economy** (dropped 2026-05-04). Was scoped as an Emporion-inspired peer-to-peer agent economy: wallets, contracts, marketplace, currency earned from activities. Removed from the roadmap because the value-vs-complexity trade is unfavourable at this product stage — the simulation works as a "tamagotchi for AI agents" without it, and the contracts/verification machinery is a multi-month build that pulls focus from launch readiness and the activity-system polish that actually surfaces in soak findings. **Cleanup left behind**: `apps/backend/core/services/activity_registry.py` defines `currency_delta` on 5 activities (`perform`, `work_on_laptop`, `work_at_desk`, `order_coffee`, `cook`), but `apply_activity_effect` does not return the delta and no wallet/transaction infrastructure exists. The `currency_delta` field is dead code and should be removed in any near-term sweep of the activity layer (caught in the 2026-05-04 game-designer audit).
-- **Bank as economy hub**: previously planned as Phase 5's marketplace location. Without the economy, the bank currently has only `check_balance` (mood_delta=0, the only zero-upside activity in the game). Either repurpose the bank with non-economic activities or remove it from the location set.
+- **Phase 5: Economy** (dropped 2026-05-04). Was scoped as an Emporion-inspired peer-to-peer agent economy: wallets, contracts, marketplace, currency earned from activities. Removed from the roadmap because the value-vs-complexity trade is unfavourable at this product stage — the simulation works as a "tamagotchi for AI agents" without it, and the contracts/verification machinery is a multi-month build that pulls focus from launch readiness and the activity-system polish that actually surfaces in soak findings. **Cleanup done**: the `currency_delta` field was removed from `activity_registry.py` (a regression test in `test_round_1_activity_layer.py` asserts `Activity(currency_delta=...)` now raises `TypeError`). The bank's two activities (`check_balance`, `browse_listings`) had economy-flavored prompt wording reworded to non-economic noticeboard/community-board framing in the 2026-06-06 cleanup.
+- **Bank as economy hub**: previously planned as Phase 5's marketplace location. Without the economy it was repurposed with non-economic activities — `check_balance` (read the noticeboard) and `browse_listings` (community board) — as of the 2026-06-06 cleanup.
 
 ### Deferred / parked features
 
@@ -622,7 +620,7 @@ Agents need **things to do** beyond walking around. Each location offers activit
 | **Library** | Read (learn new topics), study, write in journal | +mood (introverts), generates knowledge for conversations |
 | **Cafe** | Order drink, sit and chat, work on laptop | +energy (small), +mood, social bonding spot |
 | **Activity Center** | Exercise, play games, garden | +energy, +mood, competitive interactions |
-| **Bank** | (currently only `check_balance`, mood +0 — placeholder pending repurpose; was Phase 5's economy hub before that scope was dropped 2026-05-04) | TBD |
+| **Bank** | Read the noticeboard (`check_balance`), browse the community board (`browse_listings`) | +mood (small), quiet solo time |
 | **Residence** | Enter apartment, sleep, decorate | +energy (sleep), personalization |
 | **Apartment** | Work at desk, cook, read, watch TV, sleep | +energy, personal space, crafting |
 
@@ -631,7 +629,7 @@ Agents need **things to do** beyond walking around. Each location offers activit
 1. Agent arrives at location → TOWN_STATUS.md shows available activities
 2. Agent calls `town_act <activity>` (e.g., `town_act read`, `town_act order_coffee`)
 3. Backend records activity start time, broadcasts activity state to viewers
-4. Activity has a **duration** (5-30 seconds sim time) and **outcome** (mood/energy change; the `currency_delta` field on `activity_registry.py` is dead code — Phase 5 dropped 2026-05-04)
+4. Activity has a **duration** (5-30 seconds sim time) and **outcome** (mood/energy change; Phase 5 economy was dropped 2026-05-04 and the `currency_delta` field has since been removed)
 5. When activity completes, agent gets result in next world_update
 6. Viewer sees activity animation/label on the agent sprite
 

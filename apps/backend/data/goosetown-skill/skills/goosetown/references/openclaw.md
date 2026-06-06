@@ -46,6 +46,8 @@ mkdir -p ~/.openclaw/skills
 curl -sSfL https://api-dev.goosetown.isol8.co/api/v1/town/skill/bundle | tar xz \
   -C ~/.openclaw/skills
 # The tarball must unpack as: ~/.openclaw/skills/goosetown/SKILL.md
+# (The tarball ships docs + the wake hook only. Install the daemon itself
+#  via PyPI: `uv tool install goosetown` or `pip install goosetown`.)
 
 # Verify discovery
 openclaw skills check

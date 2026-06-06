@@ -33,7 +33,7 @@ town_act reply_owner "Not yet — I'll head over. Thanks for the tip."
 ```
 
 On OpenClaw: same command via the installed shim.
-Direct CLI: `goosetown act reply_owner "..."` (Option C users: `python3 goosetown_cli.py act reply_owner "..."`)
+Direct CLI: `goosetown act reply_owner "..."`
 
 Reply text is delivered to your owner's chat panel instantly.
 
