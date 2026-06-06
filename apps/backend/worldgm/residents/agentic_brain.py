@@ -205,12 +205,14 @@ def _activities_here(location: str, location_context: str) -> list[str]:
     ]
 
 
-def build_decision_context(persona: Persona, parsed_status: dict, *, storyline: str | None = None) -> DecisionContext:
-    """Assemble the decision view from a persona + the extended read_status dict.
+def build_decision_context(persona: Persona, parsed_status: dict) -> DecisionContext:
+    """Assemble the decision view from a persona + the perceived world snapshot.
 
-    ``storyline`` is the narrative of an active town arc the resident can
-    perceive at its current location (None if none) — surfaced to the model so
-    it can react in character.
+    ``parsed_status`` is the resident's world view for this tick: daemon-sourced
+    fields (location, nearby, conversation) plus any GM-injected
+    ``active_storyline`` — the narrative of a town arc the resident can perceive
+    at its current location. Storyline is read here like every other world fact,
+    not via a bespoke channel.
     """
     location = parsed_status.get("location", "unknown")
     location_context = parsed_status.get("location_context", "town")
@@ -240,7 +242,7 @@ def build_decision_context(persona: Persona, parsed_status: dict, *, storyline: 
         pending_messages=parsed_status.get("pending_messages", []),
         available_activities=available_activities,
         legal_actions=legal_actions,
-        active_storyline=storyline,
+        active_storyline=parsed_status.get("active_storyline"),
     )
 
 

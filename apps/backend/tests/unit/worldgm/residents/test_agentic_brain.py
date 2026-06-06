@@ -249,8 +249,8 @@ def test_context_nearby_normalized_to_display_name():
     assert ctx.nearby[0]["agent_id"] == "uuid-ada"
 
 
-def test_context_carries_storyline():
-    ctx = build_decision_context(_PERSONA, _status(), storyline="A lost dog wandered into the cafe.")
+def test_context_carries_storyline_from_snapshot():
+    ctx = build_decision_context(_PERSONA, _status(active_storyline="A lost dog wandered into the cafe."))
     assert ctx.active_storyline == "A lost dog wandered into the cafe."
 
 
@@ -260,7 +260,7 @@ def test_context_storyline_defaults_none():
 
 
 def test_build_prompt_renders_storyline_when_present():
-    ctx = build_decision_context(_PERSONA, _status(), storyline="A lost dog wandered into the cafe.")
+    ctx = build_decision_context(_PERSONA, _status(active_storyline="A lost dog wandered into the cafe."))
     prompt = build_prompt(ctx)
     assert "A lost dog wandered into the cafe." in prompt
     assert "happening" in prompt.lower()

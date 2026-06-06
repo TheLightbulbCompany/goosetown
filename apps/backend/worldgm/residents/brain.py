@@ -60,7 +60,6 @@ async def step_resident_brain(
     *,
     model=None,
     persona=None,
-    storyline: str | None = None,
     rng=None,
     now_utc_hour: int | None = None,
 ) -> None:
@@ -82,8 +81,9 @@ async def step_resident_brain(
         parsed_status: Output of read_status(daemon) for this tick.
         model:         Optional LLM (BedrockLanguageModel). None → FSM fallback.
         persona:       Optional Persona, required for the agentic prompt.
-        storyline:     Optional narrative of a town arc the resident perceives
-                       at its current location; surfaced in the decision prompt.
+
+    A town storyline, if any, rides in ``parsed_status["active_storyline"]``
+    (GM-injected) and is read like any other world fact in the snapshot.
         rng:           Optional zero-arg callable returning float in [0,1).
                        Defaults to random.random.  Injectable for tests.
         now_utc_hour:  Optional int 0-23. Defaults to the current UTC hour.
@@ -145,7 +145,7 @@ async def step_resident_brain(
         return
 
     # Decide via the LLM, then dispatch.
-    ctx = build_decision_context(persona, parsed_status, storyline=storyline)
+    ctx = build_decision_context(persona, parsed_status)
     action = await decide(model, ctx)
     cmd = to_command(action)
     if cmd is None:

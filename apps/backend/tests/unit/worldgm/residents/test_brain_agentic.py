@@ -139,8 +139,9 @@ async def test_llm_idle_dispatches_nothing():
     assert d.commands == []
 
 
-async def test_storyline_reaches_the_model_prompt():
-    """A storyline passed to step_resident_brain must appear in the model's prompt."""
+async def test_storyline_in_snapshot_reaches_the_model_prompt():
+    """A storyline carried in the perceived world snapshot (active_storyline)
+    must appear in the model's prompt — no bespoke arg needed."""
     d = _FakeDaemon(_state())
 
     class _CapturingModel:
@@ -152,15 +153,9 @@ async def test_storyline_reaches_the_model_prompt():
             return '{"action": "idle"}'
 
     model = _CapturingModel()
-    await step_resident_brain(
-        d,
-        _runtime(),
-        read_status(d),
-        model=model,
-        persona=_PERSONA,
-        now_utc_hour=12,
-        storyline="A traveling merchant set up a stall.",
-    )
+    status = read_status(d)
+    status["active_storyline"] = "A traveling merchant set up a stall."
+    await step_resident_brain(d, _runtime(), status, model=model, persona=_PERSONA, now_utc_hour=12)
     assert "A traveling merchant set up a stall." in model.prompt
 
 
