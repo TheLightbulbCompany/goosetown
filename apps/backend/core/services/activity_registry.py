@@ -377,11 +377,10 @@ _ACTIVITIES: list[Activity] = [
         mood_delta=0,
         energy_delta=-1,
         animation="idle",
-        description="Checking balance",
+        description="Reading the noticeboard",
         agent_prompt=(
-            "You are at the bank checking your account. "
-            "Note your current balance in TOWN_LIFE.md and decide if you need to earn more "
-            "or if you have enough to spend on something."
+            "You are in the old bank building, reading the public noticeboard. "
+            "Note anything that catches your eye in TOWN_LIFE.md."
         ),
     ),
     Activity(
@@ -391,11 +390,10 @@ _ACTIVITIES: list[Activity] = [
         mood_delta=1,
         energy_delta=-2,
         animation="reading",
-        description="Browsing job listings",
+        description="Browsing the community board",
         agent_prompt=(
-            "You are browsing the job listings board at the bank. "
-            "Look through what work is available in town. "
-            "Note any interesting opportunities in TOWN_LIFE.md."
+            "You are browsing the community board at the bank — events, lost-and-found, "
+            "neighbours looking for help. Note anything interesting in TOWN_LIFE.md."
         ),
     ),
     # --- Residence ---

@@ -3536,3 +3536,40 @@ a56c73c fix: register event handlers on sprite-ready auto-connect
 62da998 docs: Plan A — multi-animation sprite pipeline implementation plan
 ---
 
+## Session End: 20260605_233037
+### Commits
+b592069 docs(spec): align #2 spec with implementation (snapshot delivery, offload only slow ops)
+82c4002 fix(worldgm): persist preferred_location on arcs + GSI-lag freshness (review)
+0183644 chore(worldgm): ruff format pass for GM storyline injection
+59a0e3d feat(worldgm): WORLDGM_ARCS_ENABLED kill switch for the GM arc step
+278b3de feat(worldgm): wire GM arc step into tick + deliver storylines via world snapshot
+2b6dd0f feat(worldgm): publish arc kickoff/beat/resolve to EventBridge (best-effort, offloaded)
+9af9786 refactor(worldgm): storyline rides in the world snapshot, not a bespoke arg
+80b860c feat(worldgm): step_resident_brain forwards storyline to the brain
+2815e88 feat(worldgm): thread active_storyline into decision context + prompt
+57f5955 docs(plan): GM storyline injection implementation plan (TDD, 7 tasks)
+a27f26c docs(spec): refine #2 — read-after cache + offload slow ops only
+02a0aa5 docs(spec): GM storyline injection design (subsystem #2)
+9bbe809 feat(worldgm): agentic resident brain — LLM-per-tick decisions (#341)
+---
+
+## Session End: 20260605_234254
+### Commits
+c2fd782 fix(worldgm): derive arc cache from in-memory state, not a stale GSI re-read (codex)
+b592069 docs(spec): align #2 spec with implementation (snapshot delivery, offload only slow ops)
+82c4002 fix(worldgm): persist preferred_location on arcs + GSI-lag freshness (review)
+0183644 chore(worldgm): ruff format pass for GM storyline injection
+59a0e3d feat(worldgm): WORLDGM_ARCS_ENABLED kill switch for the GM arc step
+278b3de feat(worldgm): wire GM arc step into tick + deliver storylines via world snapshot
+2b6dd0f feat(worldgm): publish arc kickoff/beat/resolve to EventBridge (best-effort, offloaded)
+9af9786 refactor(worldgm): storyline rides in the world snapshot, not a bespoke arg
+80b860c feat(worldgm): step_resident_brain forwards storyline to the brain
+2815e88 feat(worldgm): thread active_storyline into decision context + prompt
+57f5955 docs(plan): GM storyline injection implementation plan (TDD, 7 tasks)
+a27f26c docs(spec): refine #2 — read-after cache + offload slow ops only
+02a0aa5 docs(spec): GM storyline injection design (subsystem #2)
+9bbe809 feat(worldgm): agentic resident brain — LLM-per-tick decisions (#341)
+### Uncommitted Changes
+production/session-logs/session-log.md
+---
+
