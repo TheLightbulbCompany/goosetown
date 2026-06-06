@@ -109,6 +109,22 @@ async def test_tick_runs_arc_step_and_caches_active_arcs(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_arc_step_skipped_when_disabled(monkeypatch):
+    import worldgm.__main__ as wm
+
+    monkeypatch.setattr(wm, "ARCS_ENABLED", False)
+    monkeypatch.setattr(wm, "maybe_kickoff_arc", AsyncMock(return_value=None))
+    monkeypatch.setattr(wm, "process_arc_beats", AsyncMock(return_value=0))
+
+    state = _gm_state(residents={}, active_arcs=[])
+    await wm._tick(state)
+
+    wm.maybe_kickoff_arc.assert_not_awaited()
+    wm.process_arc_beats.assert_not_awaited()
+    assert state.active_arcs == []
+
+
+@pytest.mark.asyncio
 async def test_tick_one_resident_injects_storyline_into_snapshot(monkeypatch):
     import worldgm.__main__ as wm
 

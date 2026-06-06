@@ -55,6 +55,9 @@ from .residents.brain import read_status, step_resident_brain
 
 TICK_INTERVAL_SECONDS = float(os.environ.get("WORLDGM_TICK_INTERVAL", "30"))
 RESIDENTS_ENABLED = os.environ.get("RESIDENTS_ENABLED", "false").lower() == "true"
+# Kill switch for the GM narrative-arc step (kickoff/beats + storyline delivery).
+# Default on; set WORLDGM_ARCS_ENABLED=false to disable without a code revert.
+ARCS_ENABLED = os.environ.get("WORLDGM_ARCS_ENABLED", "true").lower() == "true"
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -214,12 +217,13 @@ async def _tick(state: GmState) -> None:
     # arc helpers offload their own slow Bedrock/EventBridge calls; the small
     # DDB reads here are cheap. Best-effort: a failure must not break the
     # resident gather below — residents just see no storyline that tick.
-    try:
-        await maybe_kickoff_arc(state)
-        await process_arc_beats(state)
-        state.active_arcs = await _read_active_arcs()
-    except Exception:
-        logger.exception("GM arc step failed; continuing with stale arcs")
+    if ARCS_ENABLED:
+        try:
+            await maybe_kickoff_arc(state)
+            await process_arc_beats(state)
+            state.active_arcs = await _read_active_arcs()
+        except Exception:
+            logger.exception("GM arc step failed; continuing with stale arcs")
 
     # --- Resident brain ticks (RESIDENTS_ENABLED only) ---
     #
