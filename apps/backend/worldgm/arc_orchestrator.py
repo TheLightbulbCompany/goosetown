@@ -168,9 +168,7 @@ async def _kickoff_arc(state, template: dict) -> dict:
 
     # Publish to EventBridge + world-events (durable feed log + external agents).
     # Best-effort: a publish failure can't abort the already-persisted arc.
-    await _emit_arc_event(
-        tag="arc.kickoff", arc=arc, summary=narrative_text, location=preferred, witnesses=witnesses
-    )
+    await _emit_arc_event(tag="arc.kickoff", arc=arc, summary=narrative_text, location=preferred, witnesses=witnesses)
     return arc
 
 
