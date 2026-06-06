@@ -30,33 +30,16 @@ script = ExtResource("1_agent")
 position = Vector2(0, -16)
 scale = Vector2(0.5, 0.5)
 
-[node name="NameplateContainer" type="Control" parent="."]
+[node name="Nameplate" type="Panel" parent="."]
 visible = false
-layout_mode = 3
-anchors_preset = 0
-offset_left = -40.0
-offset_top = -50.0
-offset_right = 40.0
-offset_bottom = -34.0
-mouse_filter = 2
-
-[node name="Pill" type="Panel" parent="NameplateContainer"]
-layout_mode = 1
-anchors_preset = 8
-anchor_left = 0.5
-anchor_top = 0.5
-anchor_right = 0.5
-anchor_bottom = 0.5
 offset_left = -30.0
-offset_top = -8.0
+offset_top = -50.0
 offset_right = 30.0
-offset_bottom = 8.0
-grow_horizontal = 2
-grow_vertical = 2
+offset_bottom = -34.0
 mouse_filter = 2
 theme_override_styles/panel = SubResource("StyleBoxFlat_pill")
 
-[node name="NameLabel" type="Label" parent="NameplateContainer/Pill"]
+[node name="NameLabel" type="Label" parent="Nameplate"]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
@@ -89,10 +72,10 @@ layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
-offset_left = 4.0
-offset_top = 2.0
-offset_right = -4.0
-offset_bottom = -5.0
+offset_left = 7.0
+offset_top = 5.0
+offset_right = -7.0
+offset_bottom = -8.0
 theme_override_font_sizes/font_size = 9
 horizontal_alignment = 1
 vertical_alignment = 1
