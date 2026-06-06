@@ -75,8 +75,7 @@ def _stub_sync_locations(monkeypatch):
 
     monkeypatch.setattr(main_mod, "sync_locations", _fake_sync_locations)
     monkeypatch.setattr(main_mod, "maybe_kickoff_arc", AsyncMock(return_value=None))
-    monkeypatch.setattr(main_mod, "process_arc_beats", AsyncMock(return_value=0))
-    monkeypatch.setattr(main_mod, "_read_active_arcs", AsyncMock(return_value=[]))
+    monkeypatch.setattr(main_mod, "process_arc_beats", AsyncMock(return_value=[]))
 
 
 @pytest.mark.asyncio

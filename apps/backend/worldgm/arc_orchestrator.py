@@ -176,32 +176,43 @@ async def _kickoff_arc(state, template: dict) -> dict:
     return arc
 
 
-async def process_arc_beats(state) -> int:
-    """Fire any arc beats whose nextBeatAt has elapsed. Returns count fired."""
+async def process_arc_beats(state) -> list[dict]:
+    """Fire any due beats / resolutions and return the arcs STILL active after
+    processing (in-memory, fresh).
+
+    Returning the in-memory list lets the caller cache it directly instead of
+    re-reading the ``status-nextBeatAt-index`` GSI right after writing to it —
+    that GSI is eventually consistent, so a same-tick re-read could miss a
+    just-written ``lastBeatText`` or still show a just-resolved arc as active.
+    """
     active = await _read_active_arcs()
-    fired = 0
     now = _now_ms()
+    still_active: list[dict] = []
     for arc in active:
         next_at = int(arc.get("nextBeatAt", 0))
         if next_at <= now:
-            await _fire_beat(state, arc)
-            fired += 1
-    return fired
+            resolved = await _fire_beat(state, arc)
+            if resolved:
+                continue  # resolved/abandoned — drop from the active set
+        still_active.append(arc)
+    return still_active
 
 
-async def _fire_beat(state, arc: dict) -> None:
-    """Generate next beat for an arc; persist updates."""
+async def _fire_beat(state, arc: dict) -> bool:
+    """Generate the next beat for an arc; persist updates and update ``arc``
+    in place so the caller's in-memory copy is fresh. Returns True when the arc
+    was resolved or abandoned (so the caller drops it from the active set)."""
     template = find_template(arc["templateId"])
     if not template:
         logger.warning("[arc:%s] template %s not found, abandoning", arc["arcId"][:8], arc["templateId"])
         await _abandon_arc(arc["arcId"])
-        return
+        return True
 
     # If past expiresAt, resolve the arc
     now = _now_ms()
     if int(arc.get("expiresAt", 0)) <= now:
         await _resolve_arc(state, arc, template)
-        return
+        return True
 
     # Generate a continuation beat
     beat_prompt = (
@@ -210,16 +221,22 @@ async def _fire_beat(state, arc: dict) -> None:
     beat_text = await asyncio.to_thread(state.narrative_resolver.resolve, beat_prompt)
 
     # Update arc with next beat
+    next_beat_at = str(now + 3_600_000)
     table = dynamo.worldgm_arcs_table()
     table.update_item(
         Key={"arcId": arc["arcId"]},
         UpdateExpression="SET nextBeatAt = :n, lastBeatAt = :l, lastBeatText = :t",
         ExpressionAttributeValues={
-            ":n": str(now + 3_600_000),
+            ":n": next_beat_at,
             ":l": now,
             ":t": beat_text,
         },
     )
+    # Mirror the write into the in-memory copy so the cached active list the
+    # caller builds is fresh without a GSI re-read.
+    arc["lastBeatText"] = beat_text
+    arc["lastBeatAt"] = now
+    arc["nextBeatAt"] = next_beat_at
     logger.info("[arc:%s] beat fired", arc["arcId"][:8])
 
     await _emit_arc_event(
@@ -229,6 +246,7 @@ async def _fire_beat(state, arc: dict) -> None:
         location=template.get("preferred_location"),
         witnesses=arc.get("witnessIds", []),
     )
+    return False
 
 
 async def _resolve_arc(state, arc: dict, template: dict) -> None:

@@ -47,7 +47,7 @@ import signal
 from dataclasses import dataclass, field
 from typing import Any
 
-from .arc_orchestrator import _read_active_arcs, maybe_kickoff_arc, process_arc_beats
+from .arc_orchestrator import maybe_kickoff_arc, process_arc_beats
 from .bedrock_model import BedrockLanguageModel
 from .location_sync import sync_locations
 from .residents.behavior import ResidentRuntime
@@ -214,17 +214,17 @@ async def _tick(state: GmState) -> None:
     )
     # --- GM arc step: kick off / advance town storylines, then cache the
     # active arcs so residents at an arc's location perceive it THIS tick. The
-    # arc helpers offload their own slow Bedrock/EventBridge calls; the small
-    # DDB reads here are cheap. Best-effort: a failure must not break the
-    # resident gather below — residents just see no storyline that tick.
+    # arc helpers offload their own slow Bedrock/EventBridge calls. Best-effort:
+    # a failure must not break the resident gather below — residents just see no
+    # storyline that tick.
     if ARCS_ENABLED:
         try:
             new_arc = await maybe_kickoff_arc(state)
-            await process_arc_beats(state)
-            active = await _read_active_arcs()
-            # The status-index GSI is eventually consistent: a just-kicked-off
-            # arc may be absent from this same-tick re-query. Merge it in so
-            # residents perceive it now rather than ~30s late.
+            # process_arc_beats returns the in-memory active set AFTER its writes
+            # (fresh lastBeatText, resolved arcs dropped) — no eventually-consistent
+            # GSI re-read. Merge in any just-kicked-off arc (kickoff ran before the
+            # beat read, and a brand-new arc has its first beat an hour out).
+            active = await process_arc_beats(state)
             if new_arc and not any(a.get("arcId") == new_arc.get("arcId") for a in active):
                 active.append(new_arc)
             state.active_arcs = active

@@ -74,9 +74,9 @@ def test_process_arc_beats_resolves_expired_arc(mock_table, mock_emit):
     }
     mock_table.return_value.query.return_value = {"Items": [expired_arc]}
     state = _state_with({"alice": "cafe", "bob": "library"})
-    fired = asyncio.run(process_arc_beats(state))
-    assert fired == 1
-    # The arc should have been resolved
+    still_active = asyncio.run(process_arc_beats(state))
+    # The expired arc was resolved → dropped from the returned active set.
+    assert still_active == []
     update_calls = mock_table.return_value.update_item.call_args_list
     resolved_call = next(c for c in update_calls if "resolved" in str(c.kwargs.get("ExpressionAttributeValues", {})))
     assert resolved_call is not None
@@ -100,8 +100,11 @@ def test_process_arc_beats_fires_continuation_beat(mock_table, mock_emit):
     }
     mock_table.return_value.query.return_value = {"Items": [active_arc]}
     state = _state_with({"alice": "cafe", "bob": "library"}, narrative_text="next beat text")
-    fired = asyncio.run(process_arc_beats(state))
-    assert fired == 1
+    still_active = asyncio.run(process_arc_beats(state))
+    # The arc is still active and carries the fresh beat text in-memory (so the
+    # caller can cache it without a stale GSI re-read).
+    assert len(still_active) == 1
+    assert still_active[0]["lastBeatText"] == "next beat text"
     state.narrative_resolver.resolve.assert_called()
     # arc was updated with new beat text
     update_calls = mock_table.return_value.update_item.call_args_list

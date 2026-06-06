@@ -95,10 +95,11 @@ def _gm_state(residents, active_arcs):
 async def test_tick_runs_arc_step_and_caches_active_arcs(monkeypatch):
     import worldgm.__main__ as wm
 
-    monkeypatch.setattr(wm, "maybe_kickoff_arc", AsyncMock(return_value=None))
-    monkeypatch.setattr(wm, "process_arc_beats", AsyncMock(return_value=0))
     arc = {"arcId": "a1", "preferred_location": "cafe", "narrativeKickoff": "k"}
-    monkeypatch.setattr(wm, "_read_active_arcs", AsyncMock(return_value=[arc]))
+    monkeypatch.setattr(wm, "maybe_kickoff_arc", AsyncMock(return_value=None))
+    # process_arc_beats returns the in-memory active set; _tick caches it directly
+    # (no eventually-consistent GSI re-read).
+    monkeypatch.setattr(wm, "process_arc_beats", AsyncMock(return_value=[arc]))
 
     state = _gm_state(residents={}, active_arcs=[])
     await wm._tick(state)
@@ -106,6 +107,21 @@ async def test_tick_runs_arc_step_and_caches_active_arcs(monkeypatch):
     wm.maybe_kickoff_arc.assert_awaited_once()
     wm.process_arc_beats.assert_awaited_once()
     assert state.active_arcs == [arc]
+
+
+@pytest.mark.asyncio
+async def test_tick_merges_just_kicked_off_arc_into_cache(monkeypatch):
+    import worldgm.__main__ as wm
+
+    new_arc = {"arcId": "fresh", "preferred_location": "plaza", "narrativeKickoff": "A bard arrives."}
+    monkeypatch.setattr(wm, "maybe_kickoff_arc", AsyncMock(return_value=new_arc))
+    # process_arc_beats hasn't seen the new arc yet (GSI lag) — returns [].
+    monkeypatch.setattr(wm, "process_arc_beats", AsyncMock(return_value=[]))
+
+    state = _gm_state(residents={}, active_arcs=[])
+    await wm._tick(state)
+
+    assert state.active_arcs == [new_arc]  # merged in despite the empty beat read
 
 
 @pytest.mark.asyncio
