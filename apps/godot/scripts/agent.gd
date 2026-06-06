@@ -110,12 +110,37 @@ const STALE_INTERP_THRESHOLD_MS: int = 30000
 var _atlas_cache: Dictionary = {}
 
 # ---------------------------------------------------------------------------
+# Nameplate / speech-bubble sizing
+# ---------------------------------------------------------------------------
+# Both the nameplate pill and the speech bubble are sized in script to HUG
+# their text instead of using fixed scene rects — a fixed 60px pill clipped
+# long names ("Edgar Allan Poe") and a fixed 120px bubble dwarfed short lines
+# and overflowed long ones. We measure the rendered text and resize the box,
+# keeping it centered above the agent's head (these are top-level Controls
+# parented to a Node2D, so we drive position/size directly, not via anchors).
+
+## Horizontal + vertical padding (px) added around the name text, inside the pill.
+const NAMEPLATE_PAD: Vector2 = Vector2(14.0, 6.0)
+## Y of the pill's BOTTOM edge in agent-local space (just above the head).
+const NAMEPLATE_BOTTOM_Y: float = -34.0
+
+## Horizontal + vertical padding (px) added around speech text, inside the bubble.
+## Larger than the pill's because the 9-patch border art needs breathing room.
+const SPEECH_PAD: Vector2 = Vector2(18.0, 14.0)
+## Y of the bubble's BOTTOM edge in agent-local space (above the nameplate slot).
+const SPEECH_BOTTOM_Y: float = -42.0
+## Text wraps once it would exceed this width (px); short lines stay narrower.
+const SPEECH_MAX_TEXT_WIDTH: float = 130.0
+## Floor so a one-word line still gets a sensibly proportioned bubble.
+const SPEECH_MIN_TEXT_WIDTH: float = 24.0
+
+# ---------------------------------------------------------------------------
 # @onready variables
 # ---------------------------------------------------------------------------
 
 @onready var sprite: Sprite2D = $Sprite
-@onready var nameplate: Control = $NameplateContainer
-@onready var name_label: Label = $NameplateContainer/Pill/NameLabel
+@onready var nameplate: Panel = $Nameplate
+@onready var name_label: Label = $Nameplate/NameLabel
 @onready var speech_container: NinePatchRect = $SpeechBubbleContainer
 @onready var speech_text_label: Label = $SpeechBubbleContainer/SpeechText
 @onready var nav_agent: NavigationAgent2D = $NavigationAgent2D
@@ -250,6 +275,7 @@ func setup(id: String, url: String, x: float, y: float, facing_json: String, dis
 	target_position = position
 	if name_label:
 		name_label.text = display_name
+		_resize_nameplate()
 	if speech_container:
 		speech_container.visible = false
 
@@ -287,6 +313,7 @@ func update_state(data: Dictionary) -> void:
 func _show_speech_bubble() -> void:
 	if speech_container == null:
 		return
+	_resize_speech_bubble()
 	speech_container.modulate.a = 0.0
 	speech_container.visible = true
 	var tween: Tween = create_tween()
@@ -299,6 +326,52 @@ func _hide_speech_bubble() -> void:
 	var tween: Tween = create_tween()
 	tween.tween_property(speech_container, "modulate:a", 0.0, 0.3)
 	tween.tween_callback(func(): speech_container.visible = false)
+
+
+func _resize_nameplate() -> void:
+	## Size the pill to hug the name (plus padding) and re-center it above the
+	## head. Called once per name change; the NameLabel fills the pill via its
+	## anchors, so we only move/resize the pill.
+	if name_label == null or nameplate == null:
+		return
+	var font: Font = name_label.get_theme_font("font")
+	if font == null:
+		return  # not in tree yet / headless without a theme — skip, it's cosmetic
+	var font_size: int = name_label.get_theme_font_size("font_size")
+	var text_w: float = font.get_string_size(
+		display_name, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size
+	).x
+	var box_w: float = text_w + NAMEPLATE_PAD.x
+	var box_h: float = font.get_height(font_size) + NAMEPLATE_PAD.y
+	nameplate.size = Vector2(box_w, box_h)
+	nameplate.position = Vector2(-box_w * 0.5, NAMEPLATE_BOTTOM_Y - box_h)
+
+
+func _resize_speech_bubble() -> void:
+	## Size the 9-patch bubble to hug the current speech text, wrapping once the
+	## text would exceed SPEECH_MAX_TEXT_WIDTH, and re-center it above the head.
+	## The SpeechText label fills the bubble (with a small inset) via anchors, so
+	## resizing the NinePatchRect reflows the text automatically.
+	if speech_text_label == null or speech_container == null:
+		return
+	var font: Font = speech_text_label.get_theme_font("font")
+	if font == null:
+		return  # not in tree yet / headless without a theme — skip, it's cosmetic
+	var font_size: int = speech_text_label.get_theme_font_size("font_size")
+	var text: String = speech_text_label.text
+	# Natural single-line width, clamped to the wrap band. Below MAX the bubble
+	# hugs a short line; at MAX the text wraps and we measure the multi-line box.
+	var natural_w: float = font.get_string_size(
+		text, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size
+	).x
+	var wrap_w: float = clampf(natural_w, SPEECH_MIN_TEXT_WIDTH, SPEECH_MAX_TEXT_WIDTH)
+	var text_size: Vector2 = font.get_multiline_string_size(
+		text, HORIZONTAL_ALIGNMENT_CENTER, wrap_w, font_size
+	)
+	var box_w: float = text_size.x + SPEECH_PAD.x
+	var box_h: float = text_size.y + SPEECH_PAD.y
+	speech_container.size = Vector2(box_w, box_h)
+	speech_container.position = Vector2(-box_w * 0.5, SPEECH_BOTTOM_Y - box_h)
 
 
 func set_navigation_target(target: Vector2) -> void:
