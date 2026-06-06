@@ -268,7 +268,7 @@ def build_decision_context(persona: Persona, parsed_status: dict) -> DecisionCon
         legal_actions=legal_actions,
         active_storyline=parsed_status.get("active_storyline"),
         mood=_render_mood(parsed_status.get("mood")),
-        energy=int(parsed_status.get("energy", 100)),
+        energy=int(_energy if (_energy := parsed_status.get("energy")) is not None else 100),
         recent_events=list(parsed_status.get("recent_events", [])),
     )
 
