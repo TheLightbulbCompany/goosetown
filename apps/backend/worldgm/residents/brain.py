@@ -22,19 +22,40 @@ from worldgm.residents.behavior import _BED, ResidentRuntime, is_in_sleep_window
 logger = logging.getLogger(__name__)
 
 
+def _recent_events(daemon, limit: int = 6) -> list[str]:
+    """Tail the resident's TOWN_EVENTS.md — the same event stream an external
+    agent reads. Returns the last ``limit`` event lines, or [] if the file is
+    absent/unreadable (never raises)."""
+    workspace = getattr(daemon, "_workspace_path", None)
+    if workspace is None:
+        return []
+    try:
+        path = workspace / "TOWN_EVENTS.md"
+        if not path.exists():
+            return []
+        lines = [ln.strip() for ln in path.read_text().splitlines() if ln.strip().startswith("- ")]
+        return [ln.lstrip("- ").strip() for ln in lines[-limit:]]
+    except Exception:
+        return []
+
+
 def read_status(daemon) -> dict:
     """Extract the decision-relevant view from the daemon's live state.
 
-    Reads daemon.state directly (the structured source the daemon maintains),
-    NOT the TOWN_*.md markdown files — same data, far more robust.
+    Surfaces the same world picture an external agent reads from the town
+    files — mood, energy, nearby, activity, recent events — so the resident
+    brain reasons over the full situation, not a thin subset.
 
     Returns a dict with keys:
         location           str   current agent location (or "unknown")
         location_context   str   "town" | "apartment" (default "town")
         activity           str   current activity string (or "idle")
+        mood               int|str  current mood (raw from state)
+        energy             int   current energy (default 100)
         active_conversation  dict | None
         nearby             list  nearby agents [{agent_id, name/display_name}]
         pending_messages   list  unread incoming conversation turns
+        recent_events      list  last few TOWN_EVENTS.md lines
     """
     state = getattr(daemon, "state", None) or {}
     agent = state.get("agent") or {}
@@ -42,9 +63,12 @@ def read_status(daemon) -> dict:
         "location": agent.get("location", "unknown"),
         "location_context": agent.get("location_context", "town"),
         "activity": agent.get("activity", "idle"),
+        "mood": agent.get("mood"),
+        "energy": agent.get("energy", 100),
         "active_conversation": state.get("active_conversation"),
         "nearby": state.get("nearby", []),
         "pending_messages": state.get("pending_messages", []),
+        "recent_events": _recent_events(daemon),
     }
 
 
