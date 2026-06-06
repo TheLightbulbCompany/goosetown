@@ -133,6 +133,31 @@ async def test_one_failing_brain_does_not_break_others(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_tick_one_resident_threads_model_and_persona(monkeypatch):
+    """_tick_one_resident passes state.model_lite + handle.persona into the brain."""
+    import worldgm.__main__ as main_mod
+
+    captured: dict = {}
+
+    async def capture_step(daemon, runtime, status, *, model=None, persona=None, **_):
+        captured["model"] = model
+        captured["persona"] = persona
+
+    monkeypatch.setattr(main_mod, "step_resident_brain", capture_step)
+
+    persona = _persona("ada")
+    handle = _FakeHandle(persona=persona, daemon=_connected_daemon())
+    state = _state_with_residents({"ada": handle})
+    sentinel_model = object()
+    state.model_lite = sentinel_model
+
+    await main_mod._tick_one_resident(state, "ada", handle)
+
+    assert captured["model"] is sentinel_model
+    assert captured["persona"] is persona
+
+
+@pytest.mark.asyncio
 async def test_unconnected_residents_are_skipped(monkeypatch):
     """Residents whose daemon is None (still being launched) or whose
     daemon.state is empty (haven't received initial state yet) must not have

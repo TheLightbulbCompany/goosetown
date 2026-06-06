@@ -32,6 +32,8 @@ def test_read_status_extracts_from_daemon_state():
         "location_context": "town",
         "activity": "reading",
         "active_conversation": {"conv_id": "c2"},
+        "nearby": [],
+        "pending_messages": [],
     }
 
 
