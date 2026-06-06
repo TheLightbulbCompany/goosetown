@@ -50,10 +50,21 @@ def _crop_and_resize(img: Image.Image, target_size: int) -> Image.Image:
 
     PixelLab returns characters at ~60% of the canvas with transparent padding.
     Simply resizing the full canvas makes the character tiny. Instead:
-    1. Find the bounding box of non-transparent pixels
-    2. Crop to that bbox with a small margin
-    3. Resize to fill the target frame (maintaining aspect ratio, centered)
+    1. Strip PixelLab's solid gray frame background (so the bbox is the
+       character, not the whole canvas — see ``_strip_gray_background``)
+    2. Find the bounding box of non-transparent pixels
+    3. Crop to that bbox with a small margin
+    4. Resize to fill the target frame (maintaining aspect ratio, centered)
+
+    The gray strip lives here, in the shared chokepoint every composite path
+    funnels through, rather than in individual composers. ``animate-with-text``
+    frames come back with an opaque ``(128, 128, 128)`` fill; the custom
+    "talking" animation went through ``composite_animation_spritesheet`` (which
+    did not strip) and rendered as a gray box in the viewer. Stripping here
+    fixes every path uniformly and can't regress when a new composer is added.
+    Idempotent: already-transparent corners make it a no-op.
     """
+    img = _strip_gray_background(img)
     bbox = img.getbbox()
     if bbox is None:
         # Fully transparent — return empty frame
@@ -111,7 +122,7 @@ def composite_v2_animation(
         for frame_idx, frame_bytes in enumerate(frames[:frame_count]):
             try:
                 frame_img = Image.open(io.BytesIO(frame_bytes)).convert("RGBA")
-                frame_img = _strip_gray_background(frame_img)
+                # _crop_and_resize strips the gray background for every path.
                 frame_img = _crop_and_resize(frame_img, FRAME_SIZE)
                 sheet.paste(frame_img, (frame_idx * FRAME_SIZE, row_index * FRAME_SIZE))
             except Exception as e:
