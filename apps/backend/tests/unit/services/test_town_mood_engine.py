@@ -1,4 +1,4 @@
-from core.services.town_mood_engine import apply_event, mood_label, parse_mood
+from core.services.town_mood_engine import apply_event, mood_label, normalize_traits, parse_mood
 
 
 class TestMoodLabel:
@@ -96,3 +96,44 @@ class TestApplyEvent:
         energy, mood = apply_event("unknown_event", energy=80, mood=10, traits="")
         assert energy == 80
         assert mood == 10
+
+    # --- list-typed traits (residents store traits as a DynamoDB list) ---
+
+    def test_list_traits_do_not_crash_and_match_overrides(self):
+        # Regression: residents' list traits made traits.split(",") raise
+        # AttributeError, so every mood event silently failed and resident
+        # mood stayed frozen. A list must behave like the equivalent string.
+        e_str, m_str = apply_event("conversation_completed", energy=80, mood=0, traits="introvert")
+        e_list, m_list = apply_event("conversation_completed", energy=80, mood=0, traits=["introvert"])
+        assert (e_list, m_list) == (e_str, m_str) == (70, 3)
+
+    def test_list_traits_extrovert_among_several(self):
+        energy, mood = apply_event(
+            "conversation_completed", energy=80, mood=0, traits=["chatty", "extrovert", "warm"]
+        )
+        assert (energy, mood) == (78, 8)
+
+    def test_none_traits_uses_base_effect(self):
+        energy, mood = apply_event("conversation_completed", energy=80, mood=0, traits=None)
+        assert (energy, mood) == (75, 5)
+
+
+class TestNormalizeTraits:
+    def test_comma_string(self):
+        assert normalize_traits("introvert, Curious ,, melancholic") == {
+            "introvert",
+            "curious",
+            "melancholic",
+        }
+
+    def test_list(self):
+        assert normalize_traits(["Curious", "literal", "unflappable"]) == {
+            "curious",
+            "literal",
+            "unflappable",
+        }
+
+    def test_none_and_empty(self):
+        assert normalize_traits(None) == set()
+        assert normalize_traits("") == set()
+        assert normalize_traits([]) == set()

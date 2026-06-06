@@ -22,6 +22,8 @@ apartment activity is available anywhere inside the apartment.
 from dataclasses import dataclass
 from typing import Optional
 
+from core.services.town_mood_engine import normalize_traits
+
 # ---------------------------------------------------------------------------
 # Apartment spots that all map to the "apartment" location key
 # ---------------------------------------------------------------------------
@@ -615,7 +617,7 @@ def apply_activity_effect(
     activity: Activity,
     current_energy: int,
     current_mood: int,
-    traits: str,
+    traits: "str | list[str] | None",
     elapsed_seconds: float,
 ) -> tuple[int, int, bool]:
     """Compute the final (energy, mood) after an activity completes or is interrupted.
@@ -624,7 +626,8 @@ def apply_activity_effect(
         activity: The ``Activity`` being completed.
         current_energy: Agent's energy before the effect (0–100).
         current_mood: Agent's mood before the effect (-50–+50).
-        traits: Comma-separated trait string from the agent record.
+        traits: The agent record's traits — a comma-separated string or a
+            list (see ``normalize_traits``).
         elapsed_seconds: How many seconds actually elapsed. Used to scale
             the mood effect proportionally when the activity is interrupted
             (energy would drop to 0 before the full duration). Energy cost
@@ -634,7 +637,7 @@ def apply_activity_effect(
         A ``(new_energy, new_mood, interrupted)`` tuple.
         ``interrupted`` is ``True`` when energy would have gone below 0.
     """
-    trait_set = {t.strip().lower() for t in traits.split(",") if t.strip()} if traits else set()
+    trait_set = normalize_traits(traits)
 
     # Determine personality bonus
     introversion = 1.0 if "introvert" in trait_set else 0.0
