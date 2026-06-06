@@ -37,13 +37,13 @@ worldgm tick (30s)
   ├─ GM arc step  (once per tick; slow Bedrock/EventBridge calls offloaded):
   │     • await maybe_kickoff_arc(state)        → may persist an arc + emit (Bedrock/emit offloaded)
   │     • await process_arc_beats(state)        → fire due beats / resolve + emit (offloaded)
-  │     • state.active_arcs = await _read_active_arcs()   (single read AFTER processing → always fresh:
-  │                                                        includes a just-kicked-off arc, excludes resolved)
+  │     • state.active_arcs = await _read_active_arcs()   (read AFTER processing; merge the just-kicked-off
+  │                                                        arc in, since the status GSI is eventually consistent)
   └─ asyncio.gather over residents:                       [from #1]
         └─ _tick_one_resident:
-              storyline = _arc_text_for_location(state.active_arcs, resident_location)
-              await step_resident_brain(..., storyline=storyline)
-                    └─ build_decision_context(persona, status, storyline=storyline)
+              status["active_storyline"] = _arc_text_for_location(state.active_arcs, resident_location)
+              await step_resident_brain(daemon, runtime, status, model=..., persona=...)
+                    └─ build_decision_context(persona, status)   → reads status["active_storyline"]
                           → DecisionContext.active_storyline
                     └─ build_prompt → "Something is happening here: {narrative}"
 ```
@@ -51,9 +51,8 @@ worldgm tick (30s)
 ### In-process delivery (residents)
 
 - **`GmState` gains `active_arcs: list[dict]`** — set each tick from a single `_read_active_arcs()` call made *after* `maybe_kickoff_arc` + `process_arc_beats` run. Reading after processing means the cache is always fresh: a just-kicked-off arc is included (it was persisted) and a just-resolved arc is excluded (its status flipped). The existing `maybe_kickoff_arc`/`process_arc_beats` signatures and `process_arc_beats`'s `int` return are unchanged. The few small GSI queries per tick are negligible. Each cached entry is the raw arc dict; the resident-facing helper reads `arc["preferred_location"]` (may be absent → town-wide) and the narrative (`arc.get("lastBeatText") or arc.get("narrativeKickoff")`).
-- **`_tick_one_resident`** resolves the storyline for its resident: the narrative of an active arc whose `location` equals the resident's current location. An arc with **no** `preferred_location` is town-wide and delivered to every resident. If multiple match, the most recently updated wins. Result (a string or `None`) is passed as `storyline` to `step_resident_brain`.
-- **`step_resident_brain(..., storyline=None)`** forwards it to `build_decision_context`. (Subsystem #1 left exactly this seam.)
-- **`build_decision_context(persona, parsed_status, *, storyline=None)`** sets `DecisionContext.active_storyline`. **`build_prompt`** renders a `- Something is happening here: {storyline}` line in the "Current moment" block. Legal actions are unchanged — the storyline only informs; the LLM decides whether to chat about it, investigate, or ignore it.
+- **`_tick_one_resident`** resolves the storyline for its resident (narrative of an active arc whose `preferred_location` matches the resident's current location; a `None`-location arc is town-wide) and **merges it into the resident's perceived world snapshot** as `status["active_storyline"]` — the same dict that already carries `location`/`nearby`/`active_conversation`. The just-kicked-off arc is merged into `state.active_arcs` directly to avoid the eventually-consistent GSI re-query missing it for a tick.
+- **`build_decision_context(persona, parsed_status)`** reads `parsed_status.get("active_storyline")` like every other world fact → `DecisionContext.active_storyline`. **No bespoke `storyline` parameter** on `step_resident_brain` or `build_decision_context` — storyline rides in the snapshot, consistent with how external agents perceive arcs (via the EventBridge `arc.*` events). **`build_prompt`** renders a `- Something is happening here: {storyline}` line in the "Current moment" block. Legal actions are unchanged — the storyline only informs; the LLM decides whether to chat about it, investigate, or ignore it.
 
 ### EventBridge delivery (durable log + external)
 
@@ -64,7 +63,7 @@ worldgm tick (30s)
 
 ### Concurrency / blocking I/O
 
-The arc path uses synchronous Bedrock (`narrative_resolver.resolve`) and boto3 (DDB queries/puts, EventBridge put). The GM arc step runs once per tick **before** the resident `gather`, so any blocking call stalls that gather. All synchronous Bedrock/boto3 calls in the arc path run via `asyncio.to_thread`, matching subsystem #1's `decide()` discipline. The frequent path (no kickoff, no beat due) is a single offloaded DDB read; the rare path (kickoff or hourly beat) adds one offloaded ~1–2 s Bedrock call — comfortably inside the 30 s tick.
+The arc path uses synchronous Bedrock (`narrative_resolver.resolve`) and boto3 (DDB queries/puts, EventBridge put). The GM arc step runs once per tick **before** the resident `gather`, so any blocking call stalls that gather (and the resident daemons' WebSocket loops, which share the event loop). The **slow** ops are offloaded via `asyncio.to_thread`: the Bedrock resolve (~1–2 s) and `emit_world_event` (EventBridge + DDB put). The **small DDB reads stay inline** (~tens of ms each, well within the daemons' 10 s WS ping timeout): per hot-path tick that's `_read_active_arcs` (query) ×2 inside the helpers + once for the cache, plus `_read_last_arc_time` (scan) inside `maybe_kickoff_arc`. Follow-ups (not blockers): offload these reads too, and bound `_read_last_arc_time` (currently an unpaginated full-table scan that grows with table size and can under-report under 1 MB paging).
 
 ## Data flow summary
 
