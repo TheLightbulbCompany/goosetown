@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render as renderRTL, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter, useLocation } from 'react-router-dom';
+import type { ReactElement } from 'react';
 import type { Conversation } from '../hooks/useConversations';
 
 // Mock useConversations before importing the component so the import-time
@@ -13,6 +15,23 @@ import ConversationsLog from './ConversationsLog';
 import { useConversations } from '../hooks/useConversations';
 
 const mockedUse = useConversations as unknown as ReturnType<typeof vi.fn>;
+
+// ConversationsLog now uses useNavigate (for "📍 on map"), so renders need a
+// Router. LocationProbe echoes the current path+search so navigation can be
+// asserted.
+function LocationProbe() {
+  const loc = useLocation();
+  return <div data-testid="loc">{loc.pathname + loc.search}</div>;
+}
+
+function render(ui: ReactElement) {
+  return renderRTL(
+    <MemoryRouter initialEntries={['/']}>
+      {ui}
+      <LocationProbe />
+    </MemoryRouter>,
+  );
+}
 
 function makeConv(overrides: Partial<Conversation> = {}): Conversation {
   return {
@@ -130,7 +149,8 @@ describe('ConversationsLog', () => {
       error: null,
     });
     render(<ConversationsLog />);
-    expect(screen.getByText(/live/i)).toBeInTheDocument();
+    // "live" now appears in both the ● live badge and the "live · Xm" duration.
+    expect(screen.getAllByText(/live/i).length).toBeGreaterThanOrEqual(1);
   });
 
   it('renders empty-message placeholder inside modal when conversation has no turns', async () => {
@@ -226,5 +246,56 @@ describe('ConversationsLog', () => {
     expect(
       screen.getByRole('button', { name: /Rachel & Ross/i }),
     ).toBeInTheDocument();
+  });
+
+  // ─── Timestamps + locate-on-map ────────────────────────────────────────
+
+  it('shows a duration label for ended conversations', () => {
+    mockedUse.mockReturnValue({
+      conversations: [
+        makeConv({
+          started_at: '2026-04-17T00:00:00Z',
+          ended_at: '2026-04-17T00:05:00Z',
+        }),
+      ],
+      loading: false,
+      error: null,
+    });
+    render(<ConversationsLog />);
+    // 5-minute conversation → "lasted 5m" in the row footer.
+    expect(screen.getByText(/lasted 5m/i)).toBeInTheDocument();
+  });
+
+  it('"📍 on map" navigates to /town focused on the first participant', async () => {
+    mockedUse.mockReturnValue({
+      conversations: [makeConv({ participants: ['Sherlock Holmes', 'Athena'] })],
+      loading: false,
+      error: null,
+    });
+    render(<ConversationsLog />);
+    expect(screen.getByTestId('loc').textContent).toBe('/');
+
+    const locate = screen.getByRole('button', { name: /show these agents on the map/i });
+    await userEvent.click(locate);
+
+    expect(screen.getByTestId('loc').textContent).toBe('/town?focus=Sherlock%20Holmes');
+  });
+
+  it('"Show on map" in the modal closes it and navigates', async () => {
+    mockedUse.mockReturnValue({
+      conversations: [makeConv({ participants: ['Rachel', 'Ross'] })],
+      loading: false,
+      error: null,
+    });
+    render(<ConversationsLog />);
+    await userEvent.click(screen.getByRole('button', { name: /Rachel & Ross/i }));
+    // Modal open: "hello" is modal-only.
+    expect(screen.getByText(/hello/)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: /show on map/i }));
+
+    // Navigated and modal closed (modal-only "hello" gone).
+    expect(screen.getByTestId('loc').textContent).toBe('/town?focus=Rachel');
+    expect(screen.queryByText(/hello/)).toBeNull();
   });
 });
