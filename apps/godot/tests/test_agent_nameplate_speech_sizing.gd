@@ -70,3 +70,13 @@ func test_speech_bubble_is_centered_and_above_head() -> void:
 	var bubble: NinePatchRect = agent.speech_container
 	assert_float(bubble.position.x).is_equal_approx(-bubble.size.x * 0.5, 0.5)
 	assert_float(bubble.position.y + bubble.size.y).is_equal_approx(-42.0, 0.5)
+
+
+func test_speech_text_is_dark_not_white_on_white() -> void:
+	# Regression: the speech bubble's Label had no font_color override, so it
+	# defaulted to (near-)white text on the white bubble — visible as empty
+	# boxes in the town. It must be dark enough to read on white.
+	var agent: Node = _make_agent()
+	var color: Color = agent.speech_text_label.get_theme_color("font_color")
+	# Luminance well below the white bubble — i.e. actually readable.
+	assert_float(color.get_luminance()).is_less(0.3)
