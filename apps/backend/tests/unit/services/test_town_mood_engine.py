@@ -120,9 +120,7 @@ class TestApplyEvent:
         assert (e_list, m_list) == (e_str, m_str) == (70, -4)
 
     def test_list_traits_extrovert_among_several(self):
-        energy, mood = apply_event(
-            "conversation_completed", energy=80, mood=0, traits=["chatty", "extrovert", "warm"]
-        )
+        energy, mood = apply_event("conversation_completed", energy=80, mood=0, traits=["chatty", "extrovert", "warm"])
         assert (energy, mood) == (78, 6)
 
     def test_none_traits_uses_base_effect(self):
@@ -188,9 +186,7 @@ def _simulate_conversations(trait: str, n: int, gap_seconds: float = 30.0) -> in
     mood = 0
     t = 1_000_000.0
     for _ in range(n):
-        _energy, mood = apply_event(
-            "conversation_completed", 80, mood, trait, now=t, mood_updated_at=t - gap_seconds
-        )
+        _energy, mood = apply_event("conversation_completed", 80, mood, trait, now=t, mood_updated_at=t - gap_seconds)
         t += gap_seconds
     return mood
 
