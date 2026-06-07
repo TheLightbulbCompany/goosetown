@@ -58,6 +58,14 @@ RESIDENTS_ENABLED = os.environ.get("RESIDENTS_ENABLED", "false").lower() == "tru
 # Kill switch for the GM narrative-arc step (kickoff/beats + storyline delivery).
 # Default on; set WORLDGM_ARCS_ENABLED=false to disable without a code revert.
 ARCS_ENABLED = os.environ.get("WORLDGM_ARCS_ENABLED", "true").lower() == "true"
+# Deliberate beat before a resident replies to an incoming conversation turn.
+# Event-driven replies (waking the brain the instant a message lands) cured the
+# 30-60s/turn crawl, but with raw Bedrock latency the back-and-forth fires at
+# ~0.6s/turn — faster than the game server's 2s world_state broadcast, so each
+# speech bubble is overwritten/cleared before any viewer can see it and a 4-line
+# exchange completes in ~2.5s. Pacing the reply makes each line linger across a
+# broadcast and the whole exchange watchable. Tunable without a redeploy.
+CONVO_TURN_PACING_SECONDS = float(os.environ.get("WORLDGM_CONVO_TURN_PACING", "3.0"))
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -310,16 +318,25 @@ async def _resident_stepper(state: GmState, name: str, handle) -> None:
     invariant, now structural).
     """
     while not _should_exit:
+        woke_on_message = True
         try:
             await asyncio.wait_for(handle.wake.wait(), timeout=TICK_INTERVAL_SECONDS)
         except asyncio.TimeoutError:
-            pass  # periodic idle tick — no message waiting
+            woke_on_message = False  # periodic idle tick — no message waiting
         except asyncio.CancelledError:
             raise
         # Clear BEFORE stepping: a message arriving while we decide re-sets the
         # event, so the next loop iteration runs again immediately — no missed
         # turn, and repeated sets coalesce into a single follow-up step.
         handle.wake.clear()
+        # A conversation turn just landed (wake fired, not the idle timeout):
+        # take a beat before replying so the previous speaker's bubble lingers
+        # across a world_state broadcast and the exchange unfolds at a watchable
+        # pace instead of stampeding at raw LLM latency. Idle/movement ticks are
+        # never paced. A message arriving during the beat re-sets wake, so the
+        # follow-up step still runs the instant this one returns.
+        if woke_on_message and CONVO_TURN_PACING_SECONDS > 0:
+            await asyncio.sleep(CONVO_TURN_PACING_SECONDS)
         try:
             await _tick_one_resident(state, name, handle)
         except asyncio.CancelledError:

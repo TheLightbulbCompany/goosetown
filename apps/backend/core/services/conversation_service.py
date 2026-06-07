@@ -475,31 +475,15 @@ async def _handle_say(connection_id: str, body: dict, agent_conn) -> None:
         )
 
     # Send speech bubble to game server for viewer display.
-    # TEMP INSTRUMENTATION (debug/speech-bubble-instrumentation): speech bubbles
-    # stopped rendering in town — the viewer's world_state shows speechText="" even
-    # while activity="talking" populates. Both go through the same send_command on
-    # the same connection (set_activity is sent ~14 lines below). Log every
-    # set_speech outcome at INFO/WARNING (DEBUG is off in prod) so we can see
-    # whether the backend send succeeds — narrowing the break to backend-send vs
-    # game-server-receive. Revert once root-caused.
     try:
         gs_client = get_game_server_client()
         await gs_client.send_command(speaker_id, {"cmd": "set_speech", "text": message})
-        logger.info(
-            "[speech-debug] set_speech SENT ok agent=%s conv=%s turn=%d msglen=%d head=%r",
-            speaker_id[:8],
-            conv_id[:8],
-            turn_count,
-            len(message),
-            message[:30],
-        )
     except Exception:
         # Speech bubble is cosmetic, don't fail the conversation.
-        logger.warning(
-            "[speech-debug] set_speech FAILED agent=%s conv=%s turn=%d",
-            speaker_id[:8],
-            conv_id[:8],
-            turn_count,
+        logger.debug(
+            "set_speech failed for %s on conversation %s",
+            speaker_id,
+            conv_id,
             exc_info=True,
         )
 
@@ -877,17 +861,20 @@ async def _finalize_conversation(
                 except Exception as exc:
                     logger.warning("Failed to update relationship: %s", exc)
 
-    # Clear talking activity and speech bubbles for all participants
+    # Stop the "talking" animation for all participants. Deliberately do NOT
+    # clear the speech bubble here: with paced, fast exchanges the final line
+    # would be wiped the instant the conversation ends, before anyone reads it.
+    # The game server's SPEECH_DURATION timer expires each bubble ~5s after the
+    # last say, so the closing line lingers naturally instead of snapping away.
     gs_client = get_game_server_client()
     for agent_id in participants:
         try:
             await gs_client.send_command(agent_id, {"cmd": "set_activity", "activity": ""})
-            await gs_client.send_command(agent_id, {"cmd": "set_speech", "text": ""})
         except Exception:
             # Cosmetic cleanup — viewer will reconcile from world_state
             # broadcast within ~2s anyway. Keep finalisation moving.
             logger.debug(
-                "Failed to clear activity/speech for %s on conversation %s finalise",
+                "Failed to clear activity for %s on conversation %s finalise",
                 agent_id,
                 conv_id,
                 exc_info=True,

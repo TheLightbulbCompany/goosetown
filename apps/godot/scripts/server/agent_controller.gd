@@ -266,11 +266,6 @@ func handle_command(peer_id: int, data: Dictionary) -> void:
 			_handle_set_activity(peer_id, data)
 		"set_speech":
 			var text: String = str(data.get("text", ""))
-			# TEMP INSTRUMENTATION (debug/speech-bubble-instrumentation):
-			# confirm set_speech reaches the game server. Paired with the
-			# backend "set_speech SENT ok" log; if backend logs SENT but this
-			# never prints, the command is lost in transit. Revert after.
-			print("[speech-debug] set_speech RECV peer=", peer_id, " in_agents=", _agents.has(peer_id), " len=", text.length(), " head=", text.substr(0, 30))
 			_agent_speech[peer_id] = text
 			if text != "":
 				_speech_timers[peer_id] = SPEECH_DURATION
