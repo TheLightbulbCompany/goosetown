@@ -31,13 +31,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Optional
 
 from core.services.activity_registry import apply_activity_effect, get_activity
 from core.services.daemon_bridge import _send_to_daemon
 from core.services.daemon_mailbox import get_daemon_mailbox
 from core.services.game_server_client import get_game_server_client
-from core.services.town_mood_engine import apply_event, parse_mood
+from core.services.town_mood_engine import apply_event, decayed_mood
 from core.services.town_service import TownService
 
 logger = logging.getLogger(__name__)
@@ -420,7 +421,11 @@ async def _activity_timer(
         return
 
     current_energy = int(agent.get("energy", 100))
-    current_mood = parse_mood(agent.get("mood"))
+    # Decay the stored mood toward neutral by the idle time since the last mood
+    # write, BEFORE applying this activity's effect (so the fresh effect isn't
+    # itself decayed). apply_event("solitary_activity") below then runs without
+    # decay to avoid double-counting.
+    current_mood = decayed_mood(agent, time.time())
     traits = agent.get("traits", "")
 
     new_energy, new_mood, interrupted = apply_activity_effect(activity, current_energy, current_mood, traits, elapsed)
@@ -521,7 +526,11 @@ async def complete_activity_from_startup(agent_id: str, activity, elapsed: float
         return
 
     current_energy = int(agent.get("energy", 100))
-    current_mood = parse_mood(agent.get("mood"))
+    # Decay the stored mood toward neutral by the idle time since the last mood
+    # write, BEFORE applying this activity's effect (so the fresh effect isn't
+    # itself decayed). apply_event("solitary_activity") below then runs without
+    # decay to avoid double-counting.
+    current_mood = decayed_mood(agent, time.time())
     traits = agent.get("traits", "")
 
     new_energy, new_mood, interrupted = apply_activity_effect(activity, current_energy, current_mood, traits, elapsed)
@@ -579,7 +588,11 @@ async def restart_activity_timer(agent_id: str, activity, remaining: float) -> N
         return  # Activity was cancelled or changed
 
     current_energy = int(agent.get("energy", 100))
-    current_mood = parse_mood(agent.get("mood"))
+    # Decay the stored mood toward neutral by the idle time since the last mood
+    # write, BEFORE applying this activity's effect (so the fresh effect isn't
+    # itself decayed). apply_event("solitary_activity") below then runs without
+    # decay to avoid double-counting.
+    current_mood = decayed_mood(agent, time.time())
     traits = agent.get("traits", "")
 
     new_energy, new_mood, interrupted = apply_activity_effect(

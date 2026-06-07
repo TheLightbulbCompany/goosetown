@@ -30,11 +30,12 @@ continue to resolve to the same function object.
 from __future__ import annotations
 
 import logging
+import time
 
 from core.services import stances_service, town_mood_engine
 from core.services.daemon_mailbox import get_daemon_mailbox
 from core.services.town_agent_ws import get_town_agent_ws_manager
-from core.services.town_mood_engine import parse_mood
+from core.services.town_mood_engine import parse_mood, parse_mood_updated_at
 from core.services.town_service import TownService
 
 logger = logging.getLogger(__name__)
@@ -188,8 +189,12 @@ def _apply_event_with_sleep_guard(
     current_energy = int(agent.get("energy", 100) or 0)
     current_mood = parse_mood(agent.get("mood"))
     traits = agent.get("traits", "")
+    now = time.time()
+    mood_updated_at = parse_mood_updated_at(agent.get("moodUpdatedAt"))
 
-    new_energy, new_mood = town_mood_engine.apply_event(event, current_energy, current_mood, traits)
+    new_energy, new_mood = town_mood_engine.apply_event(
+        event, current_energy, current_mood, traits, now=now, mood_updated_at=mood_updated_at
+    )
 
     if new_energy > 0:
         service.update_agent_mood_energy(agent_id, new_mood, new_energy)

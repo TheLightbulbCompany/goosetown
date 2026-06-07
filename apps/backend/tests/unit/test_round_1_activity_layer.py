@@ -38,7 +38,7 @@ class TestSolitaryActivityEvent:
         assert _TRAIT_MODIFIERS["introvert"]["solitary_activity"] == (5, 5)
 
     def test_extrovert_override_unchanged(self):
-        assert _TRAIT_MODIFIERS["extrovert"]["solitary_activity"] == (2, -2)
+        assert _TRAIT_MODIFIERS["extrovert"]["solitary_activity"] == (2, -3)
 
     def test_apply_event_neutral_traits(self):
         new_e, new_m = apply_event("solitary_activity", energy=50, mood=0, traits="")
@@ -54,9 +54,9 @@ class TestSolitaryActivityEvent:
 
     def test_apply_event_extrovert_gets_solitude_penalty(self):
         new_e, new_m = apply_event("solitary_activity", energy=50, mood=0, traits="extrovert")
-        # Override: +2 energy, -2 mood
+        # Override: +2 energy, -3 mood (rebalanced)
         assert new_e == 52
-        assert new_m == -2
+        assert new_m == -3
 
 
 # ---------------------------------------------------------------------------
@@ -69,20 +69,20 @@ class TestConversationTurnEvent:
     a 2-turn conversation from a 20-turn one in mood-state outcome."""
 
     def test_base_effect_pinned(self):
-        assert _BASE_EFFECTS["conversation_turn"] == (-1, 1)
+        assert _BASE_EFFECTS["conversation_turn"] == (-1, 0)
 
     def test_neutral_per_turn_drip(self):
         new_e, new_m = apply_event("conversation_turn", energy=50, mood=0, traits="")
-        # Tiny: -1 energy, +1 mood per turn
+        # Rebalanced: -1 energy, 0 mood per turn (neutral agents get no per-turn
+        # mood — the per-turn accumulation was a saturation driver).
         assert new_e == 49
-        assert new_m == 1
+        assert new_m == 0
 
-    def test_introvert_no_per_turn_mood_boost(self):
-        """Introverts get the big reward at conversation_completed; per-turn
-        drip is 0 for them so they don't have an incentive to drag a
-        conversation out."""
+    def test_introvert_per_turn_mood_drain(self):
+        """Rebalanced: introverts are drained per-turn during a long
+        conversation (-1 mood), so dragging one out actively costs them."""
         new_e, new_m = apply_event("conversation_turn", energy=50, mood=0, traits="introvert")
-        assert new_m == 0  # mood drip suppressed
+        assert new_m == -1  # per-turn drain
         assert new_e == 49  # energy still drains
 
     def test_extrovert_double_per_turn_mood_drip(self):
@@ -101,11 +101,12 @@ class TestConversationTurnEvent:
             e_2, m_2 = apply_event("conversation_turn", e_2, m_2, "extrovert")
         assert m_2 == 4
 
-        # 20 turns: +2 mood per turn but mood saturates at +50 by turn 25
+        # 20 turns: +2 mood per turn, but diminishing-returns near the cap
+        # tapers each increment so it converges (to ~+27) instead of pinning +50.
         e_20, m_20 = 50, 0
         for _ in range(20):
             e_20, m_20 = apply_event("conversation_turn", e_20, m_20, "extrovert")
-        assert m_20 == 40
+        assert m_20 == 27
 
         assert m_20 > m_2 + 10, "20-turn conv should give meaningfully more mood than 2-turn"
 
@@ -115,7 +116,7 @@ class TestConversationTurnEvent:
         will trigger sleep before that anyway)."""
         new_e, new_m = apply_event("conversation_turn", energy=0, mood=0, traits="")
         assert new_e == 0  # clamped at 0
-        assert new_m == 1  # mood still applied
+        assert new_m == 0  # rebalanced: neutral per-turn mood is 0
 
 
 # ---------------------------------------------------------------------------

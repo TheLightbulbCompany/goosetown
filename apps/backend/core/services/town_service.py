@@ -1,6 +1,7 @@
 """Town service for managing GooseTown agent registration and state (DynamoDB)."""
 
 import logging
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -527,6 +528,11 @@ class TownService:
     def update_agent_mood_energy(self, agent_id: str, mood: int, energy: int) -> None:
         """Persist updated mood and energy values for an agent.
 
+        Also stamps ``moodUpdatedAt`` (Unix seconds) — the mood engine reads it
+        to decay mood toward neutral by the elapsed time since the last write
+        (see ``town_mood_engine.apply_event``). Written here so every mood write
+        keeps the decay clock honest without callers having to remember.
+
         Args:
             agent_id: Agent UUID.
             mood: New mood value, clamped to -50..+50 by the caller.
@@ -535,8 +541,12 @@ class TownService:
         table = dynamo.agents_table()
         table.update_item(
             Key={"id": agent_id},
-            UpdateExpression="SET mood = :m, energy = :e",
-            ExpressionAttributeValues={":m": mood, ":e": energy},
+            UpdateExpression="SET mood = :m, energy = :e, moodUpdatedAt = :t",
+            ExpressionAttributeValues={
+                ":m": mood,
+                ":e": energy,
+                ":t": Decimal(str(time.time())),
+            },
             ConditionExpression="attribute_exists(id)",
         )
 
