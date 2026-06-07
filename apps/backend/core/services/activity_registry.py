@@ -22,7 +22,7 @@ apartment activity is available anywhere inside the apartment.
 from dataclasses import dataclass
 from typing import Optional
 
-from core.services.town_mood_engine import normalize_traits
+from core.services.town_mood_engine import apply_diminishing_returns, normalize_traits
 
 # ---------------------------------------------------------------------------
 # Apartment spots that all map to the "apartment" location key
@@ -424,7 +424,7 @@ _ACTIVITIES: list[Activity] = [
         location="apartment",
         location_context="apartment",
         duration_seconds=30,
-        mood_delta=8,
+        mood_delta=5,  # rebalance: a functional reset (energy), not a mood spike
         energy_delta=100,  # clamped to 100 via min(100, current + 100)
         animation="sleeping",
         description="Sleeping",
@@ -660,5 +660,8 @@ def apply_activity_effect(
         base_mood = activity.mood_delta + mood_bonus
         new_energy = min(100, max(0, projected_energy))
 
-    new_mood = min(50, max(-50, current_mood + base_mood))
+    # Same diminishing-returns-near-the-cap as apply_event, so activities can't
+    # slam mood into the ±50 wall either. Clamp stays as a safety net.
+    effective_mood = apply_diminishing_returns(base_mood, current_mood)
+    new_mood = min(50, max(-50, current_mood + effective_mood))
     return new_energy, new_mood, interrupted

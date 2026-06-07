@@ -172,19 +172,23 @@ class TestApplyActivityEffect:
         assert new_energy == 100
         assert not interrupted
 
-    def test_mood_clamped_at_positive_50(self):
+    def test_mood_damped_near_positive_50(self):
+        # Diminishing returns: a +10 activity at mood=45 scales to +1, so mood
+        # asymptotes toward the ceiling rather than slamming to 50.
         activity = self._make_activity(mood_delta=10)
         new_energy, new_mood, interrupted = apply_activity_effect(
             activity, current_energy=80, current_mood=45, traits="", elapsed_seconds=15
         )
-        assert new_mood == 50
+        assert new_mood == 46  # 45 + round(10 * (1 - 45/50))
+        assert new_mood <= 50
 
-    def test_mood_clamped_at_negative_50(self):
+    def test_mood_damped_near_negative_50(self):
         activity = self._make_activity(mood_delta=-10, energy_delta=0)
         new_energy, new_mood, interrupted = apply_activity_effect(
             activity, current_energy=80, current_mood=-45, traits="", elapsed_seconds=15
         )
-        assert new_mood == -50
+        assert new_mood == -46  # -45 + round(-10 * (1 - 45/50))
+        assert new_mood >= -50
 
     def test_interrupted_when_energy_would_go_below_zero(self):
         activity = self._make_activity(mood_delta=4, energy_delta=-10, duration_seconds=15)
@@ -218,7 +222,7 @@ class TestApplyActivityEffect:
         new_energy, new_mood, interrupted = apply_activity_effect(
             activity, current_energy=50, current_mood=10, traits="", elapsed_seconds=10
         )
-        assert new_mood == 13  # 10 + 3, no bonus
+        assert new_mood == 12  # 10 + round(3 * (1 - 10/50)) = 10 + 2, no trait bonus
 
     def test_multiple_traits_first_matching_wins(self):
         """If an agent has both introvert and extrovert traits, introvert wins (first match)."""
