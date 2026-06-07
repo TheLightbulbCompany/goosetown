@@ -35,6 +35,46 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _witness_names(state, witness_ids: list[str], *, limit: int = 8) -> list[str]:
+    """Resolve witness agent_ids to display names via ``town_service``.
+
+    Best-effort: any failure returns ``[]``. Caps the roster at ``limit`` so the
+    grounded prompt stays focused when many residents are present.
+    """
+    if not witness_ids:
+        return []
+    try:
+        agents = state.town_service.get_active_agents()
+    except Exception:
+        logger.warning("[arc] could not resolve witness names for grounding", exc_info=True)
+        return []
+    by_id = {a["id"]: (a.get("displayName") or a.get("agentName") or "a resident") for a in agents}
+    return [by_id[w] for w in witness_ids if w in by_id][:limit]
+
+
+def _ground(seed: str, names: list[str], location: str | None) -> str:
+    """Wrap a narrative seed with the real residents present so the model
+    features them by name instead of inventing townspeople (the WORLD panel
+    used to narrate non-existent characters like "Anna the librarian").
+
+    When no names are known (shouldn't happen — kickoff needs >=2 online agents)
+    the bare seed is returned unchanged so behaviour degrades gracefully.
+    """
+    if not names:
+        return seed
+    roster = ", ".join(names)
+    where = f"at the {location}" if location else "around town"
+    return (
+        f"{seed}\n\n"
+        f"The residents present {where} right now are: {roster}. "
+        f"Write 2-3 vivid sentences about how the scene unfolds, featuring these "
+        f"residents by name. They are the town's only people — do NOT invent any "
+        f"other named residents (no new librarians, friends, neighbours, or "
+        f"narrators); the sole newcomer or new object is the one described above. "
+        f"Ground it in how these specific residents would notice and react."
+    )
+
+
 async def _emit_arc_event(*, tag: str, arc: dict, summary: str, location: str | None, witnesses: list[str]) -> None:
     """Publish an arc event to EventBridge/world-events. Best-effort: a failure
     is logged and swallowed so the arc (already persisted) is unaffected. Runs
@@ -132,15 +172,18 @@ async def _kickoff_arc(state, template: dict) -> dict:
     arc_id = str(uuid.uuid4())
     now = _now_ms()
 
-    narrative_text = await asyncio.to_thread(state.narrative_resolver.resolve, template["kickoff_prompt"])
-
-    # Determine witnesses: agents at the preferred_location, or all online if no preferred
+    # Determine witnesses FIRST (agents at preferred_location, else all online)
+    # so the kickoff narrative can be grounded in the residents actually present
+    # — otherwise the model invents townspeople who don't exist.
     witnesses = []
     preferred = template.get("preferred_location")
     if preferred:
         witnesses = [agent_id for agent_id, loc in state.last_known_locations.items() if loc == preferred]
     if not witnesses:
         witnesses = list(state.last_known_locations.keys())
+
+    grounded_prompt = _ground(template["kickoff_prompt"], _witness_names(state, witnesses), preferred)
+    narrative_text = await asyncio.to_thread(state.narrative_resolver.resolve, grounded_prompt)
 
     # Persist arc state. preferred_location is copied from the template onto the
     # row so the resident-facing _arc_text_for_location (which reads the DDB row,
@@ -214,9 +257,14 @@ async def _fire_beat(state, arc: dict) -> bool:
         await _resolve_arc(state, arc, template)
         return True
 
-    # Generate a continuation beat
+    # Generate a continuation beat — grounded in the arc's real witnesses so the
+    # continuation doesn't drift into invented characters either.
+    names = _witness_names(state, arc.get("witnessIds", []))
+    roster = f" Feature only these residents by name: {', '.join(names)}." if names else ""
     beat_prompt = (
-        f"Continue this narrative arc:\n{arc.get('narrativeKickoff', '')}\n\nWhat happens next, in one short paragraph?"
+        f"Continue this narrative arc:\n{arc.get('narrativeKickoff', '')}\n\n"
+        f"What happens next, in one short paragraph?{roster} "
+        f"Do not introduce any new named townspeople."
     )
     beat_text = await asyncio.to_thread(state.narrative_resolver.resolve, beat_prompt)
 

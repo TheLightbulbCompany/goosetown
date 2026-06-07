@@ -163,6 +163,63 @@ def test_kickoff_survives_emit_failure(mock_table, mock_rand, mock_emit):
 
 
 @patch("worldgm.arc_orchestrator.emit_world_event")
+@patch("worldgm.arc_orchestrator.random.random", return_value=0.0)
+@patch("worldgm.arc_orchestrator.dynamo.worldgm_arcs_table")
+def test_kickoff_grounds_prompt_in_real_resident_names(mock_table, mock_rand, mock_emit):
+    """The kickoff narrative prompt must name the real residents present and
+    forbid inventing townspeople — otherwise the WORLD panel narrates
+    non-existent characters (the "Anna the librarian" bug)."""
+    from worldgm.arc_orchestrator import maybe_kickoff_arc
+
+    mock_table.return_value.query.return_value = {"Items": []}
+    mock_table.return_value.scan.return_value = {"Items": []}
+    state = _state_with({"a1": "library", "a2": "library"})
+    state.town_service.get_active_agents.return_value = [
+        {"id": "a1", "displayName": "Sherlock Holmes", "currentLocation": "library"},
+        {"id": "a2", "displayName": "Mark Twain", "currentLocation": "library"},
+    ]
+    arc = asyncio.run(maybe_kickoff_arc(state))
+    assert arc is not None
+    prompt = state.narrative_resolver.resolve.call_args.args[0]
+    # Real residents named; model told not to invent townspeople.
+    assert "Sherlock Holmes" in prompt
+    assert "Mark Twain" in prompt
+    assert "do not invent" in prompt.lower()
+
+
+@patch("worldgm.arc_orchestrator.emit_world_event")
+@patch("worldgm.arc_orchestrator.dynamo.worldgm_arcs_table")
+def test_beat_grounds_continuation_in_witness_names(mock_table, mock_emit):
+    """Continuation beats must also be grounded so the arc doesn't drift into
+    invented characters as it progresses."""
+    import time
+
+    from worldgm.arc_orchestrator import process_arc_beats
+
+    now = int(time.time() * 1000)
+    active_arc = {
+        "arcId": "x",
+        "templateId": "traveling_merchant",
+        "status": "active",
+        "expiresAt": now + 3_600_000,
+        "nextBeatAt": str(now - 100),
+        "narrativeKickoff": "the merchant arrived",
+        "witnessIds": ["a1", "a2"],
+    }
+    mock_table.return_value.query.return_value = {"Items": [active_arc]}
+    state = _state_with({"a1": "library", "a2": "library"}, narrative_text="next beat text")
+    state.town_service.get_active_agents.return_value = [
+        {"id": "a1", "displayName": "Baba Yaga", "currentLocation": "library"},
+        {"id": "a2", "displayName": "Nikola Tesla", "currentLocation": "library"},
+    ]
+    asyncio.run(process_arc_beats(state))
+    prompt = state.narrative_resolver.resolve.call_args.args[0]
+    assert "Baba Yaga" in prompt
+    assert "Nikola Tesla" in prompt
+    assert "new named townspeople" in prompt
+
+
+@patch("worldgm.arc_orchestrator.emit_world_event")
 @patch("worldgm.arc_orchestrator.dynamo.worldgm_arcs_table")
 def test_resolve_emits_world_event(mock_table, mock_emit):
     import time
