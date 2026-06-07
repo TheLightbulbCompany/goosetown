@@ -126,6 +126,54 @@ class TestConversationInviteTracksParticipants:
         assert active["participants"].count("Alice") == 1
 
 
+class TestPendingMessageWakeCallback:
+    """The optional ``_on_pending_message_cb`` (wired by the worldgm resident
+    runner) fires when a fresh incoming message lands, so the brain can reply
+    immediately instead of waiting out the 30s tick. It must NOT fire on the
+    agent's own echoed turn, and must default to a no-op."""
+
+    def test_callback_fires_on_incoming_invite(self, daemon: TownDaemon):
+        fired: list[int] = []
+        daemon._on_pending_message_cb = lambda: fired.append(1)
+        daemon._on_conversation_message(
+            "conversation_invite",
+            {"conv_id": "c1", "from": "Alice", "from_agent_name": "alice", "message": "Hi"},
+        )
+        assert fired == [1]
+
+    def test_callback_does_not_fire_on_own_echo(self, daemon: TownDaemon):
+        fired: list[int] = []
+        daemon._on_pending_message_cb = lambda: fired.append(1)
+        # Backend echoes the speaker's own ``say`` back — from_agent_name is us.
+        daemon.state["active_conversation"] = {"conv_id": "c1", "participants": ["Alice"], "turns": []}
+        daemon._on_conversation_message(
+            "conversation_message",
+            {"conv_id": "c1", "from": "Testagent", "from_agent_name": "testagent", "text": "my line"},
+        )
+        assert fired == []
+
+    def test_no_callback_set_is_a_noop(self, daemon: TownDaemon):
+        # Default daemon (external agent) has no callback — must not raise.
+        assert daemon._on_pending_message_cb is None
+        daemon._on_conversation_message(
+            "conversation_invite",
+            {"conv_id": "c1", "from": "Alice", "from_agent_name": "alice", "message": "Hi"},
+        )
+        assert daemon.state["pending_messages"]
+
+    def test_callback_exception_is_swallowed(self, daemon: TownDaemon):
+        def boom() -> None:
+            raise RuntimeError("boom")
+
+        daemon._on_pending_message_cb = boom
+        # Must still record the pending message despite the callback raising.
+        daemon._on_conversation_message(
+            "conversation_invite",
+            {"conv_id": "c1", "from": "Alice", "from_agent_name": "alice", "message": "Hi"},
+        )
+        assert daemon.state["pending_messages"]
+
+
 # ===========================================================================
 # participant_joined / participant_left
 # ===========================================================================
