@@ -143,6 +143,9 @@ class GmState:
     resident_manager: Any = None
     resident_runtimes: dict = field(default_factory=dict)
     active_arcs: list = field(default_factory=list)
+    # One brain-driver task per resident (event-driven + periodic). See
+    # ``_resident_stepper``. Tracked here so ``main`` can cancel them on exit.
+    resident_steppers: list = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -231,21 +234,11 @@ async def _tick(state: GmState) -> None:
         except Exception:
             logger.exception("GM arc step failed; continuing with stale arcs")
 
-    # --- Resident brain ticks (RESIDENTS_ENABLED only) ---
-    #
-    # Brain ticks run CONCURRENTLY across residents — `step_resident_brain`
-    # awaits `daemon.handle_tool_command(...)` for moves, which blocks up to
-    # 120s on arrival. A sequential loop would serialize the entire cast
-    # (observed on dev with 20 residents: ticks taking minutes + inactivity
-    # timeouts thrashing daemons). Running them under `asyncio.gather` lets
-    # each daemon's move await its own arrival while the other 19 brains
-    # progress in parallel — the per-resident FSM still prevents that
-    # resident from double-issuing a move.
-    if state.resident_manager is not None:
-        await asyncio.gather(
-            *(_tick_one_resident(state, name, handle) for name, handle in state.resident_manager.residents.items()),
-            return_exceptions=False,  # exceptions are swallowed inside the helper
-        )
+    # Resident brains are NOT stepped here anymore. Each resident has its own
+    # ``_resident_stepper`` task (started in ``main``) that wakes on a fresh
+    # conversation message OR every TICK_INTERVAL_SECONDS — so replies fire at
+    # conversation speed instead of waiting out this 30s GM tick. This central
+    # tick keeps owning the town-wide work (location sync + arc beats) only.
 
 
 def _arc_text_for_location(active_arcs: list[dict], location: str) -> str | None:
@@ -303,6 +296,38 @@ async def _tick_one_resident(state: GmState, name: str, handle) -> None:
         logger.exception("Resident brain tick failed for %s", name)
 
 
+async def _resident_stepper(state: GmState, name: str, handle) -> None:
+    """Per-resident brain driver: step on a fresh conversation message
+    (``handle.wake``, set by the daemon) OR every ``TICK_INTERVAL_SECONDS``,
+    whichever comes first.
+
+    Replaces the old central ``asyncio.gather`` over all residents. Conversation
+    replies now fire the instant the message lands instead of waiting out the
+    30s tick — that was the root cause of exchanges crawling at ~1 line/30-60s
+    and the town looking frozen. The timeout preserves the idle/wander/activity
+    cadence. Serial by construction: one stepper owns one resident's brain, so
+    no two brain steps overlap for the same resident (the old per-resident FSM
+    invariant, now structural).
+    """
+    while not _should_exit:
+        try:
+            await asyncio.wait_for(handle.wake.wait(), timeout=TICK_INTERVAL_SECONDS)
+        except asyncio.TimeoutError:
+            pass  # periodic idle tick — no message waiting
+        except asyncio.CancelledError:
+            raise
+        # Clear BEFORE stepping: a message arriving while we decide re-sets the
+        # event, so the next loop iteration runs again immediately — no missed
+        # turn, and repeated sets coalesce into a single follow-up step.
+        handle.wake.clear()
+        try:
+            await _tick_one_resident(state, name, handle)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Resident stepper failed for %s", name)
+
+
 async def main() -> None:
     logger.info("Starting WorldGM service (tick=%.1fs)", TICK_INTERVAL_SECONDS)
     state = _bootstrap_gm()
@@ -320,7 +345,18 @@ async def main() -> None:
         )
         await manager.start()
         state.resident_manager = manager
-        logger.info("ResidentManager started (%d resident(s))", len(manager.residents))
+        # One brain-driver per resident: event-driven (conversation messages
+        # wake it) + a 30s periodic fallback. Replaces the central gather so
+        # replies aren't shackled to the GM tick.
+        state.resident_steppers = [
+            asyncio.create_task(_resident_stepper(state, rname, rhandle), name=f"stepper-{rname}")
+            for rname, rhandle in manager.residents.items()
+        ]
+        logger.info(
+            "ResidentManager started (%d resident(s), %d stepper(s))",
+            len(manager.residents),
+            len(state.resident_steppers),
+        )
     else:
         logger.info("RESIDENTS_ENABLED=false — resident system is off")
 
@@ -330,6 +366,12 @@ async def main() -> None:
         except Exception:
             logger.exception("Tick failed; continuing")
         await asyncio.sleep(TICK_INTERVAL_SECONDS)
+
+    if state.resident_steppers:
+        logger.info("Cancelling %d resident stepper(s)...", len(state.resident_steppers))
+        for stepper in state.resident_steppers:
+            stepper.cancel()
+        await asyncio.gather(*state.resident_steppers, return_exceptions=True)
 
     if state.resident_manager is not None:
         logger.info("Stopping ResidentManager...")

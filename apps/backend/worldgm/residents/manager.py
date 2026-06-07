@@ -6,7 +6,7 @@ Decision-making ("the brain") is the next task — this file is lifecycle only.
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from goosetown.daemon import TownDaemon  # module-level so tests can monkeypatch
@@ -25,6 +25,11 @@ class _ResidentHandle:
     task: asyncio.Task | None = None
     daemon: TownDaemon | None = None  # set per (re)launch
     config: ResidentConfig | None = None
+    # Set by the daemon when a fresh conversation message arrives; the
+    # worldgm resident stepper waits on this to wake the brain immediately
+    # (instead of waiting out the 30s tick) so replies flow at conversation
+    # speed. Lives on the handle so it survives daemon restarts.
+    wake: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class ResidentManager:
@@ -93,6 +98,9 @@ class ResidentManager:
                     workspace_path=cfg.workspace,
                 )
                 handle.daemon = daemon
+                # Wake this resident's brain stepper the instant a conversation
+                # message lands, so back-and-forth doesn't crawl at the tick rate.
+                daemon._on_pending_message_cb = handle.wake.set
                 logger.info("Resident '%s' daemon starting", handle.persona.name)
                 await daemon.run(serve_socket=False)
                 logger.warning("Resident '%s' daemon run() returned unexpectedly", handle.persona.name)
