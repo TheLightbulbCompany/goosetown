@@ -13,7 +13,7 @@
     "typecheck:godot": "echo 'Godot project - no TS typecheck'"
   },
   "dependencies": {
-    "@clerk/clerk-react": "^4.27.0",
+    "@clerk/clerk-react": "^5.61.8",
     "clsx": "^2.0.0",
     "dotenv": "^16.1.4",
     "react": "18.2.0",
