@@ -191,6 +191,9 @@ async def test_stepper_steps_immediately_on_wake(monkeypatch):
 
     # Long tick so a wake-driven step is unambiguously faster than the timeout.
     monkeypatch.setattr(main_mod, "TICK_INTERVAL_SECONDS", 100.0)
+    # Pacing is tested separately; neutralise it here so this test isolates the
+    # "wake fires a step before the tick timeout" property.
+    monkeypatch.setattr(main_mod, "CONVO_TURN_PACING_SECONDS", 0.0)
     steps: list[float] = []
 
     async def fake_step(state, name, handle):
@@ -208,6 +211,40 @@ async def test_stepper_steps_immediately_on_wake(monkeypatch):
         assert len(steps) >= 1, "stepper did not step on wake"
         # The event is cleared before stepping so a later message re-wakes it.
         assert not handle.wake.is_set()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_stepper_paces_conversation_reply(monkeypatch):
+    """A wake-driven turn waits CONVO_TURN_PACING_SECONDS before stepping, so the
+    exchange unfolds at a watchable cadence instead of stampeding at raw LLM
+    latency. The pacing must still be far shorter than the tick timeout — the
+    reply is paced, not shackled to the 30s tick."""
+    import worldgm.__main__ as main_mod
+
+    monkeypatch.setattr(main_mod, "TICK_INTERVAL_SECONDS", 100.0)
+    monkeypatch.setattr(main_mod, "CONVO_TURN_PACING_SECONDS", 0.1)
+    steps: list[float] = []
+
+    async def fake_step(state, name, handle):
+        steps.append(asyncio.get_event_loop().time())
+
+    monkeypatch.setattr(main_mod, "_tick_one_resident", fake_step)
+
+    handle = _FakeHandle(persona=_persona("ada"), daemon=_connected_daemon())
+    state = _state_with_residents({"ada": handle})
+    task = asyncio.create_task(_resident_stepper(state, "ada", handle))
+    try:
+        await asyncio.sleep(0.02)  # let the stepper reach wait_for
+        handle.wake.set()
+        # Before the pacing delay elapses, no step yet.
+        await asyncio.sleep(0.05)
+        assert len(steps) == 0, "stepper stepped before the pacing delay elapsed"
+        # After the pacing delay, exactly one step has fired.
+        await asyncio.sleep(0.12)
+        assert len(steps) >= 1, "stepper never stepped after pacing delay"
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
