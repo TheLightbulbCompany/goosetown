@@ -154,6 +154,14 @@ class TownDaemon:
         self.running = True
         self.ws = None
 
+        # Optional zero-arg callback fired when a fresh (non-own) conversation
+        # message lands in ``pending_messages``. The in-process worldgm resident
+        # runner wires this to wake the resident's brain immediately so replies
+        # flow at conversation speed instead of waiting for the next 30s tick.
+        # ``None`` for normal/external agents — they drive themselves and this
+        # stays a no-op.
+        self._on_pending_message_cb = None  # Callable[[], None] | None
+
         self._initial_state_event = None  # asyncio.Event, created in run()
         self._arrived_event = None  # asyncio.Event, created in run()
         # Chat-outcome future — set by _on_conversation_started (success) or
@@ -397,6 +405,17 @@ class TownDaemon:
 
         if not is_own_message:
             self.state.setdefault("pending_messages", []).append(data)
+            # Wake the brain now (worldgm resident runner) so the reply doesn't
+            # wait for the next 30s tick. No-op for self-driven agents.
+            if self._on_pending_message_cb is not None:
+                try:
+                    self._on_pending_message_cb()
+                except Exception:
+                    import logging
+
+                    logging.getLogger("town_daemon").debug(
+                        "on_pending_message callback raised", exc_info=True
+                    )
         conv_id = data.get("conv_id", "")
 
         if event == "conversation_invite":
