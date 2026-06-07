@@ -36,9 +36,30 @@ import logging
 
 from core.services.daemon_bridge import _make_agent_event_callback
 from core.services.game_server_client import get_game_server_client
-from core.services.town_service import TownService
+from core.services.town_service import TownService, versioned_sprite_url
 
 logger = logging.getLogger(__name__)
+
+
+def _version_animation_urls(sprite_animations: dict, agent: dict) -> dict:
+    """Return a copy of ``spriteAnimations`` with each entry's ``url`` cache-busted.
+
+    ``spriteAnimations`` maps animation name -> {"url", "frameCount", "fps"}.
+    The stored URLs are bare CDN URLs (1-year cache, stable key), so a
+    regenerated animation sheet (e.g. a re-stripped talking.png) is invisible
+    until the URL string changes. Append the same ``?v=<spriteUpdatedAt>`` the
+    walk URL gets so the town viewer fetches the fresh bytes. Non-dict entries
+    or entries without a ``url`` pass through untouched.
+    """
+    if not sprite_animations:
+        return sprite_animations
+    versioned: dict = {}
+    for name, meta in sprite_animations.items():
+        if isinstance(meta, dict) and meta.get("url"):
+            versioned[name] = {**meta, "url": versioned_sprite_url(meta["url"], agent)}
+        else:
+            versioned[name] = meta
+    return versioned
 
 
 # ---------------------------------------------------------------------------
@@ -220,17 +241,22 @@ async def _handle_agent_connect(request, ws_manager):
     restore_phase_from_db(agent_id, agent.get("onboardingPhase") or "alive")
     ws_manager.update_conversation(agent_id, agent.get("currentConversationId") or "")
 
-    # Connect agent to game server (shadow sprite fallback if no custom sprite)
+    # Connect agent to game server (shadow sprite fallback if no custom sprite).
+    # Cache-bust both the walk URL and every animation URL with ?v=<spriteUpdatedAt>
+    # (same helper the /apartment path uses). Sprite objects carry a 1-year
+    # Cache-Control at a stable key, so a regenerated sprite is invisible in town
+    # until the URL string changes — versioning makes regen (and any future
+    # sprite update) show up immediately, with no CloudFront invalidation.
     gs_client = get_game_server_client()
     try:
         await gs_client.connect_agent(
             agent_id=agent_id,
             display_name=agent.get("displayName", agent_name),
-            sprite_url=agent.get("spriteUrl") or "",
+            sprite_url=versioned_sprite_url(agent.get("spriteUrl") or "", agent),
             location=current_location,
             context=location_context,
             user_id=user_id,
-            sprite_animations=agent.get("spriteAnimations", {}),
+            sprite_animations=_version_animation_urls(agent.get("spriteAnimations", {}), agent),
             on_event=_make_agent_event_callback(),
         )
         logger.info(

@@ -101,6 +101,46 @@ class TestVersionedSpriteUrl:
 
 
 # ---------------------------------------------------------------------------
+# _version_animation_urls — cache-bust the per-animation URLs at game-server
+# connect, so regenerated sheets (e.g. re-stripped talking.png) show in town.
+# ---------------------------------------------------------------------------
+
+
+class TestVersionAnimationUrls:
+    def test_versions_every_entry_url(self):
+        from core.services.agent_connect_service import _version_animation_urls
+
+        anims = {
+            "walk": {"url": "https://cdn/x/walk.png", "frameCount": 6, "fps": 8},
+            "talking": {"url": "https://cdn/x/talking.png", "frameCount": 9, "fps": 8},
+        }
+        out = _version_animation_urls(anims, {"spriteUpdatedAt": 99})
+        assert out["walk"]["url"] == "https://cdn/x/walk.png?v=99"
+        assert out["talking"]["url"] == "https://cdn/x/talking.png?v=99"
+        # Other metadata preserved.
+        assert out["talking"]["frameCount"] == 9 and out["talking"]["fps"] == 8
+
+    def test_empty_dict_passthrough(self):
+        from core.services.agent_connect_service import _version_animation_urls
+
+        assert _version_animation_urls({}, {"spriteUpdatedAt": 99}) == {}
+
+    def test_entries_without_url_untouched(self):
+        from core.services.agent_connect_service import _version_animation_urls
+
+        anims = {"weird": {"frameCount": 1}, "alsoweird": "not-a-dict"}
+        out = _version_animation_urls(anims, {"spriteUpdatedAt": 99})
+        assert out == anims
+
+    def test_no_version_token_leaves_urls_bare(self):
+        from core.services.agent_connect_service import _version_animation_urls
+
+        anims = {"walk": {"url": "https://cdn/x/walk.png"}}
+        out = _version_animation_urls(anims, {"id": "x"})  # no spriteUpdatedAt
+        assert out["walk"]["url"] == "https://cdn/x/walk.png"
+
+
+# ---------------------------------------------------------------------------
 # update_agent_state — auto-bump spriteUpdatedAt when sprite_url is written
 # ---------------------------------------------------------------------------
 
