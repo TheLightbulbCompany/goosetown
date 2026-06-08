@@ -186,9 +186,16 @@ export class WorldgmStack extends cdk.Stack {
     //     /index/*. (Read-only here crash-loops resident daemons on PutItem.)
     //   - worldgm-arcs: read+write (arc_orchestrator query/scan/put/update)
     //   - world-events: write (event_publisher put_item)
+    //   - conversations: read — world_snapshot.build_snapshot reads recent
+    //     conversations (Query on status-startedAt-index) as a GM X-factor.
+    //   - relationships: read+write — build_snapshot resolves affinity via
+    //     get_or_create_relationship (GetItem + PutItem of a default row for a
+    //     never-seen pair). grantReadWriteData covers table + /index/*.
     props.tables.agents.grantReadWriteData(taskDef.taskRole);
     props.tables.worldgmArcs.grantReadWriteData(taskDef.taskRole);
     props.tables.worldEvents.grantWriteData(taskDef.taskRole);
+    props.tables.conversations.grantReadData(taskDef.taskRole);
+    props.tables.relationships.grantReadWriteData(taskDef.taskRole);
 
     this.service = new ecs.FargateService(this, "Service", {
       serviceName: `goosetown-${env}-worldgm`,
