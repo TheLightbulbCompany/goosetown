@@ -249,22 +249,16 @@ async def _tick(state: GmState) -> None:
     # tick keeps owning the town-wide work (location sync + arc beats) only.
 
 
-def _arc_text_for_location(active_arcs: list[dict], location: str) -> str | None:
-    """Return the narrative of an active arc the resident at ``location`` can
-    perceive, or None. An arc with no ``preferred_location`` is town-wide and
-    matches everywhere. With multiple matching arcs the last in ``active_arcs``
-    wins; ordering follows ``_read_active_arcs`` (GSI sort by ``nextBeatAt``)
-    so the tiebreak is arbitrary — fine because the kickoff guard normally
-    keeps at most one active arc at a time."""
-    match: str | None = None
+def _storyline_text_for_agent(active_arcs: list[dict], agent_id: str) -> str | None:
+    """Return the latest beat (or kickoff) of the storyline whose CAST contains this
+    agent, regardless of location — so a resident in their apartment still perceives
+    a thread they're part of. None if the agent is in no active storyline."""
+    if not agent_id:
+        return None
     for arc in active_arcs:
-        arc_loc = arc.get("preferred_location")
-        if arc_loc is not None and arc_loc != location:
-            continue
-        narrative = arc.get("lastBeatText") or arc.get("narrativeKickoff")
-        if narrative:
-            match = narrative  # later matches override earlier ones
-    return match
+        if agent_id in arc.get("cast", []):
+            return arc.get("lastBeatText") or arc.get("narrativeKickoff")
+    return None
 
 
 async def _tick_one_resident(state: GmState, name: str, handle) -> None:
@@ -277,8 +271,10 @@ async def _tick_one_resident(state: GmState, name: str, handle) -> None:
     status = read_status(daemon)
     # Merge the GM-sourced storyline into the resident's perceived world
     # snapshot, alongside the daemon-sourced location/nearby/conversation. The
-    # brain reads it like any other world fact — no bespoke channel.
-    status["active_storyline"] = _arc_text_for_location(state.active_arcs, status.get("location", "unknown"))
+    # brain reads it like any other world fact — no bespoke channel. Cast-based:
+    # the resident perceives a storyline they're a cast member of, wherever they are.
+    agent_id = handle.config.agent_id if getattr(handle, "config", None) else ""
+    status["active_storyline"] = _storyline_text_for_agent(state.active_arcs, agent_id)
     runtime = state.resident_runtimes.get(name)
     if runtime is None:
         runtime = ResidentRuntime(
