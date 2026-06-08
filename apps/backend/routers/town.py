@@ -787,13 +787,21 @@ async def recomposite_sprites():
     async def _run_all() -> None:
         for a in agents:
             try:
-                await resume_sprite_generation(
-                    a["id"],
-                    a["pixellabCharacterId"],
-                    "",  # appearance unused at the 'downloading' phase
-                    a.get("displayName") or a.get("agentName") or "agent",
-                    "downloading",
+                # Per-agent timeout: a hung PixelLab fetch (no timeout of its own)
+                # must NOT stall the whole sequential batch — abandon it and move
+                # on so the remaining agents still get re-composited.
+                await asyncio.wait_for(
+                    resume_sprite_generation(
+                        a["id"],
+                        a["pixellabCharacterId"],
+                        "",  # appearance unused at the 'downloading' phase
+                        a.get("displayName") or a.get("agentName") or "agent",
+                        "downloading",
+                    ),
+                    timeout=90,
                 )
+            except TimeoutError:
+                logger.warning("recomposite-sprites: timed out for %s, skipping", a.get("id"))
             except Exception:
                 logger.exception("recomposite-sprites: failed for %s", a.get("id"))
 
