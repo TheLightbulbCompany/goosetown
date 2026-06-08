@@ -119,7 +119,7 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
 
         if rotation_bytes:
             try:
-                static_png = build_static_spritesheet_from_rotations(rotation_bytes)
+                static_png = await asyncio.to_thread(build_static_spritesheet_from_rotations, rotation_bytes)
                 s3_key = await asyncio.to_thread(
                     upload_sprite_to_s3, static_png, str(agent_id), settings.SPRITE_S3_BUCKET
                 )
@@ -204,7 +204,7 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
         # Process template animations from ZIP (walk, idle)
         for pixellab_name, direction_frames in raw_animations.items():
             friendly = template_id_to_friendly.get(pixellab_name, pixellab_name)
-            sheet = composite_animation_spritesheet(direction_frames)
+            sheet = await asyncio.to_thread(composite_animation_spritesheet, direction_frames)
             if sheet:
                 png_bytes, frame_count = sheet
                 s3_key = await asyncio.to_thread(
@@ -240,7 +240,7 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
                 if frames:
                     direction_frames[directions[i]] = frames
             if direction_frames:
-                sheet = composite_animation_spritesheet(direction_frames)
+                sheet = await asyncio.to_thread(composite_animation_spritesheet, direction_frames)
                 if sheet:
                     png_bytes, frame_count = sheet
                     s3_key = await asyncio.to_thread(
@@ -419,7 +419,7 @@ async def resume_sprite_generation(
             sprite_animations: dict = {}
             for pixellab_name, direction_frames in raw_animations.items():
                 friendly = template_id_to_friendly.get(pixellab_name, pixellab_name)
-                sheet = composite_animation_spritesheet(direction_frames)
+                sheet = await asyncio.to_thread(composite_animation_spritesheet, direction_frames)
                 if sheet:
                     png_bytes, frame_count = sheet
                     s3_key = await asyncio.to_thread(
