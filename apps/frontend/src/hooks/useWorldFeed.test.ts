@@ -142,14 +142,17 @@ describe('useWorldFeed', () => {
       .mockRejectedValueOnce(new Error('first fail'))
       .mockResolvedValue(_okResponse(SAMPLE_EVENTS));
 
-    // Use a short poll interval so retry fires quickly without fake timers
-    const { result } = renderHook(() => useWorldFeed({ pollIntervalMs: 50 }));
+    // Poll interval must be comfortably longer than waitFor's ~50ms check
+    // granularity, otherwise the retry clears the error before waitFor can ever
+    // observe the 'first fail' state and the assertion flakes ("expected null to
+    // be 'first fail'"). 500ms gives the error state a stable, observable window.
+    const { result } = renderHook(() => useWorldFeed({ pollIntervalMs: 500 }));
 
-    // First fetch fails — error is set
+    // First fetch fails — error is set and observable before the retry fires.
     await waitFor(() => expect(result.current.error).toBe('first fail'));
 
-    // After the next poll (≥50ms), error clears and events populate
-    await waitFor(() => expect(result.current.error).toBeNull(), { timeout: 2000 });
+    // After the next poll, error clears and events populate.
+    await waitFor(() => expect(result.current.error).toBeNull(), { timeout: 3000 });
     expect(result.current.events).toEqual(SAMPLE_EVENTS);
   });
 });
