@@ -756,6 +756,53 @@ async def reactivate_agent(
     return {"id": agent_id, "isActive": True}
 
 
+# Holds references to in-flight re-composite background tasks so the event loop
+# doesn't garbage-collect them mid-run (fire-and-forget create_task otherwise risks GC).
+_recomposite_tasks: set = set()
+
+
+@router.post("/admin/recomposite-sprites")
+async def recomposite_sprites():
+    """DEV-ONLY: re-composite existing sprites for every agent through the fixed
+    gray-strip path (#347).
+
+    Re-downloads the agent's already-generated PixelLab frames (no new generation
+    credits — `resume_sprite_generation` at the ``downloading`` phase skips
+    create/animate), re-composites them with the gray background stripped, and
+    re-uploads to S3. The cache-bust (#354) makes the new sheets show immediately.
+
+    One-off backfill for sprites generated before the gray-strip fix landed.
+    Gated to dev (403 elsewhere) — it's an internal ops tool, not a user action.
+    Runs sequentially in a background task to avoid hammering the PixelLab API.
+    """
+    from core import dynamo
+    from core.config import settings
+
+    if settings.ENVIRONMENT != "dev":
+        raise HTTPException(status_code=403, detail="dev-only endpoint")
+
+    resp = dynamo.agents_table().scan(FilterExpression="attribute_exists(pixellabCharacterId)")
+    agents = [a for a in resp.get("Items", []) if a.get("pixellabCharacterId")]
+
+    async def _run_all() -> None:
+        for a in agents:
+            try:
+                await resume_sprite_generation(
+                    a["id"],
+                    a["pixellabCharacterId"],
+                    "",  # appearance unused at the 'downloading' phase
+                    a.get("displayName") or a.get("agentName") or "agent",
+                    "downloading",
+                )
+            except Exception:
+                logger.exception("recomposite-sprites: failed for %s", a.get("id"))
+
+    task = asyncio.create_task(_run_all())
+    _recomposite_tasks.add(task)
+    task.add_done_callback(_recomposite_tasks.discard)
+    return {"queued": len(agents)}
+
+
 @router.get("/agent/{agent_id}/owner-chat")
 async def get_owner_chat(
     agent_id: str,
