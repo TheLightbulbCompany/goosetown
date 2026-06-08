@@ -811,6 +811,50 @@ async def recomposite_sprites():
     return {"queued": len(agents)}
 
 
+@router.post("/admin/regenerate-sprite/{agent_id}")
+async def regenerate_sprite(agent_id: str):
+    """DEV-ONLY: full from-scratch sprite regeneration for ONE agent.
+
+    Unlike /recomposite-sprites (which re-downloads existing frames, no credits),
+    this creates a BRAND-NEW PixelLab character — it COSTS generation credits.
+    Use it when an agent's existing character is broken/hangs (re-composite can't
+    fix that). Passing ``character_id=None`` resets resume_sprite_generation to
+    the ``creating`` phase: create_character -> animate -> download -> composite
+    -> upload. Bounded by a generous timeout (generation+polling legitimately
+    takes minutes) so a true hang can't wedge the task forever.
+
+    Gated to dev (403 elsewhere). Single-agent only — not a batch.
+    """
+    from core.config import settings
+
+    if settings.ENVIRONMENT != "dev":
+        raise HTTPException(status_code=403, detail="dev-only endpoint")
+
+    service = TownService()
+    agent = service.get_town_agent_by_id(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="agent not found")
+
+    appearance = agent.get("appearance") or ""
+    display_name = agent.get("displayName") or agent.get("agentName") or "agent"
+
+    async def _run() -> None:
+        try:
+            await asyncio.wait_for(
+                resume_sprite_generation(agent_id, None, appearance, display_name, "creating"),
+                timeout=600,
+            )
+        except TimeoutError:
+            logger.warning("regenerate-sprite: timed out for %s", agent_id)
+        except Exception:
+            logger.exception("regenerate-sprite: failed for %s", agent_id)
+
+    task = asyncio.create_task(_run())
+    _recomposite_tasks.add(task)
+    task.add_done_callback(_recomposite_tasks.discard)
+    return {"agent_id": agent_id, "status": "regenerating", "display_name": display_name}
+
+
 @router.get("/agent/{agent_id}/owner-chat")
 async def get_owner_chat(
     agent_id: str,
