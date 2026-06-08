@@ -1,185 +1,156 @@
-"""Tests for arc_orchestrator."""
-
 import asyncio
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from worldgm.narrative_director import Injection
+
 
 @pytest.fixture(autouse=True)
-def _stub_emit_metric(monkeypatch):
-    """_emit_metric builds a real boto3 CloudWatch client; stub it so unit tests
-    never touch the network (and don't stall on a no-credentials CI runner)."""
+def _stub_metric(monkeypatch):
     monkeypatch.setattr("worldgm.arc_orchestrator._emit_metric", lambda *a, **k: None)
+    # Reset the process-local rate-cap window so tests don't pollute each other.
+    monkeypatch.setattr("worldgm.arc_orchestrator._recent_kickoffs", [])
 
 
-def _state_with(online=None, narrative_text="kickoff text"):
+def _state(residents_online=2):
     state = MagicMock()
-    state.last_known_locations = online or {}
-    state.narrative_resolver.resolve.return_value = narrative_text
+    state.last_known_locations = {f"a{i}": "cafe" for i in range(residents_online)}
     return state
 
 
+@patch("worldgm.arc_orchestrator.build_snapshot")
+@patch("worldgm.arc_orchestrator.compute_signals", return_value=[])
+@patch("worldgm.arc_orchestrator.author_kickoff")
+@patch("worldgm.arc_orchestrator.emit_world_event")
 @patch("worldgm.arc_orchestrator.dynamo.worldgm_arcs_table")
-def test_maybe_kickoff_arc_no_op_when_too_few_agents(mock_table):
+def test_kickoff_persists_cast_based_arc(mock_table, mock_emit, mock_author, mock_sigs, mock_snap):
     from worldgm.arc_orchestrator import maybe_kickoff_arc
 
-    state = _state_with({"alice": "cafe"})  # only 1 agent
-    result = asyncio.run(maybe_kickoff_arc(state))
-    assert result is None
+    mock_table.return_value.query.return_value = {"Items": []}  # no active arcs
+    # Real-attribute stubs: MagicMock(name="A") does NOT set .name to "A" (name is
+    # reserved by MagicMock), which would break the name→id mapping.
+    snap = WorldSnapshotStub(residents=[ResidentStub("a0", "A"), ResidentStub("a1", "B")])
+    mock_snap.return_value = snap
+    mock_author.return_value = Injection(narrative="A and B spar.", cast=["A", "B"], location="cafe")
+
+    state = _state()
+    with patch("worldgm.arc_orchestrator.random.random", return_value=0.0):
+        arc = asyncio.run(maybe_kickoff_arc(state))
+    assert arc is not None
+    item = mock_table.return_value.put_item.call_args.kwargs["Item"]
+    assert item["cast"] == ["a0", "a1"]  # names mapped back to ids
+    assert item["narrativeKickoff"] == "A and B spar."
+    # delivered per-witness to the cast ids
+    assert mock_emit.call_args.kwargs["witnesses"] == ["a0", "a1"]
+
+
+@patch("worldgm.arc_orchestrator.build_snapshot")
+@patch("worldgm.arc_orchestrator.compute_signals", return_value=[])
+@patch("worldgm.arc_orchestrator.author_kickoff", return_value=None)
+@patch("worldgm.arc_orchestrator.emit_world_event")
+@patch("worldgm.arc_orchestrator.dynamo.worldgm_arcs_table")
+def test_kickoff_noop_when_director_declines(mock_table, mock_emit, mock_author, mock_sigs, mock_snap):
+    from worldgm.arc_orchestrator import maybe_kickoff_arc
+
+    mock_table.return_value.query.return_value = {"Items": []}
+    mock_snap.return_value = MagicMock(residents=[MagicMock(agent_id="a0", name="A")])
+    with patch("worldgm.arc_orchestrator.random.random", return_value=0.0):
+        arc = asyncio.run(maybe_kickoff_arc(_state()))
+    assert arc is None
     mock_table.return_value.put_item.assert_not_called()
 
 
-@patch("worldgm.arc_orchestrator.dynamo.worldgm_arcs_table")
-def test_maybe_kickoff_arc_no_op_when_active_arc_exists(mock_table):
-    from worldgm.arc_orchestrator import maybe_kickoff_arc
-
-    mock_table.return_value.query.return_value = {"Items": [{"arcId": "x", "status": "active"}]}
-    state = _state_with({"alice": "cafe", "bob": "library"})
-    result = asyncio.run(maybe_kickoff_arc(state))
-    assert result is None
-
-
-@patch("worldgm.arc_orchestrator.emit_world_event")
-@patch("worldgm.arc_orchestrator.random.random", return_value=0.0)  # always kickoff
-@patch("worldgm.arc_orchestrator.dynamo.worldgm_arcs_table")
-def test_maybe_kickoff_arc_picks_template_and_persists(mock_table, mock_rand, mock_emit):
-    from worldgm.arc_orchestrator import maybe_kickoff_arc
-
-    mock_table.return_value.query.return_value = {"Items": []}
-    mock_table.return_value.scan.return_value = {"Items": []}  # no prior arcs
-    state = _state_with({"alice": "cafe", "bob": "library"})
-    result = asyncio.run(maybe_kickoff_arc(state))
-    assert result is not None
-    assert result["status"] == "active"
-    assert "arcId" in result
-    assert result["narrativeKickoff"] == "kickoff text"
-    mock_table.return_value.put_item.assert_called_once()
-
-
+@patch("worldgm.arc_orchestrator.build_snapshot")
+@patch("worldgm.arc_orchestrator.compute_signals", return_value=[])
+@patch("worldgm.arc_orchestrator.author_kickoff")
 @patch("worldgm.arc_orchestrator.emit_world_event")
 @patch("worldgm.arc_orchestrator.dynamo.worldgm_arcs_table")
-def test_process_arc_beats_resolves_expired_arc(mock_table, mock_emit):
+def test_kickoff_skips_agents_already_in_a_storyline(mock_table, mock_emit, mock_author, mock_sigs, mock_snap):
+    from worldgm.arc_orchestrator import maybe_kickoff_arc
+
+    # a0 already cast in an active arc → director must receive a snapshot WITHOUT a0,
+    # but with >=2 free residents remaining so a kickoff is still attempted.
+    mock_table.return_value.query.return_value = {"Items": [{"arcId": "x", "status": "active", "cast": ["a0"]}]}
+    snap = WorldSnapshotStub(
+        residents=[ResidentStub("a0", "A"), ResidentStub("a1", "B"), ResidentStub("a2", "C")],
+    )
+    mock_snap.return_value = snap
+    mock_author.return_value = None
+    with patch("worldgm.arc_orchestrator.random.random", return_value=0.0):
+        asyncio.run(maybe_kickoff_arc(_state()))
+    # The snapshot passed to author_kickoff has a0 filtered out.
+    passed_snap = mock_author.call_args.args[1]
+    assert all(r.agent_id != "a0" for r in passed_snap.residents)
+
+
+@patch("worldgm.arc_orchestrator.build_snapshot")
+@patch("worldgm.arc_orchestrator.author_beat", return_value="They reconcile.")
+@patch("worldgm.arc_orchestrator.emit_world_event")
+@patch("worldgm.arc_orchestrator.dynamo.worldgm_arcs_table")
+def test_beat_advances_active_arc(mock_table, mock_emit, mock_beat, mock_snap):
     import time
 
     from worldgm.arc_orchestrator import process_arc_beats
 
     now = int(time.time() * 1000)
-    expired_arc = {
+    arc = {
         "arcId": "x",
-        "templateId": "traveling_merchant",
         "status": "active",
-        "expiresAt": now - 1000,  # expired
-        "nextBeatAt": str(now - 100),  # ready to fire
+        "cast": ["a0", "a1"],
+        "expiresAt": now + 3_600_000,
+        "nextBeatAt": str(now - 100),
+        "narrativeKickoff": "they fought",
     }
-    mock_table.return_value.query.return_value = {"Items": [expired_arc]}
-    state = _state_with({"alice": "cafe", "bob": "library"})
-    still_active = asyncio.run(process_arc_beats(state))
-    # The expired arc was resolved → dropped from the returned active set.
-    assert still_active == []
-    update_calls = mock_table.return_value.update_item.call_args_list
-    resolved_call = next(c for c in update_calls if "resolved" in str(c.kwargs.get("ExpressionAttributeValues", {})))
-    assert resolved_call is not None
+    mock_table.return_value.query.return_value = {"Items": [arc]}
+    mock_snap.return_value = MagicMock()
+    still = asyncio.run(process_arc_beats(_state()))
+    assert len(still) == 1
+    assert still[0]["lastBeatText"] == "They reconcile."
 
 
+@patch("worldgm.arc_orchestrator.build_snapshot")
+@patch("worldgm.arc_orchestrator.author_beat", return_value=None)  # DONE
 @patch("worldgm.arc_orchestrator.emit_world_event")
 @patch("worldgm.arc_orchestrator.dynamo.worldgm_arcs_table")
-def test_process_arc_beats_fires_continuation_beat(mock_table, mock_emit):
+def test_beat_done_resolves_arc(mock_table, mock_emit, mock_beat, mock_snap):
     import time
 
     from worldgm.arc_orchestrator import process_arc_beats
 
     now = int(time.time() * 1000)
-    active_arc = {
+    arc = {
         "arcId": "x",
-        "templateId": "traveling_merchant",
         "status": "active",
-        "expiresAt": now + 3_600_000,  # not yet expired
-        "nextBeatAt": str(now - 100),  # ready to fire next beat
-        "narrativeKickoff": "the merchant arrived",
-    }
-    mock_table.return_value.query.return_value = {"Items": [active_arc]}
-    state = _state_with({"alice": "cafe", "bob": "library"}, narrative_text="next beat text")
-    still_active = asyncio.run(process_arc_beats(state))
-    # The arc is still active and carries the fresh beat text in-memory (so the
-    # caller can cache it without a stale GSI re-read).
-    assert len(still_active) == 1
-    assert still_active[0]["lastBeatText"] == "next beat text"
-    state.narrative_resolver.resolve.assert_called()
-    # arc was updated with new beat text
-    update_calls = mock_table.return_value.update_item.call_args_list
-    beat_call = next(c for c in update_calls if "lastBeatText" in str(c.kwargs.get("UpdateExpression", "")))
-    assert beat_call is not None
-
-
-@patch("worldgm.arc_orchestrator.emit_world_event")
-@patch("worldgm.arc_orchestrator.random.random", return_value=0.0)
-@patch("worldgm.arc_orchestrator.dynamo.worldgm_arcs_table")
-def test_kickoff_emits_world_event(mock_table, mock_rand, mock_emit):
-    from worldgm.arc_orchestrator import maybe_kickoff_arc
-
-    mock_table.return_value.query.return_value = {"Items": []}
-    mock_table.return_value.scan.return_value = {"Items": []}
-    state = _state_with({"alice": "library", "bob": "library"})
-    arc = asyncio.run(maybe_kickoff_arc(state))
-    assert arc is not None
-    mock_emit.assert_called_once()
-    kwargs = mock_emit.call_args.kwargs
-    assert kwargs["tag"] == "arc.kickoff"
-    assert kwargs["summary"] == "kickoff text"
-
-
-@patch("worldgm.arc_orchestrator.emit_world_event")
-@patch("worldgm.arc_orchestrator.random.random", return_value=0.0)
-@patch("worldgm.arc_orchestrator.dynamo.worldgm_arcs_table")
-def test_kickoff_persists_preferred_location(mock_table, mock_rand, mock_emit):
-    """The persisted arc row must carry preferred_location — the resident-facing
-    _arc_text_for_location reads it off the DDB row (not the template), so its
-    absence would make every arc town-wide. Regression guard for that blocker."""
-    from worldgm.arc_orchestrator import maybe_kickoff_arc
-
-    mock_table.return_value.query.return_value = {"Items": []}
-    mock_table.return_value.scan.return_value = {"Items": []}
-    state = _state_with({"alice": "library", "bob": "library"})
-    arc = asyncio.run(maybe_kickoff_arc(state))
-    put_item = mock_table.return_value.put_item.call_args.kwargs["Item"]
-    assert "preferred_location" in put_item
-    assert put_item["preferred_location"] == arc["preferred_location"]
-
-
-@patch("worldgm.arc_orchestrator.emit_world_event", side_effect=RuntimeError("bus down"))
-@patch("worldgm.arc_orchestrator.random.random", return_value=0.0)
-@patch("worldgm.arc_orchestrator.dynamo.worldgm_arcs_table")
-def test_kickoff_survives_emit_failure(mock_table, mock_rand, mock_emit):
-    """A publish failure must NOT prevent the arc from being persisted."""
-    from worldgm.arc_orchestrator import maybe_kickoff_arc
-
-    mock_table.return_value.query.return_value = {"Items": []}
-    mock_table.return_value.scan.return_value = {"Items": []}
-    state = _state_with({"alice": "library", "bob": "library"})
-    arc = asyncio.run(maybe_kickoff_arc(state))
-    assert arc is not None
-    mock_table.return_value.put_item.assert_called_once()  # arc still persisted
-
-
-@patch("worldgm.arc_orchestrator.emit_world_event")
-@patch("worldgm.arc_orchestrator.dynamo.worldgm_arcs_table")
-def test_resolve_emits_world_event(mock_table, mock_emit):
-    import time
-
-    from worldgm.arc_orchestrator import process_arc_beats
-
-    now = int(time.time() * 1000)
-    expired = {
-        "arcId": "x",
-        "templateId": "traveling_merchant",
-        "status": "active",
-        "expiresAt": now - 1000,
+        "cast": ["a0"],
+        "expiresAt": now + 3_600_000,
         "nextBeatAt": str(now - 100),
         "narrativeKickoff": "k",
     }
-    mock_table.return_value.query.return_value = {"Items": [expired]}
-    state = _state_with({"alice": "cafe", "bob": "library"})
-    asyncio.run(process_arc_beats(state))
-    tags = [c.kwargs["tag"] for c in mock_emit.call_args_list]
-    assert "arc.resolved" in tags
+    mock_table.return_value.query.return_value = {"Items": [arc]}
+    mock_snap.return_value = MagicMock()
+    still = asyncio.run(process_arc_beats(_state()))
+    assert still == []  # resolved → dropped
+    resolved = [
+        c
+        for c in mock_table.return_value.update_item.call_args_list
+        if "resolved" in str(c.kwargs.get("ExpressionAttributeValues", {}))
+    ]
+    assert resolved
+
+
+# Lightweight stand-ins so _filter_snapshot (which rebuilds a real WorldSnapshot)
+# operates on objects with the attributes it reads.
+class ResidentStub:
+    def __init__(self, agent_id, name):
+        self.agent_id = agent_id
+        self.name = name
+
+
+class WorldSnapshotStub:
+    def __init__(self, residents):
+        self.residents = residents
+        self.relationships = []
+        self.recent_conversations = []
+        self.clusters = {}
+        self.hour_utc = 0
