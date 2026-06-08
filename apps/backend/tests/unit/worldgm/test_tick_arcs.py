@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from worldgm.__main__ import _arc_text_for_location
 from worldgm.residents.personas import Persona
 
 _PERSONA = Persona(
@@ -18,47 +17,6 @@ _PERSONA = Persona(
     traits=("x",),
     hangout="plaza",
 )
-
-
-def _arc(arc_id, location, kickoff="k", beat=None):
-    a = {"arcId": arc_id, "preferred_location": location, "narrativeKickoff": kickoff}
-    if beat is not None:
-        a["lastBeatText"] = beat
-    return a
-
-
-# ---------------------------------------------------------------------------
-# _arc_text_for_location
-# ---------------------------------------------------------------------------
-
-
-def test_arc_text_matches_resident_location():
-    arcs = [_arc("a1", "cafe", kickoff="A lost dog appears.")]
-    assert _arc_text_for_location(arcs, "cafe") == "A lost dog appears."
-
-
-def test_arc_text_none_when_no_arc_here():
-    arcs = [_arc("a1", "cafe")]
-    assert _arc_text_for_location(arcs, "library") is None
-
-
-def test_arc_text_prefers_latest_beat_over_kickoff():
-    arcs = [_arc("a1", "plaza", kickoff="k", beat="The rumor deepens.")]
-    assert _arc_text_for_location(arcs, "plaza") == "The rumor deepens."
-
-
-def test_arc_without_location_is_town_wide():
-    arcs = [{"arcId": "storm", "narrativeKickoff": "A storm rolls in."}]
-    assert _arc_text_for_location(arcs, "anywhere") == "A storm rolls in."
-
-
-def test_arc_text_none_for_empty_arcs():
-    assert _arc_text_for_location([], "cafe") is None
-
-
-def test_arc_text_skips_entry_without_narrative():
-    arcs = [{"arcId": "blank", "preferred_location": "cafe"}]
-    assert _arc_text_for_location(arcs, "cafe") is None
 
 
 # ---------------------------------------------------------------------------
@@ -157,10 +115,10 @@ async def test_tick_one_resident_injects_storyline_into_snapshot(monkeypatch):
         async def handle_tool_command(self, cmd):  # pragma: no cover
             return {}
 
-    handle = SimpleNamespace(daemon=_D(), persona=_PERSONA)
+    handle = SimpleNamespace(daemon=_D(), persona=_PERSONA, config=SimpleNamespace(agent_id="ada-id"))
     state = _gm_state(
         residents={"ada": handle},
-        active_arcs=[{"arcId": "a1", "preferred_location": "cafe", "narrativeKickoff": "A lost dog appears."}],
+        active_arcs=[{"arcId": "a1", "cast": ["ada-id"], "narrativeKickoff": "A lost dog appears."}],
     )
     await wm._tick_one_resident(state, "ada", handle)
     assert captured["status"]["active_storyline"] == "A lost dog appears."
@@ -183,10 +141,11 @@ async def test_tick_one_resident_no_storyline_when_no_arc_here(monkeypatch):
         async def handle_tool_command(self, cmd):  # pragma: no cover
             return {}
 
-    handle = SimpleNamespace(daemon=_D(), persona=_PERSONA)
+    handle = SimpleNamespace(daemon=_D(), persona=_PERSONA, config=SimpleNamespace(agent_id="ada-id"))
     state = _gm_state(
         residents={"ada": handle},
-        active_arcs=[{"arcId": "a1", "preferred_location": "cafe", "narrativeKickoff": "A lost dog appears."}],
+        # storyline cast is someone else → ada perceives nothing.
+        active_arcs=[{"arcId": "a1", "cast": ["other-id"], "narrativeKickoff": "A lost dog appears."}],
     )
     await wm._tick_one_resident(state, "ada", handle)
     assert captured["status"]["active_storyline"] is None
