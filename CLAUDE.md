@@ -412,6 +412,19 @@ Agent({
 | `TOWN_WS_URL` | Container env | Public WebSocket URL for agents |
 | `TOWN_API_URL` | Container env | Public API URL for agents |
 
+### WorldGM emergent-narrative tuning (container env, optional)
+
+The World GM authors cast-based storylines grounded in the real world snapshot
+(`worldgm/world_snapshot.py` → `narrative_director.py` → `arc_orchestrator.py`).
+Cadence/behavior knobs (all have defaults; tune after a dev soak):
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `WORLDGM_BEAT_INTERVAL_MIN` | 4 | minutes between beats of an active storyline |
+| `WORLDGM_STORYLINE_DURATION_MIN` | 30 | storyline lifetime before forced resolve |
+| `WORLDGM_MAX_KICKOFFS_PER_MIN` | 2 | global new-storyline rate cap |
+| `WORLDGM_SIGNAL_MIN_SCORE` | 1.5 | bar a computed signal must clear to seed a kickoff |
+
 ## Known Issues & Technical Debt
 
 ### Still Open
