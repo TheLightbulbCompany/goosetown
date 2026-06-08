@@ -165,3 +165,96 @@ def build_snapshot(state, *, now_utc_hour: int | None = None) -> WorldSnapshot:
         )
 
     return snap
+
+
+# ---------------------------------------------------------------------------
+# Signals — deterministic, ranked story hooks derived from the snapshot
+# ---------------------------------------------------------------------------
+
+_RIVALRY_AFFINITY = -30
+_BOND_AFFINITY = 30
+_MOOD_EXTREME = 25
+_CLUSTER_MIN = 3
+
+
+@dataclass
+class Signal:
+    kind: str
+    score: float
+    cast: list[str]
+    location: str | None
+    note: str
+
+
+def _co_located(snap: WorldSnapshot, a: str, b: str) -> bool:
+    return any(a in members and b in members for members in snap.clusters.values())
+
+
+def compute_signals(snap: WorldSnapshot) -> list[Signal]:
+    """Derive ranked, deterministic 'hooks' from the snapshot. v1 uses absolute
+    thresholds + co-location boosts (no hour-over-hour deltas)."""
+    signals: list[Signal] = []
+
+    for rel in snap.relationships:
+        boost = 1.0 if _co_located(snap, rel.a, rel.b) else 0.0
+        if rel.affinity <= _RIVALRY_AFFINITY:
+            signals.append(
+                Signal(
+                    "rivalry",
+                    1.0 + boost,
+                    [rel.a, rel.b],
+                    None,
+                    f"{rel.a} & {rel.b}: affinity {rel.affinity} ({rel.rel_type})",
+                )
+            )
+        elif rel.affinity >= _BOND_AFFINITY:
+            signals.append(
+                Signal(
+                    "bond",
+                    1.0 + boost,
+                    [rel.a, rel.b],
+                    None,
+                    f"{rel.a} & {rel.b}: affinity {rel.affinity} ({rel.rel_type})",
+                )
+            )
+
+    for location, members in snap.clusters.items():
+        if len(members) >= _CLUSTER_MIN:
+            signals.append(
+                Signal(
+                    "cluster",
+                    1.0 + 0.25 * (len(members) - _CLUSTER_MIN),
+                    list(members),
+                    location,
+                    f"{len(members)} residents gathered at the {location}",
+                )
+            )
+
+    for r in snap.residents:
+        if abs(r.mood) >= _MOOD_EXTREME:
+            signals.append(
+                Signal(
+                    "mood_extreme",
+                    1.0 + (abs(r.mood) - _MOOD_EXTREME) / 25.0,
+                    [r.name],
+                    r.location,
+                    f"{r.name} is feeling {r.mood_label} (mood {r.mood})",
+                )
+            )
+
+    topic_counts: dict[str, list[str]] = {}
+    for c in snap.recent_conversations:
+        if c.topic:
+            topic_counts.setdefault(c.topic.lower(), []).extend(c.participants)
+    for topic, who in topic_counts.items():
+        echoes = sum(1 for c in snap.recent_conversations if c.topic.lower() == topic)
+        if len({*who}) >= 2 and echoes >= 2:
+            signals.append(Signal("topic_echo", 1.0, list({*who}), None, f"the town keeps circling: {topic}"))
+
+    for r in snap.residents:
+        if r.activity == "idle" and any(t.lower() in ("extrovert", "outgoing", "gregarious") for t in r.traits):
+            if len(snap.clusters.get(r.location, [])) <= 1:
+                signals.append(Signal("loner", 0.5, [r.name], r.location, f"{r.name} is alone and restless"))
+
+    signals.sort(key=lambda s: s.score, reverse=True)
+    return signals
