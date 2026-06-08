@@ -138,6 +138,13 @@ async def process_arc_beats(state) -> list[dict]:
 async def _fire_beat(state, arc: dict) -> bool:
     """Fire one beat. Returns True if the arc resolved (drop it)."""
     now = _now_ms()
+    # Pre-migration arcs (from the old template GM) have no cast — they can't be
+    # delivered to any resident, and continuing them just replays the old invented
+    # fiction. Resolve them so the emergent GM starts fresh. Self-heals stale arcs
+    # without a manual DB cleanup.
+    if not arc.get("cast"):
+        await _resolve_arc(arc)
+        return True
     if int(arc.get("expiresAt", 0)) <= now:
         await _resolve_arc(arc)
         return True

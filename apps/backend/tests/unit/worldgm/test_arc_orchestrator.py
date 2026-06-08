@@ -139,6 +139,39 @@ def test_beat_done_resolves_arc(mock_table, mock_emit, mock_beat, mock_snap):
     assert resolved
 
 
+@patch("worldgm.arc_orchestrator.build_snapshot")
+@patch("worldgm.arc_orchestrator.author_beat")
+@patch("worldgm.arc_orchestrator.emit_world_event")
+@patch("worldgm.arc_orchestrator.dynamo.worldgm_arcs_table")
+def test_beat_resolves_pre_migration_arc_without_cast(mock_table, mock_emit, mock_beat, mock_snap):
+    """A leftover arc from the old template GM has no `cast` — it can't be
+    delivered to anyone, so it's resolved on its next beat (self-heal) rather
+    than replaying the old invented fiction."""
+    import time
+
+    from worldgm.arc_orchestrator import process_arc_beats
+
+    now = int(time.time() * 1000)
+    old_arc = {
+        "arcId": "legacy",
+        "status": "active",
+        "expiresAt": now + 86_400_000,  # old multi-day duration
+        "nextBeatAt": str(now - 100),
+        "narrativeKickoff": "Ana the librarian interrupts the group.",
+        # no "cast" key (old format)
+    }
+    mock_table.return_value.query.return_value = {"Items": [old_arc]}
+    still = asyncio.run(process_arc_beats(_state()))
+    assert still == []  # resolved → dropped
+    mock_beat.assert_not_called()  # never authored a continuation beat
+    resolved = [
+        c
+        for c in mock_table.return_value.update_item.call_args_list
+        if "resolved" in str(c.kwargs.get("ExpressionAttributeValues", {}))
+    ]
+    assert resolved
+
+
 # Lightweight stand-ins so _filter_snapshot (which rebuilds a real WorldSnapshot)
 # operates on objects with the attributes it reads.
 class ResidentStub:
