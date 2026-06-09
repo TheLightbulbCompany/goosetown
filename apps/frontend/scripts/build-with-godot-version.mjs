@@ -11,10 +11,13 @@
 import { execSync } from 'node:child_process';
 import { renameSync, mkdirSync } from 'node:fs';
 
+// `||` (not `??`): a defined-but-empty VERCEL_GIT_COMMIT_SHA must fall
+// through to git, never produce a /godot// path.
 const sha = (
-  process.env.VERCEL_GIT_COMMIT_SHA ??
+  process.env.VERCEL_GIT_COMMIT_SHA ||
   execSync('git rev-parse HEAD').toString().trim()
 ).slice(0, 12);
+if (!sha) throw new Error('could not derive a commit sha for the godot asset dir');
 
 execSync('vite build', {
   stdio: 'inherit',
