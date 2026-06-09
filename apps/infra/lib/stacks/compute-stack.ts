@@ -103,8 +103,14 @@ export class ComputeStack extends cdk.Stack {
       "TaskDefinition",
       {
         family: `goosetown-${env}-backend`,
-        cpu: 512,
-        memoryLimitMiB: 1024,
+        // 1 vCPU (was 0.5): on 0.5 vCPU the event loop saturated under the
+        // world_state-broadcast + WS-daemon + GM + sprite-compositing load
+        // (CPU spiked to 95-99%), so GET /health exceeded its 5s timeout and the
+        // ALB reaped healthy tasks ("unhealthy ... Request timed out" → ECS
+        // replaced), churning WS connections and killing in-flight work. Fargate
+        // requires >=2GB memory at 1 vCPU. Mirrors the worldgm 0.5->1 bump (#345).
+        cpu: 1024,
+        memoryLimitMiB: 2048,
         executionRole,
         taskRole,
       }
@@ -169,7 +175,7 @@ export class ComputeStack extends cdk.Stack {
           "curl -f http://localhost:8000/health || exit 1",
         ],
         interval: cdk.Duration.seconds(30),
-        timeout: cdk.Duration.seconds(5),
+        timeout: cdk.Duration.seconds(10),
         retries: 3,
         startPeriod: cdk.Duration.seconds(60),
       },
@@ -220,9 +226,13 @@ export class ComputeStack extends cdk.Stack {
       healthCheck: {
         path: "/health",
         interval: cdk.Duration.seconds(30),
-        timeout: cdk.Duration.seconds(5),
+        // 10s (was 5) + unhealthy threshold 5 (was 3): tolerate transient
+        // event-loop busyness so the ALB doesn't reap an otherwise-healthy task
+        // (and any in-flight work on it) during a brief CPU spike. Paired with
+        // the 0.5->1 vCPU bump above, which is the fundamental fix.
+        timeout: cdk.Duration.seconds(10),
         healthyThresholdCount: 2,
-        unhealthyThresholdCount: 3,
+        unhealthyThresholdCount: 5,
       },
       stickinessCookieDuration: cdk.Duration.hours(1),
     });
