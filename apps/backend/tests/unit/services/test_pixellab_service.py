@@ -5,9 +5,10 @@ import json
 import zipfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
-from core.services.pixellab_service import PixelLabService
+from core.services.pixellab_service import _RETRY_MAX_ATTEMPTS, PixelLabService
 
 
 @pytest.mark.asyncio
@@ -147,3 +148,102 @@ async def test_fetch_animation_spritesheets_no_zip_returns_empty():
     pxl.download_character_zip = AsyncMock(return_value=None)
     result = await pxl.fetch_animation_spritesheets("char-1")
     assert result == {}
+
+
+# --- _request retry-on-transient behavior (the grey-box reliability fix) ---
+
+
+def _resp(status_code, *, json_body=None, content=None):
+    """Build a fake httpx.Response. 4xx/5xx get a raise_for_status side effect."""
+    r = MagicMock()
+    r.status_code = status_code
+    r.request = MagicMock()
+    r.raise_for_status = MagicMock()
+    if status_code >= 400:
+        r.raise_for_status.side_effect = httpx.HTTPStatusError(
+            f"{status_code}", request=r.request, response=r
+        )
+    if json_body is not None:
+        r.json = MagicMock(return_value=json_body)
+    if content is not None:
+        r.content = content
+    return r
+
+
+def _client_yielding(side_effect):
+    """A fake AsyncClient whose .request() walks a side-effect sequence across attempts."""
+    client = MagicMock()
+    client.request = AsyncMock(side_effect=side_effect)
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=None)
+    return client
+
+
+@pytest.mark.asyncio
+async def test_request_retries_transient_timeout_then_succeeds():
+    service = PixelLabService(api_key="stub")
+    client = _client_yielding([httpx.ConnectTimeout("boom"), _resp(200, json_body={"id": "char-1"})])
+    with (
+        patch("core.services.pixellab_service.httpx.AsyncClient", return_value=client),
+        patch("core.services.pixellab_service.asyncio.sleep", AsyncMock()) as sleep,
+    ):
+        result = await service.get_character("char-1")
+    assert result == {"id": "char-1"}
+    assert client.request.await_count == 2
+    assert sleep.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_request_retries_on_429_then_succeeds():
+    service = PixelLabService(api_key="stub")
+    client = _client_yielding([_resp(429), _resp(200, json_body={"id": "char-2"})])
+    with (
+        patch("core.services.pixellab_service.httpx.AsyncClient", return_value=client),
+        patch("core.services.pixellab_service.asyncio.sleep", AsyncMock()) as sleep,
+    ):
+        result = await service.get_character("char-2")
+    assert result == {"id": "char-2"}
+    assert client.request.await_count == 2
+    assert sleep.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_request_does_not_retry_4xx():
+    service = PixelLabService(api_key="stub")
+    client = _client_yielding([_resp(404)])
+    with (
+        patch("core.services.pixellab_service.httpx.AsyncClient", return_value=client),
+        patch("core.services.pixellab_service.asyncio.sleep", AsyncMock()) as sleep,
+    ):
+        with pytest.raises(httpx.HTTPStatusError):
+            await service.get_character("missing")
+    assert client.request.await_count == 1  # permanent failure: no retry
+    assert sleep.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_request_raises_after_exhausting_attempts():
+    service = PixelLabService(api_key="stub")
+    client = _client_yielding([httpx.ConnectTimeout("boom")] * _RETRY_MAX_ATTEMPTS)
+    with (
+        patch("core.services.pixellab_service.httpx.AsyncClient", return_value=client),
+        patch("core.services.pixellab_service.asyncio.sleep", AsyncMock()) as sleep,
+    ):
+        with pytest.raises(httpx.TimeoutException):
+            await service.get_character("char-3")
+    assert client.request.await_count == _RETRY_MAX_ATTEMPTS
+    assert sleep.await_count == _RETRY_MAX_ATTEMPTS - 1
+
+
+@pytest.mark.asyncio
+async def test_download_zip_423_not_retried_returns_none():
+    service = PixelLabService(api_key="stub")
+    client = _client_yielding([_resp(423)])
+    with (
+        patch("core.services.pixellab_service.httpx.AsyncClient", return_value=client),
+        patch("core.services.pixellab_service.asyncio.sleep", AsyncMock()) as sleep,
+    ):
+        result = await service.download_character_zip("char-4")
+    assert result is None  # caller-handled status, not a transient error
+    assert client.request.await_count == 1
+    assert sleep.await_count == 0
