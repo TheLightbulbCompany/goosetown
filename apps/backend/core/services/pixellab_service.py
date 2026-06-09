@@ -1,5 +1,6 @@
 """PixelLab sprite generation service for GooseTown agents."""
 
+import asyncio
 import logging
 from collections.abc import Callable, Coroutine
 from typing import Any
@@ -11,6 +12,15 @@ from core.config import settings
 logger = logging.getLogger(__name__)
 
 PIXELLAB_API_URL = "https://api.pixellab.ai/v2"
+
+# Retry policy for transient PixelLab failures. A single connect/read timeout or
+# 429/5xx blip used to kill an entire sprite generation — e.g. a skipped walk
+# animation left a grey-box sprite, or a create_character ConnectTimeout dropped
+# the whole regen. Retry those with exponential backoff; do NOT retry 4xx or
+# caller-handled statuses (423 "not ready", 202 "accepted").
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+_RETRY_MAX_ATTEMPTS = 4
+_RETRY_BASE_DELAY_SEC = 1.5
 
 # ---------------------------------------------------------------------------
 # Animation registry — single source of truth for all animation assets.
@@ -169,79 +179,126 @@ class PixelLabService:
     def __init__(self, api_key: str | None = None):
         self.api_key = api_key or settings.PIXELLAB_API_KEY
 
+    async def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        json: Any = None,
+        timeout: float = 30.0,
+        retries: int = _RETRY_MAX_ATTEMPTS,
+    ) -> httpx.Response:
+        """PixelLab HTTP request with retry-on-transient-failure + exponential backoff.
+
+        Retries connect/read timeouts, transport errors, and 429/5xx — the
+        transient blips that previously killed a whole sprite generation. Does
+        NOT retry on other statuses (4xx, or caller-handled 423/202): those are
+        returned for the caller to inspect (``resp.status_code`` / ``raise_for_status``).
+        Raises the last transient error after ``retries`` attempts.
+
+        Pass ``retries=1`` (fail-fast, no backoff) for calls that already sit
+        inside a polling loop with its own retry cadence — e.g. ``get_job_status``
+        under ``wait_for_jobs``. Retrying there would multiply the deliberately
+        capped poll timeout (PR #314) into a multi-minute stall during an outage.
+        """
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        endpoint = url.rsplit("/", 1)[-1].split("?")[0]
+        last_exc: Exception | None = None
+        for attempt in range(retries):
+            try:
+                async with httpx.AsyncClient() as client:
+                    resp = await client.request(method, url, headers=headers, json=json, timeout=timeout)
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                last_exc = exc
+                logger.warning(
+                    "PixelLab %s %s transient %s (attempt %d/%d)",
+                    method,
+                    endpoint,
+                    type(exc).__name__,
+                    attempt + 1,
+                    retries,
+                )
+            else:
+                if resp.status_code not in _RETRYABLE_STATUS:
+                    return resp
+                last_exc = httpx.HTTPStatusError(f"PixelLab {resp.status_code}", request=resp.request, response=resp)
+                logger.warning(
+                    "PixelLab %s %s -> %d (attempt %d/%d), retrying",
+                    method,
+                    endpoint,
+                    resp.status_code,
+                    attempt + 1,
+                    retries,
+                )
+            if attempt < retries - 1:
+                await asyncio.sleep(_RETRY_BASE_DELAY_SEC * (2**attempt))
+        assert last_exc is not None
+        raise last_exc
+
     async def create_character(
         self,
         description: str,
     ) -> tuple[str, str | None]:
         """Queue character creation. Returns (character_id, background_job_id)."""
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{PIXELLAB_API_URL}/create-character-with-4-directions",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json={
-                    "description": description,
-                    "image_size": {"width": 96, "height": 96},
-                    "outline": "single color black outline",
-                    "shading": "basic shading",
-                    "detail": "medium detail",
-                    "view": "low top-down",
-                },
-                timeout=30.0,
-            )
-            if resp.status_code != 200:
-                logger.error("PixelLab create_character %s: %s", resp.status_code, resp.text[:500])
-            resp.raise_for_status()
-            data = resp.json()
-            return data["character_id"], data.get("background_job_id")
+        resp = await self._request(
+            "POST",
+            f"{PIXELLAB_API_URL}/create-character-with-4-directions",
+            json={
+                "description": description,
+                "image_size": {"width": 96, "height": 96},
+                "outline": "single color black outline",
+                "shading": "basic shading",
+                "detail": "medium detail",
+                "view": "low top-down",
+            },
+        )
+        if resp.status_code != 200:
+            logger.error("PixelLab create_character %s: %s", resp.status_code, resp.text[:500])
+        resp.raise_for_status()
+        data = resp.json()
+        return data["character_id"], data.get("background_job_id")
 
-    async def get_character(self, character_id: str) -> dict:
-        """Get character status and sprite URLs."""
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                f"{PIXELLAB_API_URL}/characters/{character_id}",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                timeout=30.0,
-            )
-            resp.raise_for_status()
-            return resp.json()
+    async def get_character(self, character_id: str, *, retries: int = _RETRY_MAX_ATTEMPTS) -> dict:
+        """Get character status and sprite URLs.
+
+        Pass ``retries=1`` from fail-fast fallback callers (e.g.
+        ``get_existing_animation_names``, ``_get_rotation_base64``) so a degraded
+        PixelLab degrades gracefully instead of stalling on backoff.
+        """
+        resp = await self._request("GET", f"{PIXELLAB_API_URL}/characters/{character_id}", retries=retries)
+        resp.raise_for_status()
+        return resp.json()
 
     async def animate_character(
         self, character_id: str, animation: str = "walk", action_description: str | None = None
     ) -> list[str]:
         """Queue animation for a character. Returns list of background job IDs."""
-        async with httpx.AsyncClient() as client:
-            body = {
-                "character_id": character_id,
-                "template_animation_id": animation,
-            }
-            if action_description:
-                body["action_description"] = action_description
-            resp = await client.post(
-                f"{PIXELLAB_API_URL}/characters/animations",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                json=body,
-                timeout=30.0,
-            )
-            if resp.status_code != 200:
-                logger.error(f"PixelLab animate_character {resp.status_code}: {resp.text}")
-            resp.raise_for_status()
-            data = resp.json()
-            return data.get("background_job_ids", [])
+        body: dict[str, Any] = {
+            "character_id": character_id,
+            "template_animation_id": animation,
+        }
+        if action_description:
+            body["action_description"] = action_description
+        resp = await self._request("POST", f"{PIXELLAB_API_URL}/characters/animations", json=body)
+        if resp.status_code != 200:
+            logger.error(f"PixelLab animate_character {resp.status_code}: {resp.text}")
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("background_job_ids", [])
 
     async def get_job_status(self, job_id: str) -> dict:
         """Get background job status.
 
         Returns dict with 'status', 'id', 'last_response' (when completed).
         For animate-with-text-v2 jobs, last_response contains frame images.
+
+        Fail-fast (``retries=1``): this is always called from a polling loop
+        (``wait_for_jobs`` / the creation poll) that already retries each cycle.
+        Internal backoff here would multiply the capped poll timeout (PR #314).
         """
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                f"{PIXELLAB_API_URL}/background-jobs/{job_id}",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                timeout=30.0,
-            )
-            resp.raise_for_status()
-            return resp.json()
+        resp = await self._request("GET", f"{PIXELLAB_API_URL}/background-jobs/{job_id}", retries=1)
+        resp.raise_for_status()
+        return resp.json()
 
     async def get_v2_animation_frames(self, job_id: str) -> list[bytes]:
         """Get completed V2 animation frames as PNG bytes.
@@ -305,16 +362,11 @@ class PixelLabService:
 
     async def download_character_zip(self, character_id: str) -> bytes | None:
         """Download character ZIP (rotations + animations). Returns None if not ready (423)."""
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                f"{PIXELLAB_API_URL}/characters/{character_id}/zip",
-                headers={"Authorization": f"Bearer {self.api_key}"},
-                timeout=60.0,
-            )
-            if resp.status_code == 423:
-                return None  # animations still processing
-            resp.raise_for_status()
-            return resp.content
+        resp = await self._request("GET", f"{PIXELLAB_API_URL}/characters/{character_id}/zip", timeout=60.0)
+        if resp.status_code == 423:
+            return None  # animations still processing
+        resp.raise_for_status()
+        return resp.content
 
     async def get_existing_animation_names(self, character_id: str) -> set[str]:
         """Check which animations already exist on a PixelLab character.
@@ -323,7 +375,7 @@ class PixelLabService:
         Falls back to empty set on API error.
         """
         try:
-            char_data = await self.get_character(character_id)
+            char_data = await self.get_character(character_id, retries=1)
             animations = char_data.get("animations", [])
             return {a.get("name", "") for a in animations if a.get("name")}
         except Exception as e:
@@ -623,7 +675,7 @@ class PixelLabService:
         Returns None if the rotation image can't be fetched.
         """
         try:
-            char_data = await self.get_character(character_id)
+            char_data = await self.get_character(character_id, retries=1)
             rotation_urls = char_data.get("rotation_urls", {})
             url = rotation_urls.get(direction, "")
             if not url:
@@ -687,42 +739,36 @@ class PixelLabService:
                 "frame_count": frame_count,
             }
 
-            async with httpx.AsyncClient() as client:
-                try:
-                    resp = await client.post(
-                        f"{PIXELLAB_API_URL}/animate-with-text-v3",
-                        headers={"Authorization": f"Bearer {self.api_key}"},
-                        json=body,
-                        timeout=60.0,
+            try:
+                resp = await self._request("POST", f"{PIXELLAB_API_URL}/animate-with-text-v3", json=body, timeout=60.0)
+                if resp.status_code not in (200, 202):
+                    logger.error(
+                        "PixelLab animate-with-text-v3 %s/%s %s: %s",
+                        animation_name,
+                        direction,
+                        resp.status_code,
+                        resp.text[:500],
                     )
-                    if resp.status_code not in (200, 202):
-                        logger.error(
-                            "PixelLab animate-with-text-v3 %s/%s %s: %s",
-                            animation_name,
-                            direction,
-                            resp.status_code,
-                            resp.text[:500],
-                        )
-                        continue
-                    data = resp.json()
-                    job_id = data.get("background_job_id") or data.get("job_id")
-                    if job_id:
-                        job_ids.append(job_id)
-                        logger.info(
-                            "Custom animation %s/%s queued for %s: job %s (frames=%d)",
-                            animation_name,
-                            direction,
-                            character_id,
-                            job_id,
-                            frame_count,
-                        )
-                except Exception:
-                    logger.exception(
-                        "Failed to queue custom animation %s/%s for %s",
+                    continue
+                data = resp.json()
+                job_id = data.get("background_job_id") or data.get("job_id")
+                if job_id:
+                    job_ids.append(job_id)
+                    logger.info(
+                        "Custom animation %s/%s queued for %s: job %s (frames=%d)",
                         animation_name,
                         direction,
                         character_id,
+                        job_id,
+                        frame_count,
                     )
+            except Exception:
+                logger.exception(
+                    "Failed to queue custom animation %s/%s for %s",
+                    animation_name,
+                    direction,
+                    character_id,
+                )
 
         logger.info(
             "Custom animation %s: %d/%d directions queued for character %s",
