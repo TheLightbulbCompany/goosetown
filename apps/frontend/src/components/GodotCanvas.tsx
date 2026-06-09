@@ -96,6 +96,7 @@ interface GodotEngineConstructor {
      * container and overflows on layouts with sidebars).
      */
     canvasResizePolicy?: 0 | 1 | 2;
+    onProgress?: (current: number, total: number) => void;
   }): GodotEngine;
   isWebGLAvailable: (majorVersion?: number) => boolean;
 }
