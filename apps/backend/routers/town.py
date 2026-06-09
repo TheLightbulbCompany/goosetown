@@ -842,7 +842,13 @@ async def regenerate_sprite(agent_id: str):
         try:
             await asyncio.wait_for(
                 resume_sprite_generation(agent_id, None, appearance, display_name, "creating"),
-                timeout=600,
+                # A full from-scratch generation legitimately takes ~15-20 min
+                # (create + wait for the 4-direction character + queue + generate
+                # all signup animations + download + composite + upload). 600s was
+                # far too short and cancelled it mid-animation-queue. Now that the
+                # event-loop ConnectTimeout (#365) and task-churn (#366) hangs are
+                # fixed, this is just a generous backstop against a true hang.
+                timeout=1800,
             )
         except TimeoutError:
             logger.warning("regenerate-sprite: timed out for %s", agent_id)
