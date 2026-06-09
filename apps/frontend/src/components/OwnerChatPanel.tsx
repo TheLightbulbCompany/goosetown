@@ -38,7 +38,9 @@ export default function OwnerChatPanel({ agentId, agentName, onClose }: OwnerCha
   };
 
   return (
-    <div className="fixed z-30 bg-clay-900 flex flex-col shadow-2xl inset-x-0 bottom-0 top-[30%] rounded-t-xl border-t border-clay-700 md:inset-x-auto md:bottom-auto md:top-0 md:right-0 md:h-full md:w-[360px] md:rounded-none md:border-t-0 md:border-l">
+    /* z-[45]: above the mobile agents drawer (z-40, where Chat is launched
+       from) but below JoinTownModal (z-50). md:z-30 = original desktop z. */
+    <div className="fixed z-[45] md:z-30 bg-clay-900 flex flex-col shadow-2xl inset-x-0 bottom-0 top-[30%] rounded-t-xl border-t border-clay-700 md:inset-x-auto md:bottom-auto md:top-0 md:right-0 md:h-full md:w-[360px] md:rounded-none md:border-t-0 md:border-l">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-clay-700 bg-clay-800">
         <h3 className="font-display text-lg text-brown-100 tracking-wider">
