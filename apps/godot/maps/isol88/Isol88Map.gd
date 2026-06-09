@@ -4,6 +4,8 @@ const MAP_SIZE := Vector2i(1408, 864)
 const TILE_SIZE := 32
 const MAP_TILES := Vector2i(44, 27)
 const DEFAULT_ZOOM := 2.0
+const MIN_ZOOM := 0.75
+const MAX_ZOOM := 4.0
 
 # Time-of-day tileset variants (all 160x640, only colors differ)
 const TILESET_TEXTURES: Dictionary = {
@@ -24,6 +26,9 @@ const TILESET_TEXTURES: Dictionary = {
 @onready var _terrain_layer: TileMapLayer = $TerrainLayer
 
 var _dragging: bool = false
+var _touches: Dictionary = {}  # touch index -> screen position
+var _pinch_start_dist: float = 0.0
+var _pinch_start_zoom: float = DEFAULT_ZOOM
 var _current_tod: String = ""
 
 
@@ -92,7 +97,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		if mb.button_index == MOUSE_BUTTON_LEFT or mb.button_index == MOUSE_BUTTON_MIDDLE:
 			_dragging = mb.pressed
 
-	if event is InputEventMouseMotion and _dragging:
+	if event is InputEventMouseMotion and _dragging and _touches.size() < 2:
 		var mm: InputEventMouseMotion = event as InputEventMouseMotion
 		camera.position -= mm.relative / camera.zoom
 		_clamp_camera()
@@ -109,6 +114,37 @@ func _unhandled_input(event: InputEvent) -> void:
 		camera.position += pg.delta * 10.0 / camera.zoom
 		_clamp_camera()
 		get_viewport().set_input_as_handled()
+
+	# Touch: two-finger pinch zoom. Single-finger pan arrives via Godot's
+	# emulate_mouse_from_touch (project default) through the mouse path above.
+	if event is InputEventScreenTouch:
+		var st: InputEventScreenTouch = event as InputEventScreenTouch
+		if st.pressed:
+			_touches[st.index] = st.position
+		else:
+			_touches.erase(st.index)
+			if _touches.size() < 2:
+				_pinch_start_dist = 0.0
+		if _touches.size() == 2:
+			var keys: Array = _touches.keys()
+			var a: Vector2 = _touches[keys[0]]
+			var b: Vector2 = _touches[keys[1]]
+			_pinch_start_dist = a.distance_to(b)
+			_pinch_start_zoom = camera.zoom.x
+			_dragging = false  # second finger down: stop emulated-mouse panning
+
+	if event is InputEventScreenDrag:
+		var sd: InputEventScreenDrag = event as InputEventScreenDrag
+		_touches[sd.index] = sd.position
+		if _touches.size() == 2 and _pinch_start_dist > 0.0:
+			var keys2: Array = _touches.keys()
+			var a2: Vector2 = _touches[keys2[0]]
+			var b2: Vector2 = _touches[keys2[1]]
+			var dist: float = a2.distance_to(b2)
+			var z: float = clampf(_pinch_start_zoom * dist / _pinch_start_dist, MIN_ZOOM, MAX_ZOOM)
+			camera.zoom = Vector2(z, z)
+			_clamp_camera()
+			get_viewport().set_input_as_handled()
 
 
 func _clamp_camera() -> void:
