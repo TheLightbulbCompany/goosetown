@@ -245,3 +245,34 @@ async def test_download_zip_423_not_retried_returns_none():
     assert result is None  # caller-handled status, not a transient error
     assert client.request.await_count == 1
     assert sleep.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_get_job_status_fails_fast_no_retry():
+    """Polled inside wait_for_jobs' own retry loop — must not add internal backoff
+    (would multiply the capped poll timeout from PR #314)."""
+    service = PixelLabService(api_key="stub")
+    client = _client_yielding([httpx.ConnectTimeout("boom")])  # only ONE failure queued
+    with (
+        patch("core.services.pixellab_service.httpx.AsyncClient", return_value=client),
+        patch("core.services.pixellab_service.asyncio.sleep", AsyncMock()) as sleep,
+    ):
+        with pytest.raises(httpx.TimeoutException):
+            await service.get_job_status("job-1")
+    assert client.request.await_count == 1  # fail-fast: single attempt
+    assert sleep.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_get_character_retries_param_opts_out():
+    """Fallback callers pass retries=1 to degrade gracefully instead of stalling."""
+    service = PixelLabService(api_key="stub")
+    client = _client_yielding([httpx.ConnectTimeout("boom")])
+    with (
+        patch("core.services.pixellab_service.httpx.AsyncClient", return_value=client),
+        patch("core.services.pixellab_service.asyncio.sleep", AsyncMock()) as sleep,
+    ):
+        with pytest.raises(httpx.TimeoutException):
+            await service.get_character("char-5", retries=1)
+    assert client.request.await_count == 1
+    assert sleep.await_count == 0

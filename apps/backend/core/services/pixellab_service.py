@@ -179,19 +179,32 @@ class PixelLabService:
     def __init__(self, api_key: str | None = None):
         self.api_key = api_key or settings.PIXELLAB_API_KEY
 
-    async def _request(self, method: str, url: str, *, json: Any = None, timeout: float = 30.0) -> httpx.Response:
+    async def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        json: Any = None,
+        timeout: float = 30.0,
+        retries: int = _RETRY_MAX_ATTEMPTS,
+    ) -> httpx.Response:
         """PixelLab HTTP request with retry-on-transient-failure + exponential backoff.
 
         Retries connect/read timeouts, transport errors, and 429/5xx — the
         transient blips that previously killed a whole sprite generation. Does
         NOT retry on other statuses (4xx, or caller-handled 423/202): those are
         returned for the caller to inspect (``resp.status_code`` / ``raise_for_status``).
-        Raises the last transient error after ``_RETRY_MAX_ATTEMPTS``.
+        Raises the last transient error after ``retries`` attempts.
+
+        Pass ``retries=1`` (fail-fast, no backoff) for calls that already sit
+        inside a polling loop with its own retry cadence — e.g. ``get_job_status``
+        under ``wait_for_jobs``. Retrying there would multiply the deliberately
+        capped poll timeout (PR #314) into a multi-minute stall during an outage.
         """
         headers = {"Authorization": f"Bearer {self.api_key}"}
         endpoint = url.rsplit("/", 1)[-1].split("?")[0]
         last_exc: Exception | None = None
-        for attempt in range(_RETRY_MAX_ATTEMPTS):
+        for attempt in range(retries):
             try:
                 async with httpx.AsyncClient() as client:
                     resp = await client.request(method, url, headers=headers, json=json, timeout=timeout)
@@ -203,7 +216,7 @@ class PixelLabService:
                     endpoint,
                     type(exc).__name__,
                     attempt + 1,
-                    _RETRY_MAX_ATTEMPTS,
+                    retries,
                 )
             else:
                 if resp.status_code not in _RETRYABLE_STATUS:
@@ -215,9 +228,9 @@ class PixelLabService:
                     endpoint,
                     resp.status_code,
                     attempt + 1,
-                    _RETRY_MAX_ATTEMPTS,
+                    retries,
                 )
-            if attempt < _RETRY_MAX_ATTEMPTS - 1:
+            if attempt < retries - 1:
                 await asyncio.sleep(_RETRY_BASE_DELAY_SEC * (2**attempt))
         assert last_exc is not None
         raise last_exc
@@ -245,9 +258,14 @@ class PixelLabService:
         data = resp.json()
         return data["character_id"], data.get("background_job_id")
 
-    async def get_character(self, character_id: str) -> dict:
-        """Get character status and sprite URLs."""
-        resp = await self._request("GET", f"{PIXELLAB_API_URL}/characters/{character_id}")
+    async def get_character(self, character_id: str, *, retries: int = _RETRY_MAX_ATTEMPTS) -> dict:
+        """Get character status and sprite URLs.
+
+        Pass ``retries=1`` from fail-fast fallback callers (e.g.
+        ``get_existing_animation_names``, ``_get_rotation_base64``) so a degraded
+        PixelLab degrades gracefully instead of stalling on backoff.
+        """
+        resp = await self._request("GET", f"{PIXELLAB_API_URL}/characters/{character_id}", retries=retries)
         resp.raise_for_status()
         return resp.json()
 
@@ -273,8 +291,12 @@ class PixelLabService:
 
         Returns dict with 'status', 'id', 'last_response' (when completed).
         For animate-with-text-v2 jobs, last_response contains frame images.
+
+        Fail-fast (``retries=1``): this is always called from a polling loop
+        (``wait_for_jobs`` / the creation poll) that already retries each cycle.
+        Internal backoff here would multiply the capped poll timeout (PR #314).
         """
-        resp = await self._request("GET", f"{PIXELLAB_API_URL}/background-jobs/{job_id}")
+        resp = await self._request("GET", f"{PIXELLAB_API_URL}/background-jobs/{job_id}", retries=1)
         resp.raise_for_status()
         return resp.json()
 
@@ -353,7 +375,7 @@ class PixelLabService:
         Falls back to empty set on API error.
         """
         try:
-            char_data = await self.get_character(character_id)
+            char_data = await self.get_character(character_id, retries=1)
             animations = char_data.get("animations", [])
             return {a.get("name", "") for a in animations if a.get("name")}
         except Exception as e:
@@ -653,7 +675,7 @@ class PixelLabService:
         Returns None if the rotation image can't be fetched.
         """
         try:
-            char_data = await self.get_character(character_id)
+            char_data = await self.get_character(character_id, retries=1)
             rotation_urls = char_data.get("rotation_urls", {})
             url = rotation_urls.get(direction, "")
             if not url:
