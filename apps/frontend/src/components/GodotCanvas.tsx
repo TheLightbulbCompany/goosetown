@@ -11,7 +11,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-const GODOT_JS_PATH = '/godot/goosetown.js';
+const GODOT_BASE = import.meta.env.VITE_GODOT_BASE ?? '/godot';
+const GODOT_JS_PATH = `${GODOT_BASE}/goosetown.js`;
 
 // Approximate uncompressed payload (wasm + pck). Godot's onProgress reports
 // total=0, so we estimate percent against this; cap at 99 until startGame
@@ -191,7 +192,7 @@ export default function GodotCanvas({ className, scene = 'town' }: GodotCanvasPr
         // our sidebar-constrained parent. The ResizeObserver below owns
         // the canvas sizing instead.
         const engine = new window.Engine({
-          executable: '/godot/goosetown',
+          executable: `${GODOT_BASE}/goosetown`,
           canvas,
           canvasResizePolicy: 0,
           onProgress: (current: number, total: number) => {
