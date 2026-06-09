@@ -197,11 +197,11 @@ export default function ApartmentCard({
         const showReactivate = onReactivate && !agent.is_active;
         if (!showChat && !showViewLink && !showRemove && !showReactivate) return null;
         return (
-          <div className="flex justify-end items-center gap-3 mt-1">
+          <div className="flex flex-wrap justify-end items-center gap-1 mt-1">
             {showChat && (
               <button
                 onClick={() => onChatClick!(agent.agent_id, agent.display_name)}
-                className="font-body text-xs text-clay-300 hover:text-brown-200 transition-colors"
+                className="font-body text-xs text-clay-300 hover:text-brown-200 active:text-brown-200 active:bg-clay-700/40 transition-colors px-2 py-2 -my-1 rounded"
               >
                 Chat &rarr;
               </button>
@@ -209,7 +209,7 @@ export default function ApartmentCard({
             {showViewLink && href && (
               <Link
                 to={href}
-                className="font-body text-xs text-clay-300 hover:text-brown-200 transition-colors"
+                className="font-body text-xs text-clay-300 hover:text-brown-200 active:text-brown-200 active:bg-clay-700/40 transition-colors px-2 py-2 -my-1 rounded"
               >
                 View in {def!.displayName.toLowerCase()} &rarr;
               </Link>
@@ -217,7 +217,7 @@ export default function ApartmentCard({
             {showRemove && (
               <button
                 onClick={() => onRemove!(agent.agent_id, agent.display_name)}
-                className="font-body text-xs text-red-400/70 hover:text-red-300 transition-colors"
+                className="font-body text-xs text-red-400/70 hover:text-red-300 active:text-red-300 active:bg-clay-700/40 transition-colors px-2 py-2 -my-1 rounded"
                 title="Soft-delete: removes from town, preserves diary and history"
               >
                 Remove
@@ -226,7 +226,7 @@ export default function ApartmentCard({
             {showReactivate && (
               <button
                 onClick={() => onReactivate!(agent.agent_id, agent.display_name)}
-                className="font-body text-xs text-green-400/70 hover:text-green-300 transition-colors"
+                className="font-body text-xs text-green-400/70 hover:text-green-300 active:text-green-300 active:bg-clay-700/40 transition-colors px-2 py-2 -my-1 rounded"
                 title="Bring this agent back into town (uses a quota slot)"
               >
                 Reactivate
