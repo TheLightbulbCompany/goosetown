@@ -199,17 +199,23 @@ class PixelLabService:
                 last_exc = exc
                 logger.warning(
                     "PixelLab %s %s transient %s (attempt %d/%d)",
-                    method, endpoint, type(exc).__name__, attempt + 1, _RETRY_MAX_ATTEMPTS,
+                    method,
+                    endpoint,
+                    type(exc).__name__,
+                    attempt + 1,
+                    _RETRY_MAX_ATTEMPTS,
                 )
             else:
                 if resp.status_code not in _RETRYABLE_STATUS:
                     return resp
-                last_exc = httpx.HTTPStatusError(
-                    f"PixelLab {resp.status_code}", request=resp.request, response=resp
-                )
+                last_exc = httpx.HTTPStatusError(f"PixelLab {resp.status_code}", request=resp.request, response=resp)
                 logger.warning(
                     "PixelLab %s %s -> %d (attempt %d/%d), retrying",
-                    method, endpoint, resp.status_code, attempt + 1, _RETRY_MAX_ATTEMPTS,
+                    method,
+                    endpoint,
+                    resp.status_code,
+                    attempt + 1,
+                    _RETRY_MAX_ATTEMPTS,
                 )
             if attempt < _RETRY_MAX_ATTEMPTS - 1:
                 await asyncio.sleep(_RETRY_BASE_DELAY_SEC * (2**attempt))
@@ -334,9 +340,7 @@ class PixelLabService:
 
     async def download_character_zip(self, character_id: str) -> bytes | None:
         """Download character ZIP (rotations + animations). Returns None if not ready (423)."""
-        resp = await self._request(
-            "GET", f"{PIXELLAB_API_URL}/characters/{character_id}/zip", timeout=60.0
-        )
+        resp = await self._request("GET", f"{PIXELLAB_API_URL}/characters/{character_id}/zip", timeout=60.0)
         if resp.status_code == 423:
             return None  # animations still processing
         resp.raise_for_status()
@@ -714,9 +718,7 @@ class PixelLabService:
             }
 
             try:
-                resp = await self._request(
-                    "POST", f"{PIXELLAB_API_URL}/animate-with-text-v3", json=body, timeout=60.0
-                )
+                resp = await self._request("POST", f"{PIXELLAB_API_URL}/animate-with-text-v3", json=body, timeout=60.0)
                 if resp.status_code not in (200, 202):
                     logger.error(
                         "PixelLab animate-with-text-v3 %s/%s %s: %s",
