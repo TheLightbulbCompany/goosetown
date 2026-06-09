@@ -9,6 +9,8 @@ interface ImportMetaEnv {
   readonly VITE_BACKEND_URL?: string;
   readonly VITE_WS_URL?: string;
   readonly VITE_CLERK_PUBLISHABLE_KEY?: string;
+  /** Set by scripts/build-with-godot-version.mjs at prod build; unset in dev (-> '/godot'). */
+  readonly VITE_GODOT_BASE?: string;
 }
 
 interface ImportMeta {
