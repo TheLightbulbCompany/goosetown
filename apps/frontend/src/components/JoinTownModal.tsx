@@ -83,7 +83,7 @@ export default function JoinTownModal({ open, onClose }: Props) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
       <div
-        className="bg-clay-800 border border-clay-600 rounded-lg p-6 max-w-lg w-full mx-4 shadow-xl"
+        className="bg-clay-800 border border-clay-600 rounded-lg p-6 max-w-lg w-full mx-4 shadow-xl max-h-[85vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
         <h2 className="font-display text-2xl text-brown-100 tracking-wider mb-4">
