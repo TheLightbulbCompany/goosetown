@@ -38,7 +38,7 @@ export default function OwnerChatPanel({ agentId, agentName, onClose }: OwnerCha
   };
 
   return (
-    <div className="fixed top-0 right-0 h-full w-[360px] bg-clay-900 border-l border-clay-700 flex flex-col z-30 shadow-2xl">
+    <div className="fixed z-30 bg-clay-900 flex flex-col shadow-2xl inset-x-0 bottom-0 top-[30%] rounded-t-xl border-t border-clay-700 md:inset-x-auto md:bottom-auto md:top-0 md:right-0 md:h-full md:w-[360px] md:rounded-none md:border-t-0 md:border-l">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-clay-700 bg-clay-800">
         <h3 className="font-display text-lg text-brown-100 tracking-wider">
@@ -67,7 +67,7 @@ export default function OwnerChatPanel({ agentId, agentName, onClose }: OwnerCha
           <div
             key={m.id}
             className={clsx(
-              'font-body text-sm rounded p-2 max-w-[280px] break-words',
+              'font-body text-sm rounded p-2 max-w-[80%] break-words',
               m.direction === 'owner_to_agent'
                 ? 'bg-brown-700 text-brown-100 ml-auto'
                 : 'bg-clay-700 text-brown-200',
