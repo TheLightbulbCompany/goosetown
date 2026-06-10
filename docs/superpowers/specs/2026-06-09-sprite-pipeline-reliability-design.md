@@ -99,12 +99,18 @@ In `_request`, classify by status (not the current 4xx-blanket):
 
 `_generate_custom_animation` currently early-returns when the animation isn't in `CUSTOM_ANIMATIONS` (`activity_service.py:217`) — so `order_coffee → drink` (a **template**) never generates. Switch it to call `queue_animation(char_id, anim_name)` for **any** registry animation, removing the `CUSTOM_ANIMATIONS`-only gate. (Rename the function to `_generate_activity_animation`.)
 
-### 7. Animation registry review ("descriptions are good")
+### 7. Animation registry review + template/v3 split ("descriptions are good")
 
-Audit `ANIMATION_REGISTRY`:
-- **walk / idle** are templates (`template_animation_id` `walk` / `breathing-idle`) — verify the template IDs are valid current PixelLab templates; templates need no prose description.
-- **talking** and the custom prompts (sitting, reading, writing, working, performing, exercising, gaming, gardening, cooking, sleeping) → review each `action_description` for clarity and motion specificity; keep the `_LOOP_SUFFIX` (final frame returns to first). With `mode:v3 enhance_prompt:true`, descriptions can be tightened to the core action; verify each reads as a clean PixelLab `action_description`.
+**Template/v3 split (decided):** keep templates *only* where they earn their keep, push everything else to v3.
+
+- **Templates: `walk` + `idle` only.** These are the two universal animations generated for *every* agent at signup; template mode is **1 gen/direction** (verified — cheapest/fastest) and the walk template gives a clean, predictable locomotion cycle. `template_animation_id`: `walk` / `breathing-idle`. Verify both IDs are valid current PixelLab templates. Templates need no prose description.
+- **v3: everything else** — `talking` + all activity animations (sitting, reading, writing, working, performing, exercising, gaming, gardening, cooking, sleeping).
+- **Convert `drink` (order_coffee) from template → v3.** It's the only activity animation currently on a template, it's `auto_generate=False` so it never generated at signup, *and* it's the one silently broken by the `CUSTOM_ANIMATIONS`-only lazy path (§6). Making it v3 means **all** activity animations are uniformly v3 and flow through the unified helper.
+- **Drop the unused template entries** `run`, `crouch`, `pick_up` — nothing in `activity_registry.py` references them (audited). Removing them shrinks the registry and the template surface.
+- **Review each v3 `action_description`** (talking + activities) for clarity and motion specificity; keep the `_LOOP_SUFFIX` (final frame returns to first). With `mode:v3` + `enhance_prompt:true` (+0.05 gen, reused across directions) the descriptions can be tightened to the core action — verify each reads as a clean PixelLab `action_description`.
 - Confirm **every** `activity_registry.py` `animation=` value resolves to a registry key (audited: all present — sitting, performing, idle, reading, writing, working, drink, exercising, gaming, gardening, sleeping, cooking).
+
+> Not verified: v3-as-walk quality (we'd test before ever dropping the walk template). For launch, walk/idle stay templates.
 
 ## Files touched
 
