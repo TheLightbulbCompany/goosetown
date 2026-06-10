@@ -71,6 +71,29 @@ _TRANSITION_TABLE: dict[tuple[str, str], tuple[str, str]] = {
 # happens inside ``_handle_context_transition``.
 _TRANSITION_MAP: frozenset[str] = frozenset({marker for (_src, marker) in _TRANSITION_TABLE.keys()})
 
+# Entry markers can only be entered from town. Maps the marker to the interior
+# context it lands you in, so we can tell "genuinely already there" apart from
+# "in a *different* interior" (which must exit to town first).
+_ENTRY_MARKER_CONTEXT: dict[str, str] = {"library": "library", "residence": "apartment"}
+
+
+def _transition_path(current_context: str, destination: str) -> list[str]:
+    """Return the sequence of transition markers to reach ``destination``.
+
+    Entering an interior (``library``/``residence``) is only valid from town, so
+    if the agent is in a *different* interior it must exit first — this returns
+    ``["exit", destination]`` (two-hop). Entering from town, being genuinely in
+    the target interior already, or an ``exit`` itself are each a single step
+    (the genuine already-there case then rejects with ``already_in_X``). This is
+    what makes a single ``move <interior>`` verb work from anywhere, matching how
+    town-location moves already auto-exit the current interior.
+    """
+    target_ctx = _ENTRY_MARKER_CONTEXT.get(destination)
+    if target_ctx is not None and current_context not in ("town", target_ctx):
+        return ["exit", destination]
+    return [destination]
+
+
 # Town-map markers that are NOT cross-context transition triggers — i.e.,
 # regular intra-town navigation targets. Used by the move handler to decide
 # whether a cross-context transition needs to happen before the agent can
@@ -161,13 +184,14 @@ async def _handle_context_transition(
     current_context = agent.get("locationContext", "town")
     key = (current_context, destination)
     if key not in _TRANSITION_TABLE:
-        # The agent is in a context where this destination doesn't trigger
-        # a transition — e.g., trying to "move residence" while already in
-        # the apartment, or "move library" while already in the library.
-        if destination == "residence":
-            reason = "already_in_apartment"
-        elif destination == "library":
-            reason = "already_in_library"
+        # No transition for (current_context, destination). Pick a reason that
+        # reflects the ACTUAL context — only claim ``already_in_X`` when the
+        # agent is genuinely in that interior; otherwise it's an impossible hop
+        # (e.g. apartment → library, which the router resolves via a two-step
+        # exit-then-enter, so reaching here means a genuine dead-end).
+        target_ctx = _ENTRY_MARKER_CONTEXT.get(destination)
+        if target_ctx is not None and current_context == target_ctx:
+            reason = f"already_in_{target_ctx}"
         elif destination == "exit":
             reason = "not_in_interior"
         else:
