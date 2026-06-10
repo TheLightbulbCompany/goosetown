@@ -533,6 +533,8 @@ class PixelLabService:
                 frames = await self.generate_animation(character_id, name, on_progress=on_progress, max_attempts=30)
                 results[name] = frames
                 logger.info("Signup animation %s: %d/%d directions", name, len(frames), len(CARDINAL_4))
+            except PixelLabCreditError:
+                raise
             except Exception:
                 logger.exception("Signup animation %r failed for %s — continuing", name, character_id)
                 results[name] = {}
@@ -595,6 +597,8 @@ class PixelLabService:
         """
         try:
             char_data = await self.get_character(character_id)
+        except PixelLabCreditError:
+            raise
         except Exception:
             logger.exception("Failed to get character %s for animation fetch", character_id)
             return {}

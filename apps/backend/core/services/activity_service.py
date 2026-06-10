@@ -250,8 +250,8 @@ async def _generate_activity_animation(agent_id: str, character_id: str, animati
         for direction, frames in direction_frames.items():
             logger.info("Got %d frames for %s/%s", len(frames), animation_name, direction)
 
-        # Composite into spritesheet
-        result = composite_v2_animation(direction_frames)
+        # Composite into spritesheet (CPU-bound PIL work — offload off the event loop)
+        result = await asyncio.to_thread(composite_v2_animation, direction_frames)
         if result is None:
             logger.warning("Failed to composite %s for agent %s", animation_name, agent_id)
             return

@@ -40,6 +40,7 @@ import logging
 from core.services.daemon_bridge import _make_agent_event_callback, _send_to_daemon
 from core.services.game_server_client import get_game_server_client
 from core.services.phase_lattice import advance_phase
+from core.services.pixellab_service import PixelLabCreditError
 from core.services.town_agent_ws import get_town_agent_ws_manager
 from core.services.town_service import TownService
 
@@ -296,6 +297,8 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
                 exc_info=True,
             )
 
+    except PixelLabCreditError:
+        raise
     except Exception:
         logger.exception("Sprite generation failed for agent %s", agent_id)
         try:
@@ -451,6 +454,8 @@ async def resume_sprite_generation(
 
         logger.info("Sprite recovery completed for agent %s", agent_id)
 
+    except PixelLabCreditError:
+        raise
     except Exception:
         logger.exception("Failed to resume sprite generation for %s", agent_id)
         service.update_agent_state(agent_id, sprite_status=None)
