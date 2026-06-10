@@ -24,6 +24,9 @@ class Settings:
     WS_LAMBDA_SECRET: str = os.getenv("WS_LAMBDA_SECRET", "")
     # Set WS_STRICT_VALIDATION=false to roll back to legacy dict-based body handling for 48h post-deploy
     WS_STRICT_VALIDATION: bool = os.getenv("WS_STRICT_VALIDATION", "true").lower() != "false"
+    PIXELLAB_MAX_CONCURRENT_ANIMATIONS: int = int(os.environ.get("PIXELLAB_MAX_CONCURRENT_ANIMATIONS", "2"))
+    PIXELLAB_POOL_MAX_CONNECTIONS: int = int(os.environ.get("PIXELLAB_POOL_MAX_CONNECTIONS", "10"))
+    PIXELLAB_POOL_MAX_KEEPALIVE: int = int(os.environ.get("PIXELLAB_POOL_MAX_KEEPALIVE", "5"))
 
     def validate(self) -> None:
         """Validate required env vars. Raises RuntimeError in non-dev environments if critical vars are missing."""
