@@ -23,7 +23,9 @@ Verified against the live OpenAPI spec (`https://api.pixellab.ai/v2/openapi.json
 - **Limit is concurrency-based, not rate-based.** `429 = "too many concurrent jobs"` per account; no published number (the "~10 Tier 2" in our code is folklore), **no `Retry-After`**. Right primitive: a **tunable concurrency semaphore** + our own backoff.
 - **`402 = insufficient credits/generations`** is a *distinct* code — not retryable, should fire a credit-exhaustion alarm (closes a known launch blocker).
 - **No webhooks.** Polling `GET /background-jobs/{id}` at 5–10s is the only option; **no bulk-status endpoint** (N jobs = N polls, fire concurrently per cycle). Our 10s interval is fine.
-- **🎯 `POST /characters/animations` batches all directions in ONE call.** Takes a `directions` array (omit = all), `mode ∈ {template, v3, pro}`, returns **one `background_job_id` per direction**. It is the **same endpoint we already use for walk/idle** (template mode). For custom animations, `mode:"v3"` + `action_description` uses the **character's own rotations as the per-direction reference internally** — so we no longer fetch/pass `first_frame` ourselves.
+- **🎯 `POST /characters/animations` batches directions in ONE call.** Takes a `directions` array, `mode ∈ {template, v3, pro}`, returns **one `background_job_id` per direction**. It is the **same endpoint we already use for walk/idle** (template mode). For custom animations, `mode:"v3"` + `action_description` uses the **character's own rotations as the per-direction reference internally** — so we no longer fetch/pass `first_frame` ourselves.
+  - **`directions` default differs by mode** (verified verbatim): *template* → all character directions; ***custom/v3* → `south` only**. So the helper must **always pass the explicit 4 cardinals** for v3 or it under-generates to one direction.
+  - **Mode cost (verified verbatim):** `template` = **"1 gen/direction"** (cheapest/fastest — justifies keeping walk/idle as templates); `pro` = "20-40 gen/direction"; `v3` = `frame_count`-based custom (between the two; no published per-call number). `enhance_prompt` is **v3-only** (422 on template/pro), **+0.05 generations**, reused across directions.
 
 ### Empirical verification (2026-06-09)
 
@@ -65,7 +67,9 @@ Behavior:
 - **custom** → `POST /characters/animations {character_id, mode:"v3", action_description: <desc>, frame_count, directions: CARDINAL_4, enhance_prompt: true}`.
 - One HTTP call → `background_job_ids` (4). Submission goes through the concurrency gate (§4).
 
-`CARDINAL_4 = ["south","west","east","north"]` (our spritesheet uses 4 dirs even though chars may carry 8 rotations — omitting `directions` would over-generate).
+`CARDINAL_4 = ["south","west","east","north"]` — **always pass this explicitly**. The live spec is explicit that `directions` defaults differ by mode: *template* defaults to all character directions, but ***custom (v3) defaults to `south` only***. So omitting `directions` on a v3 animation silently under-generates to one direction (a "why is only south animated" trap). The helper passes the 4 cardinals for both modes.
+
+`mode` is auto-detected (`template_animation_id` present → template, else → v3), but we pass it explicitly for clarity. `enhance_prompt` is **v3-only** (422 on template/pro) and **costs +0.05 generations** (reused across all directions) — we enable it for v3 custom animations for richer motion.
 
 This collapses **8 connection-opens per custom animation (4 v3 + 4 rotation GETs) → 1 submit + polls** and deletes the fragile `retries=1` rotation path.
 
