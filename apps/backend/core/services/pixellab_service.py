@@ -89,10 +89,16 @@ ANIMATION_REGISTRY: dict[str, dict] = {
     # Templates (1 gen/direction, auto all directions)
     "walk": {"type": "template", "template_id": "walk", "fps": 8.0, "auto_generate": True},
     "idle": {"type": "template", "template_id": "breathing-idle", "fps": 4.0, "auto_generate": True},
-    "run": {"type": "template", "template_id": "running-6-frames", "fps": 12.0, "auto_generate": False},
-    "drink": {"type": "template", "template_id": "drinking", "fps": 6.0, "auto_generate": False},
-    "crouch": {"type": "template", "template_id": "crouching", "fps": 6.0, "auto_generate": False},
-    "pick_up": {"type": "template", "template_id": "picking-up", "fps": 6.0, "auto_generate": False},
+    "drink": {
+        "type": "custom",
+        "auto_generate": False,
+        "frames": 8,
+        "fps": 6.0,
+        "prompt": (
+            "Raising a cup to the mouth with one hand, taking a sip, lowering "
+            "it again, then settling back to a relaxed standing pose. " + _LOOP_SUFFIX
+        ),
+    },
     # Custom V3 (generated lazily on first use)
     # Prompts describe the full movement sequence for PixelLab frame generation.
     # Each custom prompt ends with the LOOP_SUFFIX so the final frame matches
