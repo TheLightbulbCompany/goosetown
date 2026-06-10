@@ -360,23 +360,36 @@ async def resume_sprite_generation(
             service.update_agent_state(agent_id, sprite_status="animating")
             current_status = "animating"
 
-        # Phase: animating + downloading
-        # queue_signup_animations now generates AND returns the per-direction
-        # frames ({anim_name: {direction: [png_bytes]}}) end-to-end, so the
-        # old separate ZIP re-fetch is gone — composite straight off the return.
-        # animating + downloading are now one fused step: the frames live only
-        # in memory, so an agent recovered mid-"downloading" must re-generate
-        # (there's no longer a ZIP-only resume point to pick up from).
-        if current_status in ("animating", "downloading") and char_id:
-            _progress("Resuming animations...")
-            signup_frames = await pxl.queue_signup_animations(char_id, on_progress=_anim_progress)
+        # Phase: animating vs downloading — two DISTINCT resume entry points
+        # that share the composite+upload+advance tail but differ ONLY in where
+        # the per-direction frames come from:
+        #
+        #   * "animating" (reached after a fresh "creating" regenerate): GENERATE
+        #     via queue_signup_animations — this costs PixelLab credits and is
+        #     the intended behavior for /admin/regenerate-sprite.
+        #   * "downloading" (the /admin/recomposite-sprites entry): RE-DOWNLOAD
+        #     the character's EXISTING animations via fetch_animation_spritesheets
+        #     — no generation, no credits. Recomposite's whole point is to
+        #     re-run the gray-strip composite over already-generated frames, so
+        #     it MUST NOT call queue_signup_animations.
+        #
+        # Both sources return the same {anim_name: {direction: [png_bytes]}}
+        # shape, so only the SOURCE differs — the loop below is identical.
+        if char_id and current_status in ("animating", "downloading"):
+            if current_status == "animating":
+                _progress("Resuming animations...")
+                anim_source = await pxl.queue_signup_animations(char_id, on_progress=_anim_progress)
+            else:  # downloading == recomposite: re-download existing, never regenerate
+                _progress("Re-downloading sprites...")
+                anim_source = await pxl.fetch_animation_spritesheets(char_id)
+
             service.update_agent_state(agent_id, sprite_status="downloading")
             current_status = "downloading"
 
             _progress("Compositing sprites...")
 
             sprite_animations: dict = {}
-            for friendly, direction_frames in signup_frames.items():
+            for friendly, direction_frames in anim_source.items():
                 if not direction_frames:
                     continue
                 sheet = await asyncio.to_thread(composite_animation_spritesheet, direction_frames)
