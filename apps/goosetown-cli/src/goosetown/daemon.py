@@ -1282,6 +1282,18 @@ class TownDaemon:
             await self.ws.send(msg)
             _log.info("WS send complete")
 
+            if payload.get("action") == "end_conversation":
+                # Optimistic local clear: the agent initiated the end, so treat
+                # itself as out of the conversation now. Otherwise an immediate
+                # `act move` hits the in_conversation guard above —
+                # active_conversation is only cleared by the server's
+                # conversation_ended event, which hasn't round-tripped yet.
+                # _on_conversation_ended stays idempotent (pop with default).
+                active = self.state.get("active_conversation") or {}
+                if active.get("conv_id") == payload.get("conv_id"):
+                    self.state.pop("active_conversation", None)
+                    self.state["pending_messages"] = []
+
             if payload.get("action") == "chat":
                 # Wait briefly for backend verdict — conversation_started
                 # (success) or chat_rejected (failure). 5s is generous; the

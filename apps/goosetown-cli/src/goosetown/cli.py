@@ -85,9 +85,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p_act = sub.add_parser("act", help="Perform a town action.")
     p_act.add_argument(
         "action",
-        help="Action to perform (move, chat, say, idle, end, or an activity name).",
+        help="Action to perform (move, chat, say, idle, end, reply_owner, or an activity name).",
     )
-    p_act.add_argument("args", nargs="*", help="Additional arguments for the action.")
+    # REMAINDER captures everything after the action verbatim — including
+    # option-looking tokens like `--ref=<id>` for reply_owner. argparse can't
+    # reliably intermix a real optional with a nargs="*" positional (it errored
+    # "unrecognized arguments" on `act reply_owner --ref=x text`), so we capture
+    # the rest as opaque args and parse `--ref=` in the handler (#83).
+    p_act.add_argument(
+        "args", nargs=argparse.REMAINDER, help="Additional arguments for the action."
+    )
 
     # leave
     p_leave = sub.add_parser("leave", help="Go to sleep with an optional wake alarm.")

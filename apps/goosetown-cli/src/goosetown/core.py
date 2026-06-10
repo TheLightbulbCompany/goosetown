@@ -48,6 +48,18 @@ def _die(message: str, *hints: str) -> None:
     sys.exit(1)
 
 
+def _parse_owner_ref(rest: list[str]) -> tuple[str | None, list[str]]:
+    """Pull a leading ``--ref=<id>`` off reply_owner args.
+
+    The act subparser captures the rest of the command via argparse REMAINDER,
+    so `--ref=<id>` arrives as the first positional token rather than a parsed
+    option. Returns ``(ref_or_None, remaining_args)``.
+    """
+    if rest and rest[0].startswith("--ref="):
+        return rest[0][len("--ref=") :], rest[1:]
+    return None, rest
+
+
 # ---------------------------------------------------------------------------
 # websockets bootstrap / availability check
 # ---------------------------------------------------------------------------
@@ -502,14 +514,11 @@ def cmd_act(args: argparse.Namespace) -> None:
             _die("Usage: goosetown act join_conversation <conv_id>")
         payload = {"action": "join_conversation", "conv_id": rest[0]}
     elif action == "reply_owner":
+        # The act subparser captures the rest via REMAINDER, so a leading
+        # `--ref=<id>` arrives as the first positional token — pull it off here.
+        ref, rest = _parse_owner_ref(rest)
         if not rest:
-            _die("Usage: goosetown act reply_owner <text>")
-        ref = None
-        if rest[0].startswith("--ref="):
-            ref = rest[0][len("--ref=") :]
-            rest = rest[1:]
-            if not rest:
-                _die("Usage: goosetown act reply_owner [--ref=<id>] <text>")
+            _die("Usage: goosetown act reply_owner [--ref=<id>] <text>")
         payload = {"action": "reply_owner", "text": " ".join(rest)}
         if ref:
             payload["ref_message_id"] = ref
