@@ -403,7 +403,10 @@ class PixelLabService:
                         logger.warning("Job %s (%s/%s) vanished (404) before fetch", jid, label, direction)
                         done_now.append(jid)
                     continue
-                except Exception:
+                except Exception as exc:
+                    # Transient poll error (timeout/connect) — log and retry next
+                    # sweep rather than silently dropping the direction.
+                    logger.debug("Poll error for job %s (%s/%s): %s", jid, label, direction, exc)
                     continue
                 status = job.get("status")
                 if status == "completed":
