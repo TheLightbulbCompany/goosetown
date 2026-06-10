@@ -131,7 +131,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			var b: Vector2 = _touches[keys[1]]
 			_pinch_start_dist = a.distance_to(b)
 			_pinch_start_zoom = camera.zoom.x
-			_dragging = false  # second finger down: stop emulated-mouse panning
+			# Second finger down: stop emulated-mouse panning. Known trade-off:
+			# after lifting one finger, the remaining finger can't pan until a
+			# fresh touch (emulate_mouse_from_touch only re-arms on a new press).
+			_dragging = false
 
 	if event is InputEventScreenDrag:
 		var sd: InputEventScreenDrag = event as InputEventScreenDrag
@@ -142,7 +145,13 @@ func _unhandled_input(event: InputEvent) -> void:
 			var b2: Vector2 = _touches[keys2[1]]
 			var dist: float = a2.distance_to(b2)
 			var z: float = clampf(_pinch_start_zoom * dist / _pinch_start_dist, MIN_ZOOM, MAX_ZOOM)
+			# Anchor the zoom to the pinch midpoint: keep the world point under
+			# the fingers stationary instead of zooming toward camera center.
+			var midpoint: Vector2 = (a2 + b2) / 2.0
+			var vp_center: Vector2 = get_viewport_rect().size / 2.0
+			var world_anchor: Vector2 = camera.position + (midpoint - vp_center) / camera.zoom.x
 			camera.zoom = Vector2(z, z)
+			camera.position = world_anchor - (midpoint - vp_center) / z
 			_clamp_camera()
 			get_viewport().set_input_as_handled()
 
