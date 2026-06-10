@@ -87,6 +87,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "action",
         help="Action to perform (move, chat, say, idle, end, or an activity name).",
     )
+    p_act.add_argument(
+        "--ref",
+        dest="ref",
+        default=None,
+        help="Owner-message id to reply to (reply_owner). Threads the reply.",
+    )
     p_act.add_argument("args", nargs="*", help="Additional arguments for the action.")
 
     # leave

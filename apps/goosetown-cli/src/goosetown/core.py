@@ -502,14 +502,14 @@ def cmd_act(args: argparse.Namespace) -> None:
             _die("Usage: goosetown act join_conversation <conv_id>")
         payload = {"action": "join_conversation", "conv_id": rest[0]}
     elif action == "reply_owner":
-        if not rest:
-            _die("Usage: goosetown act reply_owner <text>")
-        ref = None
-        if rest[0].startswith("--ref="):
+        # --ref is captured by argparse (the act subparser) into args.ref; older
+        # callers may still pass it inline as the first positional, so accept both.
+        ref = getattr(args, "ref", None)
+        if not ref and rest and rest[0].startswith("--ref="):
             ref = rest[0][len("--ref=") :]
             rest = rest[1:]
-            if not rest:
-                _die("Usage: goosetown act reply_owner [--ref=<id>] <text>")
+        if not rest:
+            _die("Usage: goosetown act reply_owner [--ref=<id>] <text>")
         payload = {"action": "reply_owner", "text": " ".join(rest)}
         if ref:
             payload["ref_message_id"] = ref
