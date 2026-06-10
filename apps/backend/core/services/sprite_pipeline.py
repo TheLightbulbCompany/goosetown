@@ -47,6 +47,25 @@ from core.services.town_service import TownService
 logger = logging.getLogger(__name__)
 
 
+# Per-agent in-flight guard shared by BOTH generation entry points
+# (``_sprite_pipeline_task`` and ``resume_sprite_generation``). Only one
+# generation may run per agent at a time — a second concurrent call for the
+# same ``agent_id`` returns early instead of generating a duplicate set of
+# sheets and racing the phase-lattice monotonic guard (#85).
+#
+# Why a plain ``set`` is race-free: asyncio is single-threaded, so the
+# ``if agent_id in _resume_in_flight`` check and the subsequent ``.add`` run
+# without an intervening ``await`` — no other coroutine can interleave between
+# them. The two direct callers that bypass ``SpriteQueue`` are the admin
+# ``POST /town/admin/regenerate-sprite/{id}`` endpoint and startup recovery
+# (``main.py:_reconnect_active_agents``); before this guard they could both
+# call ``resume_sprite_generation`` for the same resident at once, which is
+# exactly the race #85 surfaced live (the admin run bumped spriteStatus to
+# "animating" in DDB, then the worldgm backend's startup recovery saw that and
+# fired its own resume while the admin run was still going).
+_resume_in_flight: set[str] = set()
+
+
 async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: str) -> None:
     """Run the full sprite generation pipeline for a single agent.
 
@@ -71,6 +90,11 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
         composite_animation_spritesheet,
         upload_sprite_to_s3,
     )
+
+    if agent_id in _resume_in_flight:
+        logger.info("Sprite generation already in flight for %s — skipping duplicate", agent_id)
+        return
+    _resume_in_flight.add(agent_id)
 
     pxl = PixelLabService()
     service = TownService()
@@ -311,6 +335,8 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
                 agent_id,
                 exc_info=True,
             )
+    finally:
+        _resume_in_flight.discard(agent_id)
 
 
 async def resume_sprite_generation(
@@ -334,18 +360,26 @@ async def resume_sprite_generation(
         upload_sprite_to_s3,
     )
 
-    pxl = PixelLabService()
-    service = TownService()
-
-    # Recover the existing spriteUrl from DynamoDB so we don't overwrite it
-    # with "" if Phase C can't find a "walk" key in the animation dict.
-    existing_agent = service.get_town_agent_by_id(agent_id)
-    existing_sprite_url = (existing_agent or {}).get("spriteUrl", "")
-
-    def _progress(status: str) -> None:
-        _send_to_daemon(agent_id, {"event": "sprite_progress", "status": status})
+    # Per-agent in-flight guard (#85). A second concurrent resume for the same
+    # agent (e.g. admin /regenerate-sprite running while startup recovery also
+    # fires a resume on the same resident) returns early instead of generating
+    # a duplicate set of sheets and racing the phase-lattice monotonic guard.
+    if agent_id in _resume_in_flight:
+        logger.info("Sprite generation already in flight for %s — skipping duplicate", agent_id)
+        return
+    _resume_in_flight.add(agent_id)
 
     try:
+        pxl = PixelLabService()
+        service = TownService()
+
+        # Recover the existing spriteUrl from DynamoDB so we don't overwrite it
+        # with "" if Phase C can't find a "walk" key in the animation dict.
+        existing_agent = service.get_town_agent_by_id(agent_id)
+        existing_sprite_url = (existing_agent or {}).get("spriteUrl", "")
+
+        def _progress(status: str) -> None:
+            _send_to_daemon(agent_id, {"event": "sprite_progress", "status": status})
 
         async def _anim_progress(status: str) -> None:
             _progress(status)
@@ -458,4 +492,13 @@ async def resume_sprite_generation(
         raise
     except Exception:
         logger.exception("Failed to resume sprite generation for %s", agent_id)
-        service.update_agent_state(agent_id, sprite_status=None)
+        try:
+            TownService().update_agent_state(agent_id, sprite_status=None)
+        except Exception:
+            logger.debug(
+                "Failed to clear sprite_status for %s after resume failure",
+                agent_id,
+                exc_info=True,
+            )
+    finally:
+        _resume_in_flight.discard(agent_id)
