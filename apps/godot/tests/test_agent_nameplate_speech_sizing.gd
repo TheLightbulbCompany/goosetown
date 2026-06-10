@@ -60,8 +60,9 @@ func test_speech_bubble_grows_for_a_long_line() -> void:
 	# A wrapped multi-line line is taller than a two-character one, and the box
 	# tracks it instead of staying a fixed 120x36.
 	assert_that(long_size.y).is_greater(short_size.y)
-	# Width is bounded by the wrap cap (max text width + padding).
-	assert_that(long_size.x).is_less_equal(130.0 + 18.0 + 0.5)
+	# Width is bounded by the wrap cap (max text width + both side insets).
+	# Box width = text_width + 2*(label_inset + safety) = <=130 + 2*(7+3) = 150.
+	assert_that(long_size.x).is_less_equal(130.0 + 2.0 * (7.0 + 3.0) + 0.5)
 
 
 func test_speech_bubble_is_centered_and_above_head() -> void:
@@ -70,6 +71,46 @@ func test_speech_bubble_is_centered_and_above_head() -> void:
 	var bubble: NinePatchRect = agent.speech_container
 	assert_float(bubble.position.x).is_equal_approx(-bubble.size.x * 0.5, 0.5)
 	assert_float(bubble.position.y + bubble.size.y).is_equal_approx(-42.0, 0.5)
+
+
+func test_speech_bubble_interior_fits_the_rendered_text() -> void:
+	# Regression #77: text ran past the RIGHT edge of the white bubble. The box
+	# was sized from an 18px pad while the SpeechText label is inset 7px on each
+	# side (scene offsets), so the label only got box_w-14 of render width but the
+	# text was measured/wrapped at a wider value — the final glyphs overflowed.
+	#
+	# Invariant: the label's render width (box_w - 2*inset) must be >= the
+	# rendered text width, with the safety margin, for any line that fits.
+	var agent: Node = _make_agent()
+	# A line that lands just under the wrap cap so it stays single-line — this is
+	# the case that overflowed live ("...commendabl[e]").
+	var line: String = "Tesla, your enthusiasm is grand"
+	agent.update_state({"speechText": line})
+	var bubble: NinePatchRect = agent.speech_container
+	var label: Label = agent.speech_text_label
+
+	var font: Font = label.get_theme_font("font")
+	var font_size: int = label.get_theme_font_size("font_size")
+	# The actual width the text renders at, at the label's content width.
+	var label_render_w: float = bubble.size.x - 2.0 * 7.0  # 7 = SPEECH_LABEL_INSET_X
+	var rendered: Vector2 = font.get_multiline_string_size(
+		line, HORIZONTAL_ALIGNMENT_CENTER, label_render_w, font_size
+	)
+	# The interior must hold the rendered text — no right-edge clip.
+	assert_float(label_render_w).is_greater_equal(rendered.x)
+
+
+func test_speech_bubble_stays_above_head_in_headless() -> void:
+	# Bug #78's flip only engages in the web viewer (a camera frames the town).
+	# Headless/server has no viewport to clip against, so the bubble must stay in
+	# its normal above-head slot — bottom edge at SPEECH_BOTTOM_Y (-42).
+	var agent: Node = _make_agent()
+	agent.update_state({"speechText": "Near the very top of the screen"})
+	var bubble: NinePatchRect = agent.speech_container
+	# Above-head placement: bubble grows UPWARD from the bottom slot, so its top
+	# (position.y) is negative and its bottom edge is at -42.
+	assert_float(bubble.position.y + bubble.size.y).is_equal_approx(-42.0, 0.5)
+	assert_that(bubble.position.y).is_less(0.0)
 
 
 func test_speech_text_is_dark_not_white_on_white() -> void:

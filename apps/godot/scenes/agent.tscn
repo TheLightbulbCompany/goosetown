@@ -81,7 +81,7 @@ theme_override_fonts/font = ExtResource("3_font")
 theme_override_font_sizes/font_size = 9
 horizontal_alignment = 1
 vertical_alignment = 1
-autowrap_mode = 2
+autowrap_mode = 3
 text = ""
 
 [node name="CollisionShape2D" type="CollisionShape2D" parent="."]

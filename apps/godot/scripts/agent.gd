@@ -124,15 +124,36 @@ const NAMEPLATE_PAD: Vector2 = Vector2(14.0, 6.0)
 ## Y of the pill's BOTTOM edge in agent-local space (just above the head).
 const NAMEPLATE_BOTTOM_Y: float = -34.0
 
-## Horizontal + vertical padding (px) added around speech text, inside the bubble.
-## Larger than the pill's because the 9-patch border art needs breathing room.
-const SPEECH_PAD: Vector2 = Vector2(18.0, 14.0)
-## Y of the bubble's BOTTOM edge in agent-local space (above the nameplate slot).
+## Real horizontal inset (px) between the bubble's outer edge and the SpeechText
+## label's render rect, on EACH side. This MUST match the scene: SpeechText is
+## anchored to the full NinePatch rect (anchors_preset=15) with offset_left=7 /
+## offset_right=-7, so the label is 7px in from each edge. NinePatchRect does NOT
+## clip its children to the center patch, so the patch_margin_* (6/6) don't
+## further constrain the label — the label offsets are the true inset. Bug #77
+## was the box being sized from a 18px pad while the label only got box_w-14,
+## then measuring text at `wrap_w` but rendering it in a `wrap_w+4` label, so
+## kerning/rounding pushed the last chars past the right edge.
+const SPEECH_LABEL_INSET_X: float = 7.0
+## Real vertical inset (px) top+bottom from the scene (offset_top=5, offset_bottom=-8).
+const SPEECH_LABEL_INSET_TOP: float = 5.0
+const SPEECH_LABEL_INSET_BOTTOM: float = 8.0
+## Extra horizontal safety margin (px) on each side beyond the measured text, so
+## sub-pixel rounding / kerning never clips the final glyph.
+const SPEECH_SAFETY_X: float = 3.0
+## Y of the bubble's BOTTOM edge in agent-local space (above the nameplate slot)
+## when the bubble sits ABOVE the head (the normal case).
 const SPEECH_BOTTOM_Y: float = -42.0
+## Y of the bubble's TOP edge in agent-local space when it has been FLIPPED to
+## sit BELOW the head (bug #78 — near the top of the viewport). Just under the
+## sprite's feet so it doesn't overlap the body.
+const SPEECH_FLIP_TOP_Y: float = 6.0
 ## Text wraps once it would exceed this width (px); short lines stay narrower.
 const SPEECH_MAX_TEXT_WIDTH: float = 130.0
 ## Floor so a one-word line still gets a sensibly proportioned bubble.
 const SPEECH_MIN_TEXT_WIDTH: float = 24.0
+## Minimum px of clearance we want between the bubble's top and the visible top
+## of the viewport before we flip the bubble below the head (bug #78).
+const SPEECH_TOP_CLEARANCE: float = 4.0
 
 # ---------------------------------------------------------------------------
 # @onready variables
@@ -349,9 +370,15 @@ func _resize_nameplate() -> void:
 
 func _resize_speech_bubble() -> void:
 	## Size the 9-patch bubble to hug the current speech text, wrapping once the
-	## text would exceed SPEECH_MAX_TEXT_WIDTH, and re-center it above the head.
-	## The SpeechText label fills the bubble (with a small inset) via anchors, so
-	## resizing the NinePatchRect reflows the text automatically.
+	## text would exceed SPEECH_MAX_TEXT_WIDTH, and position it above the head
+	## (or below, if above would clip the top of the viewport — bug #78).
+	##
+	## The SpeechText label fills the bubble inset by SPEECH_LABEL_INSET_X on each
+	## side (see scene offsets), so the label's render width is box_w - 2*inset.
+	## Bug #77: we must measure the text at the SAME width the label will actually
+	## have, then size box_w so that width is preserved — otherwise the text wraps
+	## (or overflows) at a different width than it was measured at and clips on the
+	## right edge.
 	if speech_text_label == null or speech_container == null:
 		return
 	var font: Font = speech_text_label.get_theme_font("font")
@@ -359,19 +386,63 @@ func _resize_speech_bubble() -> void:
 		return  # not in tree yet / headless without a theme — skip, it's cosmetic
 	var font_size: int = speech_text_label.get_theme_font_size("font_size")
 	var text: String = speech_text_label.text
+
+	# The label's usable text width, on each side, is eaten by the inset plus a
+	# safety margin. The text must WRAP within (and render within) this width.
+	var side_inset: float = SPEECH_LABEL_INSET_X + SPEECH_SAFETY_X
+
 	# Natural single-line width, clamped to the wrap band. Below MAX the bubble
 	# hugs a short line; at MAX the text wraps and we measure the multi-line box.
 	var natural_w: float = font.get_string_size(
 		text, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size
 	).x
-	var wrap_w: float = clampf(natural_w, SPEECH_MIN_TEXT_WIDTH, SPEECH_MAX_TEXT_WIDTH)
-	var text_size: Vector2 = font.get_multiline_string_size(
-		text, HORIZONTAL_ALIGNMENT_CENTER, wrap_w, font_size
+	# This is the width the LABEL's content area will have. We measure the
+	# multiline box at exactly this width so the rendered wrap matches the box.
+	var label_text_w: float = clampf(
+		natural_w, SPEECH_MIN_TEXT_WIDTH, SPEECH_MAX_TEXT_WIDTH
 	)
-	var box_w: float = text_size.x + SPEECH_PAD.x
-	var box_h: float = text_size.y + SPEECH_PAD.y
+	var text_size: Vector2 = font.get_multiline_string_size(
+		text, HORIZONTAL_ALIGNMENT_CENTER, label_text_w, font_size
+	)
+	# Box width = the actual rendered text width + both side insets. Using
+	# text_size.x (the real multi-line width, which can be <= label_text_w for a
+	# short final line) keeps the bubble hugging short lines.
+	var box_w: float = text_size.x + 2.0 * side_inset
+	var box_h: float = text_size.y + SPEECH_LABEL_INSET_TOP + SPEECH_LABEL_INSET_BOTTOM
 	speech_container.size = Vector2(box_w, box_h)
-	speech_container.position = Vector2(-box_w * 0.5, SPEECH_BOTTOM_Y - box_h)
+
+	# --- Position: above the head normally; below if above clips the top (#78) ---
+	# The bubble's top edge in agent-local space when placed above the head.
+	var above_top_local_y: float = SPEECH_BOTTOM_Y - box_h
+	var place_below: bool = _bubble_would_clip_top(above_top_local_y)
+	if place_below:
+		# Flip below the head: TOP edge at SPEECH_FLIP_TOP_Y, growing downward.
+		speech_container.position = Vector2(-box_w * 0.5, SPEECH_FLIP_TOP_Y)
+	else:
+		speech_container.position = Vector2(-box_w * 0.5, above_top_local_y)
+
+
+func _bubble_would_clip_top(top_local_y: float) -> bool:
+	## Bug #78: decide whether a bubble whose top edge is at `top_local_y`
+	## (agent-local space) would be cut off by the top of the visible viewport.
+	## The agent is a Node2D in a camera-framed world; converting an agent-local
+	## point through the canvas transform gives its on-screen Y. If that screen Y
+	## is above SPEECH_TOP_CLEARANCE px, the bubble would clip — flip it below.
+	##
+	## Only meaningful in the viewer (a camera frames the town). On the headless
+	## server there is no viewport to clip against, so never flip there.
+	if not OS.has_feature("web"):
+		return false
+	var ci: CanvasItem = self as CanvasItem
+	if ci == null or not is_inside_tree():
+		return false
+	# global -> screen: viewport canvas transform applied to the bubble-top point
+	# expressed in global space. (speech_container is a child Control of this
+	# Node2D, so agent-local == its parent space; global = global_position + local.)
+	var top_global: Vector2 = global_position + Vector2(0.0, top_local_y)
+	var canvas_xform: Transform2D = get_viewport().get_canvas_transform()
+	var screen_y: float = (canvas_xform * top_global).y
+	return screen_y < SPEECH_TOP_CLEARANCE
 
 
 func set_navigation_target(target: Vector2) -> void:
