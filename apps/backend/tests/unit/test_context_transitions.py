@@ -658,3 +658,89 @@ class TestTransitionToApartment:
         assert len(sent_messages) == 1
         assert sent_messages[0]["event"] == "move_rejected"
         assert sent_messages[0]["reason"] == "navigation_error"
+
+
+# ---------------------------------------------------------------------------
+# Cross-interior move routing (#84): apartment → library must two-hop via town,
+# and the reject reason must never falsely claim "already_in_library".
+# ---------------------------------------------------------------------------
+
+
+class TestTransitionPath:
+    """Pure step-sequencing for cross-context moves through transition markers.
+
+    Entering an interior (library/residence) from a *different* interior must
+    exit to town first; entering from town is a single step; being genuinely in
+    the target interior stays a single step so the handler still rejects it with
+    ``already_in_X``.
+    """
+
+    @pytest.mark.parametrize(
+        "current,destination,expected",
+        [
+            # entering an interior from a DIFFERENT interior → exit to town first
+            ("apartment", "library", ["exit", "library"]),
+            ("library", "residence", ["exit", "residence"]),
+            # entering from town → single step
+            ("town", "library", ["library"]),
+            ("town", "residence", ["residence"]),
+            # genuinely already in the target interior → single step (handler rejects already_in_X)
+            ("library", "library", ["library"]),
+            ("apartment", "residence", ["residence"]),
+            # exit is always a single step (from any interior)
+            ("apartment", "exit", ["exit"]),
+            ("library", "exit", ["exit"]),
+        ],
+    )
+    def test_transition_path(self, current, destination, expected):
+        from core.services.context_transition_service import _transition_path
+
+        assert _transition_path(current, destination) == expected
+
+
+class TestCrossInteriorReason:
+    """The reject reason must not lie about the agent's location (#84)."""
+
+    @pytest.mark.asyncio
+    async def test_apartment_to_library_is_not_already_in_library(self):
+        """Agent in the apartment moving to library must NOT be told it's already
+        in the library — it should get an accurate cannot_transition reason."""
+        from routers.town import _handle_context_transition
+
+        agent_conn = _make_agent_conn()
+        agent = _make_agent(location_context="apartment")
+        sent_messages: list = []
+        svc_mock = MagicMock()
+        svc_mock.get_town_agent_by_id.return_value = agent
+
+        with (
+            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent_messages)),
+            patch(SERVICE_PATH, return_value=svc_mock),
+            patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
+        ):
+            await _handle_context_transition("conn-abc", "library", agent_conn)
+
+        assert len(sent_messages) == 1
+        assert sent_messages[0]["event"] == "move_rejected"
+        assert sent_messages[0]["reason"] != "already_in_library"
+        assert sent_messages[0]["reason"] == "cannot_transition_apartment_to_library"
+
+    @pytest.mark.asyncio
+    async def test_library_to_library_still_reports_already_in_library(self):
+        """Genuine already-there case must keep reporting already_in_library."""
+        from routers.town import _handle_context_transition
+
+        agent_conn = _make_agent_conn()
+        agent = _make_agent(location_context="library")
+        sent_messages: list = []
+        svc_mock = MagicMock()
+        svc_mock.get_town_agent_by_id.return_value = agent
+
+        with (
+            patch(MGMT_PATH, return_value=_make_mgmt_mock(sent_messages)),
+            patch(SERVICE_PATH, return_value=svc_mock),
+            patch(WS_MANAGER_PATH, return_value=_make_ws_manager_mock()),
+        ):
+            await _handle_context_transition("conn-abc", "library", agent_conn)
+
+        assert sent_messages[0]["reason"] == "already_in_library"

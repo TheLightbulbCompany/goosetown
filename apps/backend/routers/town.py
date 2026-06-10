@@ -1529,8 +1529,16 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
             destination = body.get("destination", "")
             if destination in _TRANSITION_MAP:
                 # Context-transition destinations are handled by the backend,
-                # not forwarded to the game server directly.
-                await _handle_context_transition(request.connectionId, destination, agent_conn)
+                # not forwarded to the game server directly. Cross-interior moves
+                # (e.g. apartment → library) can't go direct — you can only enter
+                # an interior from town — so _transition_path expands them into a
+                # two-step exit-then-enter, making a single ``move <interior>``
+                # verb work from anywhere (mirrors the town-location auto-exit
+                # below). A genuine already-there case stays a single step and is
+                # correctly rejected with ``already_in_X``.
+                for _step in _transition_path(agent_conn.location_context, destination):
+                    if not await _handle_context_transition(request.connectionId, _step, agent_conn):
+                        break
             else:
                 # If the destination lives in a different context than the
                 # agent is currently in, transparently transition first and
@@ -1663,6 +1671,7 @@ from core.services.context_transition_service import (  # noqa: E402, F401
     _TRANSITION_MAP,
     _context_for_location,
     _handle_context_transition,
+    _transition_path,
     _transition_to_apartment,
 )
 from core.services.conversation_service import (  # noqa: E402, F401
