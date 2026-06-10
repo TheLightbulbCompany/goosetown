@@ -523,7 +523,7 @@ Cadence/behavior knobs (all have defaults; tune after a dev soak):
   1. Resend audience IDs are placeholder — landing-page email signup returns 503
   2. Apex `goosetown.isol8.co` cert issuance has been failing for ≥1 week — decide between fixing apex or accepting `dev.goosetown.isol8.co` as the public URL
   3. CORS_ORIGINS for prod backend still references the unresolvable apex
-- **Operational gotcha discovered**: `dev.goosetown.isol8.co` gets clobbered every CI run because the Vercel project has it configured as a Production-environment auto-alias (see Critical Rules section).
+- **Operational gotcha discovered**: `dev.goosetown.isol8.co` got clobbered after CI runs by Vercel's automatic domain assignment — fixed 2026-06-09 by branch-scoping the domain via API (see Critical Rules section).
 
 **Production-launch blockers still open** (see Known Issues "Production-launch blockers" subsection): E2E Smoke broken since PR #254's route move, multi-agent concurrency stress test never run, single-replica game-server resilience, `onboardingPhase` race surfaced by Vera. The 15-agent soak orchestrator (`scripts/launch-soak.sh`, PR #262) is staged but not yet run; running it will exercise apartment-movement, multi-agent chat, sprite-pipeline concurrency, and the conversation auto-end timer in one shot — that's the natural next session.
 
@@ -701,7 +701,13 @@ Technical preferences for all agents are in `.claude/docs/technical-preferences.
 
 **Game server is Godot headless, not Python.** The old Python simulation (`town_simulation.py`, `town_pathfinding.py`, `town_constants.py`) was deleted in March 2026 and replaced with a Godot headless game server at `apps/godot/`.
 
-**`dev.goosetown.isol8.co` gets clobbered every CI run.** The Vercel project has `dev.goosetown.isol8.co` configured as a *Production*-environment auto-alias in addition to whatever the CI dev step sets. So every `deploy.yml` run produces a prod-target build that auto-aliases to dev domain, overwriting the dev step's manually-aliased Preview build. Symptom: dev frontend's bundle has `api-prod` URLs baked, "Failed to fetch" everywhere, conversations sidebar empty. Workaround: `vercel alias <latest-preview> dev.goosetown.isol8.co` after a CI run. Permanent fix: remove `dev.goosetown.isol8.co` from the Vercel project's Production-environment domains in the dashboard (CLI can't do this).
+**`dev.goosetown.isol8.co` clobbering — FIXED 2026-06-09.** The domain was attached to the Vercel project with no branch/environment scoping (`gitBranch: null`), so Vercel's automatic domain assignment kept re-claiming it after each deploy, overwriting the alias that `DeployVercelDev` sets (observed stealing it for both prod-env builds and stale main-branch preview builds). Fixed by scoping the domain to a never-deployed branch via the API (the old note saying this was dashboard-only was wrong):
+```bash
+curl -X PATCH "https://api.vercel.com/v9/projects/prj_59WYd9JDAymjUz5IqUpna6eTGLIO/domains/dev.goosetown.isol8.co?teamId=team_LnNnlnQh1IRxTeokgl690PvV" \
+  -H "Authorization: Bearer $VERCEL_TOKEN" -H "Content-Type: application/json" \
+  -d '{"gitBranch": "_manual-alias-only"}'
+```
+No deployment ever matches that branch, so auto-assignment never fires; the CI dev step's explicit `vercel alias` each run is now the sole owner of the domain. If the dev frontend ever shows `api-prod` URLs baked / "Failed to fetch" again, first check the domain config wasn't reset (`GET` the same endpoint), then re-alias: `vercel alias <latest-preview> dev.goosetown.isol8.co`.
 
 ## Debugging Agent Connection Issues
 
