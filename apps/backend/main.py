@@ -47,6 +47,9 @@ async def lifespan(app: FastAPI):
     gs_client = get_game_server_client()
     for agent_id in list(gs_client._agent_connections.keys()):
         await gs_client.disconnect_agent(agent_id)
+    from core.services.pixellab_service import close_pixellab_client
+
+    await close_pixellab_client()
     logger.info("GooseTown backend stopping")
 
 

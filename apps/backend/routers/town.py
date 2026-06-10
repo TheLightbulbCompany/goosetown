@@ -785,6 +785,8 @@ async def recomposite_sprites():
     agents = [a for a in resp.get("Items", []) if a.get("pixellabCharacterId")]
 
     async def _run_all() -> None:
+        from core.services.pixellab_service import PixelLabCreditError
+
         for a in agents:
             try:
                 # Per-agent timeout: a hung PixelLab fetch (no timeout of its own)
@@ -802,6 +804,8 @@ async def recomposite_sprites():
                 )
             except TimeoutError:
                 logger.warning("recomposite-sprites: timed out for %s, skipping", a.get("id"))
+            except PixelLabCreditError:
+                logger.error("ALARM: PixelLab credits exhausted during sprite generation for %s", a.get("id"))
             except Exception:
                 logger.exception("recomposite-sprites: failed for %s", a.get("id"))
 
@@ -839,6 +843,8 @@ async def regenerate_sprite(agent_id: str):
     display_name = agent.get("displayName") or agent.get("agentName") or "agent"
 
     async def _run() -> None:
+        from core.services.pixellab_service import PixelLabCreditError
+
         try:
             await asyncio.wait_for(
                 resume_sprite_generation(agent_id, None, appearance, display_name, "creating"),
@@ -852,6 +858,8 @@ async def regenerate_sprite(agent_id: str):
             )
         except TimeoutError:
             logger.warning("regenerate-sprite: timed out for %s", agent_id)
+        except PixelLabCreditError:
+            logger.error("ALARM: PixelLab credits exhausted during sprite generation for %s", agent_id)
         except Exception:
             logger.exception("regenerate-sprite: failed for %s", agent_id)
 

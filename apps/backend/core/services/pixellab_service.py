@@ -328,29 +328,12 @@ class PixelLabService:
         """Get character status and sprite URLs.
 
         Pass ``retries=1`` from fail-fast fallback callers (e.g.
-        ``get_existing_animation_names``, ``_get_rotation_base64``) so a degraded
-        PixelLab degrades gracefully instead of stalling on backoff.
+        ``get_existing_animation_names``) so a degraded PixelLab degrades
+        gracefully instead of stalling on backoff.
         """
         resp = await self._request("GET", f"{PIXELLAB_API_URL}/characters/{character_id}", retries=retries)
         resp.raise_for_status()
         return resp.json()
-
-    async def animate_character(
-        self, character_id: str, animation: str = "walk", action_description: str | None = None
-    ) -> list[str]:
-        """Queue animation for a character. Returns list of background job IDs."""
-        body: dict[str, Any] = {
-            "character_id": character_id,
-            "template_animation_id": animation,
-        }
-        if action_description:
-            body["action_description"] = action_description
-        resp = await self._request("POST", f"{PIXELLAB_API_URL}/characters/animations", json=body)
-        if resp.status_code != 200:
-            logger.error(f"PixelLab animate_character {resp.status_code}: {resp.text}")
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("background_job_ids", [])
 
     async def get_job_status(self, job_id: str) -> dict:
         """Get background job status.
@@ -365,66 +348,6 @@ class PixelLabService:
         resp = await self._request("GET", f"{PIXELLAB_API_URL}/background-jobs/{job_id}", retries=1)
         resp.raise_for_status()
         return resp.json()
-
-    async def get_v2_animation_frames(self, job_id: str) -> list[bytes]:
-        """Get completed V2 animation frames as PNG bytes.
-
-        V2 jobs return frames as raw RGBA byte buffers (type=rgba_bytes).
-        This method decodes them into PNG bytes for spritesheet compositing.
-        Returns list of PNG byte arrays, or empty list on failure.
-        """
-        import base64
-        import io
-
-        from PIL import Image
-
-        try:
-            job = await self.get_job_status(job_id)
-            if job.get("status") != "completed":
-                logger.warning("Job %s not completed (status=%s)", job_id, job.get("status"))
-                return []
-
-            last_response = job.get("last_response", {})
-            if not last_response:
-                logger.warning("Job %s completed but no last_response", job_id)
-                return []
-
-            images = last_response.get("images", [])
-            frames: list[bytes] = []
-            for img_data in images:
-                if not isinstance(img_data, dict):
-                    continue
-                b64 = img_data.get("base64", "")
-                img_type = img_data.get("type", "")
-                width = img_data.get("width", 0)
-                height = img_data.get("height", 0)
-
-                if not b64:
-                    continue
-
-                raw_bytes = base64.b64decode(b64)
-
-                if img_type == "rgba_bytes" and width > 0 and height > 0:
-                    # Raw RGBA pixel data — convert to PNG
-                    img = Image.frombytes("RGBA", (width, height), raw_bytes)
-                    buf = io.BytesIO()
-                    img.save(buf, format="PNG")
-                    frames.append(buf.getvalue())
-                else:
-                    # Assume PNG/JPEG encoded
-                    frames.append(raw_bytes)
-
-            logger.info(
-                "Got %d frames from V2 job %s (%dx%d)",
-                len(frames),
-                job_id,
-                images[0].get("width", 0) if images else 0,
-                images[0].get("height", 0) if images else 0,
-            )
-            return frames
-        except Exception:
-            logger.exception("Failed to get V2 frames from job %s", job_id)
-            return []
 
     def _frames_from_job(self, job: dict) -> list[bytes]:
         """Decode a completed job's frames (last_response.images, rgba_bytes) into
@@ -738,116 +661,6 @@ class PixelLabService:
             {k: list(v.keys()) for k, v in result.items()},
         )
         return result
-
-    async def _get_rotation_base64(self, character_id: str, direction: str) -> tuple[str, int, int] | None:
-        """Fetch a character's rotation image and return (base64_str, width, height).
-
-        Returns None if the rotation image can't be fetched.
-        """
-        try:
-            char_data = await self.get_character(character_id, retries=1)
-            rotation_urls = char_data.get("rotation_urls", {})
-            url = rotation_urls.get(direction, "")
-            if not url:
-                logger.warning("No %s rotation URL for character %s", direction, character_id)
-                return None
-
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(url, timeout=30.0)
-                resp.raise_for_status()
-                import base64
-
-                # Raw base64 only — PixelLab's Base64Image model expects the
-                # base64 string without a ``data:image/png;base64,`` prefix.
-                # Including the prefix made every animate-with-text-v2/v3 call
-                # silently fall back to generation without our reference image,
-                # which produced a gray background and inconsistent character.
-                b64 = base64.b64encode(resp.content).decode()
-                size = char_data.get("size", {})
-                w = size.get("width", 96)
-                h = size.get("height", 96)
-                return b64, w, h
-        except Exception:
-            logger.exception("Failed to fetch %s rotation for character %s", direction, character_id)
-            return None
-
-    async def queue_custom_animation(
-        self,
-        character_id: str,
-        animation_name: str,
-        action_description: str,
-        frame_count: int = 8,
-        directions: list[str] | None = None,
-    ) -> list[str]:
-        """Queue a custom animation using animate-with-text-v3.
-
-        For each direction, fetches the character's rotation image and
-        sends it to /animate-with-text-v3 as ``first_frame`` with the action
-        description. v3 takes a single reference frame, returns a configurable
-        ``frame_count`` (4-16, default 8), and infers view/direction from the
-        reference image — much simpler payload than v2 plus smoother motion.
-        Returns list of background job IDs in direction order.
-        """
-        if directions is None:
-            directions = ["south", "west", "east", "north"]
-
-        job_ids: list[str] = []
-        for direction in directions:
-            rotation = await self._get_rotation_base64(character_id, direction)
-            if not rotation:
-                logger.warning("Skipping %s direction for custom animation %s", direction, animation_name)
-                continue
-
-            ref_image, _ref_w, _ref_h = rotation
-            # Full PixelLab Base64Image shape: ``{type, base64, format}``.
-            # Without the ``type``/``format`` fields the model deserializer
-            # silently dropped our reference image and generated from prompt
-            # alone — yielding a gray background and a drifting character.
-            body = {
-                "first_frame": {"type": "base64", "base64": ref_image, "format": "png"},
-                "action": action_description,
-                "frame_count": frame_count,
-            }
-
-            try:
-                resp = await self._request("POST", f"{PIXELLAB_API_URL}/animate-with-text-v3", json=body, timeout=60.0)
-                if resp.status_code not in (200, 202):
-                    logger.error(
-                        "PixelLab animate-with-text-v3 %s/%s %s: %s",
-                        animation_name,
-                        direction,
-                        resp.status_code,
-                        resp.text[:500],
-                    )
-                    continue
-                data = resp.json()
-                job_id = data.get("background_job_id") or data.get("job_id")
-                if job_id:
-                    job_ids.append(job_id)
-                    logger.info(
-                        "Custom animation %s/%s queued for %s: job %s (frames=%d)",
-                        animation_name,
-                        direction,
-                        character_id,
-                        job_id,
-                        frame_count,
-                    )
-            except Exception:
-                logger.exception(
-                    "Failed to queue custom animation %s/%s for %s",
-                    animation_name,
-                    direction,
-                    character_id,
-                )
-
-        logger.info(
-            "Custom animation %s: %d/%d directions queued for character %s",
-            animation_name,
-            len(job_ids),
-            len(directions),
-            character_id,
-        )
-        return job_ids
 
     async def queue_animation(self, character_id: str, anim_name: str) -> tuple[list[str], list[str]]:
         """Queue ALL cardinal directions of one animation in a single
