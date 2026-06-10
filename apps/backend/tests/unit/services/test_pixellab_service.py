@@ -276,3 +276,19 @@ async def test_get_character_retries_param_opts_out():
             await service.get_character("char-5", retries=1)
     assert client.request.await_count == 1
     assert sleep.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_402_raises_credit_error_no_retry():
+    from core.services.pixellab_service import PixelLabCreditError
+
+    service = PixelLabService(api_key="stub")
+    client = _client_yielding([_resp(402)])
+    with (
+        patch("core.services.pixellab_service.httpx.AsyncClient", return_value=client),
+        patch("core.services.pixellab_service.asyncio.sleep", AsyncMock()) as sleep,
+    ):
+        with pytest.raises(PixelLabCreditError):
+            await service.get_character("char-x")
+    assert client.request.await_count == 1  # no retry on 402
+    assert sleep.await_count == 0

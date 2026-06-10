@@ -22,6 +22,12 @@ _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 _RETRY_MAX_ATTEMPTS = 4
 _RETRY_BASE_DELAY_SEC = 1.5
 
+
+class PixelLabCreditError(Exception):
+    """Raised on HTTP 402 — out of PixelLab generations/credits. Not retryable;
+    alarm-worthy (a fresh-signup spike can drain credits silently)."""
+
+
 # One pooled client shared across all PixelLab calls — keep-alive reuse + an
 # explicit socket cap, instead of a fresh AsyncClient (new TLS handshake) per
 # call. asyncio is single-threaded so the lazy create is race-free (no await
@@ -247,6 +253,13 @@ class PixelLabService:
                     retries,
                 )
             else:
+                if resp.status_code == 402:
+                    logger.error(
+                        "PixelLab CREDIT EXHAUSTED (402) on %s %s — sprite gen will fail until topped up",
+                        method,
+                        endpoint,
+                    )
+                    raise PixelLabCreditError(f"PixelLab 402 on {endpoint}")
                 if resp.status_code not in _RETRYABLE_STATUS:
                     return resp
                 last_exc = httpx.HTTPStatusError(f"PixelLab {resp.status_code}", request=resp.request, response=resp)
