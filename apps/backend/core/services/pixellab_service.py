@@ -943,3 +943,21 @@ class PixelLabService:
         job_ids = data.get("background_job_ids") or []
         logger.info("queue_animation %s/%s: %d jobs (%s)", character_id[:8], anim_name, len(job_ids), config["type"])
         return directions, job_ids
+
+    async def generate_animation(
+        self,
+        character_id: str,
+        anim_name: str,
+        *,
+        on_progress=None,
+        max_attempts: int = 30,
+    ) -> dict[str, list[bytes]]:
+        """Generate ONE animation (all 4 directions) end-to-end under the global
+        concurrency gate: submit the single batched call, then collect frames as
+        each direction completes. Returns {direction: [png_bytes]} (empty on no
+        jobs). This is the single entry point signup, activity, and admin all use."""
+        async with _get_animation_semaphore():
+            directions, job_ids = await self.queue_animation(character_id, anim_name)
+            if not job_ids:
+                return {}
+            return await self._poll_and_collect(directions, job_ids, on_progress, anim_name, max_attempts=max_attempts)
