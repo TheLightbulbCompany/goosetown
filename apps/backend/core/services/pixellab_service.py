@@ -420,6 +420,79 @@ class PixelLabService:
             logger.exception("Failed to get V2 frames from job %s", job_id)
             return []
 
+    def _frames_from_job(self, job: dict) -> list[bytes]:
+        """Decode a completed job's frames (last_response.images, rgba_bytes) into
+        PNG bytes for compositing. Returns [] if no usable images."""
+        import base64
+        import io
+
+        from PIL import Image
+
+        images = (job.get("last_response") or {}).get("images") or []
+        frames: list[bytes] = []
+        for im in images:
+            b64 = im.get("base64")
+            if not b64:
+                continue
+            raw = base64.b64decode(b64)
+            t = (im.get("type") or "").lower()
+            try:
+                if "rgba" in t or t == "bytes":
+                    img = Image.frombytes("RGBA", (im["width"], im["height"]), raw)
+                else:
+                    img = Image.open(io.BytesIO(raw)).convert("RGBA")
+            except Exception:
+                logger.warning("Could not decode an animation frame (type=%s)", t)
+                continue
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            frames.append(buf.getvalue())
+        return frames
+
+    async def _poll_and_collect(
+        self,
+        directions: list[str],
+        job_ids: list[str],
+        on_progress,
+        label: str,
+        max_attempts: int = 30,
+        poll_interval: float = 10.0,
+    ) -> dict[str, list[bytes]]:
+        """Poll the per-direction jobs, fetching each direction's frames AS it
+        completes (PixelLab cleans finished jobs up — a fetch deferred to after
+        the whole batch can 404). Returns {direction: [png_bytes]}."""
+        pending = dict(zip(job_ids, directions))  # job_id -> direction
+        collected: dict[str, list[bytes]] = {}
+        for _attempt in range(max_attempts):
+            await asyncio.sleep(poll_interval)
+            done_now: list[str] = []
+            for jid, direction in pending.items():
+                try:
+                    job = await self.get_job_status(jid)
+                except httpx.HTTPStatusError as exc:
+                    if exc.response is not None and exc.response.status_code == 404:
+                        logger.warning("Job %s (%s/%s) vanished (404) before fetch", jid, label, direction)
+                        done_now.append(jid)
+                    continue
+                except Exception:
+                    continue
+                status = job.get("status")
+                if status == "completed":
+                    frames = self._frames_from_job(job)
+                    if frames:
+                        collected[direction] = frames
+                    done_now.append(jid)
+                elif status == "failed":
+                    logger.warning("Job %s (%s/%s) failed", jid, label, direction)
+                    done_now.append(jid)
+            for jid in done_now:
+                pending.pop(jid, None)
+            if on_progress:
+                await on_progress(f"{label} {len(collected)}/{len(directions)} done")
+            if not pending:
+                break
+        return collected
+
     async def download_character_zip(self, character_id: str) -> bytes | None:
         """Download character ZIP (rotations + animations). Returns None if not ready (423)."""
         resp = await self._request("GET", f"{PIXELLAB_API_URL}/characters/{character_id}/zip", timeout=60.0)
