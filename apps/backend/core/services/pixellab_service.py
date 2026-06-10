@@ -22,6 +22,34 @@ _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 _RETRY_MAX_ATTEMPTS = 4
 _RETRY_BASE_DELAY_SEC = 1.5
 
+# One pooled client shared across all PixelLab calls — keep-alive reuse + an
+# explicit socket cap, instead of a fresh AsyncClient (new TLS handshake) per
+# call. asyncio is single-threaded so the lazy create is race-free (no await
+# between the None check and the assignment).
+_pixellab_client: httpx.AsyncClient | None = None
+
+
+def _get_pixellab_client() -> httpx.AsyncClient:
+    global _pixellab_client
+    if _pixellab_client is None or _pixellab_client.is_closed:
+        _pixellab_client = httpx.AsyncClient(
+            limits=httpx.Limits(
+                max_connections=settings.PIXELLAB_POOL_MAX_CONNECTIONS,
+                max_keepalive_connections=settings.PIXELLAB_POOL_MAX_KEEPALIVE,
+            ),
+            timeout=httpx.Timeout(30.0),
+        )
+    return _pixellab_client
+
+
+async def close_pixellab_client() -> None:
+    """Close the pooled client on app shutdown."""
+    global _pixellab_client
+    if _pixellab_client is not None and not _pixellab_client.is_closed:
+        await _pixellab_client.aclose()
+    _pixellab_client = None
+
+
 # ---------------------------------------------------------------------------
 # Animation registry — single source of truth for all animation assets.
 # Template animations are generated at registration (~5 min).
@@ -204,10 +232,10 @@ class PixelLabService:
         headers = {"Authorization": f"Bearer {self.api_key}"}
         endpoint = url.rsplit("/", 1)[-1].split("?")[0]
         last_exc: Exception | None = None
+        client = _get_pixellab_client()
         for attempt in range(retries):
             try:
-                async with httpx.AsyncClient() as client:
-                    resp = await client.request(method, url, headers=headers, json=json, timeout=timeout)
+                resp = await client.request(method, url, headers=headers, json=json, timeout=timeout)
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_exc = exc
                 logger.warning(
