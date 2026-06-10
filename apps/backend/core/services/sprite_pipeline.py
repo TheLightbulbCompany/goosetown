@@ -182,28 +182,24 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
         async def _anim_progress(status_str: str) -> None:
             _send_progress(status_str)
 
-        signup_job_ids: dict[str, list[str]] = {}
+        # generate_animation (via queue_signup_animations) now returns the
+        # composited per-direction frames directly — no separate ZIP download
+        # or per-job v2 fetch. Each signup animation (walk, idle, talking) comes
+        # back as {direction: [png_bytes]} ready to composite + upload.
+        signup_frames: dict[str, dict[str, list[bytes]]] = {}
         try:
-            signup_job_ids = await pxl.queue_signup_animations(char_id, on_progress=_anim_progress)
+            signup_frames = await pxl.queue_signup_animations(char_id, on_progress=_anim_progress)
         except Exception:
             logger.exception("Signup animations failed for %s", agent_id)
 
-        # Download and resolve animation frames via API cross-reference
         service.update_agent_state(agent_id, sprite_status="downloading")
-        _send_progress("Downloading sprites...")
-
-        raw_animations = await pxl.fetch_animation_spritesheets(char_id)
-
-        # Map PixelLab API names to our friendly names
-        template_id_to_friendly: dict[str, str] = {
-            cfg["template_id"]: name for name, cfg in ANIMATION_REGISTRY.items() if cfg.get("template_id")
-        }
+        _send_progress("Compositing sprites...")
 
         full_sprite_animations: dict = dict(initial_sprite_animations)
 
-        # Process template animations from ZIP (walk, idle)
-        for pixellab_name, direction_frames in raw_animations.items():
-            friendly = template_id_to_friendly.get(pixellab_name, pixellab_name)
+        for friendly, direction_frames in signup_frames.items():
+            if not direction_frames:
+                continue
             sheet = await asyncio.to_thread(composite_animation_spritesheet, direction_frames)
             if sheet:
                 png_bytes, frame_count = sheet
@@ -220,48 +216,13 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
                     "frameCount": frame_count,
                     "fps": int(registry_entry.get("fps", 8)),
                 }
-
-        # Process custom animations from job results (talking, etc.)
-        # Custom animate-with-text-v2 results are NOT in the ZIP — they're
-        # stored in the job's last_response as frame images.
-        for anim_name, job_ids in signup_job_ids.items():
-            if anim_name in full_sprite_animations:
-                continue  # Already resolved from ZIP
-            config = ANIMATION_REGISTRY.get(anim_name, {})
-            if config.get("type") != "custom" or not job_ids:
-                continue
-            # Each job is one direction (south, west, east, north)
-            directions = ["south", "west", "east", "north"]
-            direction_frames: dict[str, list[bytes]] = {}
-            for i, jid in enumerate(job_ids):
-                if i >= len(directions):
-                    break
-                frames = await pxl.get_v2_animation_frames(jid)
-                if frames:
-                    direction_frames[directions[i]] = frames
-            if direction_frames:
-                sheet = await asyncio.to_thread(composite_animation_spritesheet, direction_frames)
-                if sheet:
-                    png_bytes, frame_count = sheet
-                    s3_key = await asyncio.to_thread(
-                        upload_sprite_to_s3,
-                        png_bytes,
-                        str(agent_id),
-                        settings.SPRITE_S3_BUCKET,
-                        f"{anim_name}.png",
-                    )
-                    full_sprite_animations[anim_name] = {
-                        "url": f"{settings.SPRITE_CDN_URL}/{s3_key}",
-                        "frameCount": frame_count,
-                        "fps": int(config.get("fps", 6)),
-                    }
-                    logger.info(
-                        "[agent:%s] Custom animation %s: %d directions, %d frames",
-                        agent_id,
-                        anim_name,
-                        len(direction_frames),
-                        frame_count,
-                    )
+                logger.info(
+                    "[agent:%s] Signup animation %s: %d directions, %d frames",
+                    agent_id,
+                    friendly,
+                    len(direction_frames),
+                    frame_count,
+                )
 
         if not full_sprite_animations:
             logger.warning("[agent:%s] No animations resolved — agent remains on static sprite", agent_id)
@@ -399,26 +360,25 @@ async def resume_sprite_generation(
             service.update_agent_state(agent_id, sprite_status="animating")
             current_status = "animating"
 
-        # Phase: animating
-        if current_status == "animating" and char_id:
+        # Phase: animating + downloading
+        # queue_signup_animations now generates AND returns the per-direction
+        # frames ({anim_name: {direction: [png_bytes]}}) end-to-end, so the
+        # old separate ZIP re-fetch is gone — composite straight off the return.
+        # animating + downloading are now one fused step: the frames live only
+        # in memory, so an agent recovered mid-"downloading" must re-generate
+        # (there's no longer a ZIP-only resume point to pick up from).
+        if current_status in ("animating", "downloading") and char_id:
             _progress("Resuming animations...")
-            await pxl.queue_signup_animations(char_id, on_progress=_anim_progress)
+            signup_frames = await pxl.queue_signup_animations(char_id, on_progress=_anim_progress)
             service.update_agent_state(agent_id, sprite_status="downloading")
             current_status = "downloading"
 
-        # Phase: downloading
-        if current_status == "downloading" and char_id:
-            _progress("Downloading sprites...")
-
-            raw_animations = await pxl.fetch_animation_spritesheets(char_id)
-
-            template_id_to_friendly: dict[str, str] = {
-                cfg["template_id"]: name for name, cfg in ANIMATION_REGISTRY.items() if cfg.get("template_id")
-            }
+            _progress("Compositing sprites...")
 
             sprite_animations: dict = {}
-            for pixellab_name, direction_frames in raw_animations.items():
-                friendly = template_id_to_friendly.get(pixellab_name, pixellab_name)
+            for friendly, direction_frames in signup_frames.items():
+                if not direction_frames:
+                    continue
                 sheet = await asyncio.to_thread(composite_animation_spritesheet, direction_frames)
                 if sheet:
                     png_bytes, frame_count = sheet

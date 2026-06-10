@@ -591,97 +591,28 @@ class PixelLabService:
         self,
         character_id: str,
         on_progress: Callable[[str], Coroutine[Any, Any, None]] | None = None,
-    ) -> dict[str, list[str]]:
-        """Queue all signup animations sequentially and wait for each to complete.
+    ) -> dict[str, dict[str, list[bytes]]]:
+        """Generate every auto_generate signup animation (walk, idle, talking)
+        sequentially via generate_animation. Returns
+        {anim_name: {direction: [png_bytes]}} for the caller to composite.
 
-        Iterates SIGNUP_ANIMATIONS (the subset of ANIMATION_REGISTRY with
-        auto_generate=True). For templates, calls animate_character with the
-        template_id. For custom animations, calls queue_custom_animation with
-        the prompt. Waits for each animation's jobs before queuing the next to
-        avoid PixelLab concurrent-job limits.
-
-        Args:
-            character_id: PixelLab character UUID.
-            on_progress: Optional async callback called every ~10s during waits.
-
-        Returns:
-            Dict mapping friendly animation name -> list of job IDs that were queued.
+        Each animation is generated end-to-end (submit + poll + collect frames)
+        behind the global concurrency gate inside ``generate_animation``. Running
+        them sequentially keeps us under PixelLab's concurrent-job ceiling. A
+        single animation failing logs + yields ``{}`` for that name so the rest
+        of signup still completes — the agent already operates on the static
+        sprite from Phase B, so animations are a nice-to-have, not a blocker.
         """
-        existing = await self.get_existing_animation_names(character_id)
-        results: dict[str, list[str]] = {}
+        results: dict[str, dict[str, list[bytes]]] = {}
         items = list(SIGNUP_ANIMATIONS.items())
-
-        for idx, (name, config) in enumerate(items):
-            progress_label = f"{name} ({idx + 1}/{len(items)})"
-
+        for idx, (name, _config) in enumerate(items):
             try:
-                if config["type"] == "template":
-                    template_id: str = config["template_id"]
-                    if template_id in existing:
-                        logger.info(
-                            "Template %s already exists on character %s, skipping",
-                            name,
-                            character_id,
-                        )
-                        results[name] = []
-                        continue
-                    job_ids = await self.animate_character(
-                        character_id,
-                        animation=template_id,
-                    )
-                elif config["type"] == "custom":
-                    prompt: str = config["prompt"]
-                    job_ids = await self.queue_custom_animation(
-                        character_id=character_id,
-                        animation_name=name,
-                        action_description=prompt,
-                    )
-                else:
-                    logger.warning(
-                        "Unknown animation type for %s: %r",
-                        name,
-                        config.get("type"),
-                    )
-                    continue
-
-                logger.info(
-                    "Queued signup animation %r for %s: %d jobs",
-                    name,
-                    character_id,
-                    len(job_ids),
-                )
-                results[name] = job_ids
-
-                if job_ids:
-                    # Cap signup-animation polling at 5 min (30 × 10s) instead
-                    # of the default 10 min. The agent is already operational
-                    # in "static" phase by the time Phase C runs (Phase B
-                    # connects them to the game server with a static sprite),
-                    # so animations are a nice-to-have, not a blocker. A 10-min
-                    # wait left the user staring at "walk (1/3) 0/4 done" in
-                    # TOWN_STATUS.md when PixelLab itself was slow — surfaced
-                    # by the 2026-05-06 integration test (celeste + atlas
-                    # both stalled). If the cap expires, ``advance_phase`` to
-                    # "alive" still happens with the static sprite.
-                    await self.wait_for_jobs(
-                        job_ids,
-                        on_progress=on_progress,
-                        progress_label=progress_label,
-                        max_attempts=30,
-                    )
+                frames = await self.generate_animation(character_id, name, on_progress=on_progress, max_attempts=30)
+                results[name] = frames
+                logger.info("Signup animation %s: %d/%d directions", name, len(frames), len(CARDINAL_4))
             except Exception:
-                logger.exception(
-                    "Failed to queue signup animation %r for %s — continuing",
-                    name,
-                    character_id,
-                )
-                results.setdefault(name, [])
-
-        logger.info(
-            "Signup animations done for %s: %s",
-            character_id,
-            {k: len(v) for k, v in results.items()},
-        )
+                logger.exception("Signup animation %r failed for %s — continuing", name, character_id)
+                results[name] = {}
         return results
 
     async def fetch_all_rotations(self, character_id: str) -> dict[str, bytes]:
