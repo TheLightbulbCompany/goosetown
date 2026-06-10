@@ -13,6 +13,11 @@ logger = logging.getLogger(__name__)
 
 PIXELLAB_API_URL = "https://api.pixellab.ai/v2"
 
+# We composite 4-direction spritesheets even though characters carry 8 rotations.
+# v3/custom mode defaults to south-only if directions is omitted (template
+# defaults to all) — so we ALWAYS pass the 4 cardinals explicitly.
+CARDINAL_4: list[str] = ["south", "west", "east", "north"]
+
 # Retry policy for transient PixelLab failures. A single connect/read timeout or
 # 429/5xx blip used to kill an entire sprite generation — e.g. a skipped walk
 # animation left a grey-box sprite, or a create_character ConnectTimeout dropped
@@ -833,3 +838,35 @@ class PixelLabService:
             character_id,
         )
         return job_ids
+
+    async def queue_animation(self, character_id: str, anim_name: str) -> tuple[list[str], list[str]]:
+        """Queue ALL cardinal directions of one animation in a single
+        ``POST /characters/animations`` call. Returns ``(directions, job_ids)``
+        aligned by index. Handles template + v3 from ANIMATION_REGISTRY; v3 uses
+        the character's own rotations as the per-direction reference (no manual
+        reference-frame fetch). Returns ([], []) for an unknown animation."""
+        config = ANIMATION_REGISTRY.get(anim_name)
+        if not config:
+            logger.warning("queue_animation: unknown animation %r — skipping", anim_name)
+            return [], []
+
+        body: dict[str, Any] = {"character_id": character_id, "directions": CARDINAL_4}
+        if config["type"] == "template":
+            body["mode"] = "template"
+            body["template_animation_id"] = config["template_id"]
+        else:
+            body["mode"] = "v3"
+            body["action_description"] = config["prompt"]
+            body["frame_count"] = int(config.get("frames", 8))
+            body["enhance_prompt"] = True
+            body["animation_name"] = anim_name
+
+        resp = await self._request("POST", f"{PIXELLAB_API_URL}/characters/animations", json=body, timeout=60.0)
+        if resp.status_code not in (200, 202):
+            logger.error("PixelLab characters/animations %s -> %s: %s", anim_name, resp.status_code, resp.text[:300])
+            resp.raise_for_status()
+        data = resp.json()
+        directions = data.get("directions") or CARDINAL_4
+        job_ids = data.get("background_job_ids") or []
+        logger.info("queue_animation %s/%s: %d jobs (%s)", character_id[:8], anim_name, len(job_ids), config["type"])
+        return directions, job_ids
