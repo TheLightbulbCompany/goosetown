@@ -213,6 +213,7 @@ export default function GodotCanvas({ className, scene = 'town' }: GodotCanvasPr
           return;
         }
 
+        setProgress(null);
         setLoading(false);
 
         // Wait for Godot bridge to be ready

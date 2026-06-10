@@ -9,7 +9,7 @@
 // (and therefore the cache key) advances. Vercel builds always get a
 // fresh sha per deployment.
 import { execSync } from 'node:child_process';
-import { renameSync, mkdirSync } from 'node:fs';
+import { renameSync, mkdirSync, existsSync } from 'node:fs';
 
 // `||` (not `??`): a defined-but-empty VERCEL_GIT_COMMIT_SHA must fall
 // through to git, never produce a /godot// path.
@@ -24,7 +24,14 @@ execSync('vite build', {
   env: { ...process.env, VITE_GODOT_BASE: `/godot/${sha}` },
 });
 
-renameSync('dist/godot', 'dist/_godot_tmp');
+if (!existsSync('dist/godot')) {
+  throw new Error('dist/godot not found — ensure public/godot/ contains the Godot WebGL export before building');
+}
+
+// sha-tagged tmp name: an interrupted run can't collide with the next one
+// (vite's emptyOutDir clears dist/ on the following build either way).
+const tmpDir = `dist/godot_tmp_${sha}`;
+renameSync('dist/godot', tmpDir);
 mkdirSync('dist/godot');
-renameSync('dist/_godot_tmp', `dist/godot/${sha}`);
+renameSync(tmpDir, `dist/godot/${sha}`);
 console.log(`[build] godot assets versioned at /godot/${sha}`);
