@@ -7,8 +7,9 @@ bringing the router below 1700 lines.
 Functions:
 * ``_handle_agent_activity`` — validates and starts a timed activity
   (called from the ``handle_ws_message`` dispatch ladder).
-* ``_generate_custom_animation`` — background PixelLab task that lazily
-  generates a missing activity animation (e.g. "reading", "cooking").
+* ``_generate_activity_animation`` — background PixelLab task that lazily
+  generates a missing activity animation (e.g. "reading", "cooking") for
+  any ``ANIMATION_REGISTRY`` entry (template or v3).
 * ``_activity_timer`` — the asyncio task that runs while an activity is
   active, resolves at completion, and emits the result to the daemon.
 * ``_clear_activity_and_notify`` — shared cleanup helper used by timer
@@ -38,6 +39,7 @@ from core.services.activity_registry import apply_activity_effect, get_activity
 from core.services.daemon_bridge import _send_to_daemon
 from core.services.daemon_mailbox import get_daemon_mailbox
 from core.services.game_server_client import get_game_server_client
+from core.services.pixellab_service import ANIMATION_REGISTRY, PixelLabService
 from core.services.town_mood_engine import apply_event, decayed_mood
 from core.services.town_service import TownService
 
@@ -142,16 +144,14 @@ async def _handle_agent_activity(connection_id: str, activity_name: str, agent_c
         },
     )
 
-    # --- Trigger lazy custom animation generation if needed ---
-    from core.services.pixellab_service import CUSTOM_ANIMATIONS
-
+    # --- Trigger lazy activity animation generation if needed ---
     activity_anim = activity.animation
-    if activity_anim in CUSTOM_ANIMATIONS:
+    if activity_anim in ANIMATION_REGISTRY:
         agent_animations = agent.get("spriteAnimations") or {}
         anim_key = (agent_id, activity_anim)
         char_id = agent.get("pixellabCharacterId") or agent.get("pixellab_character_id")
         logger.info(
-            "Custom animation check: anim=%s, already_have=%s, in_progress=%s, char_id=%s",
+            "Activity animation check: anim=%s, already_have=%s, in_progress=%s, char_id=%s",
             activity_anim,
             activity_anim in agent_animations,
             anim_key in _custom_anim_in_progress,
@@ -166,12 +166,12 @@ async def _handle_agent_activity(connection_id: str, activity_name: str, agent_c
                     agent_id,
                     char_id,
                 )
-                gen_task = asyncio.create_task(_generate_custom_animation(agent_id, char_id, activity_anim))
+                gen_task = asyncio.create_task(_generate_activity_animation(agent_id, char_id, activity_anim))
                 _activity_tasks.add(gen_task)
                 gen_task.add_done_callback(_activity_tasks.discard)
             else:
                 logger.warning(
-                    "Cannot trigger custom animation %s for agent %s: no pixellabCharacterId in DB",
+                    "Cannot trigger activity animation %s for agent %s: no pixellabCharacterId in DB",
                     activity_anim,
                     agent_id,
                 )
@@ -203,18 +203,23 @@ async def _handle_agent_activity(connection_id: str, activity_name: str, agent_c
     task.add_done_callback(_on_timer_done)
 
 
-async def _generate_custom_animation(agent_id: str, character_id: str, animation_name: str) -> None:
-    """Background task: generate a custom animation via animate-with-text-v3.
+async def _generate_activity_animation(agent_id: str, character_id: str, animation_name: str) -> None:
+    """Background task: generate an activity's animation end-to-end.
 
-    v3 takes one reference frame per direction + an action description and
-    returns a configurable number of frames (4-16). Generates one direction
-    at a time, collects frames, composites into a spritesheet, uploads to S3.
+    Covers ANY ``ANIMATION_REGISTRY`` entry — template or v3 — by delegating
+    to ``PixelLabService.generate_animation``, which handles both modes behind
+    the global concurrency gate and returns ``{direction: [png_bytes]}``. The
+    frames are composited into a spritesheet, uploaded to S3, and merged into
+    the agent's ``spriteAnimations``.
+
+    Previously this early-returned for any animation not in ``CUSTOM_ANIMATIONS``,
+    silently skipping template-based activity animations — that gate is now on
+    ``ANIMATION_REGISTRY`` membership instead.
     """
     from core.config import settings
-    from core.services.pixellab_service import ANIMATION_REGISTRY, CUSTOM_ANIMATIONS, PixelLabService
     from core.services.sprite_storage import composite_v2_animation, upload_sprites_to_s3
 
-    config = CUSTOM_ANIMATIONS.get(animation_name)
+    config = ANIMATION_REGISTRY.get(animation_name)
     if not config:
         return
 
@@ -233,49 +238,20 @@ async def _generate_custom_animation(agent_id: str, character_id: str, animation
         logger.warning("Could not set learning status for agent %s", agent_id, exc_info=True)
 
     try:
-        # Queue custom animation (one v3 job per direction)
-        job_ids = await pxl.queue_custom_animation(
-            character_id=character_id,
-            animation_name=animation_name,
-            action_description=config["prompt"],
-            frame_count=int(config.get("frames", 8)),
-        )
-        if not job_ids:
-            logger.warning("No job IDs returned for custom animation %s", animation_name)
-            return
-
-        logger.info(
-            "Custom animation %s queued for agent %s (%d jobs), waiting...",
-            animation_name,
-            agent_id,
-            len(job_ids),
-        )
-
-        # Wait for all V2 jobs to complete
-        await pxl.wait_for_jobs(
-            job_ids,
-            progress_label=f"custom:{animation_name}",
-        )
-
-        # Collect frames from each completed job
-        # Jobs are ordered: south, west, east, north (matching queue order)
-        directions = ["south", "west", "east", "north"]
-        direction_frames: dict[str, list[bytes]] = {}
-        for i, job_id in enumerate(job_ids):
-            direction = directions[i] if i < len(directions) else f"dir{i}"
-            frames = await pxl.get_v2_animation_frames(job_id)
-            if frames:
-                direction_frames[direction] = frames
-                logger.info("Got %d frames for %s/%s", len(frames), animation_name, direction)
-            else:
-                logger.warning("No frames for %s/%s (job %s)", animation_name, direction, job_id)
+        # Generate the whole animation (all 4 directions) in one gated call.
+        # generate_animation handles template + v3 uniformly and returns
+        # {direction: [png_bytes]} once the jobs complete.
+        direction_frames = await pxl.generate_animation(character_id, animation_name)
 
         if not direction_frames:
-            logger.warning("No frames from any direction for %s", animation_name)
+            logger.warning("No frames generated for activity animation %s (agent %s)", animation_name, agent_id)
             return
 
-        # Composite into spritesheet
-        result = composite_v2_animation(direction_frames)
+        for direction, frames in direction_frames.items():
+            logger.info("Got %d frames for %s/%s", len(frames), animation_name, direction)
+
+        # Composite into spritesheet (CPU-bound PIL work — offload off the event loop)
+        result = await asyncio.to_thread(composite_v2_animation, direction_frames)
         if result is None:
             logger.warning("Failed to composite %s for agent %s", animation_name, agent_id)
             return

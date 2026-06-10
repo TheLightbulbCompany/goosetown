@@ -40,6 +40,7 @@ import logging
 from core.services.daemon_bridge import _make_agent_event_callback, _send_to_daemon
 from core.services.game_server_client import get_game_server_client
 from core.services.phase_lattice import advance_phase
+from core.services.pixellab_service import PixelLabCreditError
 from core.services.town_agent_ws import get_town_agent_ws_manager
 from core.services.town_service import TownService
 
@@ -182,28 +183,24 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
         async def _anim_progress(status_str: str) -> None:
             _send_progress(status_str)
 
-        signup_job_ids: dict[str, list[str]] = {}
+        # generate_animation (via queue_signup_animations) now returns the
+        # composited per-direction frames directly — no separate ZIP download
+        # or per-job v2 fetch. Each signup animation (walk, idle, talking) comes
+        # back as {direction: [png_bytes]} ready to composite + upload.
+        signup_frames: dict[str, dict[str, list[bytes]]] = {}
         try:
-            signup_job_ids = await pxl.queue_signup_animations(char_id, on_progress=_anim_progress)
+            signup_frames = await pxl.queue_signup_animations(char_id, on_progress=_anim_progress)
         except Exception:
             logger.exception("Signup animations failed for %s", agent_id)
 
-        # Download and resolve animation frames via API cross-reference
         service.update_agent_state(agent_id, sprite_status="downloading")
-        _send_progress("Downloading sprites...")
-
-        raw_animations = await pxl.fetch_animation_spritesheets(char_id)
-
-        # Map PixelLab API names to our friendly names
-        template_id_to_friendly: dict[str, str] = {
-            cfg["template_id"]: name for name, cfg in ANIMATION_REGISTRY.items() if cfg.get("template_id")
-        }
+        _send_progress("Compositing sprites...")
 
         full_sprite_animations: dict = dict(initial_sprite_animations)
 
-        # Process template animations from ZIP (walk, idle)
-        for pixellab_name, direction_frames in raw_animations.items():
-            friendly = template_id_to_friendly.get(pixellab_name, pixellab_name)
+        for friendly, direction_frames in signup_frames.items():
+            if not direction_frames:
+                continue
             sheet = await asyncio.to_thread(composite_animation_spritesheet, direction_frames)
             if sheet:
                 png_bytes, frame_count = sheet
@@ -220,48 +217,13 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
                     "frameCount": frame_count,
                     "fps": int(registry_entry.get("fps", 8)),
                 }
-
-        # Process custom animations from job results (talking, etc.)
-        # Custom animate-with-text-v2 results are NOT in the ZIP — they're
-        # stored in the job's last_response as frame images.
-        for anim_name, job_ids in signup_job_ids.items():
-            if anim_name in full_sprite_animations:
-                continue  # Already resolved from ZIP
-            config = ANIMATION_REGISTRY.get(anim_name, {})
-            if config.get("type") != "custom" or not job_ids:
-                continue
-            # Each job is one direction (south, west, east, north)
-            directions = ["south", "west", "east", "north"]
-            direction_frames: dict[str, list[bytes]] = {}
-            for i, jid in enumerate(job_ids):
-                if i >= len(directions):
-                    break
-                frames = await pxl.get_v2_animation_frames(jid)
-                if frames:
-                    direction_frames[directions[i]] = frames
-            if direction_frames:
-                sheet = await asyncio.to_thread(composite_animation_spritesheet, direction_frames)
-                if sheet:
-                    png_bytes, frame_count = sheet
-                    s3_key = await asyncio.to_thread(
-                        upload_sprite_to_s3,
-                        png_bytes,
-                        str(agent_id),
-                        settings.SPRITE_S3_BUCKET,
-                        f"{anim_name}.png",
-                    )
-                    full_sprite_animations[anim_name] = {
-                        "url": f"{settings.SPRITE_CDN_URL}/{s3_key}",
-                        "frameCount": frame_count,
-                        "fps": int(config.get("fps", 6)),
-                    }
-                    logger.info(
-                        "[agent:%s] Custom animation %s: %d directions, %d frames",
-                        agent_id,
-                        anim_name,
-                        len(direction_frames),
-                        frame_count,
-                    )
+                logger.info(
+                    "[agent:%s] Signup animation %s: %d directions, %d frames",
+                    agent_id,
+                    friendly,
+                    len(direction_frames),
+                    frame_count,
+                )
 
         if not full_sprite_animations:
             logger.warning("[agent:%s] No animations resolved — agent remains on static sprite", agent_id)
@@ -335,6 +297,8 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
                 exc_info=True,
             )
 
+    except PixelLabCreditError:
+        raise
     except Exception:
         logger.exception("Sprite generation failed for agent %s", agent_id)
         try:
@@ -399,26 +363,38 @@ async def resume_sprite_generation(
             service.update_agent_state(agent_id, sprite_status="animating")
             current_status = "animating"
 
-        # Phase: animating
-        if current_status == "animating" and char_id:
-            _progress("Resuming animations...")
-            await pxl.queue_signup_animations(char_id, on_progress=_anim_progress)
+        # Phase: animating vs downloading — two DISTINCT resume entry points
+        # that share the composite+upload+advance tail but differ ONLY in where
+        # the per-direction frames come from:
+        #
+        #   * "animating" (reached after a fresh "creating" regenerate): GENERATE
+        #     via queue_signup_animations — this costs PixelLab credits and is
+        #     the intended behavior for /admin/regenerate-sprite.
+        #   * "downloading" (the /admin/recomposite-sprites entry): RE-DOWNLOAD
+        #     the character's EXISTING animations via fetch_animation_spritesheets
+        #     — no generation, no credits. Recomposite's whole point is to
+        #     re-run the gray-strip composite over already-generated frames, so
+        #     it MUST NOT call queue_signup_animations.
+        #
+        # Both sources return the same {anim_name: {direction: [png_bytes]}}
+        # shape, so only the SOURCE differs — the loop below is identical.
+        if char_id and current_status in ("animating", "downloading"):
+            if current_status == "animating":
+                _progress("Resuming animations...")
+                anim_source = await pxl.queue_signup_animations(char_id, on_progress=_anim_progress)
+            else:  # downloading == recomposite: re-download existing, never regenerate
+                _progress("Re-downloading sprites...")
+                anim_source = await pxl.fetch_animation_spritesheets(char_id)
+
             service.update_agent_state(agent_id, sprite_status="downloading")
             current_status = "downloading"
 
-        # Phase: downloading
-        if current_status == "downloading" and char_id:
-            _progress("Downloading sprites...")
-
-            raw_animations = await pxl.fetch_animation_spritesheets(char_id)
-
-            template_id_to_friendly: dict[str, str] = {
-                cfg["template_id"]: name for name, cfg in ANIMATION_REGISTRY.items() if cfg.get("template_id")
-            }
+            _progress("Compositing sprites...")
 
             sprite_animations: dict = {}
-            for pixellab_name, direction_frames in raw_animations.items():
-                friendly = template_id_to_friendly.get(pixellab_name, pixellab_name)
+            for friendly, direction_frames in anim_source.items():
+                if not direction_frames:
+                    continue
                 sheet = await asyncio.to_thread(composite_animation_spritesheet, direction_frames)
                 if sheet:
                     png_bytes, frame_count = sheet
@@ -478,6 +454,8 @@ async def resume_sprite_generation(
 
         logger.info("Sprite recovery completed for agent %s", agent_id)
 
+    except PixelLabCreditError:
+        raise
     except Exception:
         logger.exception("Failed to resume sprite generation for %s", agent_id)
         service.update_agent_state(agent_id, sprite_status=None)

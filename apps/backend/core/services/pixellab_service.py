@@ -13,6 +13,11 @@ logger = logging.getLogger(__name__)
 
 PIXELLAB_API_URL = "https://api.pixellab.ai/v2"
 
+# We composite 4-direction spritesheets even though characters carry 8 rotations.
+# v3/custom mode defaults to south-only if directions is omitted (template
+# defaults to all) — so we ALWAYS pass the 4 cardinals explicitly.
+CARDINAL_4: list[str] = ["south", "west", "east", "north"]
+
 # Retry policy for transient PixelLab failures. A single connect/read timeout or
 # 429/5xx blip used to kill an entire sprite generation — e.g. a skipped walk
 # animation left a grey-box sprite, or a create_character ConnectTimeout dropped
@@ -21,6 +26,54 @@ PIXELLAB_API_URL = "https://api.pixellab.ai/v2"
 _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 _RETRY_MAX_ATTEMPTS = 4
 _RETRY_BASE_DELAY_SEC = 1.5
+
+
+class PixelLabCreditError(Exception):
+    """Raised on HTTP 402 — out of PixelLab generations/credits. Not retryable;
+    alarm-worthy (a fresh-signup spike can drain credits silently)."""
+
+
+# One pooled client shared across all PixelLab calls — keep-alive reuse + an
+# explicit socket cap, instead of a fresh AsyncClient (new TLS handshake) per
+# call. asyncio is single-threaded so the lazy create is race-free (no await
+# between the None check and the assignment).
+_pixellab_client: httpx.AsyncClient | None = None
+
+
+def _get_pixellab_client() -> httpx.AsyncClient:
+    global _pixellab_client
+    if _pixellab_client is None or _pixellab_client.is_closed:
+        _pixellab_client = httpx.AsyncClient(
+            limits=httpx.Limits(
+                max_connections=settings.PIXELLAB_POOL_MAX_CONNECTIONS,
+                max_keepalive_connections=settings.PIXELLAB_POOL_MAX_KEEPALIVE,
+            ),
+            timeout=httpx.Timeout(30.0),
+        )
+    return _pixellab_client
+
+
+async def close_pixellab_client() -> None:
+    """Close the pooled client on app shutdown."""
+    global _pixellab_client
+    if _pixellab_client is not None and not _pixellab_client.is_closed:
+        await _pixellab_client.aclose()
+    _pixellab_client = None
+
+
+# One global gate on concurrent in-flight animation generations across EVERY
+# path (signup, activity, admin). Each animation = up to 4 PixelLab jobs, so the
+# default of 2 keeps us ~<=8 concurrent jobs — under PixelLab's (undocumented)
+# concurrency cap. Tunable via PIXELLAB_MAX_CONCURRENT_ANIMATIONS.
+_animation_semaphore: "asyncio.Semaphore | None" = None
+
+
+def _get_animation_semaphore() -> asyncio.Semaphore:
+    global _animation_semaphore
+    if _animation_semaphore is None:
+        _animation_semaphore = asyncio.Semaphore(settings.PIXELLAB_MAX_CONCURRENT_ANIMATIONS)
+    return _animation_semaphore
+
 
 # ---------------------------------------------------------------------------
 # Animation registry — single source of truth for all animation assets.
@@ -36,10 +89,16 @@ ANIMATION_REGISTRY: dict[str, dict] = {
     # Templates (1 gen/direction, auto all directions)
     "walk": {"type": "template", "template_id": "walk", "fps": 8.0, "auto_generate": True},
     "idle": {"type": "template", "template_id": "breathing-idle", "fps": 4.0, "auto_generate": True},
-    "run": {"type": "template", "template_id": "running-6-frames", "fps": 12.0, "auto_generate": False},
-    "drink": {"type": "template", "template_id": "drinking", "fps": 6.0, "auto_generate": False},
-    "crouch": {"type": "template", "template_id": "crouching", "fps": 6.0, "auto_generate": False},
-    "pick_up": {"type": "template", "template_id": "picking-up", "fps": 6.0, "auto_generate": False},
+    "drink": {
+        "type": "custom",
+        "auto_generate": False,
+        "frames": 8,
+        "fps": 6.0,
+        "prompt": (
+            "Raising a cup to the mouth with one hand, taking a sip, lowering "
+            "it again, then settling back to a relaxed standing pose. " + _LOOP_SUFFIX
+        ),
+    },
     # Custom V3 (generated lazily on first use)
     # Prompts describe the full movement sequence for PixelLab frame generation.
     # Each custom prompt ends with the LOOP_SUFFIX so the final frame matches
@@ -204,10 +263,10 @@ class PixelLabService:
         headers = {"Authorization": f"Bearer {self.api_key}"}
         endpoint = url.rsplit("/", 1)[-1].split("?")[0]
         last_exc: Exception | None = None
+        client = _get_pixellab_client()
         for attempt in range(retries):
             try:
-                async with httpx.AsyncClient() as client:
-                    resp = await client.request(method, url, headers=headers, json=json, timeout=timeout)
+                resp = await client.request(method, url, headers=headers, json=json, timeout=timeout)
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_exc = exc
                 logger.warning(
@@ -219,6 +278,13 @@ class PixelLabService:
                     retries,
                 )
             else:
+                if resp.status_code == 402:
+                    logger.error(
+                        "PixelLab CREDIT EXHAUSTED (402) on %s %s — sprite gen will fail until topped up",
+                        method,
+                        endpoint,
+                    )
+                    raise PixelLabCreditError(f"PixelLab 402 on {endpoint}")
                 if resp.status_code not in _RETRYABLE_STATUS:
                     return resp
                 last_exc = httpx.HTTPStatusError(f"PixelLab {resp.status_code}", request=resp.request, response=resp)
@@ -262,29 +328,12 @@ class PixelLabService:
         """Get character status and sprite URLs.
 
         Pass ``retries=1`` from fail-fast fallback callers (e.g.
-        ``get_existing_animation_names``, ``_get_rotation_base64``) so a degraded
-        PixelLab degrades gracefully instead of stalling on backoff.
+        ``get_existing_animation_names``) so a degraded PixelLab degrades
+        gracefully instead of stalling on backoff.
         """
         resp = await self._request("GET", f"{PIXELLAB_API_URL}/characters/{character_id}", retries=retries)
         resp.raise_for_status()
         return resp.json()
-
-    async def animate_character(
-        self, character_id: str, animation: str = "walk", action_description: str | None = None
-    ) -> list[str]:
-        """Queue animation for a character. Returns list of background job IDs."""
-        body: dict[str, Any] = {
-            "character_id": character_id,
-            "template_animation_id": animation,
-        }
-        if action_description:
-            body["action_description"] = action_description
-        resp = await self._request("POST", f"{PIXELLAB_API_URL}/characters/animations", json=body)
-        if resp.status_code != 200:
-            logger.error(f"PixelLab animate_character {resp.status_code}: {resp.text}")
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("background_job_ids", [])
 
     async def get_job_status(self, job_id: str) -> dict:
         """Get background job status.
@@ -300,65 +349,81 @@ class PixelLabService:
         resp.raise_for_status()
         return resp.json()
 
-    async def get_v2_animation_frames(self, job_id: str) -> list[bytes]:
-        """Get completed V2 animation frames as PNG bytes.
-
-        V2 jobs return frames as raw RGBA byte buffers (type=rgba_bytes).
-        This method decodes them into PNG bytes for spritesheet compositing.
-        Returns list of PNG byte arrays, or empty list on failure.
-        """
+    def _frames_from_job(self, job: dict) -> list[bytes]:
+        """Decode a completed job's frames (last_response.images, rgba_bytes) into
+        PNG bytes for compositing. Returns [] if no usable images."""
         import base64
         import io
 
         from PIL import Image
 
-        try:
-            job = await self.get_job_status(job_id)
-            if job.get("status") != "completed":
-                logger.warning("Job %s not completed (status=%s)", job_id, job.get("status"))
-                return []
-
-            last_response = job.get("last_response", {})
-            if not last_response:
-                logger.warning("Job %s completed but no last_response", job_id)
-                return []
-
-            images = last_response.get("images", [])
-            frames: list[bytes] = []
-            for img_data in images:
-                if not isinstance(img_data, dict):
-                    continue
-                b64 = img_data.get("base64", "")
-                img_type = img_data.get("type", "")
-                width = img_data.get("width", 0)
-                height = img_data.get("height", 0)
-
-                if not b64:
-                    continue
-
-                raw_bytes = base64.b64decode(b64)
-
-                if img_type == "rgba_bytes" and width > 0 and height > 0:
-                    # Raw RGBA pixel data — convert to PNG
-                    img = Image.frombytes("RGBA", (width, height), raw_bytes)
-                    buf = io.BytesIO()
-                    img.save(buf, format="PNG")
-                    frames.append(buf.getvalue())
+        images = (job.get("last_response") or {}).get("images") or []
+        frames: list[bytes] = []
+        for im in images:
+            b64 = im.get("base64")
+            if not b64:
+                continue
+            raw = base64.b64decode(b64)
+            t = (im.get("type") or "").lower()
+            try:
+                if "rgba" in t or t == "bytes":
+                    img = Image.frombytes("RGBA", (im["width"], im["height"]), raw)
                 else:
-                    # Assume PNG/JPEG encoded
-                    frames.append(raw_bytes)
+                    img = Image.open(io.BytesIO(raw)).convert("RGBA")
+            except Exception:
+                logger.warning("Could not decode an animation frame (type=%s)", t)
+                continue
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            frames.append(buf.getvalue())
+        return frames
 
-            logger.info(
-                "Got %d frames from V2 job %s (%dx%d)",
-                len(frames),
-                job_id,
-                images[0].get("width", 0) if images else 0,
-                images[0].get("height", 0) if images else 0,
-            )
-            return frames
-        except Exception:
-            logger.exception("Failed to get V2 frames from job %s", job_id)
-            return []
+    async def _poll_and_collect(
+        self,
+        directions: list[str],
+        job_ids: list[str],
+        on_progress,
+        label: str,
+        max_attempts: int = 30,
+        poll_interval: float = 10.0,
+    ) -> dict[str, list[bytes]]:
+        """Poll the per-direction jobs, fetching each direction's frames AS it
+        completes (PixelLab cleans finished jobs up — a fetch deferred to after
+        the whole batch can 404). Returns {direction: [png_bytes]}."""
+        pending = dict(zip(job_ids, directions))  # job_id -> direction
+        collected: dict[str, list[bytes]] = {}
+        for _attempt in range(max_attempts):
+            await asyncio.sleep(poll_interval)
+            done_now: list[str] = []
+            for jid, direction in pending.items():
+                try:
+                    job = await self.get_job_status(jid)
+                except httpx.HTTPStatusError as exc:
+                    if exc.response is not None and exc.response.status_code == 404:
+                        logger.warning("Job %s (%s/%s) vanished (404) before fetch", jid, label, direction)
+                        done_now.append(jid)
+                    continue
+                except Exception as exc:
+                    # Transient poll error (timeout/connect) — log and retry next
+                    # sweep rather than silently dropping the direction.
+                    logger.debug("Poll error for job %s (%s/%s): %s", jid, label, direction, exc)
+                    continue
+                status = job.get("status")
+                if status == "completed":
+                    frames = self._frames_from_job(job)
+                    if frames:
+                        collected[direction] = frames
+                    done_now.append(jid)
+                elif status == "failed":
+                    logger.warning("Job %s (%s/%s) failed", jid, label, direction)
+                    done_now.append(jid)
+            for jid in done_now:
+                pending.pop(jid, None)
+            if on_progress:
+                await on_progress(f"{label} {len(collected)}/{len(directions)} done")
+            if not pending:
+                break
+        return collected
 
     async def download_character_zip(self, character_id: str) -> bytes | None:
         """Download character ZIP (rotations + animations). Returns None if not ready (423)."""
@@ -452,97 +517,30 @@ class PixelLabService:
         self,
         character_id: str,
         on_progress: Callable[[str], Coroutine[Any, Any, None]] | None = None,
-    ) -> dict[str, list[str]]:
-        """Queue all signup animations sequentially and wait for each to complete.
+    ) -> dict[str, dict[str, list[bytes]]]:
+        """Generate every auto_generate signup animation (walk, idle, talking)
+        sequentially via generate_animation. Returns
+        {anim_name: {direction: [png_bytes]}} for the caller to composite.
 
-        Iterates SIGNUP_ANIMATIONS (the subset of ANIMATION_REGISTRY with
-        auto_generate=True). For templates, calls animate_character with the
-        template_id. For custom animations, calls queue_custom_animation with
-        the prompt. Waits for each animation's jobs before queuing the next to
-        avoid PixelLab concurrent-job limits.
-
-        Args:
-            character_id: PixelLab character UUID.
-            on_progress: Optional async callback called every ~10s during waits.
-
-        Returns:
-            Dict mapping friendly animation name -> list of job IDs that were queued.
+        Each animation is generated end-to-end (submit + poll + collect frames)
+        behind the global concurrency gate inside ``generate_animation``. Running
+        them sequentially keeps us under PixelLab's concurrent-job ceiling. A
+        single animation failing logs + yields ``{}`` for that name so the rest
+        of signup still completes — the agent already operates on the static
+        sprite from Phase B, so animations are a nice-to-have, not a blocker.
         """
-        existing = await self.get_existing_animation_names(character_id)
-        results: dict[str, list[str]] = {}
+        results: dict[str, dict[str, list[bytes]]] = {}
         items = list(SIGNUP_ANIMATIONS.items())
-
-        for idx, (name, config) in enumerate(items):
-            progress_label = f"{name} ({idx + 1}/{len(items)})"
-
+        for idx, (name, _config) in enumerate(items):
             try:
-                if config["type"] == "template":
-                    template_id: str = config["template_id"]
-                    if template_id in existing:
-                        logger.info(
-                            "Template %s already exists on character %s, skipping",
-                            name,
-                            character_id,
-                        )
-                        results[name] = []
-                        continue
-                    job_ids = await self.animate_character(
-                        character_id,
-                        animation=template_id,
-                    )
-                elif config["type"] == "custom":
-                    prompt: str = config["prompt"]
-                    job_ids = await self.queue_custom_animation(
-                        character_id=character_id,
-                        animation_name=name,
-                        action_description=prompt,
-                    )
-                else:
-                    logger.warning(
-                        "Unknown animation type for %s: %r",
-                        name,
-                        config.get("type"),
-                    )
-                    continue
-
-                logger.info(
-                    "Queued signup animation %r for %s: %d jobs",
-                    name,
-                    character_id,
-                    len(job_ids),
-                )
-                results[name] = job_ids
-
-                if job_ids:
-                    # Cap signup-animation polling at 5 min (30 × 10s) instead
-                    # of the default 10 min. The agent is already operational
-                    # in "static" phase by the time Phase C runs (Phase B
-                    # connects them to the game server with a static sprite),
-                    # so animations are a nice-to-have, not a blocker. A 10-min
-                    # wait left the user staring at "walk (1/3) 0/4 done" in
-                    # TOWN_STATUS.md when PixelLab itself was slow — surfaced
-                    # by the 2026-05-06 integration test (celeste + atlas
-                    # both stalled). If the cap expires, ``advance_phase`` to
-                    # "alive" still happens with the static sprite.
-                    await self.wait_for_jobs(
-                        job_ids,
-                        on_progress=on_progress,
-                        progress_label=progress_label,
-                        max_attempts=30,
-                    )
+                frames = await self.generate_animation(character_id, name, on_progress=on_progress, max_attempts=30)
+                results[name] = frames
+                logger.info("Signup animation %s: %d/%d directions", name, len(frames), len(CARDINAL_4))
+            except PixelLabCreditError:
+                raise
             except Exception:
-                logger.exception(
-                    "Failed to queue signup animation %r for %s — continuing",
-                    name,
-                    character_id,
-                )
-                results.setdefault(name, [])
-
-        logger.info(
-            "Signup animations done for %s: %s",
-            character_id,
-            {k: len(v) for k, v in results.items()},
-        )
+                logger.exception("Signup animation %r failed for %s — continuing", name, character_id)
+                results[name] = {}
         return results
 
     async def fetch_all_rotations(self, character_id: str) -> dict[str, bytes]:
@@ -602,6 +600,8 @@ class PixelLabService:
         """
         try:
             char_data = await self.get_character(character_id)
+        except PixelLabCreditError:
+            raise
         except Exception:
             logger.exception("Failed to get character %s for animation fetch", character_id)
             return {}
@@ -669,112 +669,52 @@ class PixelLabService:
         )
         return result
 
-    async def _get_rotation_base64(self, character_id: str, direction: str) -> tuple[str, int, int] | None:
-        """Fetch a character's rotation image and return (base64_str, width, height).
+    async def queue_animation(self, character_id: str, anim_name: str) -> tuple[list[str], list[str]]:
+        """Queue ALL cardinal directions of one animation in a single
+        ``POST /characters/animations`` call. Returns ``(directions, job_ids)``
+        aligned by index. Handles template + v3 from ANIMATION_REGISTRY; v3 uses
+        the character's own rotations as the per-direction reference (no manual
+        reference-frame fetch). Returns ([], []) for an unknown animation."""
+        config = ANIMATION_REGISTRY.get(anim_name)
+        if not config:
+            logger.warning("queue_animation: unknown animation %r — skipping", anim_name)
+            return [], []
 
-        Returns None if the rotation image can't be fetched.
-        """
-        try:
-            char_data = await self.get_character(character_id, retries=1)
-            rotation_urls = char_data.get("rotation_urls", {})
-            url = rotation_urls.get(direction, "")
-            if not url:
-                logger.warning("No %s rotation URL for character %s", direction, character_id)
-                return None
+        body: dict[str, Any] = {"character_id": character_id, "directions": CARDINAL_4}
+        if config["type"] == "template":
+            body["mode"] = "template"
+            body["template_animation_id"] = config["template_id"]
+        else:
+            body["mode"] = "v3"
+            body["action_description"] = config["prompt"]
+            body["frame_count"] = int(config.get("frames", 8))
+            body["enhance_prompt"] = True
+            body["animation_name"] = anim_name
 
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(url, timeout=30.0)
-                resp.raise_for_status()
-                import base64
+        resp = await self._request("POST", f"{PIXELLAB_API_URL}/characters/animations", json=body, timeout=60.0)
+        if resp.status_code not in (200, 202):
+            logger.error("PixelLab characters/animations %s -> %s: %s", anim_name, resp.status_code, resp.text[:300])
+            resp.raise_for_status()
+        data = resp.json()
+        directions = data.get("directions") or CARDINAL_4
+        job_ids = data.get("background_job_ids") or []
+        logger.info("queue_animation %s/%s: %d jobs (%s)", character_id[:8], anim_name, len(job_ids), config["type"])
+        return directions, job_ids
 
-                # Raw base64 only — PixelLab's Base64Image model expects the
-                # base64 string without a ``data:image/png;base64,`` prefix.
-                # Including the prefix made every animate-with-text-v2/v3 call
-                # silently fall back to generation without our reference image,
-                # which produced a gray background and inconsistent character.
-                b64 = base64.b64encode(resp.content).decode()
-                size = char_data.get("size", {})
-                w = size.get("width", 96)
-                h = size.get("height", 96)
-                return b64, w, h
-        except Exception:
-            logger.exception("Failed to fetch %s rotation for character %s", direction, character_id)
-            return None
-
-    async def queue_custom_animation(
+    async def generate_animation(
         self,
         character_id: str,
-        animation_name: str,
-        action_description: str,
-        frame_count: int = 8,
-        directions: list[str] | None = None,
-    ) -> list[str]:
-        """Queue a custom animation using animate-with-text-v3.
-
-        For each direction, fetches the character's rotation image and
-        sends it to /animate-with-text-v3 as ``first_frame`` with the action
-        description. v3 takes a single reference frame, returns a configurable
-        ``frame_count`` (4-16, default 8), and infers view/direction from the
-        reference image — much simpler payload than v2 plus smoother motion.
-        Returns list of background job IDs in direction order.
-        """
-        if directions is None:
-            directions = ["south", "west", "east", "north"]
-
-        job_ids: list[str] = []
-        for direction in directions:
-            rotation = await self._get_rotation_base64(character_id, direction)
-            if not rotation:
-                logger.warning("Skipping %s direction for custom animation %s", direction, animation_name)
-                continue
-
-            ref_image, _ref_w, _ref_h = rotation
-            # Full PixelLab Base64Image shape: ``{type, base64, format}``.
-            # Without the ``type``/``format`` fields the model deserializer
-            # silently dropped our reference image and generated from prompt
-            # alone — yielding a gray background and a drifting character.
-            body = {
-                "first_frame": {"type": "base64", "base64": ref_image, "format": "png"},
-                "action": action_description,
-                "frame_count": frame_count,
-            }
-
-            try:
-                resp = await self._request("POST", f"{PIXELLAB_API_URL}/animate-with-text-v3", json=body, timeout=60.0)
-                if resp.status_code not in (200, 202):
-                    logger.error(
-                        "PixelLab animate-with-text-v3 %s/%s %s: %s",
-                        animation_name,
-                        direction,
-                        resp.status_code,
-                        resp.text[:500],
-                    )
-                    continue
-                data = resp.json()
-                job_id = data.get("background_job_id") or data.get("job_id")
-                if job_id:
-                    job_ids.append(job_id)
-                    logger.info(
-                        "Custom animation %s/%s queued for %s: job %s (frames=%d)",
-                        animation_name,
-                        direction,
-                        character_id,
-                        job_id,
-                        frame_count,
-                    )
-            except Exception:
-                logger.exception(
-                    "Failed to queue custom animation %s/%s for %s",
-                    animation_name,
-                    direction,
-                    character_id,
-                )
-
-        logger.info(
-            "Custom animation %s: %d/%d directions queued for character %s",
-            animation_name,
-            len(job_ids),
-            len(directions),
-            character_id,
-        )
-        return job_ids
+        anim_name: str,
+        *,
+        on_progress=None,
+        max_attempts: int = 30,
+    ) -> dict[str, list[bytes]]:
+        """Generate ONE animation (all 4 directions) end-to-end under the global
+        concurrency gate: submit the single batched call, then collect frames as
+        each direction completes. Returns {direction: [png_bytes]} (empty on no
+        jobs). This is the single entry point signup, activity, and admin all use."""
+        async with _get_animation_semaphore():
+            directions, job_ids = await self.queue_animation(character_id, anim_name)
+            if not job_ids:
+                return {}
+            return await self._poll_and_collect(directions, job_ids, on_progress, anim_name, max_attempts=max_attempts)
