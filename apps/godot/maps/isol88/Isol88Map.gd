@@ -34,12 +34,16 @@ var _current_tod: String = ""
 
 func _ready() -> void:
 	camera.position = player_spawn.position
-	camera.zoom = Vector2(DEFAULT_ZOOM, DEFAULT_ZOOM)
+	var z0: float = maxf(DEFAULT_ZOOM, _min_zoom())
+	camera.zoom = Vector2(z0, z0)
 
 	camera.limit_left = 0
 	camera.limit_top = 0
 	camera.limit_right = MAP_SIZE.x
 	camera.limit_bottom = MAP_SIZE.y
+
+	get_viewport().size_changed.connect(_on_viewport_resized)
+	_clamp_camera()
 
 	JsBridge.set_camera_requested.connect(_on_set_camera)
 
@@ -144,7 +148,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			var a2: Vector2 = _touches[keys2[0]]
 			var b2: Vector2 = _touches[keys2[1]]
 			var dist: float = a2.distance_to(b2)
-			var z: float = clampf(_pinch_start_zoom * dist / _pinch_start_dist, MIN_ZOOM, MAX_ZOOM)
+			var z: float = clampf(_pinch_start_zoom * dist / _pinch_start_dist, _min_zoom(), MAX_ZOOM)
 			# Anchor the zoom to the pinch midpoint: keep the world point under
 			# the fingers stationary instead of zooming toward camera center.
 			var midpoint: Vector2 = (a2 + b2) / 2.0
@@ -161,6 +165,27 @@ func _clamp_camera() -> void:
 	var half_vp: Vector2 = viewport_size / 2.0
 	camera.position.x = clampf(camera.position.x, half_vp.x, MAP_SIZE.x - half_vp.x)
 	camera.position.y = clampf(camera.position.y, half_vp.y, MAP_SIZE.y - half_vp.y)
+
+
+func _cover_zoom() -> float:
+	## Smallest zoom at which the map fills the viewport in both axes.
+	## Below this, void shows around the map edges (letterboxing).
+	var vp: Vector2 = get_viewport_rect().size
+	return maxf(vp.x / float(MAP_SIZE.x), vp.y / float(MAP_SIZE.y))
+
+
+func _min_zoom() -> float:
+	## Effective zoom floor: never below MIN_ZOOM, never below cover zoom —
+	## so the map always fills the screen and panning stops at the borders.
+	return maxf(MIN_ZOOM, _cover_zoom())
+
+
+func _on_viewport_resized() -> void:
+	## Rotation / browser-chrome changes alter the viewport: re-enforce the
+	## cover-zoom floor and border clamp.
+	var z: float = clampf(camera.zoom.x, _min_zoom(), MAX_ZOOM)
+	camera.zoom = Vector2(z, z)
+	_clamp_camera()
 
 
 func _on_set_camera(x: float, y: float, zoom: float) -> void:

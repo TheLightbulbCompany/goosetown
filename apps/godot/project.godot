@@ -23,6 +23,7 @@ JsBridge="*res://scripts/autoloads/js_bridge.gd"
 window/size/viewport_width=1408
 window/size/viewport_height=864
 window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
 
 [editor_plugins]
 
