@@ -56,6 +56,20 @@ async def close_pixellab_client() -> None:
     _pixellab_client = None
 
 
+# One global gate on concurrent in-flight animation generations across EVERY
+# path (signup, activity, admin). Each animation = up to 4 PixelLab jobs, so the
+# default of 2 keeps us ~<=8 concurrent jobs — under PixelLab's (undocumented)
+# concurrency cap. Tunable via PIXELLAB_MAX_CONCURRENT_ANIMATIONS.
+_animation_semaphore: "asyncio.Semaphore | None" = None
+
+
+def _get_animation_semaphore() -> asyncio.Semaphore:
+    global _animation_semaphore
+    if _animation_semaphore is None:
+        _animation_semaphore = asyncio.Semaphore(settings.PIXELLAB_MAX_CONCURRENT_ANIMATIONS)
+    return _animation_semaphore
+
+
 # ---------------------------------------------------------------------------
 # Animation registry — single source of truth for all animation assets.
 # Template animations are generated at registration (~5 min).
