@@ -11,7 +11,13 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-const GODOT_JS_PATH = '/godot/goosetown.js';
+const GODOT_BASE = import.meta.env.VITE_GODOT_BASE ?? '/godot';
+const GODOT_JS_PATH = `${GODOT_BASE}/goosetown.js`;
+
+// Approximate uncompressed payload (wasm + pck). Godot's onProgress reports
+// total=0, so we estimate percent against this; cap at 99 until startGame
+// resolves. Update if the export grows materially.
+const GODOT_PAYLOAD_BYTES = 46_000_000;
 
 // ---------------------------------------------------------------------------
 // Secure JsBridge handlers (paired with apps/godot/scripts/autoloads/js_bridge.gd).
@@ -96,6 +102,11 @@ interface GodotEngineConstructor {
      * container and overflows on layouts with sidebars).
      */
     canvasResizePolicy?: 0 | 1 | 2;
+    /**
+     * Fired during engine asset download (.wasm/.pck). `current` counts
+     * uncompressed bytes; `total` is ALWAYS 0 in Godot 4.6's web loader
+     * (verified empirically) — callers must supply their own denominator.
+     */
     onProgress?: (current: number, total: number) => void;
   }): GodotEngine;
   isWebGLAvailable: (majorVersion?: number) => boolean;
@@ -127,6 +138,7 @@ export default function GodotCanvas({ className, scene = 'town' }: GodotCanvasPr
   const engineRef = useRef<GodotEngine | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<number | null>(null);
   const [engineReady, setEngineReady] = useState(false);
   const currentSceneRef = useRef<string>('town');
 
@@ -180,9 +192,14 @@ export default function GodotCanvas({ className, scene = 'town' }: GodotCanvasPr
         // our sidebar-constrained parent. The ResizeObserver below owns
         // the canvas sizing instead.
         const engine = new window.Engine({
-          executable: '/godot/goosetown',
+          executable: `${GODOT_BASE}/goosetown`,
           canvas,
           canvasResizePolicy: 0,
+          onProgress: (current: number, total: number) => {
+            if (cancelled) return;
+            const denom = total > 0 ? total : GODOT_PAYLOAD_BYTES;
+            setProgress(Math.min(99, Math.round((current / denom) * 100)));
+          },
         });
 
         // World state is forwarded to Godot via JS bridge from useTownState's WebSocket.
@@ -196,6 +213,7 @@ export default function GodotCanvas({ className, scene = 'town' }: GodotCanvasPr
           return;
         }
 
+        setProgress(null);
         setLoading(false);
 
         // Wait for Godot bridge to be ready
@@ -269,8 +287,22 @@ export default function GodotCanvas({ className, scene = 'town' }: GodotCanvasPr
         tabIndex={-1}
       />
       {loading && !error && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/50 px-8">
           <p className="text-brown-200 font-body text-lg">Loading GooseTown...</p>
+          {/* bg-clay-700: the palette has no clay-800 — an undefined shade renders no CSS */}
+          <div className="w-full max-w-xs h-2 bg-clay-700 rounded-full overflow-hidden">
+            <div
+              className={
+                progress === null
+                  ? 'h-full w-1/3 bg-brown-500 rounded-full animate-pulse'
+                  : 'h-full bg-brown-500 rounded-full transition-all duration-200'
+              }
+              style={progress === null ? undefined : { width: `${progress}%` }}
+            />
+          </div>
+          {progress !== null && (
+            <p className="text-clay-300 font-body text-xs">{progress}%</p>
+          )}
         </div>
       )}
       {error && (
