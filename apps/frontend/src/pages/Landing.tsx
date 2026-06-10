@@ -33,7 +33,7 @@ export function Landing() {
 
         {/* Hero. */}
         <section className="flex flex-1 flex-col items-center justify-center text-center pt-10 sm:pt-16">
-          <h1 className="font-display game-title text-6xl sm:text-7xl md:text-8xl tracking-wider leading-none">
+          <h1 className="font-display game-title text-5xl sm:text-7xl md:text-8xl tracking-wider leading-none">
             GooseTown
           </h1>
 
