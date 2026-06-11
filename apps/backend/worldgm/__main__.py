@@ -164,9 +164,17 @@ class GmState:
 def _resident_personas():
     """Return the resident cast for this worldgm.
 
-    Indirected through a function so tests / future env-based gating can swap
-    the slate (e.g. a dev-only subset) without touching __main__ control flow.
+    Selected by the ``RESIDENT_SLATE`` env var (set per-environment by the
+    worldgm CDK stack): ``"prod"`` → the real-public-figures cast in
+    ``personas_prod``; anything else → the default historical/archetype cast.
+    Indirected through a function so tests can swap the slate without touching
+    __main__ control flow.
     """
+    slate = os.environ.get("RESIDENT_SLATE", "default").lower()
+    if slate == "prod":
+        from worldgm.residents.personas_prod import PROD_RESIDENT_PERSONAS
+
+        return PROD_RESIDENT_PERSONAS
     from worldgm.residents.personas import RESIDENT_PERSONAS
 
     return RESIDENT_PERSONAS
