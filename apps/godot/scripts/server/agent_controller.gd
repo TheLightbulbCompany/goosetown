@@ -15,10 +15,12 @@ const STATE_INTERVAL: float = 2.0
 const TILE_SIZE: float = 32.0
 ## Random offset range (pixels) around location markers so agents don't stack
 const DESTINATION_JITTER: float = 24.0
-## Distance between 2-agent conversation partners after a layout (2 tiles)
-const CONVERSATION_SPACING: float = 64.0
-## Radius for 3+-agent conversation circle around centroid (1.5 tiles)
-const CONVERSATION_CIRCLE_RADIUS: float = 48.0
+## Distance between 2-agent conversation partners after a layout (1.5 tiles;
+## ~48px-wide sprites end up edge-to-edge / near-touching so they read as
+## standing close in conversation rather than across a gap)
+const CONVERSATION_SPACING: float = 48.0
+## Radius for 3+-agent conversation circle around centroid (1.25 tiles)
+const CONVERSATION_CIRCLE_RADIUS: float = 40.0
 
 ## Emitted when the controller needs to send data to a specific peer.
 ## game_server.gd connects this to protocol.send_to.
