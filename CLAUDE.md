@@ -278,6 +278,8 @@ FastAPI, Python 3.12, uv, boto3, DynamoDB.
 | `management_api_client.py` | Pushes messages to connected WebSocket clients via API Gateway Management API |
 | `pixellab_service.py` | PixelLab API client: create 4-direction character, animate, download ZIP |
 | `sprite_storage.py` | Extract walk spritesheet from PixelLab ZIP, upload to S3 |
+| `exchange_service.py` | GooseTown Exchange: post/bid/deliver/review lifecycle, escrow, DynamoDB jobs + ledger tables |
+| `exchange_scoring.py` | Bid scoring (price × trust × confidence), trust-tier advancement, rejection tracking |
 
 ### DynamoDB Tables
 
@@ -611,8 +613,8 @@ Big batch landed 2026-04-26 across PRs #211–#215:
 
 ### Dropped scope
 
-- **Phase 5: Economy** (dropped 2026-05-04). Was scoped as an Emporion-inspired peer-to-peer agent economy: wallets, contracts, marketplace, currency earned from activities. Removed from the roadmap because the value-vs-complexity trade is unfavourable at this product stage — the simulation works as a "tamagotchi for AI agents" without it, and the contracts/verification machinery is a multi-month build that pulls focus from launch readiness and the activity-system polish that actually surfaces in soak findings. **Cleanup done**: the `currency_delta` field was removed from `activity_registry.py` (a regression test in `test_round_1_activity_layer.py` asserts `Activity(currency_delta=...)` now raises `TypeError`). The bank's two activities (`check_balance`, `browse_listings`) had economy-flavored prompt wording reworded to non-economic noticeboard/community-board framing in the 2026-06-06 cleanup.
-- **Bank as economy hub**: previously planned as Phase 5's marketplace location. Without the economy it was repurposed with non-economic activities — `check_balance` (read the noticeboard) and `browse_listings` (community board) — as of the 2026-06-06 cleanup.
+- **Phase 5: Economy** (dropped 2026-05-04; **reinstated 2026-06-12 as the GooseTown Exchange via ADR-0007**). Originally scoped as an Emporion-inspired peer-to-peer agent economy but dropped because the contracts/verification machinery was judged a multi-month invention effort. Reinstated 2026-06-12 when the AEX domain design (open-experiments/agent-exchange, MIT) collapsed the invention cost: post→bid→deliver→review lifecycle, weighted bid scoring, trust/reputation system, append-only crumbs ledger — native Python/FastAPI reimplementation, not a port. See ADR-0007 (`docs/adr/0007-agent-exchange-economy.md`) for the full decision. **Cleanup done (2026-05-04)**: the old per-activity `currency_delta` drip stays removed (the Exchange is the only currency mechanism); `activity_registry.py` regression test still asserts `Activity(currency_delta=...)` raises `TypeError`.
+- **Bank as Exchange floor**: the bank location hosts the GooseTown Exchange. Posting and bidding require presence at the bank; deliver and review are remote. Bank activities (`check_balance`, `browse_listings`) now point at the Exchange job board and crumb wallet.
 
 ### Deferred / parked features
 
@@ -633,7 +635,7 @@ Agents need **things to do** beyond walking around. Each location offers activit
 | **Library** | Read (learn new topics), study, write in journal | +mood (introverts), generates knowledge for conversations |
 | **Cafe** | Order drink, sit and chat, work on laptop | +energy (small), +mood, social bonding spot |
 | **Activity Center** | Exercise, play games, garden | +energy, +mood, competitive interactions |
-| **Bank** | Read the noticeboard (`check_balance`), browse the community board (`browse_listings`) | +mood (small), quiet solo time |
+| **Bank** | Post jobs, bid on jobs (the Exchange), check wallet (`check_balance`), browse job board (`browse_listings`) | crumbs economy — see ADR-0007 |
 | **Residence** | Enter apartment, sleep, decorate | +energy (sleep), personalization |
 | **Apartment** | Work at desk, cook, read, watch TV, sleep | +energy, personal space, crafting |
 
