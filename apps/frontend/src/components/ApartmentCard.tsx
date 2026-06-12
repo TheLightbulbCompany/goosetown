@@ -1,8 +1,11 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import clsx from 'clsx';
 import type { ApartmentAgent } from '../hooks/useApartment';
+import { usePassbook } from '../hooks/usePassbook';
 import { sceneById } from '../scenes';
 import { SpriteWaitOverlay } from './SpriteWaitOverlay';
+import CrumbAmount from './CrumbAmount';
 
 // A ``status_message`` like "Learning to cook…" is set by the backend's
 // ``_generate_custom_animation`` task while the agent is waiting on a
@@ -47,6 +50,15 @@ function statusColor(activity: string | null, statusMessage: string | null): str
   }
 }
 
+// Short passbook timestamp: "MM-DD HH:mm". Falls back to the raw string
+// when the backend hands us something unparsable.
+function shortAt(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const pad = (x: number) => String(x).padStart(2, '0');
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 function moodEmoji(mood: string | null): string {
   switch (mood) {
     case 'happy':
@@ -81,6 +93,10 @@ export default function ApartmentCard({
   onReactivate,
 }: ApartmentCardProps) {
   const energyPercent = Math.max(0, Math.min(100, agent.energy));
+  const hasWallet = typeof agent.wallet_balance === 'number';
+  // Passbook is lazy: the ledger fetch only fires on first expand.
+  const [passbookOpen, setPassbookOpen] = useState(false);
+  const passbook = usePassbook(agent.agent_id, passbookOpen && hasWallet);
 
   return (
     <div
@@ -165,9 +181,10 @@ export default function ApartmentCard({
         <div className="font-body text-xs text-clay-300">
           Mood: <span className="text-brown-200">{moodEmoji(agent.mood)} {agent.mood || 'neutral'}</span>
         </div>
-        {typeof agent.wallet_balance === 'number' && (
+        {hasWallet && (
           <div className="font-body text-xs text-clay-300">
-            Crumbs: <span className="text-brown-200">🪙 {agent.wallet_balance}</span>
+            Crumbs:{' '}
+            <CrumbAmount n={agent.wallet_balance!} className="text-brown-200" />
             {agent.trust_tier && <span className="text-clay-400 ml-1">({agent.trust_tier})</span>}
           </div>
         )}
@@ -185,6 +202,78 @@ export default function ApartmentCard({
           <span className="font-body text-xs text-clay-300 w-8 text-right">{energyPercent}%</span>
         </div>
       </div>
+
+      {/* Passbook — collapsible ledger view, only for agents with a wallet.
+          The ledger fetch is lazy (first expand) via usePassbook. */}
+      {hasWallet && (
+        <div>
+          <button
+            type="button"
+            onClick={() => setPassbookOpen((o) => !o)}
+            aria-expanded={passbookOpen}
+            className="font-body text-xs text-clay-300 hover:text-brown-200 transition-colors flex items-center gap-1"
+          >
+            <span aria-hidden="true">{passbookOpen ? '▾' : '▸'}</span>
+            Passbook
+          </button>
+          {passbookOpen && (
+            <div className="mt-2 border border-clay-700 p-2 flex flex-col gap-1.5">
+              {passbook.loading && (
+                <p className="font-body text-[11px] text-clay-500 italic">Opening passbook…</p>
+              )}
+              {passbook.error && (
+                <p className="font-body text-[11px] text-red-400">
+                  Passbook error: {passbook.error}
+                </p>
+              )}
+              {passbook.data && (
+                <>
+                  <div className="flex items-center gap-2">
+                    <CrumbAmount
+                      n={passbook.data.balance}
+                      className="text-xs text-brown-200"
+                    />
+                    {/* Trust stamp: tier in a bordered chip */}
+                    <span className="font-display lowercase text-[10px] tracking-wider border border-clay-500 text-clay-100 px-1">
+                      {passbook.data.trust_tier}
+                    </span>
+                  </div>
+                  {passbook.data.entries.length === 0 ? (
+                    <p className="font-body text-[11px] text-clay-500 italic">
+                      No entries yet — the first page is blank.
+                    </p>
+                  ) : (
+                    passbook.data.entries.slice(0, 15).map((e, i) => (
+                      <div
+                        key={`${e.ref_id}-${i}`}
+                        className="font-body text-[11px] text-clay-300 flex items-center gap-1"
+                      >
+                        <span className="text-clay-500 shrink-0">{shortAt(e.at)}</span>
+                        <span aria-hidden="true" className="text-clay-500">·</span>
+                        <span className="truncate">{e.type}</span>
+                        <span aria-hidden="true" className="text-clay-500">·</span>
+                        <CrumbAmount
+                          n={e.amount}
+                          signed
+                          className={clsx(
+                            'shrink-0',
+                            e.amount >= 0 ? 'text-gold-300' : 'text-clay-300',
+                          )}
+                        />
+                        <span aria-hidden="true" className="text-clay-500">·</span>
+                        <CrumbAmount
+                          n={e.balance_after}
+                          className="text-clay-500 shrink-0 ml-auto"
+                        />
+                      </div>
+                    ))
+                  )}
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Action row: Chat button + view in <scene> link + Remove/Reactivate.
        * All right-aligned. Active agents see Chat/View/Remove; inactive

@@ -1,6 +1,13 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+
+// ApartmentCard now calls usePassbook → useAuth; mock Clerk so it doesn't
+// throw outside a ClerkProvider (same pattern as OwnerChatPanel.test.tsx).
+vi.mock('@clerk/clerk-react', () => ({
+  useAuth: () => ({ getToken: vi.fn().mockResolvedValue('test-token') }),
+}));
+
 import ApartmentCard from './ApartmentCard';
 import type { ApartmentAgent } from '../hooks/useApartment';
 
@@ -153,5 +160,115 @@ describe('ApartmentCard', () => {
   it('does not render goal section when currentGoal is null', () => {
     renderCard(makeAgent({ currentGoal: null }));
     expect(screen.queryByText(/Goal:/)).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Passbook + CrumbAmount integration
+// ---------------------------------------------------------------------------
+
+describe('ApartmentCard passbook', () => {
+  const LEDGER = {
+    balance: 18,
+    trust_tier: 'fledgling',
+    trust_score: 0.42,
+    entries: [
+      {
+        type: 'job_payout',
+        amount: 8,
+        balance_after: 18,
+        ref_id: 'r1',
+        at: '2026-06-10T09:30:00Z',
+      },
+      {
+        type: 'job_escrow',
+        amount: -5,
+        balance_after: 10,
+        ref_id: 'r2',
+        at: '2026-06-09T15:00:00Z',
+      },
+    ],
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('does not render the Passbook section without a wallet', () => {
+    renderCard(makeAgent()); // wallet_balance undefined
+    expect(screen.queryByText(/Passbook/)).toBeNull();
+  });
+
+  it('renders the crumbs row via CrumbAmount (glyph, no bare coin emoji)', () => {
+    const { container } = renderCard(
+      makeAgent({ wallet_balance: 12, trust_tier: 'fledgling' }),
+    );
+    expect(screen.getByText('12')).toBeInTheDocument();
+    expect(screen.getByTestId('crumb-glyph')).toBeInTheDocument();
+    expect(container.textContent).not.toContain('🪙');
+    // Tier still displayed alongside the balance.
+    expect(screen.getByText('(fledgling)')).toBeInTheDocument();
+  });
+
+  it('lazy-fetches the ledger on first expand and renders entries with +/− coloring', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(LEDGER),
+    } as unknown as Response);
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderCard(makeAgent({ wallet_balance: 18, trust_tier: 'fledgling' }));
+    // Lazy: nothing fetched until the owner opens the passbook.
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByText(/Passbook/));
+    expect(await screen.findByText('job_payout')).toBeInTheDocument();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/town/agent/agent-1/ledger');
+    expect((fetchMock.mock.calls[0][1] as RequestInit).headers).toMatchObject({
+      Authorization: 'Bearer test-token',
+    });
+
+    // Credit in gold, debit in clay.
+    expect(screen.getByText('+8').parentElement?.className).toContain('text-gold-300');
+    expect(screen.getByText('−5').parentElement?.className).toContain('text-clay-300');
+    // Trust stamp chip shows the tier from the ledger payload.
+    expect(screen.getByText('fledgling')).toBeInTheDocument();
+    // Second entry's running balance renders too.
+    expect(screen.getByText('job_escrow')).toBeInTheDocument();
+  });
+
+  it('does not refetch when the passbook is collapsed and re-expanded', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(LEDGER),
+    } as unknown as Response);
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderCard(makeAgent({ wallet_balance: 18 }));
+    const toggle = screen.getByText(/Passbook/);
+    fireEvent.click(toggle);
+    expect(await screen.findByText('job_payout')).toBeInTheDocument();
+    fireEvent.click(toggle); // collapse
+    expect(screen.queryByText('job_payout')).toBeNull();
+    fireEvent.click(toggle); // re-expand — cached, no second fetch
+    expect(await screen.findByText('job_payout')).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows a passbook error state when the ledger fetch fails', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 403,
+      json: () => Promise.resolve({}),
+    } as unknown as Response);
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderCard(makeAgent({ wallet_balance: 18 }));
+    fireEvent.click(screen.getByText(/Passbook/));
+    expect(await screen.findByText(/Passbook error/)).toBeInTheDocument();
   });
 });
