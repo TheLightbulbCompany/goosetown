@@ -5,7 +5,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 ## Documents to read alongside this one
 
 - **`CONTEXT.md`** — domain glossary. Defines the vocabulary for talking about agents, the world, activities, conversations, sprites, the daemon. Use these terms exactly in code reviews and architecture discussion.
-- **`docs/adr/`** — Architecture Decision Records. Load-bearing decisions (thin game server, single-replica game server, PixelLab 4-direction only, PyPI canonical install, agent IDs are UUIDs, Phase 5 dropped). Read before re-litigating.
+- **`docs/adr/`** — Architecture Decision Records. Load-bearing decisions (thin game server, single-replica game server, PixelLab 4-direction only, PyPI canonical install, agent IDs are UUIDs, Phase 5 dropped, economy reinstated as the Exchange (ADR-0007)). Read before re-litigating.
 - **`docs/superpowers/specs/`** — current-state planning + audit artifacts. The 2026-05-04 batch is the launch-readiness plan, the activity/mood walkthrough, and the architecture audit.
 
 ## Project Overview
@@ -14,7 +14,7 @@ GooseTown is a multi-agent AI town simulation — a persistent virtual world whe
 
 GooseTown is a **separate product** from [Isol8](https://isol8.co). Isol8 is a managed platform for non-technical users to run OpenClaw agents. GooseTown is for any OpenClaw agent — it's the place agents go to live. The two share a Clerk auth system and AWS account but are independently deployed.
 
-**Vision:** A persistent virtual town where AI agents live, build relationships, and develop daily routines. Each user gets an apartment where all their agents live. The town has multiple locations, buildings, agent-to-agent conversations, and interactive spaces. Art assets are procedurally generated via [PixelLab](https://pixellab.ai) API — characters, tiles, objects, and animations. (An agent economy was previously scoped as Phase 5 / Emporion-inspired but has been dropped from the roadmap as of 2026-05-04 — see Production Roadmap.)
+**Vision:** A persistent virtual town where AI agents live, build relationships, and develop daily routines. Each user gets an apartment where all their agents live. The town has multiple locations, buildings, agent-to-agent conversations, and interactive spaces. Art assets are procedurally generated via [PixelLab](https://pixellab.ai) API — characters, tiles, objects, and animations. (An agent economy was dropped 2026-05-04 and reinstated 2026-06-12 as the AEX-derived GooseTown Exchange (ADR-0007) — see Production Roadmap.)
 
 ## Architecture (as of 2026-05-04)
 
@@ -529,7 +529,7 @@ Cadence/behavior knobs (all have defaults; tune after a dev soak):
 
 **Production-launch blockers still open** (see Known Issues "Production-launch blockers" subsection): E2E Smoke broken since PR #254's route move, multi-agent concurrency stress test never run, single-replica game-server resilience, `onboardingPhase` race surfaced by Vera. The 15-agent soak orchestrator (`scripts/launch-soak.sh`, PR #262) is staged but not yet run; running it will exercise apartment-movement, multi-agent chat, sprite-pipeline concurrency, and the conversation auto-end timer in one shot — that's the natural next session.
 
-Phase 4 (art) still **deferred** until Tier-1 launch readiness lands. Phase 5 (economy) was **dropped** 2026-05-04 — see "Dropped scope" below; the partial currency-delta hooks in `activity_registry.py` are dead code and should be ripped out alongside any near-term sweep of the activity layer. OASIS-style social-graph simulation was researched 2026-04-26 and parked — see "Deferred / parked features" at the bottom of this section.
+Phase 4 (art) still **deferred** until Tier-1 launch readiness lands. Phase 5 (economy) was **dropped** 2026-05-04 and **reinstated 2026-06-12** as the GooseTown Exchange (ADR-0007). The old currency-delta-style per-activity drip (`currency_delta` in `activity_registry.py`) stays dead — the Exchange is the only currency mechanism. OASIS-style social-graph simulation was researched 2026-04-26 and parked — see "Deferred / parked features" at the bottom of this section.
 
 ### Phase 1: Stability & Testing — ✅ Shipped (2 small items deferred)
 

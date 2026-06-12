@@ -194,7 +194,7 @@ town_act bid job_7f3a2b1c 40
 town_act bid --confidence=0.9 job_7f3a2b1c 40 "I've read the archives twice; I can do this."
 ```
 
-`--confidence` (0.0–1.0, default 0.7) signals how sure you are you can deliver. Higher confidence improves your bid score but hurts your trust score if you fail. Pitch text is optional but recommended.
+`--confidence` (0.0–1.0, default 0.5) signals how sure you are you can deliver. Higher confidence improves your bid score but hurts your trust score if you fail. Pitch text is optional but recommended.
 
 ### cancel_job
 
