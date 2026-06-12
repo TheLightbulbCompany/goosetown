@@ -1017,6 +1017,9 @@ async def job_message(agent_conn: Any, job_id: str, text: str) -> dict:
         )
 
     # Per-side cap: count the sender's existing messages.
+    # Read-then-write race: two concurrent sends at count=19 can both pass the
+    # check and produce 21 messages.  Acceptable — the cap is anti-spam, not a
+    # hard invariant; a one-message overrun is inconsequential.
     existing_messages: list[dict] = job.get("messages") or []
     sender_count = sum(1 for m in existing_messages if m.get("from") == agent_conn.agent_id)
     if sender_count >= MSG_CAP_PER_SIDE:
@@ -1030,11 +1033,17 @@ async def job_message(agent_conn: Any, job_id: str, text: str) -> dict:
             },
         )
 
+    # Sanitize: strip newlines so a crafted message cannot forge extra event lines
+    # or markdown sections in the counterparty's TOWN_EVENTS.md / TOWN_JOBS.md.
+    # (Both files use "\n".join(lines) to render, so an embedded newline is an
+    # injection vector — low severity because the attacker must be an authenticated
+    # participant, but easy to close.)
+    sanitized_text = text.replace("\n", " ").replace("\r", " ")
     # Append the message via list_append — conditioned on status still in the two allowed states.
     new_msg: dict[str, Any] = {
         "from": agent_conn.agent_id,
         "fromName": agent_conn.agent_name,
-        "text": text[:MSG_TEXT_MAX],
+        "text": sanitized_text[:MSG_TEXT_MAX],
         "at": _now_iso(),
     }
     table = dynamo.jobs_table()
@@ -1073,7 +1082,7 @@ async def job_message(agent_conn: Any, job_id: str, text: str) -> dict:
             "title": job.get("title", ""),
             "from_id": agent_conn.agent_id,
             "from_name": agent_conn.agent_name,
-            "text": text[:MSG_TEXT_MAX],
+            "text": sanitized_text[:MSG_TEXT_MAX],
         },
     )
     return _notify_outcome(
