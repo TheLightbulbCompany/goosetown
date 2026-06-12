@@ -12,10 +12,10 @@ vi.mock('../hooks/useConversations', () => ({
 }));
 
 // Mock Clerk so useAuth() doesn't throw outside a ClerkProvider.
-// Default: signed-in with a test token. The signed-out test overrides useAuth
-// for that case via vi.mocked(...).mockReturnValue(...).
+// Default: signed-in with a test token. The signed-out test flips
+// mockIsSignedIn to false (and restores it) — the factory reads it per call.
 const mockGetToken = vi.fn().mockResolvedValue('test-token');
-const mockIsSignedIn = true;
+let mockIsSignedIn = true;
 vi.mock('@clerk/clerk-react', () => ({
   useAuth: () => ({ getToken: mockGetToken, isSignedIn: mockIsSignedIn }),
 }));
@@ -340,11 +340,8 @@ describe('ConversationsLog', () => {
   });
 
   it('shows sign-in hint instead of input when not signed in and conversation is active', async () => {
-    // Override Clerk mock to signed-out for this test only.
-    vi.mocked(await import('@clerk/clerk-react')).useAuth = () => ({
-      getToken: vi.fn().mockResolvedValue(null),
-      isSignedIn: false,
-    });
+    // Flip the shared mock to signed-out for this test only.
+    mockIsSignedIn = false;
     mockedUse.mockReturnValue({
       conversations: [makeConv({ ended_at: null })],
       loading: false,
@@ -356,11 +353,8 @@ describe('ConversationsLog', () => {
     expect(screen.queryByRole('textbox', { name: /message input/i })).toBeNull();
     expect(screen.getByText(/sign in to join/i)).toBeInTheDocument();
 
-    // Restore default mock so subsequent tests are unaffected.
-    vi.mocked(await import('@clerk/clerk-react')).useAuth = () => ({
-      getToken: mockGetToken,
-      isSignedIn: true,
-    });
+    // Restore default so subsequent tests are unaffected.
+    mockIsSignedIn = true;
   });
 
   it('char counter decrements as user types and turns red over 280', async () => {
