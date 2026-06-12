@@ -165,6 +165,12 @@ export default function ApartmentCard({
         <div className="font-body text-xs text-clay-300">
           Mood: <span className="text-brown-200">{moodEmoji(agent.mood)} {agent.mood || 'neutral'}</span>
         </div>
+        {typeof agent.wallet_balance === 'number' && (
+          <div className="font-body text-xs text-clay-300">
+            Crumbs: <span className="text-brown-200">🪙 {agent.wallet_balance}</span>
+            {agent.trust_tier && <span className="text-clay-400 ml-1">({agent.trust_tier})</span>}
+          </div>
+        )}
         <div className="flex-1 flex items-center gap-2">
           <span className="font-body text-xs text-clay-300">Energy:</span>
           <div className="flex-1 h-2 bg-clay-700 rounded-full overflow-hidden">
