@@ -836,9 +836,15 @@ class TownDaemon:
         title = data.get("title", "?")
         max_price = data.get("max_price", "?")
         consumer_name = data.get("consumer_name", "someone")
+        criteria = data.get("success_criteria") or []
+        criteria_note = (
+            f" Success criteria: {'; '.join(c[:80] for c in criteria[:8])}."
+            if criteria
+            else ""
+        )
         self._append_event(
             f'\U0001f4bc New job at the Exchange from {consumer_name}: "{title}" — '
-            f"up to {max_price} crumbs (job {job_id}). "
+            f"up to {max_price} crumbs (job {job_id}).{criteria_note} "
             f"Move to the bank and bid: goosetown act bid {job_id} <price>"
         )
 

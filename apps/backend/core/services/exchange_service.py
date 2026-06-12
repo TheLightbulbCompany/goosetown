@@ -37,7 +37,7 @@ EXCHANGE_LOCATION = "bank"
 # Rate-limit knobs (per agent, per sliding 1-hour window).
 RATE_LIMIT_POST = int(os.environ.get("EXCHANGE_RATE_POST", "4"))
 RATE_LIMIT_BID = int(os.environ.get("EXCHANGE_RATE_BID", "30"))
-RATE_LIMIT_MSG = int(os.environ.get("EXCHANGE_RATE_MSG", "60"))  # reserved for W4
+RATE_LIMIT_MSG = int(os.environ.get("EXCHANGE_RATE_MSG", "60"))
 _RATE_WINDOW_SEC = 3600  # 1 hour
 
 TITLE_MAX = 120
@@ -1161,7 +1161,9 @@ async def job_message(agent_conn: Any, job_id: str, text: str) -> dict:
     an A2A message part — when a non-resident A2A bridge is added in Wave 3,
     these rows can be relayed verbatim via the A2A protocol.
     """
-    # Rate limit first — before any DB reads.
+    # Rate limit first — before any DB reads. Note the deliberate asymmetry vs
+    # post_job/bid (rate-checked last, so validation rejections are free): a
+    # message verb's only cost IS the spam, so even invalid attempts consume budget.
     if not _check_rate(agent_conn.agent_id, "job_msg", RATE_LIMIT_MSG):
         mins = _rate_limit_minutes_left(agent_conn.agent_id, "job_msg")
         return _notify_outcome(
