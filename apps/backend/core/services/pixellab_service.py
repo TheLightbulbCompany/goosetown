@@ -229,6 +229,17 @@ ANIMATION_REGISTRY: dict[str, dict] = {
             "subtly, ending in a settled speaking posture. " + _LOOP_SUFFIX
         ),
     },
+    "dance": {
+        "type": "custom",
+        "auto_generate": False,
+        "frames": 8,
+        "fps": 8.0,
+        "prompt": (
+            "Dancing energetically in place, hips and shoulders swaying side "
+            "to side to a beat, arms pumping up and down alternately, small "
+            "bounce in the knees on each step. " + _LOOP_SUFFIX
+        ),
+    },
 }
 
 TEMPLATE_ANIMATIONS = {k: v for k, v in ANIMATION_REGISTRY.items() if v["type"] == "template"}
