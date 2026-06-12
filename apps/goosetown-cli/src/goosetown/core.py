@@ -26,6 +26,12 @@ from goosetown.ipc import ipc_send
 _DEFAULT_API_URL = "https://api.goosetown.isol8.co/api/v1"
 _DEFAULT_WS_URL = "wss://ws.goosetown.isol8.co"
 
+# Exchange artifact delivery (W5): deliverables at or below this size that
+# decode as UTF-8 ride inline in the deliver_job payload; anything larger or
+# binary goes through the presigned-S3 upload flow.
+_INLINE_DELIVERABLE_MAX = 16384
+_ARTIFACT_MAX_BYTES = 5 * 1024 * 1024  # backend-enforced 5 MB cap
+
 
 # ---------------------------------------------------------------------------
 # Output / error helpers
@@ -152,6 +158,116 @@ def _parse_strategy(rest: list[str]) -> tuple[str | None, list[str]]:
             )
         return raw, rest[1:]
     return None, rest
+
+
+# ---------------------------------------------------------------------------
+# Exchange artifact upload (W5)
+# ---------------------------------------------------------------------------
+
+
+def _upload_artifact(config: dict, job_id: str, filename: str, data: bytes) -> str:
+    """Upload a deliverable file to S3 via the backend's presigned-POST flow.
+
+    1. ``POST {api_url}/town/exchange/upload-url`` (town_token Bearer, same
+       auth + urllib pattern as ``cmd_join``'s register call) → presigned
+       POST policy + artifact key.
+    2. multipart/form-data POST to S3: policy fields first, file part last
+       (S3 ignores anything after the ``file`` field, so order matters).
+
+    Returns the ``artifact_key`` to attach to the ``deliver_job`` payload.
+    Dies with a clear message on any failure.
+    """
+    import io
+    import urllib.error
+    import urllib.request
+    import uuid
+
+    api_url = (config.get("api_url") or "").rstrip("/")
+    token = config.get("token", "")
+    if not api_url or not token:
+        _die(
+            "GOOSETOWN.md is missing api_url/token — cannot upload the file.",
+            "Re-run 'goosetown join <token>' to repair the config.",
+        )
+    if len(data) > _ARTIFACT_MAX_BYTES:
+        _die(
+            f"File is {len(data)} bytes — artifact uploads are capped at "
+            f"{_ARTIFACT_MAX_BYTES} bytes (5 MB)."
+        )
+
+    body = json.dumps(
+        {"job_id": job_id, "filename": filename, "content_length": len(data)}
+    ).encode()
+    req = urllib.request.Request(
+        f"{api_url}/town/exchange/upload-url",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        _die(
+            f"Artifact upload-url request failed: HTTP {exc.code}",
+            exc.read().decode()[:500],
+        )
+    except Exception as exc:
+        _die(f"Artifact upload-url request failed: {exc}")
+
+    upload = result.get("upload") or {}
+    url = upload.get("url")
+    fields = upload.get("fields") or {}
+    artifact_key = result.get("artifact_key")
+    if not url or not artifact_key:
+        _die(
+            "Server returned an unusable upload-url response.",
+            json.dumps(result)[:500],
+        )
+
+    # Presigned POST → multipart/form-data body built by hand (urllib has no
+    # native multipart support; keeping zero runtime deps is worth 15 lines).
+    boundary = "----goosetown" + uuid.uuid4().hex
+    buf = io.BytesIO()
+    for k, v in fields.items():
+        buf.write(
+            (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{k}"\r\n\r\n'
+                f"{v}\r\n"
+            ).encode()
+        )
+    buf.write(
+        (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+            "Content-Type: application/octet-stream\r\n\r\n"
+        ).encode()
+    )
+    buf.write(data)
+    buf.write(f"\r\n--{boundary}--\r\n".encode())
+
+    up_req = urllib.request.Request(
+        url,
+        data=buf.getvalue(),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(up_req, timeout=120) as resp:
+            resp.read()
+    except urllib.error.HTTPError as exc:
+        _die(
+            f"Artifact upload to S3 failed: HTTP {exc.code}",
+            exc.read().decode()[:500],
+        )
+    except Exception as exc:
+        _die(f"Artifact upload to S3 failed: {exc}")
+
+    return artifact_key
 
 
 # ---------------------------------------------------------------------------
@@ -731,11 +847,25 @@ def cmd_act(args: argparse.Namespace) -> None:
         if len(rest) < 2:
             _die(usage)
         job_id = rest[0]
+        artifact_key: str | None = None
         if rest[1].startswith("--file="):
             file_path = Path(rest[1][len("--file=") :]).expanduser()
             if not file_path.is_file():
                 _die(f"Deliverable file not found: {file_path}", usage)
-            deliverable = file_path.read_text()
+            raw = file_path.read_bytes()
+            try:
+                text: str | None = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                text = None
+            if text is not None and len(raw) <= _INLINE_DELIVERABLE_MAX:
+                # Small UTF-8 file: unchanged inline text path.
+                deliverable = text
+            else:
+                # Large or binary file → presigned S3 upload (W5), then
+                # deliver_job carries the artifact key + a short text note.
+                artifact_key = _upload_artifact(config, job_id, file_path.name, raw)
+                safe_name = artifact_key.rsplit("/", 1)[-1]
+                deliverable = f"Delivered file: {safe_name} ({len(raw)} bytes)"
         else:
             deliverable = " ".join(rest[1:])
         deliverable = deliverable.strip()
@@ -746,6 +876,8 @@ def cmd_act(args: argparse.Namespace) -> None:
             "job_id": job_id,
             "deliverable": deliverable[:16384],
         }
+        if artifact_key:
+            payload["artifact_key"] = artifact_key
     elif action == "review":
         usage = "Usage: goosetown act review <job_id> accept|reject [reason...] [--criteria=1,0,1]"
         if len(rest) < 2:

@@ -79,6 +79,9 @@ class TownAgentAct(BaseModel):
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     pitch: str | None = Field(default=None, max_length=500)
     deliverable: str | None = Field(default=None, max_length=16384)
+    # W5: S3 artifact key (artifacts/{job_id}/{filename}) — alternative or
+    # complement to the inline text deliverable for binary/large work products.
+    artifact_key: str | None = Field(default=None, max_length=512)
     accept: bool | None = None
     reason: str | None = Field(default=None, max_length=500)
     # W3: success criteria and per-item verdicts
@@ -127,8 +130,12 @@ class TownAgentAct(BaseModel):
             raise ValueError(f"'{self.action}' requires 'job_id'")
         if self.action == "bid" and self.price is None:
             raise ValueError("'bid' requires 'price'")
-        if self.action == "deliver_job" and not self.deliverable:
-            raise ValueError("'deliver_job' requires 'deliverable'")
+        # W5: a delivery must carry the work product — inline text, an S3
+        # artifact, or both.
+        if self.action == "deliver_job" and not self.deliverable and not self.artifact_key:
+            raise ValueError("'deliver_job' requires 'deliverable' or 'artifact_key'")
+        if self.artifact_key is not None and self.action != "deliver_job":
+            raise ValueError("'artifact_key' is only valid with 'deliver_job'")
         if self.action == "review_job" and self.accept is None:
             raise ValueError("'review_job' requires 'accept'")
         # W4: job_msg requires job_id + msg_text

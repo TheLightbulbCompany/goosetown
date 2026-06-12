@@ -924,20 +924,87 @@ class TownDaemon:
             f'\U0001f4bc Your bid on "{title}" did not win (job {job_id}).'
         )
 
+    @staticmethod
+    def _sanitize_artifact_name(name: str) -> str:
+        """Client-side re-sanitization of the artifact filename (W5).
+
+        The backend already enforces the allowlist, but never trust the wire:
+        basename only, [A-Za-z0-9._-] chars, no leading dot, 128-char cap.
+        Falls back to ``artifact.bin`` when nothing safe remains.
+        """
+        base = str(name).replace("\\", "/").rsplit("/", 1)[-1]
+        cleaned = "".join(ch for ch in base if ch.isalnum() or ch in "._-").lstrip(".")
+        return cleaned[:128] or "artifact.bin"
+
+    def _download_artifact(self, job_id: str, url: str, name: str) -> str | None:
+        """Download a delivered artifact into ``<workspace>/JOBS/{job_id}/``.
+
+        Streams via urllib with a 30s timeout. Returns the local path string,
+        or None on any failure (caller then surfaces the raw URL instead).
+        """
+        import logging
+        import urllib.request
+
+        if not self._workspace_path:
+            return None
+        safe_job = (
+            "".join(ch for ch in str(job_id) if ch.isalnum() or ch in "._-") or "job"
+        )
+        safe_name = self._sanitize_artifact_name(name)
+        try:
+            target_dir = self._workspace_path / "JOBS" / safe_job
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target = target_dir / safe_name
+            with (
+                urllib.request.urlopen(url, timeout=30) as resp,
+                open(target, "wb") as fh,
+            ):
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+            return str(target)
+        except Exception as exc:
+            logging.getLogger("town_daemon").warning(
+                "Artifact download failed for job %s: %s", job_id, exc
+            )
+            return None
+
     def _on_job_delivered(self, data: dict) -> None:
-        """Consumer-side: the provider delivered — full deliverable text."""
+        """Consumer-side: the provider delivered — full deliverable text.
+
+        W5: when the event carries ``artifact_url`` (24 h presigned GET),
+        download the file into ``<workspace>/JOBS/{job_id}/{artifact_name}``
+        and reference the local path from TOWN_JOBS.md. On download failure
+        the URL itself is rendered with a note so the agent can fetch it.
+        """
         job_id = data.get("job_id", "?")
         title = data.get("title", "?")
+        artifact_url = data.get("artifact_url")
+        artifact_path: str | None = None
+        if artifact_url:
+            artifact_path = self._download_artifact(
+                job_id, artifact_url, data.get("artifact_name", "")
+            )
         self._update_job(
             job_id,
             role="consumer",
             status="DELIVERED",
             title=title,
             deliverable=data.get("deliverable", ""),
+            artifact_path=artifact_path,
+            artifact_url=None if artifact_path else artifact_url,
         )
         self._write_jobs()
+        if artifact_path:
+            file_note = f" File saved to {artifact_path}."
+        elif artifact_url:
+            file_note = " A file was attached but the download failed — see TOWN_JOBS.md for the URL."
+        else:
+            file_note = ""
         self._append_event(
-            f'\U0001f4bc Work delivered for your job "{title}" (job {job_id}). '
+            f'\U0001f4bc Work delivered for your job "{title}" (job {job_id}).{file_note} '
             f"Read it in TOWN_JOBS.md, then: goosetown act review {job_id} accept|reject"
         )
 
@@ -1115,6 +1182,15 @@ class TownDaemon:
                 lines.append("  ```")
                 lines += [f"  {dl}" for dl in safe.splitlines()]
                 lines.append("  ```")
+            # W5: delivered artifact file — local path when the download
+            # succeeded, otherwise the presigned URL with a note.
+            if job.get("artifact_path"):
+                lines.append(f"  Artifact file: {job['artifact_path']}")
+            elif job.get("artifact_url"):
+                lines.append(
+                    "  Artifact (download failed — fetch it yourself within 24h):"
+                )
+                lines.append(f"  {job['artifact_url']}")
             # W4: render last 5 messages (from counterparty).
             msgs = job.get("messages") or []
             if msgs:

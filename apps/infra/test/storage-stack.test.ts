@@ -202,6 +202,28 @@ describe("StorageStack — sprite bucket versioning", () => {
   });
 });
 
+describe("StorageStack — Exchange artifact lifecycle (W5)", () => {
+  test.each(["dev", "prod"])(
+    "%s bucket expires artifacts/ objects after 30 days",
+    (env) => {
+      const template = buildTestApp(env);
+      template.hasResourceProperties("AWS::S3::Bucket", {
+        BucketName: `goosetown-${env}-sprites`,
+        LifecycleConfiguration: Match.objectLike({
+          Rules: Match.arrayWith([
+            Match.objectLike({
+              Id: "expire-exchange-artifacts",
+              Prefix: "artifacts/",
+              ExpirationInDays: 30,
+              Status: "Enabled",
+            }),
+          ]),
+        }),
+      });
+    }
+  );
+});
+
 describe("StorageStack — WAF (CLOUDFRONT scope, on the distribution)", () => {
   test("dev creates a CLOUDFRONT-scoped WebACL", () => {
     const template = buildTestApp("dev");

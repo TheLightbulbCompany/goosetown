@@ -211,6 +211,7 @@ async def test_deliver_job_dispatches_to_service(handler_setup):
         handler_setup.agent_conn,
         job_id="job-being-delivered",
         deliverable="Here is the haiku: Crumbs fall gently / The Exchange hums / Balance achieved",
+        artifact_key=None,  # W5: text-only delivery carries no artifact
     )
 
 

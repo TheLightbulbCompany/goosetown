@@ -11,6 +11,7 @@ import asyncio
 import logging
 import math
 import os
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -46,6 +47,85 @@ PITCH_MAX = 500
 
 # Synthetic ledger account that accumulates Exchange fees (the crumb sink).
 TOWN_ACCOUNT = "TOWN"
+
+# ---------------------------------------------------------------------------
+# Artifact delivery (W5) — S3 objects under artifacts/{job_id}/{filename} in
+# the sprite bucket. Presigned-only access; 30-day S3 lifecycle expiry.
+# ---------------------------------------------------------------------------
+
+ARTIFACT_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
+ARTIFACT_UPLOAD_EXPIRES_SEC = 900  # 15 min presigned POST validity
+ARTIFACT_DOWNLOAD_EXPIRES_SEC = 86400  # 24 h presigned GET validity
+
+# Allowlist: [A-Za-z0-9._-], 1-128 chars, no leading dot (blocks dotfiles and
+# any "../" style traversal even after the basename strip).
+_ARTIFACT_NAME_RE = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$")
+
+
+def sanitize_artifact_filename(filename: str) -> str | None:
+    """Reduce ``filename`` to a safe basename, or None if it can't be made safe.
+
+    Basename only (both separator flavours stripped), then strict allowlist —
+    we reject rather than mangle so the caller-visible key always matches what
+    the provider asked for.
+    """
+    name = filename.replace("\\", "/").rsplit("/", 1)[-1].strip()
+    if not _ARTIFACT_NAME_RE.match(name):
+        return None
+    return name
+
+
+def artifact_key_for(job_id: str, safe_name: str) -> str:
+    return f"artifacts/{job_id}/{safe_name}"
+
+
+def _s3_client():
+    import boto3
+
+    return boto3.client("s3")
+
+
+def presign_artifact_upload(key: str) -> dict:
+    """Presigned **POST** (not PUT) for the artifact upload.
+
+    Mechanism choice: a presigned PUT cannot enforce an object-size limit
+    (Content-Length is not part of the PUT signature), but a POST policy's
+    ``content-length-range`` condition IS enforced by S3 at upload time —
+    an oversized upload fails with 400 EntityTooLarge regardless of what the
+    client claims. Returns ``{"url": ..., "fields": {...}}``; the client
+    uploads multipart/form-data with the policy fields first and the file
+    part last.
+    """
+    from core.config import settings
+
+    return _s3_client().generate_presigned_post(
+        Bucket=settings.SPRITE_S3_BUCKET,
+        Key=key,
+        Conditions=[["content-length-range", 1, ARTIFACT_MAX_BYTES]],
+        ExpiresIn=ARTIFACT_UPLOAD_EXPIRES_SEC,
+    )
+
+
+def presign_artifact_download(key: str) -> str:
+    """24 h presigned GET for the consumer to fetch the delivered artifact."""
+    from core.config import settings
+
+    return _s3_client().generate_presigned_url(
+        "get_object",
+        Params={"Bucket": settings.SPRITE_S3_BUCKET, "Key": key},
+        ExpiresIn=ARTIFACT_DOWNLOAD_EXPIRES_SEC,
+    )
+
+
+def head_artifact(key: str) -> int | None:
+    """Return the artifact object's size in bytes, or None if missing/unreadable."""
+    from core.config import settings
+
+    try:
+        resp = _s3_client().head_object(Bucket=settings.SPRITE_S3_BUCKET, Key=key)
+        return int(resp["ContentLength"])
+    except Exception:
+        return None
 
 
 class InsufficientFunds(Exception):
@@ -786,8 +866,16 @@ async def cancel_job(agent_conn: Any, job_id: str) -> dict:
     )
 
 
-async def deliver_job(agent_conn: Any, job_id: str, deliverable: str) -> dict:
-    """Provider submits the work product; opens the consumer review window."""
+async def deliver_job(agent_conn: Any, job_id: str, deliverable: str, artifact_key: str | None = None) -> dict:
+    """Provider submits the work product; opens the consumer review window.
+
+    W5: ``artifact_key`` references an S3 object the provider uploaded via
+    ``POST /town/exchange/upload-url``. The key must live under this job's
+    ``artifacts/{job_id}/`` prefix (no cross-job key access) and the object
+    must exist and respect the 5 MB cap. The consumer's ``job_delivered``
+    event then carries a 24 h presigned GET (``artifact_url``) +
+    ``artifact_name`` alongside any inline text deliverable.
+    """
     mailbox = get_daemon_mailbox()
     job = _get_job(job_id)
     if not job:
@@ -823,11 +911,54 @@ async def deliver_job(agent_conn: Any, job_id: str, deliverable: str) -> dict:
             },
         )
     deliverable = (deliverable or "")[:DELIVERABLE_MAX]
+    # W5: validate the artifact reference before any state flip.
+    artifact_name: str | None = None
+    if artifact_key:
+        expected_prefix = f"artifacts/{job_id}/"
+        candidate = artifact_key[len(expected_prefix) :] if artifact_key.startswith(expected_prefix) else ""
+        if not candidate or sanitize_artifact_filename(candidate) != candidate:
+            return _notify_outcome(
+                agent_conn,
+                "deliver_job",
+                {
+                    "status": "rejected",
+                    "reason": "bad_artifact",
+                    "message": f"artifact_key must be 'artifacts/{job_id}/<safe filename>'.",
+                },
+            )
+        artifact_name = candidate
+        size = head_artifact(artifact_key)
+        if size is None:
+            return _notify_outcome(
+                agent_conn,
+                "deliver_job",
+                {
+                    "status": "rejected",
+                    "reason": "artifact_missing",
+                    "message": "No uploaded artifact found at that key — upload it first via the upload-url flow.",
+                },
+            )
+        if size > ARTIFACT_MAX_BYTES:
+            return _notify_outcome(
+                agent_conn,
+                "deliver_job",
+                {
+                    "status": "rejected",
+                    "reason": "bad_artifact",
+                    "message": f"Artifact is {size} bytes — the cap is {ARTIFACT_MAX_BYTES} bytes (5 MB).",
+                },
+            )
+    flip_extra: dict[str, Any] = {
+        "deliverable": deliverable,
+        "reviewDeadlineAt": Decimal(str(time.time() + REVIEW_SEC)),
+    }
+    if artifact_key:
+        flip_extra["artifactKey"] = artifact_key
     if not _flip_status(
         job_id,
         "AWARDED",
         "DELIVERED",
-        {"deliverable": deliverable, "reviewDeadlineAt": Decimal(str(time.time() + REVIEW_SEC))},
+        flip_extra,
     ):
         return _notify_outcome(
             agent_conn,
@@ -836,17 +967,24 @@ async def deliver_job(agent_conn: Any, job_id: str, deliverable: str) -> dict:
         )
     _schedule(job_id, REVIEW_SEC, _review_timeout)  # replaces the delivery timer
     _apply_mood(agent_conn.agent_id, "job_delivered")
-    mailbox.notify(
-        job["consumerId"],
-        {
-            "event": "job_delivered",
-            "job_id": job_id,
-            "title": job.get("title", ""),
-            "deliverable": deliverable,  # full text — this is how the consumer receives the work
-            "provider_id": agent_conn.agent_id,
-            "consumer_id": job["consumerId"],
-        },
-    )
+    delivered_event: dict[str, Any] = {
+        "event": "job_delivered",
+        "job_id": job_id,
+        "title": job.get("title", ""),
+        "deliverable": deliverable,  # full text — this is how the consumer receives the work
+        "provider_id": agent_conn.agent_id,
+        "consumer_id": job["consumerId"],
+    }
+    if artifact_key:
+        # 24 h presigned GET — the consumer daemon downloads it into
+        # <workspace>/JOBS/{job_id}/. Presign failure must not strand the
+        # delivery (the flip already happened); fall back to key-only.
+        try:
+            delivered_event["artifact_url"] = presign_artifact_download(artifact_key)
+        except Exception:
+            logger.exception("Artifact presign failed for job %s key %s", job_id, artifact_key)
+        delivered_event["artifact_name"] = artifact_name
+    mailbox.notify(job["consumerId"], delivered_event)
     return _notify_outcome(
         agent_conn,
         "deliver_job",

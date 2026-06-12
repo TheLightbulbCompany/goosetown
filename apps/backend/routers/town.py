@@ -1298,6 +1298,70 @@ async def get_exchange_jobs():
     return {"jobs": exchange_service.list_board_jobs()}
 
 
+class ExchangeUploadUrlRequest(BaseModel):
+    job_id: str = Field(..., min_length=1, max_length=64)
+    filename: str = Field(..., min_length=1, max_length=256)
+    content_length: int = Field(..., ge=1, le=exchange_service.ARTIFACT_MAX_BYTES)
+
+
+@router.post("/exchange/upload-url")
+async def exchange_upload_url(
+    request: ExchangeUploadUrlRequest = Body(...),
+    token_info: tuple = Depends(get_town_token_user),
+):
+    """Presigned S3 upload for a job artifact (W5, town_token Bearer auth).
+
+    Authz: the town_token is instance/user-scoped, so the caller is whoever
+    holds the token — we authorize by ownership: the job's awarded provider
+    agent must belong to the token's user (a user's token authorizes its own
+    agents, never another household's).
+
+    Mechanism: presigned **POST** with a ``content-length-range`` policy
+    condition, not presigned PUT — a presigned PUT cannot enforce a size cap
+    (Content-Length isn't part of the PUT signature), while the POST policy
+    is enforced by S3 itself at upload time. Response shape::
+
+        {"method": "POST", "upload": {"url", "fields"}, "artifact_key", ...}
+
+    The CLI (`goosetown act deliver --file=...`) uploads multipart/form-data
+    to ``upload.url`` with every ``upload.fields`` entry first and the file
+    part last, then sends ``deliver_job`` with ``artifact_key``.
+    """
+    from core.config import settings
+
+    user_id, _ = token_info
+    if not settings.SPRITE_S3_BUCKET:
+        raise HTTPException(503, "Artifact storage is not configured")
+
+    safe_name = exchange_service.sanitize_artifact_filename(request.filename)
+    if safe_name is None:
+        raise HTTPException(
+            400,
+            "Invalid filename: use 1-128 chars of [A-Za-z0-9._-], no leading dot.",
+        )
+
+    job = exchange_service._get_job(request.job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job.get("status") != "AWARDED":
+        raise HTTPException(409, "Job is not awaiting delivery")
+
+    provider_id = job.get("providerId") or ""
+    provider = TownService().get_town_agent_by_id(provider_id) if provider_id else None
+    if not provider or provider.get("userId") != user_id:
+        raise HTTPException(403, "Your token does not own this job's provider agent")
+
+    artifact_key = exchange_service.artifact_key_for(request.job_id, safe_name)
+    upload = exchange_service.presign_artifact_upload(artifact_key)
+    return {
+        "method": "POST",
+        "upload": upload,
+        "artifact_key": artifact_key,
+        "expires_in": exchange_service.ARTIFACT_UPLOAD_EXPIRES_SEC,
+        "max_bytes": exchange_service.ARTIFACT_MAX_BYTES,
+    }
+
+
 @router.get("/world-events", response_model=list[WorldEventEntry])
 async def list_world_events(limit: int = 50):
     """Return the most recent N public world events.
@@ -1687,7 +1751,10 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
             return {"statusCode": 200, "body": result}
         elif action == "deliver_job":
             result = await exchange_service.deliver_job(
-                agent_conn, job_id=body.get("job_id", ""), deliverable=body.get("deliverable", "")
+                agent_conn,
+                job_id=body.get("job_id", ""),
+                deliverable=body.get("deliverable", ""),
+                artifact_key=body.get("artifact_key") or None,
             )
             return {"statusCode": 200, "body": result}
         elif action == "review_job":
