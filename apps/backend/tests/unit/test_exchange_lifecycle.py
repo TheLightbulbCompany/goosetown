@@ -768,3 +768,46 @@ class TestRejectionsIssuedCounter:
 
         consumer = _get_agent(dynamodb_tables, "consumer")
         assert "rejectionsIssued" not in consumer
+
+
+# ---------------------------------------------------------------------------
+# Trust EMA optimistic concurrency (codex P2 on PR #386)
+# ---------------------------------------------------------------------------
+
+
+class TestTrustUpdateOptimisticConcurrency:
+    def test_conflict_retries_and_lands_compounded_ema(self, dynamodb_tables, monkeypatch):
+        """A conditional-check conflict on the first write must trigger a re-read,
+        so the final trust reflects BOTH outcomes (no lost update)."""
+        agents = dynamodb_tables.Table("goosetown-agents")
+        agents.put_item(Item={"id": "prov-1", "agentName": "prov", "trustScore": Decimal("0.5")})
+
+        real_table = ex.dynamo.agents_table()
+        calls = {"n": 0}
+
+        class RacingTable:
+            """First update_item simulates a concurrent writer winning the race."""
+
+            meta = real_table.meta
+
+            def __getattr__(self, name):
+                return getattr(real_table, name)
+
+            def update_item(self, **kwargs):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    # Another task's settle landed in between: trust moved 0.5 -> 0.6.
+                    real_table.update_item(
+                        Key={"id": "prov-1"},
+                        UpdateExpression="SET trustScore = :t",
+                        ExpressionAttributeValues={":t": Decimal("0.6")},
+                    )
+                return real_table.update_item(**kwargs)
+
+        monkeypatch.setattr(ex.dynamo, "agents_table", lambda: RacingTable())
+        ex._update_trust("prov-1", "SUCCESS", completed_delta=0, failed_delta=0)
+
+        item = agents.get_item(Key={"id": "prov-1"})["Item"]
+        # Second attempt re-read 0.6 and compounded: 0.8*0.6 + 0.2*1.0 = 0.68.
+        assert float(item["trustScore"]) == pytest.approx(0.68)
+        assert calls["n"] >= 2  # first write conflicted, retry landed

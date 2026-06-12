@@ -270,12 +270,34 @@ def _apply_mood(agent_id: str, event: str) -> None:
 
 
 def _update_trust(agent_id: str, outcome: str, completed_delta: int, failed_delta: int) -> None:
-    svc = TownService()
-    agent = svc.get_town_agent_by_id(agent_id) or {}
-    new_trust = exchange_scoring.updated_trust(float(agent.get("trustScore", exchange_scoring.INITIAL_TRUST)), outcome)
-    # trustScore EMA written via update_agent_state (single SET expression).
-    # Counter columns use atomic ADD so concurrent tasks don't lose increments.
-    svc.update_agent_state(agent_id, trust_score=new_trust)
+    # trustScore is an EMA, so it's inherently read-modify-write. Guard the
+    # write with an optimistic ConditionExpression on the value we read and
+    # retry on conflict, so two jobs settling concurrently for one agent
+    # can't drop an outcome (codex P2 on PR #386). Counters use atomic ADD.
+    table = dynamo.agents_table()
+    for _ in range(3):
+        agent = TownService().get_town_agent_by_id(agent_id) or {}
+        old_raw = agent.get("trustScore")
+        old = float(old_raw) if old_raw is not None else exchange_scoring.INITIAL_TRUST
+        new_trust = exchange_scoring.updated_trust(old, outcome)
+        condition = "attribute_exists(id) AND " + (
+            "attribute_not_exists(trustScore)" if old_raw is None else "trustScore = :old"
+        )
+        values: dict[str, Any] = {":new": Decimal(str(new_trust))}
+        if old_raw is not None:
+            values[":old"] = Decimal(str(old_raw))
+        try:
+            table.update_item(
+                Key={"id": agent_id},
+                UpdateExpression="SET trustScore = :new",
+                ConditionExpression=condition,
+                ExpressionAttributeValues=values,
+            )
+            break
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            continue  # trustScore moved under us (or agent missing) — re-read and retry
+    else:
+        logger.warning("Trust update dropped after retries: agent=%s outcome=%s", agent_id[:8], outcome)
     if completed_delta:
         _bump_counter(agent_id, "jobsCompleted", completed_delta)
     if failed_delta:
