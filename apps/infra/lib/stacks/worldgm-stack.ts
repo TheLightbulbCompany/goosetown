@@ -98,9 +98,11 @@ export class WorldgmStack extends cdk.Stack {
           env === "prod"
             ? "wss://ws-prod.goosetown.isol8.co"
             : "wss://ws-dev.goosetown.isol8.co",
-        // Resident (seed) agents. Enabled on dev for the Phase-1 de-risk;
-        // off on prod until the full cast + sprites land and we choose to seed.
-        RESIDENTS_ENABLED: env === "dev" ? "true" : "false",
+        // Resident (seed) agents. Enabled on both envs (prod seeding decided
+        // 2026-06-11). The slate differs: dev runs the historical/archetype
+        // cast; prod runs the real-public-figures cast (personas_prod.py).
+        RESIDENTS_ENABLED: "true",
+        RESIDENT_SLATE: env === "prod" ? "prod" : "default",
       },
       secrets: {
         CLERK_ISSUER: ecs.Secret.fromSecretsManager(props.secrets.clerkIssuer),
