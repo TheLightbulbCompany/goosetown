@@ -519,6 +519,17 @@ async def cancel_job(agent_conn: Any, job_id: str) -> dict:
         )
     _cancel_timer(job_id)
     balance = credit_wallet(job["consumerId"], int(job["maxPrice"]), "ESCROW_REFUND", job_id)
+    mailbox = get_daemon_mailbox()
+    for aid in job.get("bids", {}):
+        mailbox.notify(
+            aid,
+            {
+                "event": "job_cancelled",
+                "job_id": job_id,
+                "title": job.get("title", ""),
+                "consumer_id": job["consumerId"],
+            },
+        )
     return _notify_outcome(
         agent_conn,
         "cancel_job",

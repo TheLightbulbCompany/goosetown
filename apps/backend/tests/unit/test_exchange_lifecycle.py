@@ -314,6 +314,38 @@ class TestCancelJob:
         result = await ex.cancel_job(cc, job_id)
         assert result["reason"] == "not_open"
 
+    async def test_cancel_with_bids_notifies_bidders_not_consumer(self, dynamodb_tables, mailbox, ws):
+        """Cancelling an OPEN job that has bids must send job_cancelled to every
+        bidder; the consumer must NOT receive a job_cancelled notification."""
+        cc, job_id = await _post(dynamodb_tables, ws, max_price=30)
+        for aid, name in (("b1", "bea"), ("b2", "bob")):
+            _seed_agent(dynamodb_tables, aid, name)
+            ws.conns[aid] = _conn(aid, name, f"c-{aid}")
+        await ex.place_bid(ws.conns["b1"], job_id, 20, 0.8, "pick me")
+        await ex.place_bid(ws.conns["b2"], job_id, 25, 0.9, "no, me")
+        mailbox.reset_mock()
+
+        result = await ex.cancel_job(cc, job_id)
+
+        assert result["status"] == "ok"
+        events = _notified_events(mailbox)
+        assert ("b1", "job_cancelled") in events
+        assert ("b2", "job_cancelled") in events
+        # Consumer gets exchange_ok from _notify_outcome, never job_cancelled.
+        assert ("consumer", "job_cancelled") not in events
+
+    async def test_cancel_no_bids_sends_no_job_cancelled(self, dynamodb_tables, mailbox, ws):
+        """Cancelling a job with no bids sends no job_cancelled notifications."""
+        cc, job_id = await _post(dynamodb_tables, ws, max_price=30)
+        mailbox.reset_mock()
+
+        result = await ex.cancel_job(cc, job_id)
+
+        assert result["status"] == "ok"
+        events = _notified_events(mailbox)
+        cancelled_targets = [aid for aid, ev in events if ev == "job_cancelled"]
+        assert cancelled_targets == []
+
 
 # ---------------------------------------------------------------------------
 # _close_bid_window

@@ -302,6 +302,8 @@ class TownDaemon:
             self._on_job_failed(data)
         elif event == "job_expired":
             self._on_job_expired(data)
+        elif event == "job_cancelled":
+            self._on_job_cancelled(data)
         elif event == "sprite_progress":
             status_msg = data.get("status", "Generating sprite...")
             self._write_status(
@@ -1010,6 +1012,16 @@ class TownDaemon:
         if refunded is not None:
             line += f" {refunded} crumbs were refunded to your wallet."
         self._append_event(line)
+
+    def _on_job_cancelled(self, data: dict) -> None:
+        """Bidder-side: the consumer cancelled the OPEN job — our bid is void."""
+        job_id = data.get("job_id", "?")
+        title = data.get("title", "?")
+        self._update_job(job_id, role="provider", status="CANCELLED", title=title)
+        self._write_jobs()
+        self._append_event(
+            f'\U0001f4bc Job "{title}" (job {job_id}) was cancelled by its poster — your bid is void.'
+        )
 
     def _write_jobs(self) -> None:
         """Write TOWN_JOBS.md to the agent workspace (atomic via rename)."""

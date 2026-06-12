@@ -435,6 +435,47 @@ class TestJobExpired:
         assert "40 crumbs were refunded" in content
 
 
+class TestJobCancelled:
+    def test_event_line_and_cache_cleared_from_working_on(self, daemon: TownDaemon):
+        """job_cancelled sets status=CANCELLED on the cached BID entry and appends
+        the event line — the entry must no longer appear under 'Jobs you're working on'
+        as an active [BID] row once TOWN_JOBS.md is rewritten."""
+        daemon._update_job("j1", role="provider", status="BID", title="Cancelled gig")
+        daemon._handle_event(
+            {
+                "event": "job_cancelled",
+                "job_id": "j1",
+                "title": "Cancelled gig",
+                "consumer_id": "uuid-poster",
+            }
+        )
+        job = daemon.state["exchange"]["jobs"]["j1"]
+        assert job["status"] == "CANCELLED"
+        content = _events(daemon)
+        assert "cancelled by its poster" in content
+        assert "Cancelled gig" in content
+        assert "your bid is void" in content
+        # The cached entry is now CANCELLED — no longer shows as [BID].
+        md = _jobs_md(daemon)
+        assert "[BID]" not in md
+        assert "[CANCELLED]" in md
+
+    def test_no_prior_cache_still_creates_entry(self, daemon: TownDaemon):
+        """A fresh daemon that missed the bid_ok event but receives job_cancelled
+        must still record the terminal entry (not crash on missing cache)."""
+        daemon._handle_event(
+            {
+                "event": "job_cancelled",
+                "job_id": "j-new",
+                "title": "Fresh job",
+                "consumer_id": "uuid-poster",
+            }
+        )
+        job = daemon.state["exchange"]["jobs"]["j-new"]
+        assert job["status"] == "CANCELLED"
+        assert "cancelled by its poster" in _events(daemon)
+
+
 # ---------------------------------------------------------------------------
 # _write_jobs formatting
 # ---------------------------------------------------------------------------
