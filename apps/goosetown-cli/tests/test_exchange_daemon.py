@@ -5,8 +5,9 @@ Covers:
   updates the wallet and jobs cache for the caller's own verbs.
 - Job lifecycle event handlers driven through _handle_event with raw
   dicts: TOWN_EVENTS.md lines + jobs cache + TOWN_JOBS.md sections.
-- _write_jobs formatting: wallet line, (none) placeholders, deliverable
-  fenced block, newest-first ordering, deliver hint for AWARDED jobs.
+- _write_jobs formatting (v2, action-first): wallet line, NEEDS YOUR
+  ACTION / WAITING / SETTLED buckets, all-caught-up placeholder, fenced
+  deliverable/spec blocks, deadline rendering, inline commands.
 - handle_tool_command: exchange verbs await the backend echo.
 """
 
@@ -15,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -111,10 +113,13 @@ class TestExchangeOutcome:
         assert job["status"] == "OPEN"
         assert job["title"] == "Write a haiku"
         assert job["max_price"] == 40
+        # bid_window_sec was present → absolute close time cached.
+        assert job["bids_close_at"] is not None
         md = _jobs_md(daemon)
         assert "Wallet: 60 crumbs" in md
-        assert "[OPEN] Write a haiku (job j1)" in md
+        assert '[OPEN] "Write a haiku" (job j1)' in md
         assert "up to 40 crumbs" in md
+        assert "closes" in md and "UTC" in md
 
     def test_bid_ok_caches_provider_entry(self, daemon: TownDaemon):
         daemon._handle_event(
@@ -238,9 +243,11 @@ class TestJobAwarded:
         assert "You won the job" in content
         assert "goosetown act deliver j1 <your work>" in content
         md = _jobs_md(daemon)
-        assert "## Jobs you're working on" in md
+        assert "## ⚡ NEEDS YOUR ACTION" in md
         assert "agreed 30 crumbs" in md
-        assert "deliver with: goosetown act deliver j1" in md
+        # deadline_sec was in the award → absolute deadline rendered.
+        assert "- DELIVER by " in md
+        assert "→ goosetown act deliver j1 <your work>" in md
 
     def test_consumer_copy_gets_consumer_role(self, daemon: TownDaemon):
         job = self._award(daemon, provider=False)
@@ -397,7 +404,8 @@ class TestJobCompleted:
         assert job["status"] == "COMPLETED"
         assert "you were paid 18 crumbs" in _events(daemon)
         md = _jobs_md(daemon)
-        assert "## Jobs you're working on" in md
+        assert "## 📜 SETTLED (recent)" in md
+        assert '[PAID +18] "Fresh job" (job j-fresh)' in md
         # Wallet updated from balance field.
         assert daemon.state["exchange"]["wallet"] == 118
         assert "Wallet: 118 crumbs" in md
@@ -482,20 +490,32 @@ class TestJobCancelled:
 
 
 class TestWriteJobs:
-    def test_empty_sections_show_none(self, daemon: TownDaemon):
+    def test_empty_cache_renders_all_caught_up_only(self, daemon: TownDaemon):
+        """Empty cache: action header + all-caught-up line; the WAITING and
+        SETTLED sections are omitted entirely (no noise for the reader)."""
         daemon._exchange_state()
         daemon._write_jobs()
         md = _jobs_md(daemon)
         assert "# GooseTown Exchange — your jobs" in md
-        assert "## Jobs you posted" in md
-        assert "## Jobs you're working on" in md
-        assert md.count("(none)") == 2
+        assert "## ⚡ NEEDS YOUR ACTION" in md
+        assert "- (nothing — you're all caught up)" in md
+        assert "## 📌 WAITING" not in md
+        assert "## 📜 SETTLED" not in md
         assert "Wallet:" not in md  # unknown wallet → line omitted
 
     def test_wallet_line_when_known(self, daemon: TownDaemon):
         daemon._exchange_state()["wallet"] = 75
         daemon._write_jobs()
-        assert "Wallet: 75 crumbs" in _jobs_md(daemon)
+        md = _jobs_md(daemon)
+        assert "Wallet: 75 crumbs" in md
+        assert "Trust:" not in md  # tier never cached today → wallet-only
+
+    def test_wallet_line_with_trust_tier_when_cached(self, daemon: TownDaemon):
+        ex = daemon._exchange_state()
+        ex["wallet"] = 94
+        ex["trust_tier"] = "reliable"
+        daemon._write_jobs()
+        assert "Wallet: 94 crumbs · Trust: reliable" in _jobs_md(daemon)
 
     def test_newest_updated_first(self, daemon: TownDaemon):
         daemon._update_job("old", role="consumer", status="OPEN", title="Old job")
@@ -505,6 +525,267 @@ class TestWriteJobs:
         daemon._write_jobs()
         md = _jobs_md(daemon)
         assert md.index("New job") < md.index("Old job")
+
+
+# ---------------------------------------------------------------------------
+# _write_jobs — v2 action-first layout
+# ---------------------------------------------------------------------------
+
+
+class TestWriteJobsV2Layout:
+    def test_all_caught_up_when_only_waiting_jobs(self, daemon: TownDaemon):
+        daemon._update_job(
+            "j1", role="consumer", status="OPEN", title="T", max_price=10
+        )
+        daemon._write_jobs()
+        md = _jobs_md(daemon)
+        assert "- (nothing — you're all caught up)" in md
+        assert "## 📌 WAITING" in md
+
+    def test_deliver_and_review_both_under_needs_action(self, daemon: TownDaemon):
+        daemon._update_job(
+            "jd",
+            role="provider",
+            status="AWARDED",
+            title="Deliver me",
+            agreed_price=20,
+        )
+        daemon._update_job(
+            "jr",
+            role="consumer",
+            status="DELIVERED",
+            title="Review me",
+            deliverable="the work",
+        )
+        daemon._write_jobs()
+        md = _jobs_md(daemon)
+        action_at = md.index("## ⚡ NEEDS YOUR ACTION")
+        assert '- DELIVER: "Deliver me" (job jd) — agreed 20 crumbs' in md
+        assert '- REVIEW: "Review me" (job jr) — delivered, awaiting your verdict' in md
+        assert md.index("- DELIVER") > action_at
+        assert md.index("- REVIEW") > action_at
+        assert "## 📌 WAITING" not in md
+        # Exact commands inline.
+        assert "→ goosetown act deliver jd <your work>" in md
+        assert "--file=path for big/binary work" in md
+        assert (
+            "→ goosetown act review jr accept|reject [reason] [--criteria=1,0,1]" in md
+        )
+        assert "you're all caught up" not in md
+
+    def test_action_entries_ordered_by_deadline(self, daemon: TownDaemon):
+        daemon._update_job(
+            "late",
+            role="provider",
+            status="AWARDED",
+            title="Late job",
+            deadline_at=2_000_000.0,
+        )
+        daemon._update_job(
+            "soon",
+            role="provider",
+            status="AWARDED",
+            title="Soon job",
+            deadline_at=1_000_000.0,
+        )
+        daemon._write_jobs()
+        md = _jobs_md(daemon)
+        assert md.index('"Soon job"') < md.index('"Late job"')
+
+    def test_deadlineless_action_entry_sorts_last(self, daemon: TownDaemon):
+        daemon._update_job(
+            "nodl", role="consumer", status="DELIVERED", title="No deadline"
+        )
+        daemon._update_job(
+            "dl",
+            role="provider",
+            status="AWARDED",
+            title="Has deadline",
+            deadline_at=1_000_000.0,
+        )
+        daemon._write_jobs()
+        md = _jobs_md(daemon)
+        assert md.index('"Has deadline"') < md.index('"No deadline"')
+
+    def test_waiting_bucket_mapping_per_state(self, daemon: TownDaemon):
+        daemon._update_job(
+            "j-open",
+            role="consumer",
+            status="OPEN",
+            title="Open job",
+            max_price=40,
+            bid_count=2,
+        )
+        daemon._update_job(
+            "j-bid", role="provider", status="BID", title="Bid job", bid_price=12
+        )
+        daemon._update_job(
+            "j-del", role="provider", status="DELIVERED", title="Delivered job"
+        )
+        daemon._update_job(
+            "j-await",
+            role="consumer",
+            status="AWARDED",
+            title="Awarded job",
+            agreed_price=30,
+        )
+        daemon._write_jobs()
+        md = _jobs_md(daemon)
+        waiting = md[md.index("## 📌 WAITING") :]
+        assert (
+            '- [OPEN] "Open job" (job j-open) — up to 40 crumbs — 2 sealed bid(s)'
+            in waiting
+        )
+        assert (
+            '- [BID] "Bid job" (job j-bid) — your bid: 12 crumbs — sealed; '
+            "you'll hear at the close" in waiting
+        )
+        assert (
+            '- [DELIVERED] "Delivered job" (job j-del) — delivered; '
+            "payment on accept (auto-accepts if they go quiet)" in waiting
+        )
+        assert (
+            '- [AWARDED] "Awarded job" (job j-await) — agreed 30 crumbs — '
+            "awaiting delivery" in waiting
+        )
+        # None of these are actionable → action section shows all-caught-up.
+        assert "you're all caught up" in md
+
+    def test_settled_trimmed_to_8_newest_first_cache_untouched(
+        self, daemon: TownDaemon
+    ):
+        for i in range(10):
+            daemon._update_job(
+                f"j{i}",
+                role="provider",
+                status="COMPLETED",
+                title=f"Settled {i}",
+                payout=10 + i,
+            )
+            daemon.state["exchange"]["jobs"][f"j{i}"]["updated"] = float(i)
+        daemon._write_jobs()
+        md = _jobs_md(daemon)
+        # Two oldest fall off the render; cache keeps all 10.
+        assert "(job j0)" not in md
+        assert "(job j1)" not in md
+        assert "(job j2)" in md
+        assert "(job j9)" in md
+        assert md.index("(job j9)") < md.index("(job j2)")
+        assert len(daemon.state["exchange"]["jobs"]) == 10
+
+    def test_settled_line_markers(self, daemon: TownDaemon):
+        daemon._update_job(
+            "jp", role="provider", status="COMPLETED", title="Paid job", payout=18
+        )
+        daemon._update_job(
+            "jc",
+            role="consumer",
+            status="COMPLETED",
+            title="My posted job",
+            payout=18,
+        )
+        daemon._update_job(
+            "jf",
+            role="provider",
+            status="FAILED",
+            title="Failed job",
+            fail_reason="delivery_timeout",
+        )
+        daemon._update_job("je", role="consumer", status="EXPIRED", title="Expired job")
+        daemon._update_job("jl", role="provider", status="LOST", title="Lost job")
+        daemon._write_jobs()
+        md = _jobs_md(daemon)
+        assert '- [PAID +18] "Paid job" (job jp)' in md
+        assert '- [PAID] "My posted job" (job jc) — provider received 18 crumbs' in md
+        assert '- [FAILED] "Failed job" (job jf) — delivery_timeout' in md
+        assert '- [EXPIRED] "Expired job" (job je)' in md
+        assert '- [LOST] "Lost job" (job jl)' in md
+
+    def test_award_deadline_sec_renders_absolute_deliver_by(self, daemon: TownDaemon):
+        """deadline_sec in job_awarded → deadline_at cached (now + sec) and
+        rendered as DELIVER by HH:MM UTC."""
+        with patch("time.time", return_value=1_700_000_000.0):
+            daemon._handle_event(
+                {
+                    "event": "job_awarded",
+                    "job_id": "j1",
+                    "title": "Write a haiku",
+                    "agreed_price": 30,
+                    "deadline_sec": 600,
+                    "provider_name": "testagent",
+                    "consumer_name": "othergoose",
+                    "description": "A haiku about dusk.",
+                }
+            )
+        job = daemon.state["exchange"]["jobs"]["j1"]
+        assert job["deadline_at"] == 1_700_000_600.0
+        # 1_700_000_000 epoch is 22:13:20 UTC → +600s = 22:23:20.
+        md = _jobs_md(daemon)
+        assert '- DELIVER by 22:23 UTC: "Write a haiku" (job j1)' in md
+
+    def test_award_without_deadline_sec_renders_no_clock(self, daemon: TownDaemon):
+        daemon._handle_event(
+            {
+                "event": "job_awarded",
+                "job_id": "j1",
+                "title": "Write a haiku",
+                "agreed_price": 30,
+                "provider_name": "testagent",
+                "consumer_name": "othergoose",
+                "description": "A haiku about dusk.",
+            }
+        )
+        assert daemon.state["exchange"]["jobs"]["j1"].get("deadline_at") is None
+        md = _jobs_md(daemon)
+        assert '- DELIVER: "Write a haiku" (job j1)' in md
+        assert "DELIVER by" not in md
+
+    def test_consumer_award_deadline_rendered_in_waiting(self, daemon: TownDaemon):
+        with patch("time.time", return_value=1_700_000_000.0):
+            daemon._handle_event(
+                {
+                    "event": "job_awarded",
+                    "job_id": "j1",
+                    "title": "My job",
+                    "agreed_price": 30,
+                    "deadline_sec": 600,
+                    "provider_name": "rival",
+                    "consumer_name": "testagent",
+                }
+            )
+        md = _jobs_md(daemon)
+        assert (
+            '- [AWARDED] "My job" (job j1) — agreed 30 crumbs — '
+            "awaiting delivery (due 22:23 UTC)" in md
+        )
+
+    def test_post_job_bid_window_renders_closes_at(self, daemon: TownDaemon):
+        """bid_window_sec on the post_job echo → bids_close_at cached and
+        rendered as 'closes HH:MM UTC' on the [OPEN] line."""
+        daemon._pending_exchange_payload = {
+            "action": "post_job",
+            "title": "Write a haiku",
+            "description": "d",
+            "max_price": 40,
+        }
+        with patch("time.time", return_value=1_700_000_000.0):
+            daemon._handle_event(
+                {
+                    "event": "exchange_ok",
+                    "verb": "post_job",
+                    "status": "ok",
+                    "job_id": "j1",
+                    "bid_window_sec": 120,
+                    "escrowed": 40,
+                    "balance": 60,
+                }
+            )
+        job = daemon.state["exchange"]["jobs"]["j1"]
+        assert job["bids_close_at"] == 1_700_000_120.0
+        # 22:13:20 UTC + 120s = 22:15:20.
+        md = _jobs_md(daemon)
+        assert "closes 22:15 UTC" in md
+        assert "no bids yet" in md  # no bid_received cached yet
 
 
 # ---------------------------------------------------------------------------

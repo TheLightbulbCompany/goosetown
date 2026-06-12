@@ -810,6 +810,14 @@ class TownDaemon:
         pending = pending_payload if pending_payload.get("action") == verb else {}
 
         if verb == "post_job" and job_id:
+            # Persist the absolute bid-window close so TOWN_JOBS.md can
+            # render "closes HH:MM UTC" on the [OPEN] line.
+            bid_window = data.get("bid_window_sec")
+            bids_close_at = (
+                time.time() + bid_window
+                if isinstance(bid_window, (int, float))
+                else None
+            )
             self._update_job(
                 job_id,
                 role="consumer",
@@ -817,6 +825,7 @@ class TownDaemon:
                 title=pending.get("title"),
                 max_price=data.get("escrowed", pending.get("max_price")),
                 success_criteria=pending.get("success_criteria"),
+                bids_close_at=bids_close_at,
             )
         elif verb == "bid" and job_id:
             self._update_job(
@@ -883,6 +892,14 @@ class TownDaemon:
         agreed = data.get("agreed_price", "?")
         deadline = data.get("deadline_sec", "?")
         provider_name = data.get("provider_name", "?")
+        # Persist the absolute delivery deadline (now + deadline_sec) so
+        # TOWN_JOBS.md can render "DELIVER by HH:MM UTC" / "due HH:MM UTC".
+        deadline_sec = data.get("deadline_sec")
+        deadline_at = (
+            time.time() + deadline_sec
+            if isinstance(deadline_sec, (int, float))
+            else None
+        )
         role = self._job_role(data, job_id)
         if role is None:
             # Only the winner's copy carries the job description.
@@ -895,6 +912,7 @@ class TownDaemon:
                 status="AWARDED",
                 title=title,
                 agreed_price=agreed,
+                deadline_at=deadline_at,
                 description=data.get("description"),
                 success_criteria=data.get("success_criteria"),
             )
@@ -910,6 +928,7 @@ class TownDaemon:
                 status="AWARDED",
                 title=title,
                 agreed_price=agreed,
+                deadline_at=deadline_at,
             )
             # Update wallet if the backend included a partial-refund balance.
             if "balance" in data:
@@ -1162,43 +1181,95 @@ class TownDaemon:
             f"reply: goosetown act job_msg {job_id} <text>"
         )
 
-    def _write_jobs(self) -> None:
-        """Write TOWN_JOBS.md to the agent workspace (atomic via rename)."""
-        ex = self.state.get("exchange") or {}
-        jobs = list((ex.get("jobs") or {}).values())
-        jobs.sort(key=lambda j: j.get("updated", 0), reverse=True)
+    # ------------------------------------------------------------------
+    # TOWN_JOBS.md rendering (v2 — action-first)
+    # ------------------------------------------------------------------
 
-        lines: list[str] = ["# GooseTown Exchange — your jobs", ""]
-        wallet = ex.get("wallet")
-        if wallet is not None:
-            lines += [f"Wallet: {wallet} crumbs", ""]
+    _TERMINAL_JOB_STATUSES = frozenset(
+        {"COMPLETED", "FAILED", "EXPIRED", "CANCELLED", "LOST"}
+    )
 
-        posted = [j for j in jobs if j.get("role") == "consumer"]
-        working = [j for j in jobs if j.get("role") == "provider"]
+    @staticmethod
+    def _fmt_clock(epoch: float) -> str:
+        """Render an absolute epoch deadline as ``HH:MM UTC``."""
+        return time.strftime("%H:%M", time.gmtime(epoch)) + " UTC"
 
-        lines.append("## Jobs you posted")
-        lines.append("")
-        if not posted:
-            lines.append("(none)")
-        for job in posted:
-            title = job.get("title") or "(untitled)"
-            line = f"- [{job.get('status', '?')}] {title} (job {job['job_id']})"
-            price_bits = []
-            if job.get("max_price") is not None:
-                price_bits.append(f"up to {job['max_price']} crumbs")
+    def _job_bucket(self, job: dict) -> str:
+        """Map a cached job to its TOWN_JOBS.md v2 bucket.
+
+        - provider + AWARDED → "action" (DELIVER now)
+        - consumer + DELIVERED → "action" (REVIEW now)
+        - terminal statuses → "settled"
+        - everything else non-terminal → "waiting"
+        """
+        status = job.get("status")
+        role = job.get("role")
+        if status in self._TERMINAL_JOB_STATUSES:
+            return "settled"
+        if role == "provider" and status == "AWARDED":
+            return "action"
+        if role == "consumer" and status == "DELIVERED":
+            return "action"
+        return "waiting"
+
+    @staticmethod
+    def _fenced_block(label: str, text: str) -> list[str]:
+        """Indented fenced block; embedded fences neutralized (``` → ''')."""
+        safe = str(text).replace("```", "'''")
+        out = [f"  {label}", "  ```"]
+        out += [f"  {ln}" for ln in safe.splitlines()]
+        out.append("  ```")
+        return out
+
+    @staticmethod
+    def _job_message_lines(job: dict) -> list[str]:
+        """W4: render the cached last-5 counterparty messages for a job."""
+        out: list[str] = []
+        for m in job.get("messages") or []:
+            from_name = m.get("from_name", "?")
+            text = str(m.get("text", ""))[:200]
+            out.append(f"  > {from_name}: {text}")
+        return out
+
+    def _render_action_entry(self, job: dict) -> list[str]:
+        """One NEEDS-YOUR-ACTION entry — exact command inline, money first."""
+        job_id = job["job_id"]
+        title = job.get("title") or "(untitled)"
+        lines: list[str] = []
+        if job.get("role") == "provider":
+            # We won the job (AWARDED) → DELIVER.
+            head = "- DELIVER"
+            if job.get("deadline_at") is not None:
+                head += f" by {self._fmt_clock(job['deadline_at'])}"
+            head += f': "{title}" (job {job_id})'
             if job.get("agreed_price") is not None:
-                price_bits.append(f"agreed {job['agreed_price']}")
-            if price_bits:
-                line += " — " + " / ".join(price_bits)
-            lines.append(line)
-            deliverable = job.get("deliverable")
-            if deliverable:
-                # Deliverables are rendered inside a fence; neutralize embedded fences (LLM-read doc).
-                safe = str(deliverable).replace("```", "'''")
-                lines.append("  Deliverable:")
-                lines.append("  ```")
-                lines += [f"  {dl}" for dl in safe.splitlines()]
-                lines.append("  ```")
+                head += f" — agreed {job['agreed_price']} crumbs"
+            lines.append(head)
+            lines.append(
+                f"  → goosetown act deliver {job_id} <your work>"
+                "   (or --file=path for big/binary work)"
+            )
+            if job.get("description"):
+                lines += self._fenced_block("Job spec:", job["description"])
+            # W3: success criteria as a checklist (verdicts when known).
+            criteria = job.get("success_criteria")
+            if criteria:
+                verdicts = job.get("criteria_verdicts")
+                lines.append("  Success criteria:")
+                for i, criterion in enumerate(criteria):
+                    met = bool(verdicts and i < len(verdicts) and verdicts[i])
+                    lines.append(f"  - [{'x' if met else ' '}] {criterion}")
+        else:
+            # Work was delivered to us (DELIVERED) → REVIEW.
+            lines.append(
+                f'- REVIEW: "{title}" (job {job_id}) — delivered, awaiting your verdict'
+            )
+            lines.append(
+                f"  → goosetown act review {job_id} "
+                "accept|reject [reason] [--criteria=1,0,1]"
+            )
+            if job.get("deliverable"):
+                lines += self._fenced_block("Deliverable:", job["deliverable"])
             # W5: delivered artifact file — local path when the download
             # succeeded, otherwise the presigned URL with a note.
             if job.get("artifact_path"):
@@ -1208,61 +1279,118 @@ class TownDaemon:
                     "  Artifact (download failed — fetch it yourself within 24h):"
                 )
                 lines.append(f"  {job['artifact_url']}")
-            # W4: render last 5 messages (from counterparty).
-            msgs = job.get("messages") or []
-            if msgs:
-                for m in msgs:
-                    from_name = m.get("from_name", "?")
-                    text = str(m.get("text", ""))[:200]
-                    lines.append(f"  > {from_name}: {text}")
-        lines.append("")
+        lines += self._job_message_lines(job)
+        return lines
 
-        lines.append("## Jobs you're working on")
-        lines.append("")
-        if not working:
-            lines.append("(none)")
-        for job in working:
-            title = job.get("title") or "(untitled)"
-            line = f"- [{job.get('status', '?')}] {title} (job {job['job_id']})"
+    def _render_waiting_line(self, job: dict) -> str:
+        """One WAITING line — a state where the agent can't act yet."""
+        job_id = job["job_id"]
+        title = job.get("title") or "(untitled)"
+        status = job.get("status") or "?"
+        role = job.get("role")
+        line = f'- [{status}] "{title}" (job {job_id})'
+        if role == "consumer" and status == "OPEN":
+            if job.get("max_price") is not None:
+                line += f" — up to {job['max_price']} crumbs"
+            bid_count = job.get("bid_count")
+            line += (
+                f" — {bid_count} sealed bid(s)"
+                if bid_count is not None
+                else " — no bids yet"
+            )
+            if job.get("bids_close_at") is not None:
+                line += f" — closes {self._fmt_clock(job['bids_close_at'])}"
+        elif role == "provider" and status == "BID":
+            if job.get("bid_price") is not None:
+                line += f" — your bid: {job['bid_price']} crumbs"
+            line += " — sealed; you'll hear at the close"
+        elif role == "provider" and status == "DELIVERED":
+            line += " — delivered; payment on accept (auto-accepts if they go quiet)"
+        elif role == "consumer" and status == "AWARDED":
             if job.get("agreed_price") is not None:
                 line += f" — agreed {job['agreed_price']} crumbs"
-            elif job.get("bid_price") is not None:
-                line += f" — your bid: {job['bid_price']} crumbs"
-            if job.get("status") == "AWARDED":
-                line += (
-                    f" — deliver with: goosetown act deliver {job['job_id']} "
-                    "<your work>"
-                )
-            lines.append(line)
-            description = job.get("description")
-            if description and job.get("status") == "AWARDED":
-                # The work spec is rendered inside a fence while the job is
-                # active; neutralize embedded fences (LLM-read doc), same as
-                # deliverables above.
-                safe = str(description).replace("```", "'''")
-                lines.append("  Job spec:")
-                lines.append("  ```")
-                lines += [f"  {dl}" for dl in safe.splitlines()]
-                lines.append("  ```")
-            # W3: render success criteria as a checklist when AWARDED.
-            criteria = job.get("success_criteria")
-            verdicts = job.get("criteria_verdicts")
-            if criteria and job.get("status") == "AWARDED":
-                lines.append("  Success criteria:")
-                for i, criterion in enumerate(criteria):
-                    if verdicts and i < len(verdicts):
-                        check = "x" if verdicts[i] else " "
-                    else:
-                        check = " "
-                    lines.append(f"  - [{check}] {criterion}")
-            # W4: render last 5 messages (from counterparty).
-            msgs = job.get("messages") or []
-            if msgs:
-                for m in msgs:
-                    from_name = m.get("from_name", "?")
-                    text = str(m.get("text", ""))[:200]
-                    lines.append(f"  > {from_name}: {text}")
+            line += " — awaiting delivery"
+            if job.get("deadline_at") is not None:
+                line += f" (due {self._fmt_clock(job['deadline_at'])})"
+        return line
+
+    def _render_settled_line(self, job: dict) -> str:
+        """One terminal one-liner: [PAID +N] / [FAILED] / [EXPIRED] / ..."""
+        job_id = job["job_id"]
+        title = job.get("title") or "(untitled)"
+        status = job.get("status")
+        if status == "COMPLETED":
+            payout = job.get("payout")
+            if job.get("role") == "provider" and payout is not None:
+                return f'- [PAID +{payout}] "{title}" (job {job_id})'
+            line = f'- [PAID] "{title}" (job {job_id})'
+            if payout is not None:
+                line += f" — provider received {payout} crumbs"
+            return line
+        line = f'- [{status}] "{title}" (job {job_id})'
+        if status == "FAILED" and job.get("fail_reason"):
+            line += f" — {job['fail_reason']}"
+        return line
+
+    def _write_jobs(self) -> None:
+        """Write TOWN_JOBS.md (v2, action-first) to the agent workspace.
+
+        The reader is an LLM agent with one heartbeat of attention: the file
+        tells it what to do instead of making it derive. Information order is
+        action priority — actionable jobs (with their exact command inline,
+        most urgent deadline first), then waiting states, then the last 8
+        settled one-liners. Atomic via rename (``_write_workspace_file``).
+        """
+        ex = self.state.get("exchange") or {}
+        jobs = list((ex.get("jobs") or {}).values())
+
+        lines: list[str] = ["# GooseTown Exchange — your jobs", ""]
+        wallet = ex.get("wallet")
+        if wallet is not None:
+            wallet_line = f"Wallet: {wallet} crumbs"
+            # Trust tier renders only when something cached it; today no
+            # daemon event carries the tier, so this stays wallet-only.
+            if ex.get("trust_tier"):
+                wallet_line += f" · Trust: {ex['trust_tier']}"
+            lines += [wallet_line, ""]
+
+        action = [j for j in jobs if self._job_bucket(j) == "action"]
+        waiting = [j for j in jobs if self._job_bucket(j) == "waiting"]
+        settled = [j for j in jobs if self._job_bucket(j) == "settled"]
+
+        # Most urgent deadline first; deadline-less entries after, newest first.
+        action.sort(
+            key=lambda j: (
+                j["deadline_at"] if j.get("deadline_at") is not None else float("inf"),
+                -(j.get("updated") or 0),
+            )
+        )
+        waiting.sort(key=lambda j: j.get("updated", 0), reverse=True)
+        settled.sort(key=lambda j: j.get("updated", 0), reverse=True)
+        settled = settled[:8]  # render-side trim only; the cache keeps all
+
+        lines.append("## ⚡ NEEDS YOUR ACTION")
         lines.append("")
+        if not action:
+            lines.append("- (nothing — you're all caught up)")
+        for job in action:
+            lines += self._render_action_entry(job)
+        lines.append("")
+
+        if waiting:
+            lines.append("## 📌 WAITING")
+            lines.append("")
+            for job in waiting:
+                lines.append(self._render_waiting_line(job))
+                lines += self._job_message_lines(job)
+            lines.append("")
+
+        if settled:
+            lines.append("## 📜 SETTLED (recent)")
+            lines.append("")
+            for job in settled:
+                lines.append(self._render_settled_line(job))
+            lines.append("")
 
         self._write_workspace_file("TOWN_JOBS.md", "\n".join(lines) + "\n")
 
