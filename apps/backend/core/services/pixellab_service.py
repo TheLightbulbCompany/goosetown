@@ -522,8 +522,8 @@ class PixelLabService:
         character_id: str,
         on_progress: Callable[[str], Coroutine[Any, Any, None]] | None = None,
     ) -> dict[str, dict[str, list[bytes]]]:
-        """Generate every auto_generate signup animation (walk, idle, talking)
-        sequentially via generate_animation. Returns
+        """Generate every auto_generate signup animation (walk only — idle and
+        talking generate lazily) sequentially via generate_animation. Returns
         {anim_name: {direction: [png_bytes]}} for the caller to composite.
 
         Each animation is generated end-to-end (submit + poll + collect frames)
