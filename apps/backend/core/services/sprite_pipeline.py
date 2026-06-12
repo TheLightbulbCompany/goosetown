@@ -30,9 +30,15 @@ Pipeline phases:
 
 Failure contract: exceptions PROPAGATE (the SQS worker releases the message
 for redelivery) and ``spriteStatus`` is left where it was — it is the resume
-pointer. The legacy swallow-and-clear-status contract survives only in the
-temporary ``_sprite_pipeline_task`` wrapper (kept for the in-memory
-SpriteQueue until Task 7 rewires callers to SQS).
+pointer. This includes the case where generation yields no animations at all
+(``RuntimeError`` raised so the SQS worker retries rather than silently
+completing without a sprite). The legacy swallow-and-clear-status contract
+survives in TWO temporary places kept for backward compatibility until Task 7:
+
+* ``_sprite_pipeline_task`` wrapper (kept for the in-memory SpriteQueue until
+  Task 7 rewires callers to SQS).
+* ``resume_sprite_generation`` (kept for the admin regenerate/recomposite
+  endpoints and ``main.py`` startup recovery until Task 7 rewires them).
 
 The module also still owns ``resume_sprite_generation`` — used by the admin
 regenerate ("creating") and recomposite ("downloading") endpoints and the
@@ -114,7 +120,10 @@ async def run_signup_pipeline(agent_id: str, *, sink: SpriteEventSink) -> None:
 
     Raises on transient failure (PixelLab/S3/DDB) — the worker releases the
     message for redelivery and ``spriteStatus`` stays put as the resume
-    pointer. Never clears ``spriteStatus`` on failure.
+    pointer. Also raises ``RuntimeError`` when generation yields no animations
+    at all (Phase B returned no rotations AND Phase C returned no frames) so
+    the SQS worker retries rather than silently completing with no sprite.
+    Never clears ``spriteStatus`` on failure.
     """
     from core.config import settings
     from core.services.pixellab_service import ANIMATION_REGISTRY, PixelLabService
@@ -144,6 +153,7 @@ async def run_signup_pipeline(agent_id: str, *, sink: SpriteEventSink) -> None:
             logger.info("run_signup_pipeline: agent %s already complete — duplicate delivery", agent_id)
             return
 
+        # Both attribute spellings exist in older rows (camelCase is current).
         char_id = agent.get("pixellabCharacterId") or agent.get("pixellab_character_id")
         appearance = agent.get("appearance") or ""
 
@@ -274,9 +284,13 @@ async def run_signup_pipeline(agent_id: str, *, sink: SpriteEventSink) -> None:
                 )
 
         if not full_sprite_animations:
-            logger.warning("[agent:%s] No animations resolved — agent remains on static sprite", agent_id)
-            advance_phase(agent_id, "alive", service=service)
-            return
+            # Nothing came back from Phase B OR Phase C (no rotations AND no
+            # walk frames) — the agent would be left with no sprite at all.
+            # Raise so the SQS worker releases the message: redelivery retries
+            # the whole resume-aware pipeline, and 3 strikes route the job to
+            # the DLQ (alarmed). Deliberately NOT advance_phase("alive") — the
+            # job is not done.
+            raise RuntimeError(f"sprite pipeline produced no animations for agent {agent_id}")
 
         # Real walk URL overrides the static placeholder; falls back to the
         # existing spriteUrl (never "") when resuming past Phase B.
@@ -326,6 +340,7 @@ async def run_animation_job(agent_id: str, anim_name: str, *, sink: SpriteEventS
             logger.warning("run_animation_job: agent %s not found — dropping job", agent_id)
             return
 
+        # Both attribute spellings exist in older rows (camelCase is current).
         char_id = agent.get("pixellabCharacterId") or agent.get("pixellab_character_id")
         if not char_id:
             logger.warning("run_animation_job: agent %s has no pixellabCharacterId — cannot animate", agent_id)
@@ -373,7 +388,7 @@ async def run_animation_job(agent_id: str, anim_name: str, *, sink: SpriteEventS
         }
 
         service.update_agent_state(agent_id, sprite_animations=merged)
-        logger.info("Animation %s ready for agent %s", anim_name, agent_id)
+        logger.info("[agent:%s] Animation %s ready", agent_id, anim_name)
 
         await sink.sprite_updated(agent_id, "animations_updated")
     finally:
@@ -384,7 +399,9 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
     """Legacy wrapper for the in-memory SpriteQueue (deleted in the next
     commit). Preserves the old swallow-and-clear-status contract so existing
     callers/tests keep passing until they're rewired to SQS."""
-    del display_name, appearance  # row is the source of truth now
+    # Args kept for caller compat only (SpriteQueue); row is the source of
+    # truth. The wrapper and SpriteQueue are deleted together in the next commit.
+    del display_name, appearance
     try:
         await run_signup_pipeline(agent_id, sink=LocalSpriteEventSink())
     except Exception:

@@ -200,6 +200,7 @@ async def test_resume_walk_url_falls_back_to_existing_sprite_url():
     with _patched_pipeline(pxl, ts):
         await run_signup_pipeline("a-1", sink=sink)
 
+    # idle survives because initial_sprite_animations seeds from the existing row's spriteAnimations.
     complete_calls = [c for c in ts.update_agent_state.call_args_list if c.kwargs.get("sprite_status") == "complete"]
     assert len(complete_calls) == 1
     assert complete_calls[0].kwargs["sprite_url"] == "https://cdn/old-walk.png"
@@ -258,6 +259,48 @@ async def test_create_failure_propagates_and_status_left_at_creating():
     status_writes = [c.kwargs.get("sprite_status") for c in ts.update_agent_state.call_args_list]
     assert status_writes[-1] == "creating"
     assert None not in status_writes
+    # Guard drained even on failure.
+    assert "a-1" not in sprite_pipeline._resume_in_flight
+
+
+# ---------------------------------------------------------------------------
+# 4b. Empty pipeline output — raises, does NOT advance to alive
+# ---------------------------------------------------------------------------
+
+
+async def test_no_animations_output_raises_and_does_not_advance_alive():
+    """Phase B returns no rotations AND Phase C returns no signup frames —
+    full_sprite_animations stays empty.  The pipeline must raise RuntimeError
+    so the SQS worker retries rather than silently completing with no sprite.
+    advance_phase must NOT be called with "alive", and sprite_updated must NOT
+    be awaited with "animations_updated"."""
+    row = {
+        "id": "a-1",
+        "spriteStatus": "queued",
+        "appearance": "a goose",
+        "pixellabCharacterId": "char-1",
+        # No spriteUrl, no spriteAnimations — Phase B will attempt rotations.
+    }
+    ts = _make_service(row)
+    sink = _make_sink()
+
+    pxl = MagicMock()
+    pxl.create_character = AsyncMock()
+    pxl.fetch_all_rotations = AsyncMock(return_value={})  # Phase B produces nothing
+    pxl.queue_signup_animations = AsyncMock(return_value={})  # Phase C produces nothing
+
+    with _patched_pipeline(pxl, ts) as (advance, _):
+        with pytest.raises(RuntimeError, match="sprite pipeline produced no animations"):
+            await run_signup_pipeline("a-1", sink=sink)
+
+    # advance_phase must NOT have been called with "alive" — job is not done.
+    alive_calls = [c for c in advance.call_args_list if c.args[1] == "alive"]
+    assert len(alive_calls) == 0
+
+    # sink.sprite_updated must NOT have been awaited with "animations_updated".
+    animations_updated_calls = [c for c in sink.sprite_updated.await_args_list if c.args[1] == "animations_updated"]
+    assert len(animations_updated_calls) == 0
+
     # Guard drained even on failure.
     assert "a-1" not in sprite_pipeline._resume_in_flight
 
@@ -374,7 +417,11 @@ async def test_concurrent_signup_for_same_agent_runs_only_once():
         # Second concurrent call: with the guard it returns instantly.
         await asyncio.wait_for(run_signup_pipeline("a-1", sink=sink), timeout=2.0)
         release.set()
-        await run_a
+        # The first run raises RuntimeError (no rotations + no signup frames →
+        # empty full_sprite_animations) — the guard test only cares about the
+        # create_character call count, not the outcome.
+        with contextlib.suppress(RuntimeError):
+            await run_a
 
     assert pxl.create_character.await_count == 1
     assert "a-1" not in sprite_pipeline._resume_in_flight
