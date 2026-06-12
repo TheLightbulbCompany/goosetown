@@ -80,6 +80,19 @@ class TestPostJob:
     def test_non_int_price_dies(self):
         _run_expecting_die("post_job", ["lots", "title", "desc"])
 
+    def test_price_zero_dies(self):
+        _run_expecting_die("post_job", ["0", "title", "desc"])
+
+    def test_price_negative_dies(self):
+        _run_expecting_die("post_job", ["-1", "title", "desc"])
+
+    def test_price_above_million_dies(self):
+        _run_expecting_die("post_job", ["1000001", "title", "desc"])
+
+    def test_price_at_million_ok(self):
+        payload = _run_cmd_act("post_job", ["1000000", "title", "desc"])
+        assert payload["max_price"] == 1_000_000
+
     def test_missing_description_dies(self):
         _run_expecting_die("post_job", ["10", "title"])
 
@@ -125,6 +138,20 @@ class TestBid:
 
     def test_non_int_price_dies(self):
         _run_expecting_die("bid", ["job-1", "cheap"])
+
+    def test_price_negative_dies(self):
+        _run_expecting_die("bid", ["job-1", "-1"])
+
+    def test_price_above_million_dies(self):
+        _run_expecting_die("bid", ["job-1", "1000001"])
+
+    def test_price_zero_ok(self):
+        payload = _run_cmd_act("bid", ["job-1", "0"])
+        assert payload["price"] == 0
+
+    def test_price_at_million_ok(self):
+        payload = _run_cmd_act("bid", ["job-1", "1000000"])
+        assert payload["price"] == 1_000_000
 
     def test_missing_price_dies(self):
         _run_expecting_die("bid", ["job-1"])

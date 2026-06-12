@@ -83,9 +83,7 @@ class TestExchangeOutcome:
     async def test_already_done_future_is_left_alone(self, daemon: TownDaemon):
         daemon._exchange_outcome = asyncio.get_running_loop().create_future()
         daemon._exchange_outcome.set_result({"status": "ok", "first": True})
-        daemon._handle_event(
-            {"event": "exchange_ok", "verb": "bid", "status": "ok"}
-        )
+        daemon._handle_event({"event": "exchange_ok", "verb": "bid", "status": "ok"})
         assert daemon._exchange_outcome.result()["first"] is True
 
     def test_post_job_ok_caches_own_job_and_wallet(self, daemon: TownDaemon):
@@ -301,9 +299,7 @@ class TestJobDelivered:
 
     def test_deliverable_not_kept_for_provider_jobs(self, daemon: TownDaemon):
         """Provider-side jobs never get a deliverable block in TOWN_JOBS.md."""
-        daemon._update_job(
-            "j2", role="provider", status="DELIVERED", title="Other job"
-        )
+        daemon._update_job("j2", role="provider", status="DELIVERED", title="Other job")
         daemon._write_jobs()
         md = _jobs_md(daemon)
         assert "```" not in md
@@ -338,6 +334,32 @@ class TestJobCompleted:
             }
         )
         assert "Your job" in _events(daemon)
+
+    def test_role_freshness_no_cache_uses_event_ids(self, daemon: TownDaemon):
+        """job_completed arriving with provider_id/consumer_id but no cached job
+        (fresh daemon that missed earlier events) derives the correct role."""
+        daemon._agent_id = "uuid-me"
+        daemon._handle_event(
+            {
+                "event": "job_completed",
+                "job_id": "j-fresh",
+                "title": "Fresh job",
+                "payout": 18,
+                "fee": 2,
+                "provider_id": "uuid-me",
+                "consumer_id": "uuid-other",
+                "balance": 118,
+            }
+        )
+        job = daemon.state["exchange"]["jobs"]["j-fresh"]
+        assert job["role"] == "provider"
+        assert job["status"] == "COMPLETED"
+        assert "you were paid 18 crumbs" in _events(daemon)
+        md = _jobs_md(daemon)
+        assert "## Jobs you're working on" in md
+        # Wallet updated from balance field.
+        assert daemon.state["exchange"]["wallet"] == 118
+        assert "Wallet: 118 crumbs" in md
 
 
 class TestJobFailed:

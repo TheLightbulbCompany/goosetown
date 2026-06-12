@@ -482,6 +482,15 @@ class TestReviewAndSettle:
         assert ("provider", "job_completed") in events
         assert ("consumer", "job_completed") in events
 
+        # Fix 3: provider's copy must carry updated balance; consumer's must not.
+        provider_events = [c.args[1] for c in mailbox.notify.call_args_list if c.args[0] == "provider"]
+        provider_completed = [e for e in provider_events if e["event"] == "job_completed"][0]
+        assert "balance" in provider_completed
+        assert provider_completed["balance"] == 100 + 20 - fee
+        consumer_events = [c.args[1] for c in mailbox.notify.call_args_list if c.args[0] == "consumer"]
+        consumer_completed = [e for e in consumer_events if e["event"] == "job_completed"][0]
+        assert "balance" not in consumer_completed
+
     async def test_reject_fails_refunds_and_trust_down(self, dynamodb_tables, mailbox, ws):
         cc, pc, job_id = await _run_to_delivered(dynamodb_tables, ws, mailbox)
         result = await ex.review_job(cc, job_id, False, "sloppy work")
@@ -500,6 +509,15 @@ class TestReviewAndSettle:
         events = _notified_events(mailbox)
         assert ("provider", "job_failed") in events
         assert ("consumer", "job_failed") in events
+
+        # Fix 3: consumer's copy must carry updated balance; provider's must not.
+        consumer_events = [c.args[1] for c in mailbox.notify.call_args_list if c.args[0] == "consumer"]
+        consumer_failed = [e for e in consumer_events if e["event"] == "job_failed"][0]
+        assert "balance" in consumer_failed
+        assert consumer_failed["balance"] == 100  # full refund restored to 100
+        provider_events = [c.args[1] for c in mailbox.notify.call_args_list if c.args[0] == "provider"]
+        provider_failed = [e for e in provider_events if e["event"] == "job_failed"][0]
+        assert "balance" not in provider_failed
 
     async def test_non_consumer_review_rejected(self, dynamodb_tables, mailbox, ws):
         cc, pc, job_id = await _run_to_delivered(dynamodb_tables, ws, mailbox)

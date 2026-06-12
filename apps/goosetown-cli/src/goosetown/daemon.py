@@ -847,7 +847,12 @@ class TownDaemon:
         )
 
     def _on_job_awarded(self, data: dict) -> None:
-        """We won the job (provider) or our job was awarded (consumer)."""
+        """We won the job (provider) or our job was awarded (consumer).
+
+        The consumer's copy may include a ``balance`` field when a partial
+        escrow refund was issued (max_price > agreed_price). Update the
+        wallet cache when present (Fix 3: wallet freshness on award).
+        """
         job_id = data.get("job_id", "?")
         title = data.get("title", "?")
         agreed = data.get("agreed_price", "?")
@@ -880,6 +885,9 @@ class TownDaemon:
                 title=title,
                 agreed_price=agreed,
             )
+            # Update wallet if the backend included a partial-refund balance.
+            if "balance" in data:
+                self._exchange_state()["wallet"] = data["balance"]
             self._append_event(
                 f'\U0001f4bc Your job "{title}" was awarded to {provider_name} '
                 f"for {agreed} crumbs (job {job_id}). Delivery due within {deadline}s."
@@ -914,16 +922,32 @@ class TownDaemon:
         )
 
     def _on_job_completed(self, data: dict) -> None:
-        """Both sides: job settled successfully."""
+        """Both sides: job settled successfully.
+
+        Derives role via ``_job_role`` (which checks event ids before the
+        local cache) so a fresh daemon that missed earlier events still
+        renders the correct provider-vs-consumer flavour line.  Updates the
+        wallet from the ``balance`` field when the backend includes it
+        (Fix 3: wallet freshness on settlement).
+        """
         job_id = data.get("job_id", "?")
         title = data.get("title", "?")
         payout = data.get("payout", "?")
         fee = data.get("fee", "?")
+        # Derive role fresh from event ids; fall back to local cache.
+        role = self._job_role(data, job_id)
         job = self._update_job(
             job_id, status="COMPLETED", title=title, payout=payout, fee=fee
         )
+        # Stamp role onto the cache entry if it was unknown before.
+        if role is not None and job.get("role") is None:
+            job["role"] = role
+        # Update wallet from settlement event (provider's copy carries balance).
+        if "balance" in data:
+            self._exchange_state()["wallet"] = data["balance"]
         self._write_jobs()
-        if job.get("role") == "provider":
+        effective_role = job.get("role") or role
+        if effective_role == "provider":
             line = (
                 f'\U0001f4bc Job "{title}" completed — you were paid {payout} crumbs '
                 f"({fee} crumb platform fee) (job {job_id})."
@@ -936,22 +960,40 @@ class TownDaemon:
         self._append_event(line)
 
     def _on_job_failed(self, data: dict) -> None:
-        """Both sides: job failed (delivery timeout or consumer rejection)."""
+        """Both sides: job failed (delivery timeout or consumer rejection).
+
+        Derives role via ``_job_role`` for freshness parity with
+        ``_on_job_completed``.  Updates the wallet from the ``balance``
+        field when the backend includes it (consumer's copy on reject/timeout
+        carries the refunded balance).
+        """
         job_id = data.get("job_id", "?")
         title = data.get("title", "?")
         reason = data.get("reason", "unknown")
-        self._update_job(job_id, status="FAILED", title=title, fail_reason=reason)
+        # Derive role fresh from event ids; fall back to local cache.
+        role = self._job_role(data, job_id)
+        job = self._update_job(job_id, status="FAILED", title=title, fail_reason=reason)
+        # Stamp role onto the cache entry if it was unknown before.
+        if role is not None and job.get("role") is None:
+            job["role"] = role
+        # Update wallet from refund event (consumer's copy carries balance).
+        if "balance" in data:
+            self._exchange_state()["wallet"] = data["balance"]
         self._write_jobs()
-        self._append_event(
-            f'\U0001f4bc Job "{title}" failed: {reason} (job {job_id}).'
-        )
+        self._append_event(f'\U0001f4bc Job "{title}" failed: {reason} (job {job_id}).')
 
     def _on_job_expired(self, data: dict) -> None:
-        """Consumer-side: bid window closed with no eligible bids."""
+        """Consumer-side: bid window closed with no eligible bids.
+
+        Updates the wallet from the ``balance`` field when the backend
+        includes it (Fix 3: wallet freshness on expiry refund).
+        """
         job_id = data.get("job_id", "?")
         title = data.get("title", "?")
         refunded = data.get("refunded")
         self._update_job(job_id, role="consumer", status="EXPIRED", title=title)
+        if "balance" in data:
+            self._exchange_state()["wallet"] = data["balance"]
         self._write_jobs()
         line = f'\U0001f4bc Your job "{title}" expired with no winner (job {job_id}).'
         if refunded is not None:
@@ -1689,9 +1731,7 @@ class TownDaemon:
                 # echo of our own verb. 10s is generous — the exchange
                 # handlers are hot-path DynamoDB writes.
                 try:
-                    return await asyncio.wait_for(
-                        exchange_outcome_future, timeout=10.0
-                    )
+                    return await asyncio.wait_for(exchange_outcome_future, timeout=10.0)
                 except asyncio.TimeoutError:
                     return {
                         "status": "ambiguous",
@@ -1837,9 +1877,7 @@ class TownDaemon:
 
             keepalive_task = asyncio.create_task(self._keepalive_loop())
             socket_task = (
-                asyncio.create_task(self.run_socket_server())
-                if serve_socket
-                else None
+                asyncio.create_task(self.run_socket_server()) if serve_socket else None
             )
             try:
                 await ws_task

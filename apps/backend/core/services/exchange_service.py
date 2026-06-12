@@ -628,7 +628,7 @@ async def _close_bid_window(job_id: str) -> None:
         if not _flip_status(job_id, "OPEN", "EXPIRED"):
             return
         _cancel_timer(job_id)
-        credit_wallet(consumer_id, max_price, "ESCROW_REFUND", job_id)
+        consumer_balance = credit_wallet(consumer_id, max_price, "ESCROW_REFUND", job_id)
         _apply_mood(consumer_id, "job_expired_consumer")
         mailbox.notify(
             consumer_id,
@@ -638,6 +638,7 @@ async def _close_bid_window(job_id: str) -> None:
                 "title": job.get("title", ""),
                 "refunded": max_price,
                 "consumer_id": consumer_id,
+                "balance": consumer_balance,
             },
         )
         return
@@ -656,8 +657,9 @@ async def _close_bid_window(job_id: str) -> None:
         },
     ):
         return
+    consumer_balance_after_award: int | None = None
     if max_price - agreed > 0:
-        credit_wallet(consumer_id, max_price - agreed, "ESCROW_REFUND", job_id)
+        consumer_balance_after_award = credit_wallet(consumer_id, max_price - agreed, "ESCROW_REFUND", job_id)
 
     _apply_mood(winner, "job_won")
     awarded = {
@@ -672,7 +674,11 @@ async def _close_bid_window(job_id: str) -> None:
         "consumer_id": consumer_id,
     }
     mailbox.notify(winner, {**awarded, "description": job.get("description", "")})
-    mailbox.notify(consumer_id, awarded)
+    # Consumer copy includes updated balance when a partial escrow refund was issued.
+    consumer_awarded = (
+        awarded if consumer_balance_after_award is None else {**awarded, "balance": consumer_balance_after_award}
+    )
+    mailbox.notify(consumer_id, consumer_awarded)
     for aid in bids:
         if aid != winner:
             mailbox.notify(aid, {"event": "bid_lost", "job_id": job_id, "title": job.get("title", "")})
@@ -692,7 +698,8 @@ async def _delivery_timeout(job_id: str) -> None:
     mailbox = get_daemon_mailbox()
     agreed = int(job.get("agreedPrice", 0))
     provider_id = job.get("providerId", "")
-    credit_wallet(job["consumerId"], agreed, "ESCROW_REFUND", job_id)
+    consumer_id = job["consumerId"]
+    consumer_balance = credit_wallet(consumer_id, agreed, "ESCROW_REFUND", job_id)
     _update_trust(provider_id, "FAILURE_PROVIDER", completed_delta=0, failed_delta=1)
     _apply_mood(provider_id, "job_failed_provider")
     failed = {
@@ -701,10 +708,11 @@ async def _delivery_timeout(job_id: str) -> None:
         "title": job.get("title", ""),
         "reason": "delivery_timeout",
         "provider_id": provider_id,
-        "consumer_id": job["consumerId"],
+        "consumer_id": consumer_id,
     }
     mailbox.notify(provider_id, failed)
-    mailbox.notify(job["consumerId"], failed)
+    # Consumer copy includes updated balance after the delivery-timeout refund.
+    mailbox.notify(consumer_id, {**failed, "balance": consumer_balance})
 
 
 async def _review_timeout(job_id: str) -> None:
@@ -729,7 +737,7 @@ async def _settle(job: dict, outcome: str, reason: str = "", rejected_by_consume
 
     if success:
         fee = exchange_scoring.platform_fee(agreed)
-        credit_wallet(provider_id, agreed - fee, "PAYOUT", job_id)
+        provider_balance = credit_wallet(provider_id, agreed - fee, "PAYOUT", job_id)
         # TOWN has no running balance — balanceAfter 0 by convention.
         _ledger_append(TOWN_ACCOUNT, "FEE", fee, 0, job_id)
         _update_trust(provider_id, outcome, completed_delta=1, failed_delta=0)
@@ -744,10 +752,12 @@ async def _settle(job: dict, outcome: str, reason: str = "", rejected_by_consume
             "provider_id": provider_id,
             "consumer_id": consumer_id,
         }
-        mailbox.notify(provider_id, completed)
+        # Provider copy includes updated balance; consumer copy does not (consumer wallet
+        # didn't move at settle — it moved at award when the partial refund was issued).
+        mailbox.notify(provider_id, {**completed, "balance": provider_balance})
         mailbox.notify(consumer_id, completed)
     else:
-        credit_wallet(consumer_id, agreed, "ESCROW_REFUND", job_id)
+        consumer_balance = credit_wallet(consumer_id, agreed, "ESCROW_REFUND", job_id)
         _update_trust(provider_id, "FAILURE_PROVIDER", completed_delta=0, failed_delta=1)
         _apply_mood(provider_id, "job_failed_provider")
         if rejected_by_consumer:
@@ -760,8 +770,9 @@ async def _settle(job: dict, outcome: str, reason: str = "", rejected_by_consume
             "provider_id": provider_id,
             "consumer_id": consumer_id,
         }
+        # Consumer copy includes updated balance (they received the refund); provider's does not.
         mailbox.notify(provider_id, failed)
-        mailbox.notify(consumer_id, failed)
+        mailbox.notify(consumer_id, {**failed, "balance": consumer_balance})
 
 
 # ---------------------------------------------------------------------------
