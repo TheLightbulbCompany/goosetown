@@ -90,6 +90,18 @@ export class ComputeStack extends cdk.Stack {
       secret.grantRead(taskRole);
     });
 
+    // Durable sprite pipeline: backend produces to the sprite-jobs queue.
+    // ARN string (not a queue object) to avoid a cross-stack dependency on
+    // SpriteWorkerStack — same pattern as worldgm's agent-* queue grant.
+    taskRole.addToPrincipalPolicy(
+      new iam.PolicyStatement({
+        actions: ["sqs:SendMessage", "sqs:GetQueueUrl"],
+        resources: [
+          `arn:aws:sqs:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:goosetown-${env}-sprite-jobs`,
+        ],
+      }),
+    );
+
     // CloudWatch log group
     const logGroup = new logs.LogGroup(this, "LogGroup", {
       logGroupName: `/ecs/goosetown-${env}`,
@@ -154,6 +166,11 @@ export class ComputeStack extends cdk.Stack {
         // Until populated, /landing/signup returns 503 with a server log
         // explaining the misconfiguration.
         RESEND_AUDIENCE_ID: env === "prod" ? "TBD-prod-audience-id" : "TBD-dev-audience-id",
+        // Durable sprite pipeline (spec 2026-06-11): backend is producer-only.
+        SPRITE_JOBS_QUEUE_NAME: `goosetown-${env}-sprite-jobs`,
+        // Lazy animation generation (activity anims + talking). Dev MUST stay
+        // "false" so it never burns the shared PixelLab account on lazy gen.
+        ACTIVITY_ANIMATION_GENERATION: env === "prod" ? "true" : "false",
       },
       secrets: {
         CLERK_ISSUER: ecs.Secret.fromSecretsManager(props.secrets.clerkIssuer),
@@ -167,6 +184,11 @@ export class ComputeStack extends cdk.Stack {
           props.secrets.pixelLabApiKey
         ),
         RESEND_API_KEY: ecs.Secret.fromSecretsManager(props.secrets.resendApiKey),
+        // Authenticates the sprite worker's POSTs to /town/internal/sprite-event.
+        // Same secret is wired into the sprite worker (sprite-worker-stack).
+        SPRITE_EVENT_SECRET: ecs.Secret.fromSecretsManager(
+          props.secrets.spriteEventSecret
+        ),
       },
       portMappings: [{ containerPort: 8000, protocol: ecs.Protocol.TCP }],
       healthCheck: {

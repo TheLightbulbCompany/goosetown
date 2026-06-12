@@ -11,7 +11,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
@@ -411,14 +411,6 @@ class OwnerMessageRequest(BaseModel):
     text: str
 
 
-# `_sprite_pipeline_task` lives in `core/services/sprite_pipeline.py` — moved
-# out to break the circular import with `sprite_queue`. Re-exported here so
-# callers inside this module (and external patches like the test suite) can
-# still reference `routers.town._sprite_pipeline_task` during the grace period
-# while we migrate off the old path.
-from core.services.sprite_pipeline import _sprite_pipeline_task  # noqa: E402, F401
-
-
 @router.post("/agent/register")
 async def register_agent(
     request: AgentRegisterRequest = Body(...),
@@ -468,8 +460,9 @@ async def register_agent(
             _agent_id = agent["id"]
 
             _existing = service.get_town_agent_by_id(_agent_id)
-            _in_progress = ("creating", "building_static", "static_ready", "animating", "downloading")
-            if _existing and _existing.get("spriteStatus") in _in_progress:
+            from core.services.sprite_jobs import IN_PROGRESS_STATUSES
+
+            if _existing and _existing.get("spriteStatus") in IN_PROGRESS_STATUSES:
                 logger.info(
                     "Sprite generation in progress for %s (%s)",
                     _agent_id,
@@ -479,14 +472,20 @@ async def register_agent(
                 _appearance = request.appearance
                 _display_name = request.display_name
 
-                from core.services.sprite_queue import get_sprite_queue
+                # Persist appearance on the row BEFORE enqueueing.  opt_in does
+                # not store appearance; the sprite worker reads the row as the
+                # source of truth, so without this write it would hit the
+                # "no appearance → warn + return" path and strand the agent at
+                # spriteStatus="queued" with no sprite and no claim release.
+                service.update_agent_state(_agent_id, appearance=_appearance)
 
-                queue = get_sprite_queue()
-                position = queue.enqueue(_agent_id, _display_name, _appearance)
-                if position > 0:
+                from core.services import sprite_jobs
+
+                queued = sprite_jobs.enqueue_signup(_agent_id, _display_name, _appearance)
+                if queued:
                     _send_to_daemon(
                         _agent_id,
-                        {"event": "sprite_progress", "status": f"Queued for sprite generation (position {position})"},
+                        {"event": "sprite_progress", "status": "Queued for sprite generation"},
                     )
 
     # Best-effort SQS queue creation for WorldGM personal events.
@@ -514,9 +513,10 @@ async def register_agent(
 
 
 # `resume_sprite_generation` lives in `core.services.sprite_pipeline`
-# alongside `_sprite_pipeline_task` (sub-project #3 final slice,
-# 2026-04-23). Re-imported here so the router module remains a one-stop
-# back-compat surface for any external caller.
+# (sub-project #3 final slice, 2026-04-23). Re-imported here so the router
+# module remains a one-stop back-compat surface for any external caller.
+# Used by the admin recomposite endpoint; the regenerate endpoint now uses
+# sprite_jobs.enqueue_signup (Task 7).
 from core.services.sprite_pipeline import resume_sprite_generation  # noqa: E402, F401
 
 
@@ -822,10 +822,8 @@ async def regenerate_sprite(agent_id: str):
     Unlike /recomposite-sprites (which re-downloads existing frames, no credits),
     this creates a BRAND-NEW PixelLab character — it COSTS generation credits.
     Use it when an agent's existing character is broken/hangs (re-composite can't
-    fix that). Passing ``character_id=None`` resets resume_sprite_generation to
-    the ``creating`` phase: create_character -> animate -> download -> composite
-    -> upload. Bounded by a generous timeout (generation+polling legitimately
-    takes minutes) so a true hang can't wedge the task forever.
+    fix that). Clears pixellabCharacterId + sets spriteStatus="queued" so the
+    SQS sprite worker starts from the ``creating`` phase.
 
     Gated to dev (403 elsewhere). Single-agent only — not a batch.
     """
@@ -839,34 +837,15 @@ async def regenerate_sprite(agent_id: str):
     if not agent:
         raise HTTPException(status_code=404, detail="agent not found")
 
-    appearance = agent.get("appearance") or ""
     display_name = agent.get("displayName") or agent.get("agentName") or "agent"
 
-    async def _run() -> None:
-        from core.services.pixellab_service import PixelLabCreditError
+    # Clear existing PixelLab character so the worker creates a fresh one.
+    # force=True bypasses the conditional DDB claim — state is already reset.
+    service.update_agent_state(agent_id, sprite_status="queued", pixellab_character_id=None)
+    from core.services import sprite_jobs
 
-        try:
-            await asyncio.wait_for(
-                resume_sprite_generation(agent_id, None, appearance, display_name, "creating"),
-                # A full from-scratch generation legitimately takes ~15-20 min
-                # (create + wait for the 4-direction character + queue + generate
-                # all signup animations + download + composite + upload). 600s was
-                # far too short and cancelled it mid-animation-queue. Now that the
-                # event-loop ConnectTimeout (#365) and task-churn (#366) hangs are
-                # fixed, this is just a generous backstop against a true hang.
-                timeout=1800,
-            )
-        except TimeoutError:
-            logger.warning("regenerate-sprite: timed out for %s", agent_id)
-        except PixelLabCreditError:
-            logger.error("ALARM: PixelLab credits exhausted during sprite generation for %s", agent_id)
-        except Exception:
-            logger.exception("regenerate-sprite: failed for %s", agent_id)
-
-    task = asyncio.create_task(_run())
-    _recomposite_tasks.add(task)
-    task.add_done_callback(_recomposite_tasks.discard)
-    return {"agent_id": agent_id, "status": "regenerating", "display_name": display_name}
+    sent = sprite_jobs.enqueue_signup(agent_id, agent.get("displayName", ""), agent.get("appearance", ""), force=True)
+    return {"agent_id": agent_id, "ok": sent, "status": "regenerating", "display_name": display_name}
 
 
 @router.get("/agent/{agent_id}/owner-chat")
@@ -1644,6 +1623,58 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
     return {"statusCode": 200}
 
 
+# ===========================================================================
+# Internal seam: sprite worker → backend
+# ===========================================================================
+
+
+class SpriteEventRequest(BaseModel):
+    agent_id: str
+    type: Literal["progress", "static_ready", "animations_updated"]
+    status: str | None = None
+
+
+@router.post("/internal/sprite-event")
+async def internal_sprite_event(request: SpriteEventRequest, raw_request: Request):
+    """Sprite-worker → backend seam (spec 2026-06-11 §4).
+
+    The sprite worker owns PixelLab API calls and DynamoDB writes
+    (spriteStatus / spriteUrl / spriteAnimations / onboardingPhase). This
+    endpoint applies the backend-process side effects the worker cannot reach:
+    updating the in-memory phase-lattice cache, pushing sprites to the game
+    server, and notifying the daemon.
+
+    Auth: dedicated ``SPRITE_EVENT_SECRET`` shared-secret gate (header
+    ``x-sprite-event-secret``), wired end-to-end through CDK into both the
+    backend and the sprite worker.
+    """
+    from core.config import settings
+
+    # Real shared-secret auth — CDK wires SPRITE_EVENT_SECRET into both the
+    # backend and the sprite worker (unlike WS_LAMBDA_SECRET, which was never
+    # wired end-to-end; see core/config.py). Fail CLOSED outside dev if the
+    # secret is missing: an unset secret in prod is a misconfiguration, not
+    # an excuse to accept unauthenticated internal calls.
+    secret = settings.SPRITE_EVENT_SECRET
+    if secret:
+        if raw_request.headers.get("x-sprite-event-secret", "") != secret:
+            raise HTTPException(status_code=403, detail="forbidden")
+    elif settings.ENVIRONMENT != "dev":
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    if request.type == "progress":
+        _send_to_daemon(
+            request.agent_id,
+            {"event": "sprite_progress", "status": request.status or ""},
+        )
+    else:
+        from core.services.sprite_update_apply import apply_sprite_update
+
+        await apply_sprite_update(request.agent_id, request.type)
+
+    return {"ok": True}
+
+
 # ---------------------------------------------------------------------------
 # Conversation handlers live in `core.services.conversation_service`. These
 # imports keep the dispatch ladder above calling its old names AND preserve
@@ -1660,8 +1691,6 @@ from core.services.activity_service import (  # noqa: E402, F401
     _activity_tasks,
     _activity_timer,
     _clear_activity_and_notify,
-    _custom_anim_in_progress,
-    _generate_activity_animation,
     _handle_agent_activity,
     complete_activity_from_startup,
     restart_activity_timer,

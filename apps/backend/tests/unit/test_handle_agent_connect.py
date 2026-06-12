@@ -212,7 +212,7 @@ async def test_connect_returns_404_when_agent_not_found():
 # Auto-sprite kick for out-of-band rows (residents)
 # ---------------------------------------------------------------------------
 
-_QUEUE_PATH = "core.services.sprite_queue.get_sprite_queue"
+_ENQUEUE_PATH = "core.services.sprite_jobs.enqueue_signup"
 
 
 def _spriteless_resident_record() -> dict:
@@ -233,11 +233,11 @@ def _spriteless_resident_record() -> dict:
     }
 
 
-async def _run_connect_with(agent_record: dict, queue_mock):
+async def _run_connect_with(agent_record: dict, enqueue_mock):
     """Helper: run _handle_agent_connect against a synthesized agent row.
 
-    ``queue_mock`` stands in for ``get_sprite_queue()`` — its ``enqueue``
-    attribute receives the call we care about.
+    ``enqueue_mock`` stands in for ``sprite_jobs.enqueue_signup`` — it
+    receives the call we care about.
     """
     from core.services.agent_connect_service import _handle_agent_connect
 
@@ -253,7 +253,7 @@ async def _run_connect_with(agent_record: dict, queue_mock):
         patch(TOWN_SERVICE_PATH, return_value=svc_mock),
         patch(GS_CLIENT_PATH, return_value=gs_mock),
         patch(MAILBOX_FACTORY_PATH, return_value=fake_mailbox),
-        patch(_QUEUE_PATH, return_value=queue_mock),
+        patch(_ENQUEUE_PATH, new=enqueue_mock),
     ):
         await _handle_agent_connect(_make_request(), ws_mock)
 
@@ -261,12 +261,11 @@ async def _run_connect_with(agent_record: dict, queue_mock):
 @pytest.mark.asyncio
 async def test_connect_auto_enqueues_sprite_for_spriteless_row():
     """Resident row written out-of-band with appearance + no sprite state
-    must enqueue on the same SpriteQueue the register endpoint uses —
-    inheriting its bounded concurrency, dedup, and retry."""
-    queue = MagicMock()
-    queue.enqueue.return_value = 0
-    await _run_connect_with(_spriteless_resident_record(), queue)
-    queue.enqueue.assert_called_once_with(
+    must call sprite_jobs.enqueue_signup — durability and dedup come from
+    SQS + the DynamoDB conditional claim."""
+    enqueue_mock = MagicMock(return_value=True)
+    await _run_connect_with(_spriteless_resident_record(), enqueue_mock)
+    enqueue_mock.assert_called_once_with(
         "agent-resident-uuid",
         "Tobias",
         "Barrel-chested old man, mustard raincoat.",
@@ -277,44 +276,42 @@ async def test_connect_auto_enqueues_sprite_for_spriteless_row():
 async def test_connect_does_not_enqueue_when_sprite_already_ready():
     """An agent whose row already has spriteReady=true must NOT enqueue
     — no duplicate PixelLab calls, no clobbering."""
-    queue = MagicMock()
+    enqueue_mock = MagicMock(return_value=True)
     record = _spriteless_resident_record()
     record["spriteReady"] = True
     record["spriteUrl"] = "https://cdn/x.png"
-    await _run_connect_with(record, queue)
-    queue.enqueue.assert_not_called()
+    await _run_connect_with(record, enqueue_mock)
+    enqueue_mock.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_connect_does_not_enqueue_when_pipeline_in_flight():
     """Pipeline already running (spriteStatus set) — reconnect must skip,
-    not enqueue a second job. (The queue's own dedup is a backstop, but
-    this handler's check avoids even hitting the queue for the common case.)"""
-    queue = MagicMock()
+    not enqueue a second job."""
+    enqueue_mock = MagicMock(return_value=True)
     record = _spriteless_resident_record()
     record["spriteStatus"] = "creating"
-    await _run_connect_with(record, queue)
-    queue.enqueue.assert_not_called()
+    await _run_connect_with(record, enqueue_mock)
+    enqueue_mock.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_connect_does_not_enqueue_when_pixellab_character_id_set():
-    """Existing PixelLab character means the pipeline already started — the
-    backend's startup recovery path (main.py resume_sprite_generation) handles
-    that case. This handler must skip to avoid double-billing PixelLab."""
-    queue = MagicMock()
+    """Existing PixelLab character means the pipeline already started —
+    this handler must skip to avoid double-billing PixelLab."""
+    enqueue_mock = MagicMock(return_value=True)
     record = _spriteless_resident_record()
     record["pixellabCharacterId"] = "char-abc"
-    await _run_connect_with(record, queue)
-    queue.enqueue.assert_not_called()
+    await _run_connect_with(record, enqueue_mock)
+    enqueue_mock.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_connect_does_not_enqueue_when_no_appearance():
     """Legacy user rows without an appearance field must not crash or enqueue.
     The /town/agent/register HTTP path already handles their sprites."""
-    queue = MagicMock()
+    enqueue_mock = MagicMock(return_value=True)
     record = _spriteless_resident_record()
     record["appearance"] = None
-    await _run_connect_with(record, queue)
-    queue.enqueue.assert_not_called()
+    await _run_connect_with(record, enqueue_mock)
+    enqueue_mock.assert_not_called()

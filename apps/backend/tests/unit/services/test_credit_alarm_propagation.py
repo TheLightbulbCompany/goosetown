@@ -7,11 +7,11 @@ admin endpoints' ``except PixelLabCreditError`` alarm arms were therefore dead
 code.
 
 After Fix 1 an ``except PixelLabCreditError: raise`` arm sits BEFORE the broad
-catch in both ``_sprite_pipeline_task`` and ``resume_sprite_generation``, so
-the error propagates out to the admin endpoint and fires the alarm.
+catch in ``resume_sprite_generation``, so the error propagates out to the admin
+endpoint and fires the alarm.
 
 This test verifies the ``resume_sprite_generation`` path (the one consumed by
-the regenerate + recomposite admin endpoints). Mocking pattern follows
+the recomposite admin endpoint). Mocking pattern follows
 ``test_resume_recomposite.py``.
 """
 

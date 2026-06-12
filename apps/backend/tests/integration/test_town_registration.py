@@ -27,7 +27,7 @@ async def test_registration_sets_static_phase_before_animations():
     We simulate a hung Phase C by making queue_signup_animations sleep for 30 s and
     cancelling with a 1.5 s timeout, then assert the Phase B state was already written.
     """
-    from core.services.sprite_pipeline import _sprite_pipeline_task
+    from core.services.sprite_pipeline import LocalSpriteEventSink, run_signup_pipeline
 
     agent_id = "test-agent-id"
 
@@ -61,10 +61,15 @@ async def test_registration_sets_static_phase_before_animations():
     # Mock TownService
     mock_service = MagicMock()
     mock_service.update_agent_state.side_effect = fake_update_agent_state
+    # The pipeline now reads display_name / appearance / char_id / status from
+    # the ROW (the row is the source of truth — wrapper args are advisory).
     mock_service.get_town_agent_by_id.return_value = {
         "id": agent_id,
         "currentLocation": "plaza",
         "locationContext": "town",
+        "displayName": "Test Agent",
+        "appearance": "a pixel art warrior",
+        "spriteStatus": "queued",
     }
 
     # Mock game server client and WS manager (agent not connected yet — that's fine)
@@ -72,12 +77,9 @@ async def test_registration_sets_static_phase_before_animations():
     mock_gs_client.connect_agent = AsyncMock()
     mock_gs_client.update_agent_sprites = AsyncMock()
 
-    mock_ws_mgr = MagicMock()
-    mock_ws_mgr.get_by_agent_id.return_value = None
-
     fake_s3_key = f"sprites/{agent_id}/walk.png"
 
-    # Patch everything that _sprite_pipeline_task imports or calls at runtime.
+    # Patch everything that run_signup_pipeline imports or calls at runtime.
     # The function does lazy imports, so we patch at the source module level.
     # asyncio.sleep is patched to a no-op so the polling loops don't take real time.
     async def _instant_sleep(_secs=0):
@@ -85,14 +87,20 @@ async def test_registration_sets_static_phase_before_animations():
 
     with (
         patch("core.services.pixellab_service.PixelLabService", return_value=mock_pxl),
-        # `_sprite_pipeline_task` lives in `core.services.sprite_pipeline`.
+        # `run_signup_pipeline` lives in `core.services.sprite_pipeline`.
         # TownService, get_game_server_client, and get_town_agent_ws_manager
         # are imported at the top of that module — so patch by that module's
         # namespace (patching where the NAME IS LOOKED UP, not where it's
         # defined, which is the standard unittest.mock rule).
         patch("core.services.sprite_pipeline.TownService", return_value=mock_service),
         patch("core.services.sprite_pipeline.get_game_server_client", return_value=mock_gs_client),
-        patch("core.services.sprite_pipeline.get_town_agent_ws_manager", return_value=mock_ws_mgr),
+        # The pipeline no longer touches the ws_manager / game server
+        # directly — backend-process effects go through LocalSpriteEventSink →
+        # apply_sprite_update. Patch it at its source module (lazy import).
+        patch(
+            "core.services.sprite_update_apply.apply_sprite_update",
+            new=AsyncMock(),
+        ),
         patch(
             "core.services.sprite_storage.upload_sprite_to_s3",
             return_value=fake_s3_key,
@@ -125,7 +133,7 @@ async def test_registration_sets_static_phase_before_animations():
         # Phase C (queue_signup_animations) will be cancelled by the TimeoutError.
         try:
             await asyncio.wait_for(
-                _sprite_pipeline_task(agent_id, "Test Agent", "a pixel art warrior"),
+                run_signup_pipeline(agent_id, sink=LocalSpriteEventSink()),
                 timeout=1.5,
             )
         except asyncio.TimeoutError:

@@ -18,6 +18,10 @@ aws sso login --profile isol8-admin
 | `goosetown-{env}-gameserver-task-missing` | `ECS/ContainerInsights/RunningTaskCount` < 1 for 5 min (Container Insights enabled on gameserver cluster) | `goosetown-{env}-alarms` | Game server Fargate task has crashed or failed to start. All connected agents will drop after ~1 min (5-retry cap in daemon). |
 | `goosetown-{env}-backend-task-missing` | `AWS/ApplicationELB/HealthyHostCount` < desired (1 dev / 2 prod) for 5 min | `goosetown-{env}-alarms` | Backend ALB has fewer healthy targets than desired. Either the Fargate task is down or it's failing `/health`. REST API and WebSocket forwarding are unavailable either way. |
 | `goosetown-{env}-nat-port-errors` | ErrorPortAllocation >= 1 in 5 min | `goosetown-{env}-alarms` | NAT gateway port exhaustion or AZ-level fault. Private-subnet egress (backend → Clerk, PixelLab, DynamoDB endpoint) may be degraded. Awareness-only in dev — see issue #165. |
+| `goosetown-{env}-sprite-dlq-depth` | DLQ `ApproximateNumberOfMessagesVisible` >= 1 | `goosetown-{env}-alarms` | Sprite job failed 3 times and landed in the DLQ. Inspect the message, fix the root cause, then redrive (section 19). |
+| `goosetown-{env}-sprite-backlog-age` | `ApproximateAgeOfOldestMessage` > 1800s (30 min) | `goosetown-{env}-alarms` | Sprite jobs are not being processed fast enough — worker may be down, PixelLab may be rate-limiting, or a credit exhaustion is causing 15-min re-enqueue cycles. |
+| `goosetown-{env}-sprite-worker-missing` | Sprite worker CPUUtilization SampleCount < 1 for 5 min | `goosetown-{env}-alarms` | Sprite worker Fargate task is missing. Restart via section 19. |
+| `goosetown-{env}-sprite-credit-exhausted` | `GooseTown/SpriteWorker:CreditExhausted` sum >= 1 | `goosetown-{env}-alarms` | PixelLab returned 402. Top up credits; queued jobs are re-enqueued with a 15-minute delay and auto-resume. Receive count resets each cycle so credit outages never dead-letter jobs. See section 19 for recovery steps. |
 
 SNS subscriptions are managed manually per environment:
 
@@ -373,6 +377,11 @@ StorageStack ──► (spriteBucket) ──► ComputeStack (S3 read/write IAM 
 GameServerStack ──► (serviceUrl + sg) ──► ComputeStack (env var + SG ingress)
 
 ComputeStack ──► (fargateTaskRole) ──► ApiStack (grants ManageConnections IAM)
+
+SpriteWorkerStack ──► (SQS queue ARN string) ──► ComputeStack (IAM SendMessage grant, inline ARN — no cross-stack object reference)
+                  ──► (cluster from ClusterStack) ──► Fargate task (same backend image, command override)
+                  ──► AuthStack (PIXELLAB_API_KEY + WS_LAMBDA_SECRET secrets)
+                  ──► StorageStack (sprite bucket write)
 ```
 
 ### Inverted dependencies (rare but real)
@@ -391,6 +400,7 @@ ComputeStack ──► (fargateTaskRole) ──► ApiStack (grants ManageConnec
 | GameServerStack | All connected agents drop. Backend's `GAME_SERVER_URL` resolves via Cloud Map and re-resolves on next connect. |
 | ComputeStack | Backend ALB targets churn. WebSocket connections (handled by ApiStack Lambdas, not backend) keep working briefly but `/ws-message` POSTs fail. |
 | ApiStack | All WebSocket clients drop. New connects fail until authorizer redeploys. Backend itself unaffected — REST polling continues. |
+| SpriteWorkerStack | Sprite generation pauses. Jobs are durable in SQS (4-day retention); no sprites are lost. New registrations succeed with shadow-placeholder sprite until worker restarts and drains the queue. Safe to restart at any time — in-flight job resumes via SQS redelivery. |
 
 ---
 
@@ -562,7 +572,7 @@ If a cert change broke ACM validation (rare — the cert is wildcard-fixed), the
 
 ## 13. StorageStack Rollback
 
-**Contains:** S3 bucket `goosetown-{env}-sprites`, CloudFront distribution at `assets-{env}.goosetown.isol8.co` with OAC, ResponseHeadersPolicy injecting CORS + CORP at the edge, an A-record for the CloudFront distribution. **Versioning is OFF on the sprite bucket** — this is a known gap.
+**Contains:** S3 bucket `goosetown-{env}-sprites`, CloudFront distribution at `assets-{env}.goosetown.isol8.co` with OAC, ResponseHeadersPolicy injecting CORS + CORP at the edge, an A-record for the CloudFront distribution. Bucket versioning is ON (PR #219, `versioned: true` + 30-day noncurrent-version lifecycle rule).
 
 ### Typical failure modes
 
@@ -586,23 +596,35 @@ If a cert change broke ACM validation (rare — the cert is wildcard-fixed), the
    ```
    Invalidation completes in 5-15 min. Cost: $0.005/path after the first 1000/month — `/*` counts as one path.
 
-#### Accidentally deleted sprite (no versioning fallback)
+#### Accidentally deleted sprite (versioning fallback available)
 
-Versioning is OFF (`storage-stack.ts:36-50` does not set `versioned: true`). For each lost sprite:
+Bucket versioning is ON (PR #219). For each lost sprite you can restore the previous version. For each lost sprite:
 
 1. **Find the agent ID** that owned the sprite path (`sprites/{agent_id}/walk.png`).
-2. **Re-trigger sprite generation** by clearing the sprite-ready flag in DynamoDB:
+2. **Restore from S3 versioning** (preferred):
+   ```bash
+   # List versions for the sprite
+   aws s3api list-object-versions \
+     --bucket goosetown-prod-sprites \
+     --prefix "sprites/<agent-id>/walk.png" \
+     --profile isol8-admin
+   # Copy a prior version back to the current key:
+   aws s3api copy-object \
+     --bucket goosetown-prod-sprites \
+     --copy-source "goosetown-prod-sprites/sprites/<agent-id>/walk.png?versionId=<prev-version-id>" \
+     --key "sprites/<agent-id>/walk.png" \
+     --profile isol8-admin
+   ```
+3. **If no prior version exists, re-trigger sprite generation** by clearing the sprite-ready flag in DynamoDB then enqueuing via the admin regenerate endpoint (or clearing `spriteStatus` and `pixellabCharacterId` so the sprite worker boot sweep picks it up):
    ```bash
    aws dynamodb update-item \
      --table-name goosetown-prod-agents \
      --key '{"id":{"S":"<agent-id>"}}' \
-     --update-expression "SET spriteReady = :false REMOVE spriteUrl" \
-     --expression-attribute-values '{":false":{"BOOL":false}}' \
+     --update-expression "SET spriteReady = :false, spriteStatus = :queued REMOVE spriteUrl" \
+     --expression-attribute-values '{":false":{"BOOL":false},":queued":{"S":"queued"}}' \
      --profile isol8-admin
-   ```
-3. **Trigger the sprite pipeline.** The cleanest way is to have the agent re-register, but that loses identity. Alternative: call the backend's resume-sprite-generation path. There's an internal `resume_sprite_generation` in `core/services/sprite_pipeline.py` that walks `spriteReady=false` agents — it runs at backend startup. Force a backend deploy:
-   ```bash
-   aws ecs update-service --cluster goosetown-prod --service goosetown-prod-backend --force-new-deployment --profile isol8-admin
+   # Then force-restart the sprite worker so the boot sweep picks up the row:
+   aws ecs update-service --cluster goosetown-prod --service goosetown-prod-sprite-worker --force-new-deployment --profile isol8-admin
    ```
 4. **Verify** the sprite reappears in S3 (`aws s3 ls s3://goosetown-prod-sprites/sprites/<agent-id>/`) and the CDN URL on the agent record updates.
 
@@ -801,3 +823,81 @@ aws iam put-role-policy \
 ```
 
 `cdk bootstrap` is idempotent on the inline policy — running it later will reset the policy to the standard template, removing this addition. If you re-bootstrap, re-run the patch above. (Long-term, file an upstream issue with `aws-cdk` to add this permission to the standard bootstrap template.)
+
+---
+
+## 19. SpriteWorkerStack Rollback & Recovery
+
+**Contains:** SQS queue `goosetown-{env}-sprite-jobs` + DLQ `goosetown-{env}-sprite-jobs-dlq`, four CloudWatch alarms (DLQ depth, backlog age, worker-missing, CreditExhausted), a single-replica Fargate service `goosetown-{env}-sprite-worker` running the backend image with a command override (`python -m sprite_worker`). `desiredCount=1` by design — global PixelLab concurrency is correct only because there is exactly one process generating.
+
+Jobs are **durable in SQS** (4-day message retention). A worker restart, crash, or deploy never loses queued jobs — in-flight messages reappear within ≤5 min (visibility timeout expires) and are reprocessed via the resume-aware pipeline. Safe to restart the worker at any time.
+
+### Worker restart
+
+```bash
+aws ecs update-service \
+  --cluster goosetown-{env} \
+  --service goosetown-{env}-sprite-worker \
+  --force-new-deployment \
+  --profile isol8-admin
+```
+
+### Image rollback (bad deploy)
+
+Same procedure as section 14 (GameServerStack image rollback) — find the previous ECR image tag, register a new task definition revision pointing at it, and force-deploy. The worker boot sweep will re-enqueue any rows stuck in `spriteStatus` in (`queued`, `creating`, `building_static`, `animating`, `downloading`) so nothing is lost.
+
+### DLQ replay
+
+Inspect the DLQ first before redriving — a message may have failed 3× due to a transient bug that is now fixed, or there may be a permanent data-shape issue you need to fix first.
+
+```bash
+# Inspect the first DLQ message without consuming it:
+aws sqs receive-message \
+  --queue-url "https://sqs.us-east-1.amazonaws.com/877352799272/goosetown-{env}-sprite-jobs-dlq" \
+  --attribute-names All \
+  --message-attribute-names All \
+  --profile isol8-admin
+
+# Redrive all DLQ messages back to the source queue:
+aws sqs start-message-move-task \
+  --source-arn "arn:aws:sqs:us-east-1:877352799272:goosetown-{env}-sprite-jobs-dlq" \
+  --profile isol8-admin
+```
+
+After redriving, monitor the `ApproximateNumberOfMessagesVisible` on the source queue to confirm messages are being consumed. If the same messages DLQ again, check the sprite worker logs:
+
+```bash
+aws logs tail /ecs/goosetown-{env}-sprite-worker \
+  --follow \
+  --profile isol8-admin
+```
+
+### Credit-exhaustion alarm response (`GooseTown/SpriteWorker:CreditExhausted`)
+
+1. Top up PixelLab credits at https://pixellab.ai (account login required).
+2. No manual action needed for the queue — on a 402 the worker re-enqueues the message as a fresh SQS message with a 15-minute delay, then deletes the original. A fresh message resets the receive count, so credit outages cycle every 15 minutes indefinitely without burning the 3-receive DLQ budget. Jobs auto-resume within 15 minutes of the credit top-up.
+3. If the DLQ alarm also fired alongside this alarm, those messages represent genuine processing failures (not credit outages). Redrive them after fixing the underlying cause.
+
+### Per-env PixelLab API key split (DEFERRED — single shared account by decision)
+
+Both `dev` and `prod` share one PixelLab account key (`goosetown/dev/pixellab_api_key` and `goosetown/prod/pixellab_api_key` hold the same value). **Decision 2026-06-12: this stays — there is no second account and none is planned.** The shared cap is managed instead by per-env worker concurrency (`PIXELLAB_MAX_CONCURRENT_ANIMATIONS`: prod 2, dev 1 in `sprite-worker-stack.ts`) plus `ACTIVITY_ANIMATION_GENERATION=false` on the dev backend. An email to PixelLab asking about the concurrent-job cap and an enterprise/higher-concurrency tier is the pending path to more headroom; revisit a key split only if PixelLab offers multiple keys per account or an enterprise plan lands.
+
+If that ever happens, the mechanical steps are:
+
+1. Obtain the second key (separate account or per-account key, whichever PixelLab supports).
+2. Store the new dev key in Secrets Manager:
+   ```bash
+   aws secretsmanager put-secret-value \
+     --secret-id goosetown/dev/pixellab_api_key \
+     --secret-string '<new dev key>' \
+     --profile isol8-admin \
+     --region us-east-1
+   ```
+3. Force new deployments of the dev backend and dev sprite worker so containers pick up the updated secret:
+   ```bash
+   aws ecs update-service --cluster goosetown-dev --service goosetown-dev-backend \
+     --force-new-deployment --profile isol8-admin
+   aws ecs update-service --cluster goosetown-dev --service goosetown-dev-sprite-worker \
+     --force-new-deployment --profile isol8-admin
+   ```
+4. Verify: register a throwaway dev agent; confirm the sprite generates and the prod account's generation count does not move.
