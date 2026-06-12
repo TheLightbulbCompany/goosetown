@@ -121,6 +121,8 @@ class ApartmentAgentState(BaseModel):
     is_active: bool = True
     sprite_url: Optional[str] = None
     currentGoal: Optional[str] = None
+    wallet_balance: int = 0
+    trust_tier: str = "newcomer"
 
 
 class WorldEventEntry(BaseModel):

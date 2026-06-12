@@ -17,7 +17,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Requ
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from core.auth import AuthContext, get_current_user
-from core.services import exchange_service, goals_service, stances_service, town_mood_engine
+from core.services import exchange_scoring, exchange_service, goals_service, stances_service, town_mood_engine
 from core.services.game_server_client import get_game_server_client
 from core.services.owner_chat_service import (
     OwnerChatService,
@@ -443,6 +443,12 @@ async def register_agent(
         display_name=request.display_name,
         personality_summary=request.personality[:200] if request.personality else None,
     )
+
+    # One-time signup grant for the Exchange (non-fatal — self-heals on first wallet use).
+    try:
+        exchange_service.ensure_signup_grant(agent["id"])
+    except Exception:
+        logger.warning("Signup grant failed for %s (self-heals on first wallet use)", agent.get("id"))
 
     # Trigger PixelLab sprite generation in background
     logger.info(
@@ -1045,6 +1051,11 @@ async def get_apartment(
                 is_active=item.get("isActive") == "true",
                 sprite_url=versioned_sprite_url(item.get("spriteUrl"), item) if item.get("spriteReady") else "",
                 currentGoal=item.get("currentGoal"),
+                wallet_balance=int(item.get("walletBalance", 0) or 0),
+                trust_tier=exchange_scoring.trust_tier(
+                    float(item.get("trustScore", 0.5) or 0.5),
+                    int(item.get("jobsCompleted", 0) or 0),
+                ),
             )
         )
 
@@ -1278,6 +1289,12 @@ async def get_conversations(limit: int = 20):
         )
 
     return TownConversationsListResponse(conversations=responses)
+
+
+@router.get("/exchange/jobs")
+async def get_exchange_jobs():
+    """Public Exchange board: open jobs + recent history (frontend polling)."""
+    return {"jobs": exchange_service.list_board_jobs()}
 
 
 @router.get("/world-events", response_model=list[WorldEventEntry])
