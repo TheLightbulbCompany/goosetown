@@ -240,7 +240,7 @@ describe('ApartmentCard passbook', () => {
     expect(screen.getByText('job_escrow')).toBeInTheDocument();
   });
 
-  it('does not refetch when the passbook is collapsed and re-expanded', async () => {
+  it('does not refetch on re-expand after a successful fetch', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
@@ -257,6 +257,32 @@ describe('ApartmentCard passbook', () => {
     fireEvent.click(toggle); // re-expand — cached, no second fetch
     expect(await screen.findByText('job_payout')).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries the fetch on re-expand after a failed fetch', async () => {
+    const failResponse = {
+      ok: false,
+      status: 500,
+      json: () => Promise.resolve({}),
+    } as unknown as Response;
+    const successResponse = {
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(LEDGER),
+    } as unknown as Response;
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(failResponse)
+      .mockResolvedValueOnce(successResponse);
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderCard(makeAgent({ wallet_balance: 18 }));
+    const toggle = screen.getByText(/Passbook/);
+    fireEvent.click(toggle); // first expand → fetch fails
+    expect(await screen.findByText(/Passbook error/)).toBeInTheDocument();
+    fireEvent.click(toggle); // collapse
+    fireEvent.click(toggle); // re-expand → startedRef reset, retries
+    expect(await screen.findByText('job_payout')).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('shows a passbook error state when the ledger fetch fails', async () => {

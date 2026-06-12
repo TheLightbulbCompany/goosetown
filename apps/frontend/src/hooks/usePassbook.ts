@@ -63,6 +63,8 @@ export function usePassbook(agentId: string, enabled: boolean): {
       } catch (err) {
         if (cancelled) return;
         setError(err instanceof Error ? err.message : 'fetch failed');
+        // Reset so that re-expanding after a failure triggers a retry.
+        startedRef.current = false;
       } finally {
         if (!cancelled) setLoading(false);
       }

@@ -46,6 +46,7 @@ export default function CrumbAmount({
     <span className={`inline-flex items-baseline gap-1 font-body ${className}`.trim()}>
       <span>{text}</span>
       <CrumbGlyph />
+      <span className="sr-only"> crumbs</span>
     </span>
   );
 }

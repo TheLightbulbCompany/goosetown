@@ -16,7 +16,7 @@ describe('CrumbAmount', () => {
     // Hand-pixeled: a handful of <rect>s on a 7px grid, crisp edges, gold.
     expect(glyph.querySelectorAll('rect').length).toBeGreaterThanOrEqual(3);
     expect(glyph.getAttribute('width')).toBe('7');
-    expect(glyph.className.baseVal).toContain('text-gold-500');
+    expect(glyph.getAttribute('class')).toContain('text-gold-500');
   });
 
   it('renders an explicit sign when signed', () => {

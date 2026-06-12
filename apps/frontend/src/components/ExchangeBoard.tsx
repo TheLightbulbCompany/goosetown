@@ -108,9 +108,9 @@ function PinnedNotice({ job }: { job: ExchangeJob }) {
         {job.bid_count} sealed bid{job.bid_count === 1 ? '' : 's'}
       </p>
       {fraction !== null && (
-        <div className="mt-2 h-[1.5px] bg-brown-300" data-testid="town-clock">
+        <div className="mt-2 h-0.5 bg-brown-300" data-testid="town-clock">
           <div
-            className="h-full bg-brown-700"
+            className="h-0.5 bg-brown-700"
             data-testid="town-clock-fill"
             style={{ width: `${fraction * 100}%` }}
           />
