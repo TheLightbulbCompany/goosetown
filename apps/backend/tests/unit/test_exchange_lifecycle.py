@@ -986,3 +986,83 @@ class TestLateRacingBidNotifications:
         assert ("bid-c", "job_cancelled") in events
         # Consumer must NOT receive job_cancelled (only exchange_ok from _notify_outcome).
         assert ("consumer", "job_cancelled") not in events
+
+
+# ---------------------------------------------------------------------------
+# Revision-guarded close: late bids are SCORED, not just notified (codex P2)
+# ---------------------------------------------------------------------------
+
+
+class TestBidRevisionGuard:
+    """``place_bid`` bumps ``bidsRev`` atomically with the bid; ``_close_bid_window``
+    guards its status flip on the revision it scored and retries on mismatch, so a
+    bid that commits between the close path's read and its flip participates in
+    the award instead of being silently dropped from scoring."""
+
+    @staticmethod
+    def _stale_first_read(monkeypatch, stale: dict) -> dict:
+        """Patch ex._get_job so the FIRST call returns ``stale``; later calls hit
+        the real table. Returns the call counter dict."""
+        real_get_job = ex._get_job
+        calls = {"n": 0}
+
+        def fake(job_id):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return stale
+            return real_get_job(job_id)
+
+        monkeypatch.setattr(ex, "_get_job", fake)
+        return calls
+
+    async def test_retry_scores_late_bid_and_awards_it(self, dynamodb_tables, mailbox, ws, monkeypatch):
+        """Stale snapshot has bidder A only; the real table holds A + late bidder B
+        (strictly better: lower price, same confidence). The guarded flip must
+        fail, the close must retry on fresh data, and B must win the award."""
+        cc, job_id = await _post(dynamodb_tables, ws, max_price=30)
+        for aid, name in (("bid-a", "alice"), ("bid-b", "brenda")):
+            _seed_agent(dynamodb_tables, aid, name)
+            ws.conns[aid] = _conn(aid, name, f"c-{aid}")
+
+        await ex.place_bid(ws.conns["bid-a"], job_id, 20, 0.9, "first in")
+        stale = ex._get_job(job_id)  # bidsRev=1, bids={A}
+        # Late racer commits via the REAL bid path (bumps bidsRev to 2).
+        await ex.place_bid(ws.conns["bid-b"], job_id, 10, 0.9, "late but cheaper")
+
+        calls = self._stale_first_read(monkeypatch, stale)
+        mailbox.reset_mock()
+        await ex._close_bid_window(job_id)
+
+        job = _get_job(dynamodb_tables, job_id)
+        assert job["status"] == "AWARDED"
+        assert job["providerId"] == "bid-b"  # late bid was scored and won
+        assert int(job["agreedPrice"]) == 10
+        assert calls["n"] >= 3  # stale read, post-failure re-read, retry read
+        events = _notified_events(mailbox)
+        assert ("bid-b", "job_awarded") in events
+        assert ("bid-a", "bid_lost") in events
+        assert ("bid-b", "bid_lost") not in events
+
+    async def test_rebid_race_awards_at_reread_price(self, dynamodb_tables, mailbox, ws, monkeypatch):
+        """A bids 50 then rebids 10 (bidsRev bumps twice). A stale snapshot from
+        the first bid must NOT settle at 50 — the guard fails, the close re-reads,
+        and the award uses the rebid price."""
+        cc, job_id = await _post(dynamodb_tables, ws, max_price=60)
+        _seed_agent(dynamodb_tables, "bid-a", "alice")
+        ws.conns["bid-a"] = _conn("bid-a", "alice", "c-a")
+
+        await ex.place_bid(ws.conns["bid-a"], job_id, 50, 0.8, "opening offer")
+        stale = ex._get_job(job_id)  # bidsRev=1, price 50
+        await ex.place_bid(ws.conns["bid-a"], job_id, 10, 0.8, "actually cheaper")  # bidsRev=2
+
+        calls = self._stale_first_read(monkeypatch, stale)
+        mailbox.reset_mock()
+        await ex._close_bid_window(job_id)
+
+        job = _get_job(dynamodb_tables, job_id)
+        assert job["status"] == "AWARDED"
+        assert job["providerId"] == "bid-a"
+        assert int(job["agreedPrice"]) == 10  # re-read won; stale 50 never settled
+        assert calls["n"] >= 3
+        # Escrow 60, agreed 10 -> 50 refunded: consumer back to 90.
+        assert int(_get_agent(dynamodb_tables, "consumer")["walletBalance"]) == 90

@@ -216,12 +216,20 @@ def _get_job(job_id: str) -> dict | None:
     return resp.get("Item")
 
 
-def _flip_status(job_id: str, from_status: str, to_status: str, set_extra: dict[str, Any] | None = None) -> dict | None:
+def _flip_status(
+    job_id: str,
+    from_status: str,
+    to_status: str,
+    set_extra: dict[str, Any] | None = None,
+    extra_condition: str | None = None,
+    extra_values: dict[str, Any] | None = None,
+) -> dict | None:
     """Conditionally flip a job's status.
 
     Returns the post-flip item dict (``ReturnValues="ALL_NEW"``) on success, or
-    ``None`` if the job wasn't in ``from_status`` (another path — timer, sweeper,
-    explicit verb — won the race).
+    ``None`` if the condition failed — the job wasn't in ``from_status`` (another
+    path — timer, sweeper, explicit verb — won the race) or, when
+    ``extra_condition`` is supplied, that condition no longer held.
 
     Callers that only care about success/failure can use the returned value in a
     boolean context (``None`` is falsy, a dict is truthy), so all existing
@@ -235,11 +243,15 @@ def _flip_status(job_id: str, from_status: str, to_status: str, set_extra: dict[
         names[f"#x{i}"] = attr
         values[f":x{i}"] = val
         sets.append(f"#x{i} = :x{i}")
+    condition = "#st = :from"
+    if extra_condition:
+        condition += f" AND {extra_condition}"
+        values.update(extra_values or {})
     try:
         resp = table.update_item(
             Key={"id": job_id},
             UpdateExpression="SET " + ", ".join(sets),
-            ConditionExpression="#st = :from",
+            ConditionExpression=condition,
             ExpressionAttributeNames=names,
             ExpressionAttributeValues=values,
             ReturnValues="ALL_NEW",
@@ -477,12 +489,15 @@ async def place_bid(agent_conn: Any, job_id: str, price: int, confidence: float,
     }
     table = dynamo.jobs_table()
     try:
+        # The bidsRev bump rides in the SAME atomic write as the bid, so the
+        # window-close path can detect (and re-score) any bid that commits
+        # between its job read and its status flip.
         resp = table.update_item(
             Key={"id": job_id},
-            UpdateExpression="SET bids.#aid = :bid, updatedAt = :now",
+            UpdateExpression="SET bids.#aid = :bid, updatedAt = :now ADD bidsRev :one",
             ConditionExpression="#st = :open",
             ExpressionAttributeNames={"#aid": agent_conn.agent_id, "#st": "status"},
-            ExpressionAttributeValues={":bid": bid, ":open": "OPEN", ":now": _now_iso()},
+            ExpressionAttributeValues={":bid": bid, ":open": "OPEN", ":now": _now_iso(), ":one": 1},
             ReturnValues="ALL_NEW",
         )
     except table.meta.client.exceptions.ConditionalCheckFailedException:
@@ -663,16 +678,60 @@ async def review_job(agent_conn: Any, job_id: str, accept: bool | None, reason: 
 # ---------------------------------------------------------------------------
 
 
+_CLOSE_GUARDED_ATTEMPTS = 5
+
+
 async def _close_bid_window(job_id: str) -> None:
-    """Bid window over: award to the scoring winner, or expire with a refund."""
+    """Bid window over: award to the scoring winner, or expire with a refund.
+
+    A bid can commit between our job read and the OPEN→AWARDED/EXPIRED flip
+    (its ``status=OPEN`` condition passed), and it must participate in the
+    award — not just be notified as a loser. ``place_bid`` bumps ``bidsRev``
+    atomically with each bid, so we guard the flip on the revision we scored
+    and re-read + re-score whenever a late bid moved it.
+    """
+    for _ in range(_CLOSE_GUARDED_ATTEMPTS):
+        if await _close_bid_window_once(job_id, guard_revision=True):
+            return
+    logger.warning(
+        "Bid-window close for job %s lost the revision guard %d times; closing without it (a bid landing "
+        "after this final read is notified as a loser but not scored)",
+        job_id,
+        _CLOSE_GUARDED_ATTEMPTS,
+    )
+    await _close_bid_window_once(job_id, guard_revision=False)
+
+
+def _flip_lost(job_id: str) -> bool:
+    """After a failed close flip: True if another path already transitioned the
+    job (done), False if the job is still OPEN — a late bid bumped ``bidsRev``
+    and the caller should re-read and re-score."""
+    job = _get_job(job_id)
+    return not job or job.get("status") != "OPEN"
+
+
+async def _close_bid_window_once(job_id: str, guard_revision: bool) -> bool:
+    """One read→score→flip attempt. Returns True when the close is finished
+    (this attempt won the flip, or another path already transitioned the job);
+    False when the revision guard failed and the attempt should be retried."""
     job = _get_job(job_id)
     if not job or job.get("status") != "OPEN":
-        return  # already transitioned (cancel, sweeper/timer race)
+        return True  # already transitioned (cancel, sweeper/timer race)
     mailbox = get_daemon_mailbox()
     ws = get_town_agent_ws_manager()
     consumer_id = job["consumerId"]
     max_price = int(job.get("maxPrice", 0))
     bids: dict[str, dict] = job.get("bids") or {}
+
+    extra_condition: str | None = None
+    extra_values: dict[str, Any] | None = None
+    if guard_revision:
+        rev = int(job.get("bidsRev", 0))
+        if rev > 0:
+            extra_condition = "bidsRev = :rev"
+            extra_values = {":rev": rev}
+        else:
+            extra_condition = "attribute_not_exists(bidsRev)"
 
     # Disqualify bidders that are no longer connected (spec: can't deliver if gone).
     live_bids = {aid: bid for aid, bid in bids.items() if ws.get_by_agent_id(aid) is not None}
@@ -685,9 +744,9 @@ async def _close_bid_window(job_id: str) -> None:
     winner = exchange_scoring.choose_winner(live_bids, max_price, trust_by_agent, job.get("strategy", "balanced"))
 
     if winner is None:
-        flipped = _flip_status(job_id, "OPEN", "EXPIRED")
+        flipped = _flip_status(job_id, "OPEN", "EXPIRED", extra_condition=extra_condition, extra_values=extra_values)
         if not flipped:
-            return
+            return _flip_lost(job_id)
         _cancel_timer(job_id)
         consumer_balance = credit_wallet(consumer_id, max_price, "ESCROW_REFUND", job_id)
         _apply_mood(consumer_id, "job_expired_consumer")
@@ -702,17 +761,13 @@ async def _close_bid_window(job_id: str) -> None:
                 "balance": consumer_balance,
             },
         )
-        # Notify any bidders that raced in between our _get_job read and the flip.
-        # DynamoDB serializes item writes: every bid whose status=OPEN condition
-        # succeeded committed BEFORE our flip, so ALL_NEW carries the authoritative
-        # bids map.  The pre-read snapshot ("bids") may have been empty (window
-        # appeared to have no bids), but a late bid could still have committed
-        # atomically before us.
+        # Post-flip bids map: under the revision guard it equals the scored
+        # snapshot; on the unguarded fallback it also covers any late racer.
         post_flip_bids: dict = flipped.get("bids") or {}
         for aid in post_flip_bids:
             mailbox.notify(aid, {"event": "bid_lost", "job_id": job_id, "title": job.get("title", "")})
             _apply_mood(aid, "bid_lost")
-        return
+        return True
 
     agreed = int(live_bids[winner]["price"])
     provider_name = str(live_bids[winner].get("agentName", ""))
@@ -726,9 +781,11 @@ async def _close_bid_window(job_id: str) -> None:
             "agreedPrice": agreed,
             "deliveryDeadlineAt": Decimal(str(time.time() + DELIVERY_SEC)),
         },
+        extra_condition=extra_condition,
+        extra_values=extra_values,
     )
     if not flipped:
-        return
+        return _flip_lost(job_id)
     consumer_balance_after_award: int | None = None
     if max_price - agreed > 0:
         consumer_balance_after_award = credit_wallet(consumer_id, max_price - agreed, "ESCROW_REFUND", job_id)
@@ -751,10 +808,9 @@ async def _close_bid_window(job_id: str) -> None:
         awarded if consumer_balance_after_award is None else {**awarded, "balance": consumer_balance_after_award}
     )
     mailbox.notify(consumer_id, consumer_awarded)
-    # Use the post-flip bids map for loser notifications.  DynamoDB serializes
-    # item writes, so every bid whose status=OPEN condition succeeded committed
-    # BEFORE our AWARDED flip — ALL_NEW is the authoritative set and automatically
-    # covers any bidder that raced in after the pre-read snapshot was taken.
+    # Post-flip bids map for loser notifications: under the revision guard it
+    # equals the scored snapshot; on the unguarded fallback it also covers any
+    # late racer (notified as a loser, not scored).
     post_flip_bids = flipped.get("bids") or {}
     for aid in post_flip_bids:
         if aid != winner:
@@ -762,6 +818,7 @@ async def _close_bid_window(job_id: str) -> None:
             _apply_mood(aid, "bid_lost")
 
     _schedule(job_id, DELIVERY_SEC, _delivery_timeout)
+    return True
 
 
 async def _delivery_timeout(job_id: str) -> None:
