@@ -30,7 +30,11 @@ TOWN_ACCOUNT = "TOWN"
 
 
 class InsufficientFunds(Exception):
-    pass
+    """Raised when an agent's wallet balance cannot cover the requested debit."""
+
+
+class AgentNotFound(Exception):
+    """Raised when the target agent row does not exist in DynamoDB."""
 
 
 def _now_iso() -> str:
@@ -38,17 +42,27 @@ def _now_iso() -> str:
 
 
 def _ledger_append(agent_id: str, entry_type: str, amount: int, balance_after: int, ref_id: str) -> None:
-    dynamo.ledger_table().put_item(
-        Item={
-            "id": str(uuid.uuid4()),
-            "agentId": agent_id,
-            "entryType": entry_type,
-            "amount": amount,
-            "balanceAfter": balance_after,
-            "refId": ref_id,
-            "createdAt": _now_iso(),
-        }
-    )
+    try:
+        dynamo.ledger_table().put_item(
+            Item={
+                "id": str(uuid.uuid4()),
+                "agentId": agent_id,
+                "entryType": entry_type,
+                "amount": amount,
+                "balanceAfter": balance_after,
+                "refId": ref_id,
+                "createdAt": _now_iso(),
+            }
+        )
+    except Exception:
+        logger.error(
+            "Ledger append failed (balance already moved!): agent=%s type=%s amount=%d ref=%s",
+            agent_id,
+            entry_type,
+            amount,
+            ref_id,
+        )
+        raise
 
 
 def ensure_signup_grant(agent_id: str) -> None:
@@ -79,8 +93,11 @@ def debit_wallet(agent_id: str, amount: int, entry_type: str, ref_id: str) -> in
             ExpressionAttributeValues={":neg": -amount, ":amt": amount},
             ReturnValues="ALL_NEW",
         )
-    except table.meta.client.exceptions.ConditionalCheckFailedException:
-        raise InsufficientFunds(f"agent {agent_id[:8]} cannot cover {amount} crumbs")
+    except table.meta.client.exceptions.ConditionalCheckFailedException as exc:
+        check = table.get_item(Key={"id": agent_id})
+        if "Item" not in check:
+            raise AgentNotFound(f"agent {agent_id[:8]} not found") from exc
+        raise InsufficientFunds(f"agent {agent_id[:8]} cannot cover {amount} crumbs") from exc
     new_balance = int(resp["Attributes"]["walletBalance"])
     _ledger_append(agent_id, entry_type, -amount, new_balance, ref_id)
     return new_balance
@@ -90,13 +107,16 @@ def credit_wallet(agent_id: str, amount: int, entry_type: str, ref_id: str) -> i
     """Atomic credit. Returns new balance."""
     ensure_signup_grant(agent_id)
     table = dynamo.agents_table()
-    resp = table.update_item(
-        Key={"id": agent_id},
-        UpdateExpression="ADD walletBalance :amt",
-        ConditionExpression="attribute_exists(id)",
-        ExpressionAttributeValues={":amt": amount},
-        ReturnValues="ALL_NEW",
-    )
+    try:
+        resp = table.update_item(
+            Key={"id": agent_id},
+            UpdateExpression="ADD walletBalance :amt",
+            ConditionExpression="attribute_exists(id)",
+            ExpressionAttributeValues={":amt": amount},
+            ReturnValues="ALL_NEW",
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException as exc:
+        raise AgentNotFound(f"agent {agent_id[:8]} not found") from exc
     new_balance = int(resp["Attributes"]["walletBalance"])
     _ledger_append(agent_id, entry_type, amount, new_balance, ref_id)
     return new_balance

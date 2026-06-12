@@ -7,6 +7,7 @@ from boto3.dynamodb.conditions import Attr
 
 from core.services.exchange_service import (
     SIGNUP_GRANT,
+    AgentNotFound,
     InsufficientFunds,
     credit_wallet,
     debit_wallet,
@@ -182,3 +183,57 @@ class TestGetWallet:
         assert wallet["jobsCompleted"] == 0
         assert wallet["jobsFailed"] == 0
         assert wallet["jobsPosted"] == 0
+
+
+# ---------------------------------------------------------------------------
+# AgentNotFound — debit and credit on nonexistent agent
+# ---------------------------------------------------------------------------
+
+
+class TestAgentNotFound:
+    def test_debit_nonexistent_agent_raises_agent_not_found(self, dynamodb_tables):
+        """debit_wallet on a missing agent must raise AgentNotFound, not InsufficientFunds."""
+        with pytest.raises(AgentNotFound):
+            debit_wallet("ghost-agent", 10, "ESCROW_DEBIT", "job-x")
+
+    def test_credit_nonexistent_agent_raises_agent_not_found(self, dynamodb_tables):
+        """credit_wallet on a missing agent must raise AgentNotFound."""
+        with pytest.raises(AgentNotFound):
+            credit_wallet("ghost-agent", 10, "PAYOUT", "job-x")
+
+
+# ---------------------------------------------------------------------------
+# Consecutive debits — balance chain and ledger integrity
+# ---------------------------------------------------------------------------
+
+
+class TestConsecutiveDebits:
+    def test_two_debits_balance_chain_and_ledger_rows(self, dynamodb_tables):
+        """Fresh agent (100 crumbs) → debit 30 → debit 30 → balance 40.
+
+        Ledger must have 3 rows (GRANT + 2 debits) with correct balanceAfter chain.
+        """
+        _seed_agent(dynamodb_tables, agent_id="agent-seq", name="bob")
+
+        bal1 = debit_wallet("agent-seq", 30, "ESCROW_DEBIT", "job-a")
+        assert bal1 == SIGNUP_GRANT - 30  # 70
+
+        bal2 = debit_wallet("agent-seq", 30, "ESCROW_DEBIT", "job-b")
+        assert bal2 == SIGNUP_GRANT - 60  # 40
+
+        rows = sorted(_ledger_rows(dynamodb_tables, "agent-seq"), key=lambda r: r["createdAt"])
+        assert len(rows) == 3
+
+        grant_row = rows[0]
+        assert grant_row["entryType"] == "GRANT"
+        assert int(grant_row["balanceAfter"]) == SIGNUP_GRANT  # 100
+
+        debit1_row = rows[1]
+        assert debit1_row["entryType"] == "ESCROW_DEBIT"
+        assert int(debit1_row["amount"]) == -30
+        assert int(debit1_row["balanceAfter"]) == SIGNUP_GRANT - 30  # 70
+
+        debit2_row = rows[2]
+        assert debit2_row["entryType"] == "ESCROW_DEBIT"
+        assert int(debit2_row["amount"]) == -30
+        assert int(debit2_row["balanceAfter"]) == SIGNUP_GRANT - 60  # 40
