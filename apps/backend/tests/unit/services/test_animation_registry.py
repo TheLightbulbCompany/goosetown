@@ -1,7 +1,13 @@
 """Template/v3 split: only walk+idle are templates; everything else is v3.
 Every activity_registry animation resolves to a registry key."""
 
-from core.services.pixellab_service import ANIMATION_REGISTRY
+from core.services.pixellab_service import ANIMATION_REGISTRY, SIGNUP_ANIMATIONS
+
+
+def test_signup_animations_is_walk_only():
+    """Fast/slow split (task #40): signup generates create + walk ONLY.
+    idle/talking generate lazily (activity layer / conversation hook)."""
+    assert set(SIGNUP_ANIMATIONS.keys()) == {"walk"}
 
 
 def test_only_walk_idle_are_templates():

@@ -88,7 +88,9 @@ _LOOP_SUFFIX = "Looping animation cycle: the final frame returns to the same pos
 ANIMATION_REGISTRY: dict[str, dict] = {
     # Templates (1 gen/direction, auto all directions)
     "walk": {"type": "template", "template_id": "walk", "fps": 8.0, "auto_generate": True},
-    "idle": {"type": "template", "template_id": "breathing-idle", "fps": 4.0, "auto_generate": True},
+    # lazily generated (fast/slow split, spec 2026-06-11) —
+    # idle via the activity layer, talking via the conversation-start hook
+    "idle": {"type": "template", "template_id": "breathing-idle", "fps": 4.0, "auto_generate": False},
     "drink": {
         "type": "custom",
         "auto_generate": False,
@@ -214,9 +216,11 @@ ANIMATION_REGISTRY: dict[str, dict] = {
             "settling back into peaceful stillness. " + _LOOP_SUFFIX
         ),
     },
+    # lazily generated (fast/slow split, spec 2026-06-11) —
+    # idle via the activity layer, talking via the conversation-start hook
     "talking": {
         "type": "custom",
-        "auto_generate": True,
+        "auto_generate": False,
         "frames": 8,
         "fps": 4.0,
         "prompt": (

@@ -6,8 +6,10 @@ from core.services.pixellab_service import (
 )
 
 
-def test_signup_animations_contains_only_walk_idle_talking():
-    assert set(SIGNUP_ANIMATIONS.keys()) == {"walk", "idle", "talking"}
+def test_signup_animations_contains_only_walk():
+    # Fast/slow split (task #40): signup generates walk only.
+    # idle/talking generate lazily (activity layer / conversation-start hook).
+    assert set(SIGNUP_ANIMATIONS.keys()) == {"walk"}
 
 
 def test_all_registry_entries_have_auto_generate_flag():
@@ -17,8 +19,9 @@ def test_all_registry_entries_have_auto_generate_flag():
 
 
 def test_only_signup_animations_have_auto_generate_true():
+    # Fast/slow split (task #40): only walk is auto-generated at signup.
     auto = {name for name, cfg in ANIMATION_REGISTRY.items() if cfg["auto_generate"]}
-    assert auto == {"walk", "idle", "talking"}
+    assert auto == {"walk"}
 
 
 def test_walk_is_template_type():

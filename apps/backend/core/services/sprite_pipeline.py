@@ -21,9 +21,10 @@ Pipeline phases:
   static spritesheet, upload to S3, set ``spriteReady=True`` and
   ``onboardingPhase='static'``, and connect the agent to the game server
   so they appear in town right away (even without walk animation).
-* **Phase C — Animate**: queue signup animations (walk, idle, talking),
-  download the resulting ZIP + custom-animation frames, composite each
-  into its own spritesheet, upload, and flip ``onboardingPhase='alive'``.
+* **Phase C — Animate**: queue signup animations (walk only — idle/talking
+  generate lazily via activity layer / conversation-start hook),
+  composite walk frames into its own spritesheet, upload, and flip
+  ``onboardingPhase='alive'``.
 
 The module also owns ``resume_sprite_generation`` — a companion used by
 ``main.py:_reconnect_active_agents`` on backend startup when an agent's
@@ -200,17 +201,17 @@ async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: st
         else:
             logger.warning("[agent:%s] No rotations returned — skipping Phase B static sprite", agent_id)
 
-        # ---- Phase C: Generate signup animations (walk, idle, talking) ----
+        # ---- Phase C: Generate signup animations (walk only — idle/talking go lazy) ----
         service.update_agent_state(agent_id, sprite_status="animating")
-        _send_progress("Bringing you to life (animating walk, idle, talking)...")
+        _send_progress("Bringing you to life (animating walk)...")
 
         async def _anim_progress(status_str: str) -> None:
             _send_progress(status_str)
 
         # generate_animation (via queue_signup_animations) now returns the
         # composited per-direction frames directly — no separate ZIP download
-        # or per-job v2 fetch. Each signup animation (walk, idle, talking) comes
-        # back as {direction: [png_bytes]} ready to composite + upload.
+        # or per-job v2 fetch. Each signup animation (walk only — idle/talking
+        # are lazy) comes back as {direction: [png_bytes]} ready to composite + upload.
         signup_frames: dict[str, dict[str, list[bytes]]] = {}
         try:
             signup_frames = await pxl.queue_signup_animations(char_id, on_progress=_anim_progress)
