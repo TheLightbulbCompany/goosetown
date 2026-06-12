@@ -878,11 +878,13 @@ aws logs tail /ecs/goosetown-{env}-sprite-worker \
 2. No manual action needed for the queue — on a 402 the worker re-enqueues the message as a fresh SQS message with a 15-minute delay, then deletes the original. A fresh message resets the receive count, so credit outages cycle every 15 minutes indefinitely without burning the 3-receive DLQ budget. Jobs auto-resume within 15 minutes of the credit top-up.
 3. If the DLQ alarm also fired alongside this alarm, those messages represent genuine processing failures (not credit outages). Redrive them after fixing the underlying cause.
 
-### Per-env PixelLab API key split (one-time human action)
+### Per-env PixelLab API key split (DEFERRED — single shared account by decision)
 
-Both `dev` and `prod` currently share one PixelLab account key (`goosetown/dev/pixellab_api_key` and `goosetown/prod/pixellab_api_key` hold the same value). This means dev sprite generation burns prod account concurrency and quota. To isolate:
+Both `dev` and `prod` share one PixelLab account key (`goosetown/dev/pixellab_api_key` and `goosetown/prod/pixellab_api_key` hold the same value). **Decision 2026-06-12: this stays — there is no second account and none is planned.** The shared cap is managed instead by per-env worker concurrency (`PIXELLAB_MAX_CONCURRENT_ANIMATIONS`: prod 2, dev 1 in `sprite-worker-stack.ts`) plus `ACTIVITY_ANIMATION_GENERATION=false` on the dev backend. An email to PixelLab asking about the concurrent-job cap and an enterprise/higher-concurrency tier is the pending path to more headroom; revisit a key split only if PixelLab offers multiple keys per account or an enterprise plan lands.
 
-1. Create a second PixelLab account (or additional API key if PixelLab supports multiple keys per account — check first).
+If that ever happens, the mechanical steps are:
+
+1. Obtain the second key (separate account or per-account key, whichever PixelLab supports).
 2. Store the new dev key in Secrets Manager:
    ```bash
    aws secretsmanager put-secret-value \

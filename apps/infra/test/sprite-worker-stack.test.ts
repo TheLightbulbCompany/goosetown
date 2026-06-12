@@ -286,6 +286,31 @@ describe("SpriteWorkerStack — container definition", () => {
       ]),
     });
   });
+
+  test("PixelLab animation concurrency is per-env: dev 1, prod 2 (shared account)", () => {
+    // Dev and prod share ONE PixelLab account (no key split, decision
+    // 2026-06-12), so the two workers' combined concurrency must respect
+    // the account-level concurrent-job cap.
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.arrayWith([
+            Match.objectLike({ Name: "PIXELLAB_MAX_CONCURRENT_ANIMATIONS", Value: "1" }),
+          ]),
+        }),
+      ]),
+    });
+    const prodTemplate = buildTestApp("prod");
+    prodTemplate.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Environment: Match.arrayWith([
+            Match.objectLike({ Name: "PIXELLAB_MAX_CONCURRENT_ANIMATIONS", Value: "2" }),
+          ]),
+        }),
+      ]),
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

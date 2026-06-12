@@ -95,8 +95,12 @@ export class SpriteWorkerStack extends cdk.Stack {
         // as compute-stack's WS_MANAGEMENT_API_URL (avoids cross-stack cycles).
         BACKEND_INTERNAL_URL: `https://api-${env}.goosetown.isol8.co`,
         // Global PixelLab animation concurrency (each animation = up to 4
-        // jobs). Tune after PixelLab confirms the account cap.
-        PIXELLAB_MAX_CONCURRENT_ANIMATIONS: "2",
+        // jobs). Dev and prod share ONE PixelLab account (decision 2026-06-12:
+        // no second account; enterprise tier may change this later), so the
+        // two workers' combined concurrency must respect the account cap —
+        // prod gets 2, dev 1 (~12 combined jobs worst-case). Tune after
+        // PixelLab confirms the actual cap.
+        PIXELLAB_MAX_CONCURRENT_ANIMATIONS: env === "prod" ? "2" : "1",
         SPRITE_WORKER_MAX_CONCURRENT_PIPELINES: "2",
       },
       secrets: {

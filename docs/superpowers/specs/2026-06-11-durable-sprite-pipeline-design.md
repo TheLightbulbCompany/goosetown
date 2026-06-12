@@ -250,6 +250,13 @@ first); all infra lands via the pipeline, nothing touched directly.
 
 ### 7. Per-env PixelLab API keys (human action required — flagged)
 
+> **Status update 2026-06-12:** decision made — there is only one PixelLab
+> account and no second one is planned. This section is DEFERRED indefinitely;
+> the shared cap is handled by per-env worker concurrency instead (prod 2 /
+> dev 1 animations in `sprite-worker-stack.ts`) and the §8 email becomes a
+> future enterprise-tier inquiry. See RUNBOOK "Per-env PixelLab API key split
+> (DEFERRED)".
+
 Secrets Manager already has per-env secrets (`goosetown/dev/pixellab_api_key`,
 `goosetown/prod/pixellab_api_key`) — both currently hold the **same** account's key, so
 dev and prod contend for one account cap. No infra code change needed. Human steps:
