@@ -483,3 +483,137 @@ async def test_animation_job_blocked_while_signup_in_flight_for_same_agent():
     pxl.generate_animation.assert_not_awaited()
     # Guard entry is NOT discarded by the short-circuit path — the owning run does that.
     assert "a-1" in sprite_pipeline._resume_in_flight
+
+
+# ---------------------------------------------------------------------------
+# 7. Fallback appearance from SQS message (codex P1 — register-path gap)
+# ---------------------------------------------------------------------------
+
+
+async def test_row_without_appearance_uses_fallback_and_promotes_it():
+    """Row lacks appearance (opt_in path); fallback_appearance supplied by the
+    worker processor.  Pipeline must:
+    (a) call create_character with the fallback value, and
+    (b) persist the fallback onto the row via update_agent_state BEFORE Phase A.
+    """
+    row = {
+        "id": "a-1",
+        "spriteStatus": "queued",
+        # NOTE: no 'appearance' key — simulates an opt_in-created row
+        "displayName": "Goose",
+    }
+    ts = _make_service(row)
+    sink = _make_sink()
+
+    pxl = MagicMock()
+    pxl.create_character = AsyncMock(return_value=("char-1", "job-1"))
+    pxl.get_job_status = AsyncMock(return_value={"status": "completed"})
+    pxl.fetch_all_rotations = AsyncMock(return_value=dict(_FOUR_ROTATIONS))
+    pxl.queue_signup_animations = AsyncMock(return_value={"walk": dict(_FOUR_DIR_FRAMES)})
+
+    with _patched_pipeline(pxl, ts):
+        await run_signup_pipeline(
+            "a-1",
+            sink=sink,
+            fallback_appearance="a pixel-art goose in a suit",
+        )
+
+    # (a) create_character called with the fallback description.
+    pxl.create_character.assert_awaited_once_with(description="a pixel-art goose in a suit")
+
+    # (b) appearance was promoted onto the row before Phase A (must appear as a
+    #     kwarg to update_agent_state among the early calls, before "creating").
+    all_kwargs = [c.kwargs for c in ts.update_agent_state.call_args_list]
+    promote_calls = [kw for kw in all_kwargs if kw.get("appearance") == "a pixel-art goose in a suit"]
+    assert promote_calls, "appearance was never promoted onto the row"
+
+    # The promote write must precede the sprite_status="creating" write.
+    writes_in_order = [
+        (i, kw) for i, kw in enumerate(all_kwargs) if kw.get("appearance") or kw.get("sprite_status") == "creating"
+    ]
+    appearance_idx = next(i for i, kw in writes_in_order if kw.get("appearance"))
+    creating_idx = next(i for i, kw in writes_in_order if kw.get("sprite_status") == "creating")
+    assert appearance_idx < creating_idx, "appearance promote must happen before sprite_status='creating' write"
+
+
+async def test_row_with_appearance_ignores_fallback():
+    """When the row already has appearance, the fallback must NOT overwrite it
+    and must NOT trigger an extra update_agent_state call for appearance."""
+    row = {
+        "id": "a-1",
+        "spriteStatus": "queued",
+        "appearance": "a pixel-art goose in a suit",
+        "displayName": "Goose",
+    }
+    ts = _make_service(row)
+    sink = _make_sink()
+
+    pxl = MagicMock()
+    pxl.create_character = AsyncMock(return_value=("char-1", "job-1"))
+    pxl.get_job_status = AsyncMock(return_value={"status": "completed"})
+    pxl.fetch_all_rotations = AsyncMock(return_value=dict(_FOUR_ROTATIONS))
+    pxl.queue_signup_animations = AsyncMock(return_value={"walk": dict(_FOUR_DIR_FRAMES)})
+
+    with _patched_pipeline(pxl, ts):
+        await run_signup_pipeline(
+            "a-1",
+            sink=sink,
+            fallback_appearance="DIFFERENT fallback that must be ignored",
+        )
+
+    # create_character must use the ROW's appearance, not the fallback.
+    pxl.create_character.assert_awaited_once_with(description="a pixel-art goose in a suit")
+
+    # No update_agent_state call should carry appearance (it's already on the row).
+    all_kwargs = [c.kwargs for c in ts.update_agent_state.call_args_list]
+    promote_calls = [kw for kw in all_kwargs if "appearance" in kw]
+    assert not promote_calls, f"unexpected appearance writes: {promote_calls}"
+
+
+async def test_no_appearance_anywhere_releases_claim_and_returns():
+    """Row has no appearance AND no fallback supplied → early-return path.
+    Pipeline must NOT call PixelLab AND must attempt to release the claim
+    via release_sprite_claim."""
+    row = {
+        "id": "a-1",
+        "spriteStatus": "queued",
+        # No appearance
+    }
+    ts = _make_service(row)
+    ts.release_sprite_claim = MagicMock(return_value=True)
+    sink = _make_sink()
+
+    pxl = MagicMock()
+    pxl.create_character = AsyncMock()
+
+    with _patched_pipeline(pxl, ts):
+        # Must NOT raise — the early return is a terminal no-op, not a retryable error.
+        await run_signup_pipeline("a-1", sink=sink)
+
+    pxl.create_character.assert_not_awaited()
+    ts.release_sprite_claim.assert_called_once_with("a-1")
+
+
+async def test_no_appearance_release_returns_false_logs_and_returns():
+    """release_sprite_claim returns False (worker already advanced the status)
+    — the pipeline must log and return without calling update_agent_state
+    with sprite_status=None (don't clobber the worker's progress)."""
+    row = {
+        "id": "a-1",
+        "spriteStatus": "queued",
+    }
+    ts = _make_service(row)
+    ts.release_sprite_claim = MagicMock(return_value=False)
+    sink = _make_sink()
+
+    pxl = MagicMock()
+    pxl.create_character = AsyncMock()
+
+    with _patched_pipeline(pxl, ts):
+        await run_signup_pipeline("a-1", sink=sink)
+
+    pxl.create_character.assert_not_awaited()
+    ts.release_sprite_claim.assert_called_once_with("a-1")
+    # Must NOT have tried to clobber sprite_status.
+    status_clobber_calls = [c for c in ts.update_agent_state.call_args_list if c.kwargs.get("sprite_status") is None]
+    assert not status_clobber_calls, f"unexpected sprite_status=None writes: {status_clobber_calls}"

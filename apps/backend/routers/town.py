@@ -472,6 +472,13 @@ async def register_agent(
                 _appearance = request.appearance
                 _display_name = request.display_name
 
+                # Persist appearance on the row BEFORE enqueueing.  opt_in does
+                # not store appearance; the sprite worker reads the row as the
+                # source of truth, so without this write it would hit the
+                # "no appearance → warn + return" path and strand the agent at
+                # spriteStatus="queued" with no sprite and no claim release.
+                service.update_agent_state(_agent_id, appearance=_appearance)
+
                 from core.services import sprite_jobs
 
                 queued = sprite_jobs.enqueue_signup(_agent_id, _display_name, _appearance)

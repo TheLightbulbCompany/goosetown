@@ -90,7 +90,45 @@ async def test_signup_success_returns_delete():
         outcome = await processor.process_message(body, sink=sink)
 
     assert outcome is Outcome.DELETE
-    mock_pipeline.assert_awaited_once_with("agent-uuid-001", sink=sink)
+    mock_pipeline.assert_awaited_once_with(
+        "agent-uuid-001",
+        sink=sink,
+        fallback_display_name="",
+        fallback_appearance="",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Signup message fields forwarded as fallback kwargs
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_signup_message_fields_forwarded_as_fallback_kwargs():
+    """display_name and appearance in the SQS message body must be forwarded
+    to run_signup_pipeline as fallback_display_name / fallback_appearance."""
+    import json
+
+    body = json.dumps(
+        {
+            "kind": "signup",
+            "agent_id": "agent-uuid-010",
+            "display_name": "Goose McAgent",
+            "appearance": "a pixel-art goose in a business suit",
+        }
+    )
+    sink = _make_sink()
+
+    with patch("sprite_worker.processor.run_signup_pipeline", new_callable=AsyncMock) as mock_pipeline:
+        outcome = await processor.process_message(body, sink=sink)
+
+    assert outcome is Outcome.DELETE
+    mock_pipeline.assert_awaited_once_with(
+        "agent-uuid-010",
+        sink=sink,
+        fallback_display_name="Goose McAgent",
+        fallback_appearance="a pixel-art goose in a business suit",
+    )
 
 
 # ---------------------------------------------------------------------------

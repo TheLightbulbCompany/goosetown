@@ -98,7 +98,13 @@ class LocalSpriteEventSink:
         await apply_sprite_update(agent_id, kind)
 
 
-async def run_signup_pipeline(agent_id: str, *, sink: SpriteEventSink) -> None:
+async def run_signup_pipeline(
+    agent_id: str,
+    *,
+    sink: SpriteEventSink,
+    fallback_display_name: str = "",
+    fallback_appearance: str = "",
+) -> None:
     """Run (or resume) the signup sprite pipeline for one agent.
 
     Resume-aware: reads the agent row and branches on
@@ -117,6 +123,14 @@ async def run_signup_pipeline(agent_id: str, *, sink: SpriteEventSink) -> None:
     at all (Phase B returned no rotations AND Phase C returned no frames) so
     the SQS worker retries rather than silently completing with no sprite.
     Never clears ``spriteStatus`` on failure.
+
+    ``fallback_display_name`` and ``fallback_appearance`` are one-shot fallbacks
+    from the SQS message body (populated by legacy producers or enqueue_signup).
+    They are used ONLY when the agent row itself lacks the field, and are then
+    promoted onto the row so that mid-pipeline crashes + redelivery and the boot
+    sweep (which reads only the row) converge correctly on the same code path.
+    The row is still the canonical source of truth; these fallbacks paper over
+    the register-path gap where ``opt_in`` did not persist ``appearance``.
     """
     from core.config import settings
     from core.services.pixellab_service import ANIMATION_REGISTRY, PixelLabService
@@ -148,7 +162,16 @@ async def run_signup_pipeline(agent_id: str, *, sink: SpriteEventSink) -> None:
 
         # Both attribute spellings exist in older rows (camelCase is current).
         char_id = agent.get("pixellabCharacterId") or agent.get("pixellab_character_id")
-        appearance = agent.get("appearance") or ""
+
+        # Row is the source of truth; fall back to the SQS message's copy when
+        # the row lacks appearance (e.g. rows created via opt_in before the
+        # register-path appearance-persist fix landed).  Promote onto the row
+        # so that mid-pipeline crash + redelivery and the boot sweep both
+        # converge on the correct code path.
+        appearance = agent.get("appearance") or fallback_appearance
+        if appearance and not agent.get("appearance"):
+            service.update_agent_state(agent_id, appearance=appearance)
+            logger.info("run_signup_pipeline: promoted fallback appearance onto row for %s", agent_id)
 
         pxl = PixelLabService()
 
@@ -159,6 +182,26 @@ async def run_signup_pipeline(agent_id: str, *, sink: SpriteEventSink) -> None:
         if not char_id:
             if not appearance:
                 logger.warning("run_signup_pipeline: agent %s has no appearance — cannot create character", agent_id)
+                # Release the spriteStatus="queued" claim so a future register
+                # attempt can re-enqueue.  The release is conditional on the
+                # row still being exactly "queued" — if another delivery already
+                # advanced the status (returns False) there's nothing to do:
+                # that delivery is running (or will run) the create path and
+                # will either succeed or retry via the DLQ.  Best-effort: swallow
+                # any DDB error so the worker doesn't flag this as a retriable
+                # failure (the message is terminally un-processable without
+                # appearance; retrying would just loop).
+                try:
+                    released = service.release_sprite_claim(agent_id)
+                    if not released:
+                        logger.info(
+                            "run_signup_pipeline: claim for %s already advanced — leaving status as-is",
+                            agent_id,
+                        )
+                except Exception:
+                    logger.warning(
+                        "run_signup_pipeline: best-effort claim release failed for %s", agent_id, exc_info=True
+                    )
                 return
 
             service.update_agent_state(agent_id, sprite_status="creating")

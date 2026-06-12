@@ -204,3 +204,76 @@ class TestSpriteQuota:
         )
         # blank appearance → sprite path not entered → quota not checked
         assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Register-path appearance persistence (codex P1)
+# ---------------------------------------------------------------------------
+
+
+class TestAppearancePersistOnRegister:
+    """appearance must be persisted via update_agent_state BEFORE enqueue_signup
+    so the sprite worker finds it on the agent row (opt_in does not store it)."""
+
+    def test_appearance_persisted_before_enqueue(self, client, dynamodb_tables):
+        """Registration with appearance calls update_agent_state(appearance=…)
+        BEFORE enqueue_signup so the worker sees it on the row."""
+        import core.config as _config_mod
+
+        enqueued_calls: list = []
+        update_calls: list = []
+
+        def _fake_enqueue(agent_id, display_name, appearance, **kw):
+            enqueued_calls.append({"agent_id": agent_id, "appearance": appearance})
+            return True
+
+        def _fake_update(agent_id, **kwargs):
+            update_calls.append({"agent_id": agent_id, **kwargs})
+            # Return a minimal agent dict so callers don't blow up on None.
+            return {"id": agent_id}
+
+        # The router gates the whole sprite block on settings having values;
+        # set them on the already-cached singleton so the block is entered.
+        orig_api_key = _config_mod.settings.PIXELLAB_API_KEY
+        orig_bucket = _config_mod.settings.SPRITE_S3_BUCKET
+        orig_cdn = _config_mod.settings.SPRITE_CDN_URL
+        _config_mod.settings.PIXELLAB_API_KEY = "fake-key"
+        _config_mod.settings.SPRITE_S3_BUCKET = "fake-bucket"
+        _config_mod.settings.SPRITE_CDN_URL = "https://fake-cdn.example.com"
+        try:
+            with (
+                patch("core.services.sprite_jobs.enqueue_signup", side_effect=_fake_enqueue),
+                patch(
+                    "core.services.town_service.TownService.update_agent_state",
+                    side_effect=_fake_update,
+                ),
+            ):
+                resp = client.post(
+                    "/api/v1/town/agent/register",
+                    json={
+                        "agent_name": "appearance-tester",
+                        "display_name": "Appearance Tester",
+                        "personality": "test",
+                        "appearance": "a pixel-art goose in a business suit",
+                        "traits": "introvert",
+                    },
+                )
+        finally:
+            _config_mod.settings.PIXELLAB_API_KEY = orig_api_key
+            _config_mod.settings.SPRITE_S3_BUCKET = orig_bucket
+            _config_mod.settings.SPRITE_CDN_URL = orig_cdn
+
+        assert resp.status_code == 200, resp.json()
+
+        # There must be at least one update_agent_state call that persists appearance.
+        appearance_persist_calls = [c for c in update_calls if c.get("appearance")]
+        assert appearance_persist_calls, "update_agent_state was never called with appearance before enqueue_signup"
+
+        # enqueue_signup must also have been called.
+        assert enqueued_calls, "enqueue_signup was never called"
+
+        # The persisted appearance must match the request value.
+        persisted = appearance_persist_calls[0]["appearance"]
+        assert persisted == "a pixel-art goose in a business suit", (
+            f"persisted appearance does not match request: {persisted!r}"
+        )

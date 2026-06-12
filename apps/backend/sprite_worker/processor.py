@@ -47,7 +47,12 @@ async def process_message(raw_body: str, *, sink: SpriteEventSink) -> Outcome:
     _active.add(agent_id)
     try:
         if kind == "signup":
-            await run_signup_pipeline(agent_id, sink=sink)
+            await run_signup_pipeline(
+                agent_id,
+                sink=sink,
+                fallback_display_name=body.get("display_name", ""),
+                fallback_appearance=body.get("appearance", ""),
+            )
         else:
             await run_animation_job(agent_id, body.get("anim_name", ""), sink=sink)
         return Outcome.DELETE
