@@ -265,19 +265,27 @@ export class ComputeStack extends cdk.Stack {
     }
 
     // Fargate Service
-    // Prod: 2 tasks + minHealthyPercent:100 → true HA, zero-downtime rolling deploys.
-    // Dev:  1 task + minHealthyPercent:0   → accepts ~30s downtime, unblocks rolling
-    //       update so a single unhealthy task doesn't crash-loop indefinitely.
+    // SINGLE-TASK (both envs) — INTERIM, pre-launch. The sprite pipeline's
+    // SpriteQueue(max_concurrent=1) throttle is PER-PROCESS, but with >1 backend
+    // replica each gets its own queue, so the real global concurrency is N. Each
+    // pipeline's animation batch (3 anims × 4 dirs = up to 12 jobs) already brushes
+    // PixelLab Tier-2's 10-concurrent-job cap; two replicas at once blow past it and
+    // PixelLab 429s silently drop animations (observed 2026-06-12: 12/19 residents
+    // seeded with missing idle/talking). Pinning prod to 1 task makes generation
+    // globally serial until the durable single-worker sprite pipeline decouples
+    // generation from the backend. REVERT to HA (desired 2, minCapacity 2,
+    // maxCapacity 12, minHealthyPercent 100) once that worker ships and before real
+    // launch traffic — single-task means ~30s downtime per deploy + no replica HA.
     const isProd = env === "prod";
     this.service = new ecs.FargateService(this, "Service", {
       serviceName: `goosetown-${env}-backend`,
       cluster,
       taskDefinition,
-      desiredCount: isProd ? 2 : 1,
+      desiredCount: 1,
       assignPublicIp: false,
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       circuitBreaker: { rollback: true },
-      minHealthyPercent: isProd ? 100 : 0,
+      minHealthyPercent: 0,
     });
 
     this.service.attachToApplicationTargetGroup(targetGroup);
@@ -294,9 +302,13 @@ export class ComputeStack extends cdk.Stack {
     // HN-spike scenario where 500 simultaneous /town/instance + register
     // calls would peg CPU on 6 tasks. Game server stays single-replica
     // until room-sharding (ADR-0002).
+    // INTERIM single-task pin (see the FargateService comment above): prod is
+    // held at exactly 1 (min=max=1) so the per-process SpriteQueue throttle is
+    // also the global one. Dev keeps 1-3 headroom. Restore prod to 2-12 when the
+    // durable sprite worker decouples generation from the backend.
     const scaling = this.service.autoScaleTaskCount({
-      minCapacity: isProd ? 2 : 1,
-      maxCapacity: isProd ? 12 : 3,
+      minCapacity: 1,
+      maxCapacity: isProd ? 1 : 3,
     });
     scaling.scaleOnCpuUtilization("CpuScaling", {
       targetUtilizationPercent: 60,
@@ -414,7 +426,10 @@ export class ComputeStack extends cdk.Stack {
           statistic: "Minimum",
           period: cdk.Duration.minutes(1),
         }),
-        threshold: isProd ? 2 : 1,
+        // 1 healthy target — both envs run a single task during the interim
+        // single-replica pin (see FargateService comment). Restore to `isProd ? 2`
+        // when prod HA is restored alongside the durable sprite worker.
+        threshold: 1,
         comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
         evaluationPeriods: 5,
         treatMissingData: cloudwatch.TreatMissingData.BREACHING,
