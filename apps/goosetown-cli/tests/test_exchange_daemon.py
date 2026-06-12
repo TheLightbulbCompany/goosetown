@@ -667,3 +667,61 @@ class TestConnectedAgentId:
             {"event": "connected", "agent": {"id": "uuid-me", "location": "plaza"}}
         )
         assert daemon.state["exchange"]["jobs"]["j1"]["title"] == "T"
+
+
+# ---------------------------------------------------------------------------
+# IPC framing: >8 KB frames must be read to EOF (codex P2 on PR #386)
+# ---------------------------------------------------------------------------
+
+
+class TestSocketFrameAssembly:
+    async def test_16kb_frame_split_across_chunks_is_reassembled(
+        self, daemon: TownDaemon
+    ):
+        """ipc_send shuts down its write side after sendall; the daemon must
+        read until EOF instead of a single read(8192), or 16 KB deliverables
+        arrive truncated and json.loads fails."""
+        big = json.dumps(
+            {
+                "action": "act",
+                "payload": {
+                    "action": "deliver_job",
+                    "job_id": "j1",
+                    "deliverable": "x" * 16000,
+                },
+            }
+        ).encode()
+        assert len(big) > 8192
+
+        reader = asyncio.StreamReader()
+        reader.feed_data(big[:6000])
+        reader.feed_data(big[6000:])
+        reader.feed_eof()
+
+        captured: dict = {}
+
+        async def fake_handle(cmd: dict) -> dict:
+            captured.update(cmd)
+            return {"status": "ok"}
+
+        writes: list[bytes] = []
+
+        class FakeWriter:
+            def write(self, data: bytes) -> None:
+                writes.append(data)
+
+            async def drain(self) -> None:
+                pass
+
+            def close(self) -> None:
+                pass
+
+            async def wait_closed(self) -> None:
+                pass
+
+        daemon.handle_tool_command = fake_handle  # type: ignore[method-assign]
+        await daemon._handle_socket_client(reader, FakeWriter())
+
+        # The full frame parsed: deliverable arrived intact, no error reply.
+        assert captured["payload"]["deliverable"] == "x" * 16000
+        assert json.loads(b"".join(writes).decode()) == {"status": "ok"}

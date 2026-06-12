@@ -132,6 +132,9 @@ class TownDaemon:
     Unix socket.
     """
 
+    # IPC frame cap: deliverables are ≤16 KB; generous headroom for envelope.
+    _MAX_IPC_FRAME_BYTES = 131072
+
     def __init__(
         self,
         ws_url: str,
@@ -1830,8 +1833,24 @@ class TownDaemon:
 
     async def _handle_socket_client(self, reader, writer) -> None:
         """Handle a single tool connection on the Unix socket."""
+        import asyncio
+
         try:
-            data = await __import__("asyncio").wait_for(reader.read(8192), timeout=5.0)
+            # ipc_send() shuts down its write side after sendall, so EOF marks
+            # the end of the frame — read until then. A single read(8192) both
+            # truncated >8 KB frames (16 KB deliverables) and assumed a frame
+            # always arrives in one chunk, which SOCK_STREAM never guarantees.
+            chunks: list[bytes] = []
+            remaining = self._MAX_IPC_FRAME_BYTES
+            while remaining > 0:
+                chunk = await asyncio.wait_for(
+                    reader.read(min(8192, remaining)), timeout=5.0
+                )
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            data = b"".join(chunks)
             if not data:
                 return
             cmd = json.loads(data.decode())
