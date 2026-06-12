@@ -162,6 +162,16 @@ class TestChooseWinner:
         winner = choose_winner(bids, max_price=10, trust_by_agent={}, strategy="balanced")
         assert winner == "agent-ok"
 
+    def test_missing_bidat_loses_tie_to_timestamped_bid(self):
+        # Same price, confidence, and trust — only difference is agent-a has a
+        # bidAt timestamp and agent-b omits it entirely.  The one WITH bidAt must win.
+        bids = {
+            "agent-a": {"price": 5, "confidence": 0.5, "bidAt": "2026-01-01T00:00:00"},
+            "agent-b": {"price": 5, "confidence": 0.5},  # no bidAt
+        }
+        winner = choose_winner(bids, max_price=10, trust_by_agent={}, strategy="balanced")
+        assert winner == "agent-a"
+
 
 # ---------------------------------------------------------------------------
 # updated_trust

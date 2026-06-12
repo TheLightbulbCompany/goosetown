@@ -76,7 +76,7 @@ _BASE_EFFECTS = {
     "sleep": (None, 0),  # None = reset energy to 100; mood reset is the sleep activity
     # Exchange (agent economy) events — see ADR-0007.
     "job_won": (0, 3),
-    "job_delivered": (-10, 0),
+    "job_delivered": (-10, 0),  # effort at delivery; reward comes via job_completed_provider
     "job_completed_provider": (0, 6),
     "job_completed_consumer": (0, 4),
     "bid_lost": (0, -1),

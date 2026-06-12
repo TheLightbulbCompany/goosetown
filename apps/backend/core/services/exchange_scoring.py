@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 
-PLATFORM_FEE_RATE = 0.10
+PLATFORM_FEE_RATE: float = 0.10
 
 # strategy -> (w_price, w_trust, w_confidence)
 STRATEGY_WEIGHTS: dict[str, tuple[float, float, float]] = {
@@ -33,6 +33,7 @@ def platform_fee(price: int) -> int:
 
 
 def score_bid(price: int, max_price: int, trust: float, confidence: float, strategy: str) -> float:
+    """Weighted bid score: price competitiveness + provider trust + self-reported confidence."""
     w_price, w_trust, w_conf = STRATEGY_WEIGHTS.get(strategy, STRATEGY_WEIGHTS["balanced"])
     price_score = max(0.0, 1.0 - (price / max_price)) if max_price > 0 else 0.0
     return w_price * price_score + w_trust * max(0.0, min(1.0, trust)) + w_conf * max(0.0, min(1.0, confidence))
@@ -52,7 +53,8 @@ def choose_winner(bids: dict[str, dict], max_price: int, trust_by_agent: dict[st
             float(bid.get("confidence", 0.5)),
             strategy,
         )
-        ranked.append((-s, str(bid.get("bidAt", "")), agent_id))
+        # Missing bidAt sorts LAST in a tie — never rewards omitting the timestamp.
+        ranked.append((-s, str(bid.get("bidAt") or "9999-99-99"), agent_id))
     if not ranked:
         return None
     ranked.sort()
@@ -68,6 +70,7 @@ def updated_trust(old: float, outcome: str) -> float:
 
 
 def trust_tier(trust: float, jobs_completed: int) -> str:
+    """Display tier gated on volume + score (AEX tier gates, simplified)."""
     if jobs_completed >= 15 and trust >= 0.85:
         return "trusted"
     if jobs_completed >= 5 and trust >= 0.7:
