@@ -177,7 +177,11 @@ describe("ComputeStack — dev rolling-update config", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Prod: desiredCount=2, minHealthyPercent=100
+// Prod: desiredCount=1, minHealthyPercent=0 (INTERIM single-task pin)
+// The sprite pipeline's SpriteQueue(max_concurrent=1) throttle is per-process;
+// >1 backend replica defeats it and blows PixelLab's 10-concurrent-job cap,
+// silently dropping animations. Pinned to 1 task until the durable single-worker
+// sprite pipeline lands. Restore to desired 2 / minHealthyPercent 100 then.
 // ---------------------------------------------------------------------------
 
 describe("ComputeStack — prod rolling-update config", () => {
@@ -187,16 +191,16 @@ describe("ComputeStack — prod rolling-update config", () => {
     ({ template } = buildTestApp("prod"));
   });
 
-  test("prod ECS service has desiredCount=2", () => {
+  test("prod ECS service has desiredCount=1 (interim single-task pin)", () => {
     template.hasResourceProperties("AWS::ECS::Service", {
-      DesiredCount: 2,
+      DesiredCount: 1,
     });
   });
 
-  test("prod ECS service has MinimumHealthyPercent=100", () => {
+  test("prod ECS service has MinimumHealthyPercent=0 (single task can't sustain 100% during a roll)", () => {
     template.hasResourceProperties("AWS::ECS::Service", {
       DeploymentConfiguration: Match.objectLike({
-        MinimumHealthyPercent: 100,
+        MinimumHealthyPercent: 0,
       }),
     });
   });
@@ -418,18 +422,18 @@ describe("ComputeStack — backend autoscaling", () => {
     );
   });
 
-  test("prod scales 2→12 tasks", () => {
-    // Producer's 2026-05-04 launch-readiness plan (Tier 2 #2.2) raised
-    // prod maxCapacity from 6→12 to give headroom for HN-spike scale.
-    // 500 simultaneous /town/instance + register calls would peg CPU
-    // on 6 tasks before WAF rate-limit kicked in; doubling the ceiling
-    // buys breathing room. Game server stays single-replica per ADR-0002.
+  test("prod pinned at 1 task (interim single-task sprite-concurrency fix)", () => {
+    // INTERIM: prod is pinned to exactly 1 task (min=max=1) so the per-process
+    // SpriteQueue(max_concurrent=1) throttle is also the global one — >1 replica
+    // blows PixelLab's 10-concurrent-job cap and drops animations. Restore to
+    // 2→12 (Producer's 2026-05-04 Tier-2 #2.2 HN-spike headroom) once the durable
+    // single-worker sprite pipeline decouples generation from the backend.
     const { template } = buildTestApp("prod");
     template.hasResourceProperties(
       "AWS::ApplicationAutoScaling::ScalableTarget",
       {
-        MinCapacity: 2,
-        MaxCapacity: 12,
+        MinCapacity: 1,
+        MaxCapacity: 1,
         ScalableDimension: "ecs:service:DesiredCount",
       }
     );
