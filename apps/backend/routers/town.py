@@ -1669,6 +1669,7 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
                 description=body.get("description", ""),
                 max_price=_coerce_int(body.get("max_price")),
                 strategy=body.get("strategy") or "balanced",
+                success_criteria=body.get("success_criteria") or None,
             )
             return {"statusCode": 200, "body": result}
         # CLI verb "bid" → service place_bid (the one non-1:1 name).
@@ -1696,6 +1697,7 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
                 job_id=body.get("job_id", ""),
                 accept=_raw_accept if isinstance(_raw_accept, bool) else None,
                 reason=body.get("reason", "") or "",
+                criteria_verdicts=body.get("criteria_verdicts") or None,
             )
             return {"statusCode": 200, "body": result}
         # ``idle`` and ``context_transition`` fall through with no extra work:

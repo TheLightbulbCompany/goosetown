@@ -20,7 +20,8 @@ STRATEGY_WEIGHTS: dict[str, tuple[float, float, float]] = {
 }
 
 # AEX outcome attribution, reduced to the outcomes GooseTown can observe.
-OUTCOME_SCORES = {"SUCCESS": 1.0, "SUCCESS_AUTO": 0.9, "FAILURE_PROVIDER": 0.0}
+# SUCCESS_PARTIAL: consumer accepted but flagged ≥1 criteria verdict false (W3).
+OUTCOME_SCORES = {"SUCCESS": 1.0, "SUCCESS_AUTO": 0.9, "SUCCESS_PARTIAL": 0.6, "FAILURE_PROVIDER": 0.0}
 TRUST_EMA_ALPHA = 0.2
 INITIAL_TRUST = 0.5
 

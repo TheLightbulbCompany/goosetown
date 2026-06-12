@@ -118,6 +118,7 @@ async def test_post_job_dispatches_to_service(handler_setup):
         description="Write me a haiku about crumbs",
         max_price=50,
         strategy="lowest_price",
+        success_criteria=None,
     )
 
 
@@ -242,6 +243,7 @@ async def test_review_job_dispatches_to_service(handler_setup):
         job_id="job-under-review",
         accept=False,
         reason="not what I asked for",
+        criteria_verdicts=None,
     )
 
 
@@ -289,6 +291,7 @@ async def test_post_job_bad_max_price_string_coerced_to_zero(handler_setup):
         description="Should coerce gracefully",
         max_price=0,
         strategy="balanced",
+        success_criteria=None,
     )
 
 
@@ -329,4 +332,5 @@ async def test_review_job_missing_accept_passes_none(handler_setup):
         job_id="job-no-accept",
         accept=None,
         reason="forgot to include accept",
+        criteria_verdicts=None,
     )

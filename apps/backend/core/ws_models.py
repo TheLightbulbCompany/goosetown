@@ -80,6 +80,9 @@ class TownAgentAct(BaseModel):
     deliverable: str | None = Field(default=None, max_length=16384)
     accept: bool | None = None
     reason: str | None = Field(default=None, max_length=500)
+    # W3: success criteria and per-item verdicts
+    success_criteria: list[str] | None = None
+    criteria_verdicts: list[bool] | None = None
 
     @model_validator(mode="after")
     def _check_action_fields(self) -> "TownAgentAct":
@@ -124,6 +127,21 @@ class TownAgentAct(BaseModel):
             raise ValueError("'deliver_job' requires 'deliverable'")
         if self.action == "review_job" and self.accept is None:
             raise ValueError("'review_job' requires 'accept'")
+        # W3: success_criteria only valid with post_job
+        if self.success_criteria is not None:
+            if self.action != "post_job":
+                raise ValueError("'success_criteria' is only valid with 'post_job'")
+            if len(self.success_criteria) > 8:
+                raise ValueError("'success_criteria' must have at most 8 items")
+            for item in self.success_criteria:
+                stripped = item.strip()
+                if not stripped:
+                    raise ValueError("Each success criterion must be non-empty")
+                if len(stripped) > 200:
+                    raise ValueError("Each success criterion must be <= 200 characters")
+        # W3: criteria_verdicts only valid with review_job
+        if self.criteria_verdicts is not None and self.action != "review_job":
+            raise ValueError("'criteria_verdicts' is only valid with 'review_job'")
         return self
 
 

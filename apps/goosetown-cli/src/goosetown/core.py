@@ -86,6 +86,54 @@ def _parse_confidence(rest: list[str]) -> tuple[float | None, list[str]]:
     return None, rest
 
 
+_CRITERIA_MAX_ITEMS = 8
+_CRITERIA_ITEM_MAX = 200
+
+
+def _parse_criteria(rest: list[str]) -> tuple[list[str] | None, list[str]]:
+    """Pull a leading ``--criteria=<a;b;c>`` off ``act post_job`` args.
+
+    Modeled on ``_parse_confidence``. Semicolon-separated items; each is
+    stripped and truncated to 200 chars. Empty items are silently dropped.
+    Returns ``(criteria_or_None, remaining_args)``. Dies when more than 8
+    non-empty items are provided after splitting.
+    """
+    if rest and rest[0].startswith("--criteria="):
+        raw = rest[0][len("--criteria=") :]
+        items = [
+            item.strip()[:_CRITERIA_ITEM_MAX] for item in raw.split(";") if item.strip()
+        ]
+        if len(items) > _CRITERIA_MAX_ITEMS:
+            _die(
+                f"--criteria: too many items ({len(items)}); maximum is {_CRITERIA_MAX_ITEMS}.",
+                "Separate criteria with semicolons: --criteria='a;b;c'",
+            )
+        return (items if items else None), rest[1:]
+    return None, rest
+
+
+def _parse_criteria_verdicts(rest: list[str]) -> tuple[list[bool] | None, list[str]]:
+    """Pull a leading ``--criteria=1,0,1`` off ``act review`` args.
+
+    Comma-separated 0/1 digits. Returns ``(verdicts_or_None, remaining_args)``.
+    Dies on any character other than 0, 1, or comma.
+    """
+    if rest and rest[0].startswith("--criteria="):
+        raw = rest[0][len("--criteria=") :]
+        if not raw:
+            return None, rest[1:]
+        # Validate: only digits 0 and 1 separated by commas.
+        import re
+
+        if not re.fullmatch(r"[01](,[01])*", raw):
+            _die(
+                f"Invalid --criteria value for review: '{raw}'",
+                "Use comma-separated 0/1 values, e.g. --criteria=1,0,1",
+            )
+        return [c == "1" for c in raw.split(",")], rest[1:]
+    return None, rest
+
+
 _VALID_STRATEGIES = ("balanced", "lowest_price", "best_quality")
 
 
@@ -613,9 +661,11 @@ def cmd_act(args: argparse.Namespace) -> None:
         usage = (
             "Usage: goosetown act post_job "
             "[--strategy=balanced|lowest_price|best_quality] "
+            "[--criteria='a;b;c'] "
             '<max_price> "<title>" "<description...>"'
         )
         strategy, rest = _parse_strategy(rest)
+        criteria, rest = _parse_criteria(rest)
         if len(rest) < 3:
             _die(
                 usage,
@@ -646,6 +696,8 @@ def cmd_act(args: argparse.Namespace) -> None:
         }
         if strategy is not None:
             payload["strategy"] = strategy
+        if criteria is not None:
+            payload["success_criteria"] = criteria
     elif action == "bid":
         usage = (
             "Usage: goosetown act bid [--confidence=0.X] <job_id> <price> [pitch...]"
@@ -695,7 +747,7 @@ def cmd_act(args: argparse.Namespace) -> None:
             "deliverable": deliverable[:16384],
         }
     elif action == "review":
-        usage = "Usage: goosetown act review <job_id> accept|reject [reason...]"
+        usage = "Usage: goosetown act review <job_id> accept|reject [reason...] [--criteria=1,0,1]"
         if len(rest) < 2:
             _die(usage)
         job_id = rest[0]
@@ -704,14 +756,26 @@ def cmd_act(args: argparse.Namespace) -> None:
             _die(
                 f"Second argument must be 'accept' or 'reject', got '{rest[1]}'.", usage
             )
+        # Pull --criteria=1,0,1 out of the remaining args (may appear anywhere after verdict)
+        remaining = rest[2:]
+        verdicts: list[bool] | None = None
+        filtered: list[str] = []
+        for token in remaining:
+            if token.startswith("--criteria="):
+                parsed_verdicts, _ = _parse_criteria_verdicts([token])
+                verdicts = parsed_verdicts
+            else:
+                filtered.append(token)
         payload = {
             "action": "review_job",
             "job_id": job_id,
             "accept": verdict == "accept",
         }
-        reason = " ".join(rest[2:]).strip()
+        reason = " ".join(filtered).strip()
         if reason:
             payload["reason"] = reason[:500]
+        if verdicts is not None:
+            payload["criteria_verdicts"] = verdicts
     elif action in _VALID_ACTIVITIES:
         payload = {"action": "activity", "activity_id": action}
     else:

@@ -814,6 +814,7 @@ class TownDaemon:
                 status="OPEN",
                 title=pending.get("title"),
                 max_price=data.get("escrowed", pending.get("max_price")),
+                success_criteria=pending.get("success_criteria"),
             )
         elif verb == "bid" and job_id:
             self._update_job(
@@ -887,6 +888,7 @@ class TownDaemon:
                 title=title,
                 agreed_price=agreed,
                 description=data.get("description"),
+                success_criteria=data.get("success_criteria"),
             )
             self._append_event(
                 f'\U0001f4bc You won the job "{title}" for {agreed} crumbs '
@@ -953,7 +955,12 @@ class TownDaemon:
         # Derive role fresh from event ids; fall back to local cache.
         role = self._job_role(data, job_id)
         job = self._update_job(
-            job_id, status="COMPLETED", title=title, payout=payout, fee=fee
+            job_id,
+            status="COMPLETED",
+            title=title,
+            payout=payout,
+            fee=fee,
+            criteria_verdicts=data.get("criteria_verdicts"),
         )
         # Stamp role onto the cache entry if it was unknown before.
         if role is not None and job.get("role") is None:
@@ -963,15 +970,21 @@ class TownDaemon:
             self._exchange_state()["wallet"] = data["balance"]
         self._write_jobs()
         effective_role = job.get("role") or role
+        # W3: append a short verdict summary if present.
+        verdicts = data.get("criteria_verdicts")
+        verdict_suffix = ""
+        if verdicts:
+            met = sum(1 for v in verdicts if v)
+            verdict_suffix = f" criteria: {met}/{len(verdicts)} met"
         if effective_role == "provider":
             line = (
                 f'\U0001f4bc Job "{title}" completed — you were paid {payout} crumbs '
-                f"({fee} crumb platform fee) (job {job_id})."
+                f"({fee} crumb platform fee) (job {job_id}).{verdict_suffix}"
             )
         else:
             line = (
                 f'\U0001f4bc Your job "{title}" completed — provider received '
-                f"{payout} crumbs (fee {fee}) (job {job_id})."
+                f"{payout} crumbs (fee {fee}) (job {job_id}).{verdict_suffix}"
             )
         self._append_event(line)
 
@@ -988,7 +1001,13 @@ class TownDaemon:
         reason = data.get("reason", "unknown")
         # Derive role fresh from event ids; fall back to local cache.
         role = self._job_role(data, job_id)
-        job = self._update_job(job_id, status="FAILED", title=title, fail_reason=reason)
+        job = self._update_job(
+            job_id,
+            status="FAILED",
+            title=title,
+            fail_reason=reason,
+            criteria_verdicts=data.get("criteria_verdicts"),
+        )
         # Stamp role onto the cache entry if it was unknown before.
         if role is not None and job.get("role") is None:
             job["role"] = role
@@ -996,7 +1015,15 @@ class TownDaemon:
         if "balance" in data:
             self._exchange_state()["wallet"] = data["balance"]
         self._write_jobs()
-        self._append_event(f'\U0001f4bc Job "{title}" failed: {reason} (job {job_id}).')
+        # W3: append verdict summary if present.
+        verdicts = data.get("criteria_verdicts")
+        verdict_suffix = ""
+        if verdicts:
+            met = sum(1 for v in verdicts if v)
+            verdict_suffix = f" criteria: {met}/{len(verdicts)} met"
+        self._append_event(
+            f'\U0001f4bc Job "{title}" failed: {reason} (job {job_id}).{verdict_suffix}'
+        )
 
     def _on_job_expired(self, data: dict) -> None:
         """Consumer-side: bid window closed with no eligible bids.
@@ -1092,6 +1119,17 @@ class TownDaemon:
                 lines.append("  ```")
                 lines += [f"  {dl}" for dl in safe.splitlines()]
                 lines.append("  ```")
+            # W3: render success criteria as a checklist when AWARDED.
+            criteria = job.get("success_criteria")
+            verdicts = job.get("criteria_verdicts")
+            if criteria and job.get("status") == "AWARDED":
+                lines.append("  Success criteria:")
+                for i, criterion in enumerate(criteria):
+                    if verdicts and i < len(verdicts):
+                        check = "x" if verdicts[i] else " "
+                    else:
+                        check = " "
+                    lines.append(f"  - [{check}] {criterion}")
         lines.append("")
 
         self._write_workspace_file("TOWN_JOBS.md", "\n".join(lines) + "\n")

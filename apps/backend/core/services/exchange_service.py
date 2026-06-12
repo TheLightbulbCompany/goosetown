@@ -464,7 +464,14 @@ def _update_trust(agent_id: str, outcome: str, completed_delta: int, failed_delt
 # ---------------------------------------------------------------------------
 
 
-async def post_job(agent_conn: Any, title: str, description: str, max_price: int, strategy: str) -> dict:
+async def post_job(
+    agent_conn: Any,
+    title: str,
+    description: str,
+    max_price: int,
+    strategy: str,
+    success_criteria: list[str] | None = None,
+) -> dict:
     """Post a job at the Exchange: escrow ``max_price``, open the bid window."""
     mailbox = get_daemon_mailbox()
     agent = TownService().get_town_agent_by_id(agent_conn.agent_id) or {}
@@ -517,6 +524,13 @@ async def post_job(agent_conn: Any, title: str, description: str, max_price: int
                 "message": f"Posting needs {max_price} crumbs in escrow; you have {balance}.",
             },
         )
+    # W3: sanitize success_criteria (strip, truncate 200, drop empties, cap 8).
+    sanitized_criteria: list[str] | None = None
+    if success_criteria:
+        sanitized_criteria = [c.strip()[:200] for c in success_criteria if c.strip()][:8]
+        if not sanitized_criteria:
+            sanitized_criteria = None
+
     now = time.time()
     job: dict[str, Any] = {
         "id": job_id,
@@ -536,6 +550,9 @@ async def post_job(agent_conn: Any, title: str, description: str, max_price: int
     # same-owner hard-block cheaply (no extra agent read per bid).
     if consumer_user_id:
         job["consumerUserId"] = consumer_user_id
+    # W3: store success criteria on the job row.
+    if sanitized_criteria:
+        job["successCriteria"] = sanitized_criteria
     try:
         dynamo.jobs_table().put_item(Item=job)
     except Exception:
@@ -553,7 +570,7 @@ async def post_job(agent_conn: Any, title: str, description: str, max_price: int
     _bump_counter(agent_conn.agent_id, "jobsPosted")
     _schedule(job_id, BID_WINDOW_SEC, _close_bid_window)
 
-    broadcast = {
+    broadcast: dict[str, Any] = {
         "event": "job_posted",
         "job_id": job_id,
         "title": job["title"],
@@ -563,6 +580,9 @@ async def post_job(agent_conn: Any, title: str, description: str, max_price: int
         "consumer_name": agent_conn.agent_name,
         "bid_window_sec": int(BID_WINDOW_SEC),
     }
+    # W3: include criteria in broadcast so bidders can see what success means.
+    if sanitized_criteria:
+        broadcast["success_criteria"] = sanitized_criteria
     for conn in get_town_agent_ws_manager().connected_agents():
         if conn.agent_id != agent_conn.agent_id:
             mailbox.notify_connection(conn.connection_id, broadcast)
@@ -834,7 +854,13 @@ async def deliver_job(agent_conn: Any, job_id: str, deliverable: str) -> dict:
     )
 
 
-async def review_job(agent_conn: Any, job_id: str, accept: bool | None, reason: str) -> dict:
+async def review_job(
+    agent_conn: Any,
+    job_id: str,
+    accept: bool | None,
+    reason: str,
+    criteria_verdicts: list[bool] | None = None,
+) -> dict:
     """Consumer accepts (settle + payout) or rejects (refund + provider trust hit)."""
     if accept is None:
         return _notify_outcome(
@@ -879,8 +905,37 @@ async def review_job(agent_conn: Any, job_id: str, accept: bool | None, reason: 
                 "message": "The review window passed — the delivery was auto-accepted and the provider paid.",
             },
         )
-    outcome = "SUCCESS" if accept else "FAILURE_PROVIDER"
-    if not await _settle(job, outcome, reason=reason, rejected_by_consumer=not accept):
+    # W3: validate criteria_verdicts length when the job has criteria.
+    stored_criteria: list[str] = job.get("successCriteria") or []
+    if criteria_verdicts is not None and stored_criteria:
+        if len(criteria_verdicts) != len(stored_criteria):
+            return _notify_outcome(
+                agent_conn,
+                "review_job",
+                {
+                    "status": "rejected",
+                    "reason": "bad_verdicts",
+                    "message": (
+                        f"criteria_verdicts length ({len(criteria_verdicts)}) must match "
+                        f"the job's success_criteria count ({len(stored_criteria)})."
+                    ),
+                },
+            )
+    # W3: determine outcome — accept with any false verdict → SUCCESS_PARTIAL.
+    if accept:
+        if criteria_verdicts is not None and stored_criteria and not all(criteria_verdicts):
+            outcome = "SUCCESS_PARTIAL"
+        else:
+            outcome = "SUCCESS"
+    else:
+        outcome = "FAILURE_PROVIDER"
+    if not await _settle(
+        job,
+        outcome,
+        reason=reason,
+        rejected_by_consumer=not accept,
+        criteria_verdicts=criteria_verdicts if stored_criteria else None,
+    ):
         # Lost the race against the auto-accept timer (or a concurrent review):
         # the job was already settled between our status read and the flip.
         return _notify_outcome(
@@ -1028,7 +1083,12 @@ async def _close_bid_window_once(job_id: str, guard_revision: bool) -> bool:
         "provider_id": winner,
         "consumer_id": consumer_id,
     }
-    mailbox.notify(winner, {**awarded, "description": job.get("description", "")})
+    # W3: include success criteria in the winner's copy (alongside description).
+    winner_awarded: dict[str, Any] = {**awarded, "description": job.get("description", "")}
+    success_criteria = job.get("successCriteria")
+    if success_criteria:
+        winner_awarded["success_criteria"] = success_criteria
+    mailbox.notify(winner, winner_awarded)
     # Consumer copy includes updated balance when a partial escrow refund was issued.
     consumer_awarded = (
         awarded if consumer_balance_after_award is None else {**awarded, "balance": consumer_balance_after_award}
@@ -1083,7 +1143,13 @@ async def _review_timeout(job_id: str) -> None:
     await _settle(job, "SUCCESS_AUTO")
 
 
-async def _settle(job: dict, outcome: str, reason: str = "", rejected_by_consumer: bool = False) -> bool:
+async def _settle(
+    job: dict,
+    outcome: str,
+    reason: str = "",
+    rejected_by_consumer: bool = False,
+    criteria_verdicts: list[bool] | None = None,
+) -> bool:
     """Single settlement path for accept / auto-accept / reject.
 
     Returns True if this call won the DELIVERED→terminal status flip (and
@@ -1091,8 +1157,14 @@ async def _settle(job: dict, outcome: str, reason: str = "", rejected_by_consume
     verb vs auto-accept timer) settled the job first.
     """
     job_id = job["id"]
-    success = outcome in ("SUCCESS", "SUCCESS_AUTO")
-    if not _flip_status(job_id, "DELIVERED", "COMPLETED" if success else "FAILED", {"outcome": outcome}):
+    # W3: SUCCESS_PARTIAL is treated as success for payment (COMPLETED status)
+    # but with a lower trust attribution score (0.6 vs 1.0).
+    success = outcome in ("SUCCESS", "SUCCESS_AUTO", "SUCCESS_PARTIAL")
+    set_extra: dict[str, Any] = {"outcome": outcome}
+    # W3: persist criteria_verdicts on the job row when provided.
+    if criteria_verdicts is not None:
+        set_extra["criteriaVerdicts"] = criteria_verdicts
+    if not _flip_status(job_id, "DELIVERED", "COMPLETED" if success else "FAILED", set_extra):
         return False  # another path (review vs auto-accept timer) won the race
     _cancel_timer(job_id)
     mailbox = get_daemon_mailbox()
@@ -1108,7 +1180,7 @@ async def _settle(job: dict, outcome: str, reason: str = "", rejected_by_consume
         _update_trust(provider_id, outcome, completed_delta=1, failed_delta=0)
         _apply_mood(provider_id, "job_completed_provider")
         _apply_mood(consumer_id, "job_completed_consumer")
-        completed = {
+        completed: dict[str, Any] = {
             "event": "job_completed",
             "job_id": job_id,
             "title": job.get("title", ""),
@@ -1117,6 +1189,9 @@ async def _settle(job: dict, outcome: str, reason: str = "", rejected_by_consume
             "provider_id": provider_id,
             "consumer_id": consumer_id,
         }
+        # W3: include criteria_verdicts in settlement events when present.
+        if criteria_verdicts is not None:
+            completed["criteria_verdicts"] = criteria_verdicts
         # Provider copy includes updated balance; consumer copy does not (consumer wallet
         # didn't move at settle — it moved at award when the partial refund was issued).
         mailbox.notify(provider_id, {**completed, "balance": provider_balance})
@@ -1127,7 +1202,7 @@ async def _settle(job: dict, outcome: str, reason: str = "", rejected_by_consume
         _apply_mood(provider_id, "job_failed_provider")
         if rejected_by_consumer:
             _bump_counter(consumer_id, "rejectionsIssued")
-        failed = {
+        failed: dict[str, Any] = {
             "event": "job_failed",
             "job_id": job_id,
             "title": job.get("title", ""),
@@ -1135,6 +1210,9 @@ async def _settle(job: dict, outcome: str, reason: str = "", rejected_by_consume
             "provider_id": provider_id,
             "consumer_id": consumer_id,
         }
+        # W3: include criteria_verdicts in failed events when present.
+        if criteria_verdicts is not None:
+            failed["criteria_verdicts"] = criteria_verdicts
         # Consumer copy includes updated balance (they received the refund); provider's does not.
         mailbox.notify(provider_id, failed)
         mailbox.notify(consumer_id, {**failed, "balance": consumer_balance})
