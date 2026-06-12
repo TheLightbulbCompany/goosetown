@@ -73,6 +73,10 @@ function buildTestApp(env: string, withAlarmTopic = false): Template {
     townTokenSecret: makeSecret("TownTokenSecret", `goosetown-${env}-town-token-secret`),
     pixelLabApiKey: makeSecret("PixelLabApiKey", `goosetown-${env}-pixellab-api-key`),
     resendApiKey: makeSecret("ResendApiKey", `goosetown-${env}-resend-api-key`),
+    spriteEventSecret: makeSecret(
+      "SpriteEventSecret",
+      `goosetown-${env}-sprite-event-secret`
+    ),
   };
 
   const alarmTopic = withAlarmTopic
@@ -245,6 +249,22 @@ describe("SpriteWorkerStack — container definition", () => {
               Name: "BACKEND_INTERNAL_URL",
               Value: "https://api-dev.goosetown.isol8.co",
             }),
+          ]),
+        }),
+      ]),
+    });
+  });
+
+  test("container secrets include PIXELLAB_API_KEY and SPRITE_EVENT_SECRET", () => {
+    // SPRITE_EVENT_SECRET authenticates the worker's POSTs to the backend's
+    // /town/internal/sprite-event endpoint (codex P2: this seam gets REAL
+    // shared-secret auth, unlike the vacuous WS_LAMBDA_SECRET gate).
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Secrets: Match.arrayWith([
+            Match.objectLike({ Name: "PIXELLAB_API_KEY" }),
+            Match.objectLike({ Name: "SPRITE_EVENT_SECRET" }),
           ]),
         }),
       ]),

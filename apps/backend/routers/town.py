@@ -1644,18 +1644,23 @@ async def internal_sprite_event(request: SpriteEventRequest, raw_request: Reques
     updating the in-memory phase-lattice cache, pushing sprites to the game
     server, and notifying the daemon.
 
-    Same shared-secret gate as ``/ws-message`` (and the same known caveat:
-    ``WS_LAMBDA_SECRET`` is not yet wired end-to-end through CDK — see
-    ``core/config.py``'s ``WS_LAMBDA_SECRET`` note).
+    Auth: dedicated ``SPRITE_EVENT_SECRET`` shared-secret gate (header
+    ``x-sprite-event-secret``), wired end-to-end through CDK into both the
+    backend and the sprite worker.
     """
     from core.config import settings
 
-    # In non-dev environments, require shared secret from the sprite worker.
-    # In dev, skip if WS_LAMBDA_SECRET is unset (local dev ergonomics).
-    if settings.ENVIRONMENT != "dev" or settings.WS_LAMBDA_SECRET:
-        provided = raw_request.headers.get("x-ws-lambda-secret", "")
-        if provided != settings.WS_LAMBDA_SECRET:
-            raise HTTPException(status_code=403, detail="Invalid or missing WS lambda secret")
+    # Real shared-secret auth — CDK wires SPRITE_EVENT_SECRET into both the
+    # backend and the sprite worker (unlike WS_LAMBDA_SECRET, which was never
+    # wired end-to-end; see core/config.py). Fail CLOSED outside dev if the
+    # secret is missing: an unset secret in prod is a misconfiguration, not
+    # an excuse to accept unauthenticated internal calls.
+    secret = settings.SPRITE_EVENT_SECRET
+    if secret:
+        if raw_request.headers.get("x-sprite-event-secret", "") != secret:
+            raise HTTPException(status_code=403, detail="forbidden")
+    elif settings.ENVIRONMENT != "dev":
+        raise HTTPException(status_code=403, detail="forbidden")
 
     if request.type == "progress":
         _send_to_daemon(

@@ -184,6 +184,11 @@ export class ComputeStack extends cdk.Stack {
           props.secrets.pixelLabApiKey
         ),
         RESEND_API_KEY: ecs.Secret.fromSecretsManager(props.secrets.resendApiKey),
+        // Authenticates the sprite worker's POSTs to /town/internal/sprite-event.
+        // Same secret is wired into the sprite worker (sprite-worker-stack).
+        SPRITE_EVENT_SECRET: ecs.Secret.fromSecretsManager(
+          props.secrets.spriteEventSecret
+        ),
       },
       portMappings: [{ containerPort: 8000, protocol: ecs.Protocol.TCP }],
       healthCheck: {

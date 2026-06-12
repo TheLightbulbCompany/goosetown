@@ -101,6 +101,10 @@ export class SpriteWorkerStack extends cdk.Stack {
       },
       secrets: {
         PIXELLAB_API_KEY: ecs.Secret.fromSecretsManager(props.secrets.pixelLabApiKey),
+        // Authenticates this worker's POSTs to the backend's
+        // /town/internal/sprite-event endpoint (same secret wired into the
+        // backend in compute-stack).
+        SPRITE_EVENT_SECRET: ecs.Secret.fromSecretsManager(props.secrets.spriteEventSecret),
       },
     });
 

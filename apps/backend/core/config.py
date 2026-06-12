@@ -22,6 +22,11 @@ class Settings:
     WS_MANAGEMENT_API_URL: str = os.getenv("WS_MANAGEMENT_API_URL", "")
     GAME_SERVER_URL: str = os.getenv("GAME_SERVER_URL", "ws://localhost:8080")
     WS_LAMBDA_SECRET: str = os.getenv("WS_LAMBDA_SECRET", "")
+    # Shared secret for the sprite worker -> backend /town/internal/sprite-event
+    # seam. Unlike WS_LAMBDA_SECRET (never wired end-to-end — see the note in
+    # validate() below), CDK wires this into BOTH the backend (compute-stack)
+    # and the sprite worker (sprite-worker-stack), so the gate is real.
+    SPRITE_EVENT_SECRET: str = os.getenv("SPRITE_EVENT_SECRET", "")
     # Set WS_STRICT_VALIDATION=false to roll back to legacy dict-based body handling for 48h post-deploy
     WS_STRICT_VALIDATION: bool = os.getenv("WS_STRICT_VALIDATION", "true").lower() != "false"
     PIXELLAB_MAX_CONCURRENT_ANIMATIONS: int = int(os.environ.get("PIXELLAB_MAX_CONCURRENT_ANIMATIONS", "2"))

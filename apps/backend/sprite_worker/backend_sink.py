@@ -29,8 +29,8 @@ class HttpSpriteEventSink:
 
     async def _post(self, payload: dict) -> None:
         headers = {}
-        if settings.WS_LAMBDA_SECRET:
-            headers["x-ws-lambda-secret"] = settings.WS_LAMBDA_SECRET
+        if settings.SPRITE_EVENT_SECRET:
+            headers["x-sprite-event-secret"] = settings.SPRITE_EVENT_SECRET
         for attempt in range(_RETRIES):
             try:
                 resp = await self._client.post(self._url, json=payload, headers=headers)

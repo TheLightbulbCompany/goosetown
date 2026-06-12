@@ -12,6 +12,7 @@ export interface AuthSecrets {
   townTokenSecret: secretsmanager.ISecret;
   pixelLabApiKey: secretsmanager.ISecret;
   resendApiKey: secretsmanager.ISecret;
+  spriteEventSecret: secretsmanager.ISecret;
 }
 
 export class AuthStack extends cdk.Stack {
@@ -55,12 +56,30 @@ export class AuthStack extends cdk.Stack {
       description: "Resend API key for landing page email signups",
     });
 
+    // Shared secret authenticating the sprite worker's POSTs to the backend's
+    // /town/internal/sprite-event endpoint. Unlike WS_LAMBDA_SECRET (vacuous —
+    // see core/config.py), BOTH sides of this seam are wired here in CDK.
+    const spriteEventSecret = new secretsmanager.Secret(
+      this,
+      "SpriteEventSecret",
+      {
+        secretName: `goosetown/${env}/sprite_event_secret`,
+        description:
+          "Shared secret for sprite worker -> backend /town/internal/sprite-event",
+        generateSecretString: {
+          excludePunctuation: true,
+          passwordLength: 48,
+        },
+      }
+    );
+
     this.secrets = {
       clerkIssuer,
       clerkSecretKey,
       townTokenSecret,
       pixelLabApiKey,
       resendApiKey,
+      spriteEventSecret,
     };
 
     // Outputs

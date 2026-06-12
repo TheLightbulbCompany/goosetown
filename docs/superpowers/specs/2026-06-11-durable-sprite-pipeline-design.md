@@ -188,9 +188,12 @@ The pipeline's non-PixelLab side effects need backend-process state the worker d
 have: per-agent game-server WebSocket connections (`game_server_client`), the in-memory
 `ws_manager` registry, and the phase-lattice cache mirror. One seam handles all of it:
 
-- **`POST /town/internal/sprite-event`** on the backend, authed with the existing
-  `x-ws-lambda-secret` header (same secret + check as `/town/ws-message`; in-VPC call to
-  the `api-{env}` ALB URL). Body:
+- **`POST /town/internal/sprite-event`** on the backend, authed with a dedicated
+  `x-sprite-event-secret` header (`SPRITE_EVENT_SECRET`, generated in auth-stack and
+  wired by CDK into both the backend and the sprite worker — real end-to-end auth,
+  unlike the vacuous `WS_LAMBDA_SECRET` gate on `/town/ws-message`; fails closed
+  outside dev when unset. Codex P2 revision of the original same-gate design).
+  In-VPC call to the `api-{env}` ALB URL. Body:
   `{agent_id, type: "progress" | "static_ready" | "animations_updated", status?, …}`.
   - `progress` → `_send_to_daemon(agent_id, {event: "sprite_progress", status})` —
     keepalive messages the daemon writes into TOWN_STATUS.md.
@@ -220,7 +223,9 @@ have: per-agent game-server WebSocket connections (`game_server_client`), the in
   `PIXELLAB_MAX_CONCURRENT_ANIMATIONS` (prod: 2 until PixelLab confirms the cap; §8),
   `SPRITE_WORKER_MAX_CONCURRENT_PIPELINES` (2).
 - Secrets: `PIXELLAB_API_KEY` (the per-env secret that already exists:
-  `goosetown/{env}/pixellab_api_key`), `WS_LAMBDA_SECRET` (for the internal endpoint).
+  `goosetown/{env}/pixellab_api_key`), `SPRITE_EVENT_SECRET` (for the internal
+  endpoint; new generated secret `goosetown/{env}/sprite_event_secret` in auth-stack,
+  also wired into the backend in compute-stack).
 - IAM: consume + send on the sprite-jobs queue; agents-table RW; sprite-bucket write;
   `cloudwatch:PutMetricData`.
 
