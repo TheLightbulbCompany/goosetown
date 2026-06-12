@@ -61,19 +61,21 @@ async def test_registration_sets_static_phase_before_animations():
     # Mock TownService
     mock_service = MagicMock()
     mock_service.update_agent_state.side_effect = fake_update_agent_state
+    # The pipeline now reads display_name / appearance / char_id / status from
+    # the ROW (the row is the source of truth — wrapper args are advisory).
     mock_service.get_town_agent_by_id.return_value = {
         "id": agent_id,
         "currentLocation": "plaza",
         "locationContext": "town",
+        "displayName": "Test Agent",
+        "appearance": "a pixel art warrior",
+        "spriteStatus": "queued",
     }
 
     # Mock game server client and WS manager (agent not connected yet — that's fine)
     mock_gs_client = MagicMock()
     mock_gs_client.connect_agent = AsyncMock()
     mock_gs_client.update_agent_sprites = AsyncMock()
-
-    mock_ws_mgr = MagicMock()
-    mock_ws_mgr.get_by_agent_id.return_value = None
 
     fake_s3_key = f"sprites/{agent_id}/walk.png"
 
@@ -92,7 +94,13 @@ async def test_registration_sets_static_phase_before_animations():
         # defined, which is the standard unittest.mock rule).
         patch("core.services.sprite_pipeline.TownService", return_value=mock_service),
         patch("core.services.sprite_pipeline.get_game_server_client", return_value=mock_gs_client),
-        patch("core.services.sprite_pipeline.get_town_agent_ws_manager", return_value=mock_ws_mgr),
+        # The pipeline no longer touches the ws_manager / game server
+        # directly — backend-process effects go through LocalSpriteEventSink →
+        # apply_sprite_update. Patch it at its source module (lazy import).
+        patch(
+            "core.services.sprite_update_apply.apply_sprite_update",
+            new=AsyncMock(),
+        ),
         patch(
             "core.services.sprite_storage.upload_sprite_to_s3",
             return_value=fake_s3_key,
