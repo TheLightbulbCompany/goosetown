@@ -106,24 +106,41 @@ def presign_artifact_upload(key: str) -> dict:
     )
 
 
-def presign_artifact_download(key: str) -> str:
-    """24 h presigned GET for the consumer to fetch the delivered artifact."""
+def presign_artifact_download(key: str, version_id: str | None = None) -> str:
+    """24 h presigned GET for the consumer to fetch the delivered artifact.
+
+    When ``version_id`` is supplied (captured at deliver time from the S3
+    HeadObject response), the presigned URL includes ``VersionId`` in its query
+    params so S3 serves that immutable version regardless of later overwrites.
+
+    # Upload presigns outlive delivery (15 min); pin the consumer's GET to the
+    # version seen at deliver time so post-delivery overwrites are invisible
+    # (bucket is versioned).
+    """
     from core.config import settings
 
+    params: dict = {"Bucket": settings.SPRITE_S3_BUCKET, "Key": key}
+    if version_id:
+        params["VersionId"] = version_id
     return _s3_client().generate_presigned_url(
         "get_object",
-        Params={"Bucket": settings.SPRITE_S3_BUCKET, "Key": key},
+        Params=params,
         ExpiresIn=ARTIFACT_DOWNLOAD_EXPIRES_SEC,
     )
 
 
-def head_artifact(key: str) -> int | None:
-    """Return the artifact object's size in bytes, or None if missing/unreadable."""
+def head_artifact(key: str) -> tuple[int, str | None] | None:
+    """Return ``(size_bytes, version_id)`` for the artifact, or None if missing/unreadable.
+
+    ``version_id`` is the S3 object version captured at HeadObject time; it
+    may be None on unversioned buckets or local test stacks that don't enable
+    versioning. Callers that only need the size can index element 0.
+    """
     from core.config import settings
 
     try:
         resp = _s3_client().head_object(Bucket=settings.SPRITE_S3_BUCKET, Key=key)
-        return int(resp["ContentLength"])
+        return int(resp["ContentLength"]), resp.get("VersionId")
     except Exception:
         return None
 
@@ -967,6 +984,7 @@ async def deliver_job(agent_conn: Any, job_id: str, deliverable: str, artifact_k
     deliverable = (deliverable or "")[:DELIVERABLE_MAX]
     # W5: validate the artifact reference before any state flip.
     artifact_name: str | None = None
+    artifact_version_id: str | None = None
     if artifact_key:
         expected_prefix = f"artifacts/{job_id}/"
         candidate = artifact_key[len(expected_prefix) :] if artifact_key.startswith(expected_prefix) else ""
@@ -981,8 +999,8 @@ async def deliver_job(agent_conn: Any, job_id: str, deliverable: str, artifact_k
                 },
             )
         artifact_name = candidate
-        size = head_artifact(artifact_key)
-        if size is None:
+        head = head_artifact(artifact_key)
+        if head is None:
             return _notify_outcome(
                 agent_conn,
                 "deliver_job",
@@ -992,6 +1010,7 @@ async def deliver_job(agent_conn: Any, job_id: str, deliverable: str, artifact_k
                     "message": "No uploaded artifact found at that key — upload it first via the upload-url flow.",
                 },
             )
+        size, artifact_version_id = head
         if size > ARTIFACT_MAX_BYTES:
             return _notify_outcome(
                 agent_conn,
@@ -1008,6 +1027,8 @@ async def deliver_job(agent_conn: Any, job_id: str, deliverable: str, artifact_k
     }
     if artifact_key:
         flip_extra["artifactKey"] = artifact_key
+        if artifact_version_id:
+            flip_extra["artifactVersionId"] = artifact_version_id
     if not _flip_status(
         job_id,
         "AWARDED",
@@ -1031,10 +1052,12 @@ async def deliver_job(agent_conn: Any, job_id: str, deliverable: str, artifact_k
     }
     if artifact_key:
         # 24 h presigned GET — the consumer daemon downloads it into
-        # <workspace>/JOBS/{job_id}/. Presign failure must not strand the
+        # <workspace>/JOBS/{job_id}/. Pin to artifact_version_id when present
+        # so post-delivery overwrites via the still-valid upload presign are
+        # invisible to the consumer. Presign failure must not strand the
         # delivery (the flip already happened); fall back to key-only.
         try:
-            delivered_event["artifact_url"] = presign_artifact_download(artifact_key)
+            delivered_event["artifact_url"] = presign_artifact_download(artifact_key, version_id=artifact_version_id)
         except Exception:
             logger.exception("Artifact presign failed for job %s key %s", job_id, artifact_key)
         delivered_event["artifact_name"] = artifact_name

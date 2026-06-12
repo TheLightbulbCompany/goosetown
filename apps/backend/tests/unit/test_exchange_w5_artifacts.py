@@ -278,7 +278,7 @@ class TestDeliverJobArtifact:
     async def test_oversize_object_rejected(self, dynamodb_tables, s3_bucket, mailbox):
         _seed_agent(dynamodb_tables, "prov-1", "pete")
         _seed_job(dynamodb_tables, "job-1")
-        with patch("core.services.exchange_service.head_artifact", return_value=ex.ARTIFACT_MAX_BYTES + 1):
+        with patch("core.services.exchange_service.head_artifact", return_value=(ex.ARTIFACT_MAX_BYTES + 1, None)):
             result = await ex.deliver_job(_conn("prov-1", "pete"), "job-1", "", artifact_key="artifacts/job-1/big.bin")
         assert result["status"] == "rejected"
         assert result["reason"] == "bad_artifact"
@@ -320,6 +320,148 @@ class TestDeliverJobArtifact:
         assert "artifact_name" not in delivered
         job = dynamodb_tables.Table("goosetown-jobs").get_item(Key={"id": "job-1"})["Item"]
         assert "artifactKey" not in job
+
+
+# ---------------------------------------------------------------------------
+# Version-pinning: consumer download is pinned to the delivery-time S3 version
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def versioned_s3_bucket(dynamodb_tables, monkeypatch):
+    """S3 bucket with versioning enabled — simulates the production sprite bucket."""
+    from core.config import settings
+
+    monkeypatch.setattr(settings, "SPRITE_S3_BUCKET", BUCKET)
+    s3 = boto3.client("s3", region_name="us-east-1")
+    s3.create_bucket(Bucket=BUCKET)
+    s3.put_bucket_versioning(
+        Bucket=BUCKET,
+        VersioningConfiguration={"Status": "Enabled"},
+    )
+    return s3
+
+
+class TestArtifactVersionPinning:
+    """Upload presigns outlive delivery (15 min); the consumer's GET must be
+    pinned to the S3 version captured at deliver time so post-delivery overwrites
+    are invisible (bucket is versioned per storage-stack.ts)."""
+
+    async def test_versioned_bucket_pins_download_to_delivery_version(
+        self, dynamodb_tables, versioned_s3_bucket, mailbox
+    ):
+        """Upload v1, deliver (captures v1 VersionId), overwrite with v2.
+        The presigned URL must reference the v1 VersionId, not the current HEAD."""
+        _seed_agent(dynamodb_tables, "prov-1", "pete")
+        _seed_job(dynamodb_tables, "job-1")
+
+        # Upload v1 and record its VersionId.
+        put_v1 = versioned_s3_bucket.put_object(Bucket=BUCKET, Key="artifacts/job-1/data.bin", Body=b"version-one")
+        v1_id = put_v1["VersionId"]
+
+        # Capture the presign call so we can inspect the Params.
+        captured: list[dict] = []
+        real_presign = ex.presign_artifact_download
+
+        def _spy(key, version_id=None):
+            captured.append({"key": key, "version_id": version_id})
+            return real_presign(key, version_id=version_id)
+
+        with patch("core.services.exchange_service.presign_artifact_download", side_effect=_spy):
+            result = await ex.deliver_job(
+                _conn("prov-1", "pete"),
+                "job-1",
+                "delivered",
+                artifact_key="artifacts/job-1/data.bin",
+            )
+
+        assert result["status"] == "ok", result
+
+        # Overwrite with v2 AFTER delivery (simulates provider re-uploading).
+        versioned_s3_bucket.put_object(Bucket=BUCKET, Key="artifacts/job-1/data.bin", Body=b"version-two")
+
+        # Presign was called with the v1 VersionId.
+        assert len(captured) == 1
+        assert captured[0]["version_id"] == v1_id
+
+        # artifactVersionId persisted on the job row.
+        job = dynamodb_tables.Table("goosetown-jobs").get_item(Key={"id": "job-1"})["Item"]
+        assert job.get("artifactVersionId") == v1_id
+
+        # Consumer event artifact_url contains the version query param.
+        # Moto uses "versionId=" in presigned URLs; real S3 uses "VersionId=".
+        # Case-insensitive check covers both environments.
+        consumer_events = [c.args[1] for c in mailbox.notify.call_args_list if c.args[0] == "cons-1"]
+        delivered = next(e for e in consumer_events if e["event"] == "job_delivered")
+        url = delivered["artifact_url"]
+        assert "versionid=" in url.lower()
+
+    async def test_unversioned_bucket_omits_version_id_no_crash(self, dynamodb_tables, s3_bucket, mailbox):
+        """On an unversioned bucket (no VersionId in HeadObject), delivery succeeds
+        and the presigned URL has no VersionId param — no crash."""
+        _seed_agent(dynamodb_tables, "prov-1", "pete")
+        _seed_job(dynamodb_tables, "job-1")
+        s3_bucket.put_object(Bucket=BUCKET, Key="artifacts/job-1/plain.txt", Body=b"hello")
+
+        captured: list[dict] = []
+        real_presign = ex.presign_artifact_download
+
+        def _spy(key, version_id=None):
+            captured.append({"key": key, "version_id": version_id})
+            return real_presign(key, version_id=version_id)
+
+        with patch("core.services.exchange_service.presign_artifact_download", side_effect=_spy):
+            result = await ex.deliver_job(
+                _conn("prov-1", "pete"),
+                "job-1",
+                "plain text",
+                artifact_key="artifacts/job-1/plain.txt",
+            )
+
+        assert result["status"] == "ok", result
+        # version_id must be None (unversioned bucket returns no VersionId).
+        assert len(captured) == 1
+        assert captured[0]["version_id"] is None
+
+        # No artifactVersionId on the job row.
+        job = dynamodb_tables.Table("goosetown-jobs").get_item(Key={"id": "job-1"})["Item"]
+        assert "artifactVersionId" not in job
+
+        # URL is still valid (no VersionId= query param injected).
+        consumer_events = [c.args[1] for c in mailbox.notify.call_args_list if c.args[0] == "cons-1"]
+        delivered = next(e for e in consumer_events if e["event"] == "job_delivered")
+        assert "artifact_url" in delivered
+
+    def test_presign_artifact_download_includes_version_id_in_params(self, monkeypatch):
+        """Unit-test presign_artifact_download: when version_id is supplied,
+        it is forwarded in the S3 Params dict."""
+        from core.config import settings
+
+        monkeypatch.setattr(settings, "SPRITE_S3_BUCKET", BUCKET)
+        fake_s3 = MagicMock()
+        fake_s3.generate_presigned_url.return_value = "https://s3.example.com/signed"
+
+        with patch("core.services.exchange_service._s3_client", return_value=fake_s3):
+            ex.presign_artifact_download("artifacts/job-1/x.bin", version_id="v-abc123")
+
+        call_kwargs = fake_s3.generate_presigned_url.call_args
+        params = call_kwargs[1]["Params"] if call_kwargs[1] else call_kwargs[0][1]["Params"]
+        assert params.get("VersionId") == "v-abc123"
+
+    def test_presign_artifact_download_no_version_id_omits_param(self, monkeypatch):
+        """Without a version_id, VersionId must NOT appear in the Params dict."""
+        from core.config import settings
+
+        monkeypatch.setattr(settings, "SPRITE_S3_BUCKET", BUCKET)
+        fake_s3 = MagicMock()
+        fake_s3.generate_presigned_url.return_value = "https://s3.example.com/signed"
+
+        with patch("core.services.exchange_service._s3_client", return_value=fake_s3):
+            ex.presign_artifact_download("artifacts/job-1/x.bin")
+
+        call_kwargs = fake_s3.generate_presigned_url.call_args
+        params = call_kwargs[1]["Params"] if call_kwargs[1] else call_kwargs[0][1]["Params"]
+        assert "VersionId" not in params
 
 
 # ---------------------------------------------------------------------------
