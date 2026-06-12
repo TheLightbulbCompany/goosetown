@@ -495,6 +495,50 @@ class TownService:
             return None
         return _decimal_to_native(resp.get("Attributes"))
 
+    def claim_sprite_job(self, agent_id: str) -> bool:
+        """Atomically claim the right to enqueue a sprite job for this agent.
+
+        Sets ``spriteStatus="queued"`` ONLY if the agent exists and no job is
+        already queued/in-flight. Returns False when another producer (or a
+        previous enqueue) already claimed it — the caller skips the SQS send.
+        Write-then-send ordering: if the SQS send fails after this write, the
+        worker boot sweep re-enqueues every ``queued`` row, so the failure is
+        self-healing rather than job-losing.
+
+        NOTE: the status list below must stay in sync with
+        ``core.services.sprite_jobs.IN_PROGRESS_STATUSES`` (DynamoDB condition
+        expressions can't import constants).
+        """
+        from botocore.exceptions import ClientError
+
+        table = dynamo.agents_table()
+        try:
+            table.update_item(
+                Key={"id": agent_id},
+                UpdateExpression="SET spriteStatus = :queued",
+                ConditionExpression=(
+                    "attribute_exists(id) AND ("
+                    "attribute_not_exists(spriteStatus) OR "
+                    "attribute_type(spriteStatus, :null_type) OR "
+                    "NOT (spriteStatus IN (:s0, :s1, :s2, :s3, :s4, :s5)))"
+                ),
+                ExpressionAttributeValues={
+                    ":queued": "queued",
+                    ":null_type": "NULL",
+                    ":s0": "queued",
+                    ":s1": "creating",
+                    ":s2": "building_static",
+                    ":s3": "static_ready",
+                    ":s4": "animating",
+                    ":s5": "downloading",
+                },
+            )
+            return True
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+
     def update_agent_activity(
         self,
         agent_id: str,
