@@ -60,6 +60,32 @@ def _parse_owner_ref(rest: list[str]) -> tuple[str | None, list[str]]:
     return None, rest
 
 
+def _parse_confidence(rest: list[str]) -> tuple[float | None, list[str]]:
+    """Pull a leading ``--confidence=0.X`` off ``act bid`` args.
+
+    Modeled on ``_parse_owner_ref``: the act subparser captures the rest of
+    the command via argparse REMAINDER, so ``--confidence=`` arrives as the
+    first positional token rather than a parsed option. Returns
+    ``(confidence_or_None, remaining_args)``. Dies on a non-float or
+    out-of-range value.
+    """
+    if rest and rest[0].startswith("--confidence="):
+        raw = rest[0][len("--confidence=") :]
+        try:
+            value = float(raw)
+        except ValueError:
+            _die(
+                f"Invalid --confidence value: '{raw}'",
+                "Confidence must be a number between 0 and 1, e.g. --confidence=0.8",
+            )
+        if not 0.0 <= value <= 1.0:
+            _die(
+                f"--confidence must be between 0 and 1 (got {value}).",
+            )
+        return value, rest[1:]
+    return None, rest
+
+
 # ---------------------------------------------------------------------------
 # websockets bootstrap / availability check
 # ---------------------------------------------------------------------------
@@ -563,6 +589,85 @@ def cmd_act(args: argparse.Namespace) -> None:
             "target_agent_id": target_agent_id,
             "text": text,
         }
+    elif action == "post_job":
+        usage = 'Usage: goosetown act post_job <max_price> "<title>" "<description...>"'
+        if len(rest) < 3:
+            _die(
+                usage,
+                'Example: goosetown act post_job 40 "Write a haiku" "A haiku about the plaza fountain at dusk."',
+            )
+        try:
+            max_price = int(rest[0])
+        except ValueError:
+            _die(f"max_price must be an integer number of crumbs, got '{rest[0]}'.", usage)
+        title = rest[1].strip()[:120]
+        if not title:
+            _die("Job title must not be empty.", usage)
+        description = " ".join(rest[2:]).strip()
+        if not description:
+            _die("Job description must not be empty.", usage)
+        payload = {
+            "action": "post_job",
+            "title": title,
+            "description": description[:4096],
+            "max_price": max_price,
+        }
+    elif action == "bid":
+        usage = "Usage: goosetown act bid [--confidence=0.X] <job_id> <price> [pitch...]"
+        confidence, rest = _parse_confidence(rest)
+        if len(rest) < 2:
+            _die(usage)
+        job_id = rest[0]
+        try:
+            price = int(rest[1])
+        except ValueError:
+            _die(f"price must be an integer number of crumbs, got '{rest[1]}'.", usage)
+        payload = {"action": "bid", "job_id": job_id, "price": price}
+        if confidence is not None:
+            payload["confidence"] = confidence
+        pitch = " ".join(rest[2:]).strip()
+        if pitch:
+            payload["pitch"] = pitch[:500]
+    elif action == "cancel_job":
+        if not rest:
+            _die("Usage: goosetown act cancel_job <job_id>")
+        payload = {"action": "cancel_job", "job_id": rest[0]}
+    elif action == "deliver":
+        usage = "Usage: goosetown act deliver <job_id> <deliverable text... | --file=path>"
+        if len(rest) < 2:
+            _die(usage)
+        job_id = rest[0]
+        if rest[1].startswith("--file="):
+            file_path = Path(rest[1][len("--file=") :]).expanduser()
+            if not file_path.is_file():
+                _die(f"Deliverable file not found: {file_path}", usage)
+            deliverable = file_path.read_text()
+        else:
+            deliverable = " ".join(rest[1:])
+        deliverable = deliverable.strip()
+        if not deliverable:
+            _die("Deliverable must not be empty.", usage)
+        payload = {
+            "action": "deliver_job",
+            "job_id": job_id,
+            "deliverable": deliverable[:16384],
+        }
+    elif action == "review":
+        usage = "Usage: goosetown act review <job_id> accept|reject [reason...]"
+        if len(rest) < 2:
+            _die(usage)
+        job_id = rest[0]
+        verdict = rest[1].lower()
+        if verdict not in ("accept", "reject"):
+            _die(f"Second argument must be 'accept' or 'reject', got '{rest[1]}'.", usage)
+        payload = {
+            "action": "review_job",
+            "job_id": job_id,
+            "accept": verdict == "accept",
+        }
+        reason = " ".join(rest[2:]).strip()
+        if reason:
+            payload["reason"] = reason[:500]
     elif action in _VALID_ACTIVITIES:
         payload = {"action": "activity", "activity_id": action}
     else:
@@ -577,6 +682,11 @@ def cmd_act(args: argparse.Namespace) -> None:
             "set_goal",
             "complete_goal",
             "describe_stance",
+            "post_job",
+            "bid",
+            "cancel_job",
+            "deliver",
+            "review",
         ]
         _die(
             f"Unknown action: '{action}'",

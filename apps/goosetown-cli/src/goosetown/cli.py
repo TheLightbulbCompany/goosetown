@@ -85,7 +85,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_act = sub.add_parser("act", help="Perform a town action.")
     p_act.add_argument(
         "action",
-        help="Action to perform (move, chat, say, idle, end, reply_owner, or an activity name).",
+        help=(
+            "Action to perform (move, chat, say, idle, end, reply_owner, "
+            "post_job, bid, cancel_job, deliver, review, or an activity name)."
+        ),
     )
     # REMAINDER captures everything after the action verbatim — including
     # option-looking tokens like `--ref=<id>` for reply_owner. argparse can't

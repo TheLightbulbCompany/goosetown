@@ -13,6 +13,7 @@ The daemon is spawned as a subprocess by ``core._start_daemon`` and runs
 import json
 import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -174,6 +175,20 @@ class TownDaemon:
         # invocation. Replaces the old shared _arrived_event which
         # couldn't distinguish arrival from rejection.
         self._move_outcome = None  # asyncio.Future | None
+        # Exchange-outcome future — set by _on_exchange_outcome when the
+        # backend echoes exchange_ok / exchange_rejected for the caller's
+        # own verb (post_job, bid, cancel_job, deliver_job, review_job).
+        # Created fresh per exchange `act` invocation, mirroring
+        # _chat_outcome.
+        self._exchange_outcome = None  # asyncio.Future | None
+        # Payload of the in-flight exchange act — lets _on_exchange_outcome
+        # enrich the jobs cache with fields the backend echo omits (e.g.
+        # post_job's exchange_ok has no title). Cleared with the future.
+        self._pending_exchange_payload: dict | None = None
+        # Own agent UUID — learned from the `connected` event. Used to
+        # tell which role (provider vs consumer) an exchange event is
+        # addressed to.
+        self._agent_id: str = ""
         # Last requested move destination — used by _on_arrived to
         # normalize away the player_spawn marker quirk (Godot's
         # _get_agent_location can return player_spawn when it's near
@@ -206,15 +221,19 @@ class TownDaemon:
             self._events = self._events[-self._max_events :]
         self._write_events()
 
-    def _write_events(self) -> None:
-        """Write TOWN_EVENTS.md to agent workspace (atomic via rename)."""
+    def _write_workspace_file(self, filename: str, content: str) -> None:
+        """Atomically write a markdown file to the agent workspace (temp + rename)."""
         if not self._workspace_path or not self._workspace_path.exists():
             return
-        events_file = self._workspace_path / "TOWN_EVENTS.md"
-        content = "# Recent Events\n\n" + "\n".join(self._events) + "\n"
-        tmp = events_file.with_suffix(".tmp")
+        target = self._workspace_path / filename
+        tmp = target.with_suffix(".tmp")
         tmp.write_text(content)
-        tmp.rename(events_file)
+        tmp.rename(target)
+
+    def _write_events(self) -> None:
+        """Write TOWN_EVENTS.md to agent workspace (atomic via rename)."""
+        content = "# Recent Events\n\n" + "\n".join(self._events) + "\n"
+        self._write_workspace_file("TOWN_EVENTS.md", content)
 
     def _write_state(self) -> None:
         """Persist state dict to state.json."""
@@ -223,12 +242,7 @@ class TownDaemon:
 
     def _write_status(self, content: str) -> None:
         """Write TOWN_STATUS.md to agent workspace (atomic via rename)."""
-        if not self._workspace_path or not self._workspace_path.exists():
-            return
-        status_file = self._workspace_path / "TOWN_STATUS.md"
-        tmp = status_file.with_suffix(".tmp")
-        tmp.write_text(content)
-        tmp.rename(status_file)
+        self._write_workspace_file("TOWN_STATUS.md", content)
 
     # ------------------------------------------------------------------
     # Event handlers
@@ -270,6 +284,24 @@ class TownDaemon:
             self._on_move_rejected(data)
         elif event == "arrived":
             self._on_arrived(data)
+        elif event in ("exchange_ok", "exchange_rejected"):
+            self._on_exchange_outcome(data)
+        elif event == "job_posted":
+            self._on_job_posted(data)
+        elif event == "bid_received":
+            self._on_bid_received(data)
+        elif event == "job_awarded":
+            self._on_job_awarded(data)
+        elif event == "bid_lost":
+            self._on_bid_lost(data)
+        elif event == "job_delivered":
+            self._on_job_delivered(data)
+        elif event == "job_completed":
+            self._on_job_completed(data)
+        elif event == "job_failed":
+            self._on_job_failed(data)
+        elif event == "job_expired":
+            self._on_job_expired(data)
         elif event == "sprite_progress":
             status_msg = data.get("status", "Generating sprite...")
             self._write_status(
@@ -311,12 +343,20 @@ class TownDaemon:
 
     def _on_connected(self, data: dict) -> None:
         """Handle the initial connected event from the server."""
+        # Preserve the exchange jobs cache across reconnects — it's local
+        # knowledge (wallet, jobs, deliverables) the server won't resend.
+        exchange = self.state.get("exchange")
         self.state = {
             "agent": data.get("agent", {}),
             "nearby": [],
             "pending_messages": [],
             "connected": True,
         }
+        if exchange:
+            self.state["exchange"] = exchange
+        own_id = data.get("agent", {}).get("id", "")
+        if own_id:
+            self._agent_id = own_id
         if self._initial_state_event is not None:
             self._initial_state_event.set()
         agent = data.get("agent", {})
@@ -693,6 +733,288 @@ class TownDaemon:
             )
         )
         self._append_event("WOKE UP")
+
+    # ------------------------------------------------------------------
+    # Exchange (job board) events
+    # ------------------------------------------------------------------
+
+    def _exchange_state(self) -> dict:
+        """Return (creating if needed) the exchange cache in self.state."""
+        return self.state.setdefault("exchange", {"wallet": None, "jobs": {}})
+
+    def _update_job(self, job_id: str, **fields) -> dict:
+        """Merge fields into the cached job entry (None values are skipped).
+
+        Does NOT write TOWN_JOBS.md — callers do that once per event via
+        ``_write_jobs()``.
+        """
+        ex = self._exchange_state()
+        job = ex.setdefault("jobs", {}).setdefault(job_id, {"job_id": job_id})
+        job.update({k: v for k, v in fields.items() if v is not None})
+        job["updated"] = time.time()
+        return job
+
+    def _job_role(self, data: dict, job_id: str) -> str | None:
+        """Best-effort role detection for an exchange event addressed to us.
+
+        Prefers explicit ids when the backend includes them, then falls
+        back to name comparison (the backend's ``provider_name`` /
+        ``consumer_name`` carry machine agent names), then to the locally
+        cached role for the job.
+        """
+        provider_id = data.get("provider_id", "")
+        consumer_id = data.get("consumer_id", "")
+        if self._agent_id:
+            if provider_id and provider_id == self._agent_id:
+                return "provider"
+            if consumer_id and consumer_id == self._agent_id:
+                return "consumer"
+        provider_name = data.get("provider_name", "")
+        consumer_name = data.get("consumer_name", "")
+        if provider_name and provider_name == self._agent_name:
+            return "provider"
+        if consumer_name and consumer_name == self._agent_name:
+            return "consumer"
+        cached = (self._exchange_state().get("jobs") or {}).get(job_id) or {}
+        return cached.get("role")
+
+    def _on_exchange_outcome(self, data: dict) -> None:
+        """Handle exchange_ok / exchange_rejected — outcome of our own verb.
+
+        Resolves the pending ``_exchange_outcome`` future (if an `act`
+        invocation is waiting) and, on success, updates the local jobs
+        cache and wallet so TOWN_JOBS.md reflects the new reality.
+        """
+        pending_payload = self._pending_exchange_payload or {}
+        if self._exchange_outcome is not None and not self._exchange_outcome.done():
+            self._exchange_outcome.set_result(dict(data))
+
+        if data.get("event") != "exchange_ok":
+            return
+
+        verb = data.get("verb", "")
+        ex = self._exchange_state()
+        if "balance" in data:
+            ex["wallet"] = data["balance"]
+
+        job_id = data.get("job_id", "")
+        # Only trust the stashed payload when it matches this verb (the CLI
+        # payload "action" names are identical to the backend verb names).
+        pending = pending_payload if pending_payload.get("action") == verb else {}
+
+        if verb == "post_job" and job_id:
+            self._update_job(
+                job_id,
+                role="consumer",
+                status="OPEN",
+                title=pending.get("title"),
+                max_price=data.get("escrowed", pending.get("max_price")),
+            )
+        elif verb == "bid" and job_id:
+            self._update_job(
+                job_id, role="provider", status="BID", bid_price=data.get("price")
+            )
+        elif verb == "cancel_job" and job_id:
+            self._update_job(job_id, role="consumer", status="CANCELLED")
+        elif verb == "deliver_job" and job_id:
+            self._update_job(job_id, role="provider", status="DELIVERED")
+        # review_job: the settlement events (job_completed / job_failed)
+        # follow immediately and carry the authoritative status.
+        self._write_jobs()
+
+    def _on_job_posted(self, data: dict) -> None:
+        """Broadcast: another agent posted a job — event line only, no cache."""
+        job_id = data.get("job_id", "?")
+        title = data.get("title", "?")
+        max_price = data.get("max_price", "?")
+        consumer_name = data.get("consumer_name", "someone")
+        self._append_event(
+            f'\U0001f4bc New job at the Exchange from {consumer_name}: "{title}" — '
+            f"up to {max_price} crumbs (job {job_id}). "
+            f"Move to the bank and bid: goosetown act bid {job_id} <price>"
+        )
+
+    def _on_bid_received(self, data: dict) -> None:
+        """Consumer-side: a sealed bid landed on our job."""
+        job_id = data.get("job_id", "?")
+        title = data.get("title", "?")
+        bid_count = data.get("bid_count", "?")
+        self._update_job(job_id, role="consumer", title=title, bid_count=bid_count)
+        self._write_jobs()
+        self._append_event(
+            f'\U0001f4bc Sealed bid received on your job "{title}" — '
+            f"{bid_count} bid(s) so far (job {job_id})."
+        )
+
+    def _on_job_awarded(self, data: dict) -> None:
+        """We won the job (provider) or our job was awarded (consumer)."""
+        job_id = data.get("job_id", "?")
+        title = data.get("title", "?")
+        agreed = data.get("agreed_price", "?")
+        deadline = data.get("deadline_sec", "?")
+        provider_name = data.get("provider_name", "?")
+        role = self._job_role(data, job_id)
+        if role is None:
+            # Only the winner's copy carries the job description.
+            role = "provider" if "description" in data else "consumer"
+
+        if role == "provider":
+            self._update_job(
+                job_id,
+                role="provider",
+                status="AWARDED",
+                title=title,
+                agreed_price=agreed,
+                description=data.get("description"),
+            )
+            self._append_event(
+                f'\U0001f4bc You won the job "{title}" for {agreed} crumbs '
+                f"(job {job_id}). Deliver within {deadline}s: "
+                f"goosetown act deliver {job_id} <your work>"
+            )
+        else:
+            self._update_job(
+                job_id,
+                role="consumer",
+                status="AWARDED",
+                title=title,
+                agreed_price=agreed,
+            )
+            self._append_event(
+                f'\U0001f4bc Your job "{title}" was awarded to {provider_name} '
+                f"for {agreed} crumbs (job {job_id}). Delivery due within {deadline}s."
+            )
+        self._write_jobs()
+
+    def _on_bid_lost(self, data: dict) -> None:
+        """Our sealed bid did not win."""
+        job_id = data.get("job_id", "?")
+        title = data.get("title", "?")
+        self._update_job(job_id, role="provider", status="LOST", title=title)
+        self._write_jobs()
+        self._append_event(
+            f'\U0001f4bc Your bid on "{title}" did not win (job {job_id}).'
+        )
+
+    def _on_job_delivered(self, data: dict) -> None:
+        """Consumer-side: the provider delivered — full deliverable text."""
+        job_id = data.get("job_id", "?")
+        title = data.get("title", "?")
+        self._update_job(
+            job_id,
+            role="consumer",
+            status="DELIVERED",
+            title=title,
+            deliverable=data.get("deliverable", ""),
+        )
+        self._write_jobs()
+        self._append_event(
+            f'\U0001f4bc Work delivered for your job "{title}" (job {job_id}). '
+            f"Read it in TOWN_JOBS.md, then: goosetown act review {job_id} accept|reject"
+        )
+
+    def _on_job_completed(self, data: dict) -> None:
+        """Both sides: job settled successfully."""
+        job_id = data.get("job_id", "?")
+        title = data.get("title", "?")
+        payout = data.get("payout", "?")
+        fee = data.get("fee", "?")
+        job = self._update_job(
+            job_id, status="COMPLETED", title=title, payout=payout, fee=fee
+        )
+        self._write_jobs()
+        if job.get("role") == "provider":
+            line = (
+                f'\U0001f4bc Job "{title}" completed — you were paid {payout} crumbs '
+                f"({fee} crumb platform fee) (job {job_id})."
+            )
+        else:
+            line = (
+                f'\U0001f4bc Your job "{title}" completed — provider received '
+                f"{payout} crumbs (fee {fee}) (job {job_id})."
+            )
+        self._append_event(line)
+
+    def _on_job_failed(self, data: dict) -> None:
+        """Both sides: job failed (delivery timeout or consumer rejection)."""
+        job_id = data.get("job_id", "?")
+        title = data.get("title", "?")
+        reason = data.get("reason", "unknown")
+        self._update_job(job_id, status="FAILED", title=title, fail_reason=reason)
+        self._write_jobs()
+        self._append_event(
+            f'\U0001f4bc Job "{title}" failed: {reason} (job {job_id}).'
+        )
+
+    def _on_job_expired(self, data: dict) -> None:
+        """Consumer-side: bid window closed with no eligible bids."""
+        job_id = data.get("job_id", "?")
+        title = data.get("title", "?")
+        refunded = data.get("refunded")
+        self._update_job(job_id, role="consumer", status="EXPIRED", title=title)
+        self._write_jobs()
+        line = f'\U0001f4bc Your job "{title}" expired with no winner (job {job_id}).'
+        if refunded is not None:
+            line += f" {refunded} crumbs were refunded to your wallet."
+        self._append_event(line)
+
+    def _write_jobs(self) -> None:
+        """Write TOWN_JOBS.md to the agent workspace (atomic via rename)."""
+        ex = self.state.get("exchange") or {}
+        jobs = list((ex.get("jobs") or {}).values())
+        jobs.sort(key=lambda j: j.get("updated", 0), reverse=True)
+
+        lines: list[str] = ["# GooseTown Exchange — your jobs", ""]
+        wallet = ex.get("wallet")
+        if wallet is not None:
+            lines += [f"Wallet: {wallet} crumbs", ""]
+
+        posted = [j for j in jobs if j.get("role") == "consumer"]
+        working = [j for j in jobs if j.get("role") == "provider"]
+
+        lines.append("## Jobs you posted")
+        lines.append("")
+        if not posted:
+            lines.append("(none)")
+        for job in posted:
+            title = job.get("title") or "(untitled)"
+            line = f"- [{job.get('status', '?')}] {title} (job {job['job_id']})"
+            price_bits = []
+            if job.get("max_price") is not None:
+                price_bits.append(f"up to {job['max_price']} crumbs")
+            if job.get("agreed_price") is not None:
+                price_bits.append(f"agreed {job['agreed_price']}")
+            if price_bits:
+                line += " — " + " / ".join(price_bits)
+            lines.append(line)
+            deliverable = job.get("deliverable")
+            if deliverable:
+                lines.append("  Deliverable:")
+                lines.append("  ```")
+                lines += [f"  {dl}" for dl in str(deliverable).splitlines()]
+                lines.append("  ```")
+        lines.append("")
+
+        lines.append("## Jobs you're working on")
+        lines.append("")
+        if not working:
+            lines.append("(none)")
+        for job in working:
+            title = job.get("title") or "(untitled)"
+            line = f"- [{job.get('status', '?')}] {title} (job {job['job_id']})"
+            if job.get("agreed_price") is not None:
+                line += f" — agreed {job['agreed_price']} crumbs"
+            elif job.get("bid_price") is not None:
+                line += f" — your bid: {job['bid_price']} crumbs"
+            if job.get("status") == "AWARDED":
+                line += (
+                    f" — deliver with: goosetown act deliver {job['job_id']} "
+                    "<your work>"
+                )
+            lines.append(line)
+        lines.append("")
+
+        self._write_workspace_file("TOWN_JOBS.md", "\n".join(lines) + "\n")
 
     # ------------------------------------------------------------------
     # Alarm / sleep-wake cycle
@@ -1278,6 +1600,21 @@ class TownDaemon:
                 self._pending_move_destination = payload.get("destination", "")
                 self._arrived_event.clear()
 
+            # Exchange verbs: set up the outcome future BEFORE sending so
+            # the backend's exchange_ok / exchange_rejected echo can't
+            # arrive between send and wait (mirrors chat_outcome_future).
+            exchange_outcome_future = None
+            if payload.get("action") in (
+                "post_job",
+                "bid",
+                "cancel_job",
+                "deliver_job",
+                "review_job",
+            ):
+                exchange_outcome_future = asyncio.get_running_loop().create_future()
+                self._exchange_outcome = exchange_outcome_future
+                self._pending_exchange_payload = dict(payload)
+
             _log.info("Sending via WS: %s", msg[:100])
             await self.ws.send(msg)
             _log.info("WS send complete")
@@ -1347,6 +1684,27 @@ class TownDaemon:
                     "message": "Did not arrive within 120s",
                     "last_known_location": cached_loc,
                 }
+            if exchange_outcome_future is not None:
+                # Wait for the backend's exchange_ok / exchange_rejected
+                # echo of our own verb. 10s is generous — the exchange
+                # handlers are hot-path DynamoDB writes.
+                try:
+                    return await asyncio.wait_for(
+                        exchange_outcome_future, timeout=10.0
+                    )
+                except asyncio.TimeoutError:
+                    return {
+                        "status": "ambiguous",
+                        "action": payload.get("action"),
+                        "note": (
+                            "Backend did not acknowledge within 10s — "
+                            "check TOWN_JOBS.md / TOWN_EVENTS.md."
+                        ),
+                    }
+                finally:
+                    self._exchange_outcome = None
+                    self._pending_exchange_payload = None
+
             if payload.get("action") == "say":
                 # `say` is fire-and-forget for now: the backend echoes the
                 # message back via conversation_message, which the daemon
