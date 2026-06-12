@@ -15,10 +15,10 @@ Functions:
   entry points used by ``main.py:_reconnect_active_agents`` to pick up
   activities that were mid-flight when the backend was restarted.
 
-Module-level state (``_activity_tasks``, ``_custom_anim_in_progress``)
-holds strong references to in-flight asyncio tasks so they're not GC'd
-mid-wait. Stays per-process in-memory; a backend restart drops these
-and the startup code above re-creates whatever's still valid.
+Module-level state (``_activity_tasks``) holds strong references to
+in-flight asyncio tasks so they're not GC'd mid-wait. Stays per-process
+in-memory; a backend restart drops these and the startup code above
+re-creates whatever's still valid.
 
 The dispatch ladder, ``main.py`` startup, and any external caller can
 still import these names from ``routers.town`` via the re-export block
@@ -45,7 +45,6 @@ logger = logging.getLogger(__name__)
 
 # Strong references to activity timer tasks to prevent GC
 _activity_tasks: set = set()
-_custom_anim_in_progress: set[tuple[str, str]] = set()  # (agent_id, animation_name)
 
 
 async def _handle_agent_activity(connection_id: str, activity_name: str, agent_conn) -> None:
@@ -142,25 +141,25 @@ async def _handle_agent_activity(connection_id: str, activity_name: str, agent_c
     )
 
     # --- Trigger lazy activity animation generation if needed ---
+    # Dedup is owned by the worker's idempotent re-check (run_animation_job
+    # skips when the animation already exists on the agent row) — a duplicate
+    # SQS message is cheap, so no in-process in-progress set is kept here.
     activity_anim = activity.animation
     if activity_anim in ANIMATION_REGISTRY:
         from core.config import settings
 
         agent_animations = agent.get("spriteAnimations") or {}
-        anim_key = (agent_id, activity_anim)
         char_id = agent.get("pixellabCharacterId") or agent.get("pixellab_character_id")
         logger.info(
-            "Activity animation check: anim=%s, already_have=%s, in_progress=%s, char_id=%s",
+            "Activity animation check: anim=%s, already_have=%s, char_id=%s",
             activity_anim,
             activity_anim in agent_animations,
-            anim_key in _custom_anim_in_progress,
             char_id or "MISSING",
         )
-        if activity_anim not in agent_animations and anim_key not in _custom_anim_in_progress:
+        if activity_anim not in agent_animations:
             if not settings.ACTIVITY_ANIMATION_GENERATION:
                 logger.info("Activity animation generation disabled — skipping %s", activity_anim)
             elif char_id:
-                _custom_anim_in_progress.add(anim_key)
                 from core.services import sprite_jobs
 
                 sprite_jobs.enqueue_animation(agent_id, activity_anim)

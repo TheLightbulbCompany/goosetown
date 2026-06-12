@@ -176,6 +176,17 @@ describe("SpriteWorkerStack — ECS service", () => {
     });
   });
 
+  test("deploys are stop-then-start (min 0% / max 100%) so two workers never overlap", () => {
+    template.hasResourceProperties("AWS::ECS::Service", {
+      ServiceName: "goosetown-dev-sprite-worker",
+      // CDK's maxHealthyPercent renders as the CFn MaximumPercent property.
+      DeploymentConfiguration: Match.objectLike({
+        MinimumHealthyPercent: 0,
+        MaximumPercent: 100,
+      }),
+    });
+  });
+
   test("service has circuit-breaker rollback enabled", () => {
     template.hasResourceProperties("AWS::ECS::Service", {
       ServiceName: "goosetown-dev-sprite-worker",

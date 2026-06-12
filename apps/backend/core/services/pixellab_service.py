@@ -528,23 +528,21 @@ class PixelLabService:
 
         Each animation is generated end-to-end (submit + poll + collect frames)
         behind the global concurrency gate inside ``generate_animation``. Running
-        them sequentially keeps us under PixelLab's concurrent-job ceiling. A
-        single animation failing logs + yields ``{}`` for that name so the rest
-        of signup still completes — the agent already operates on the static
-        sprite from Phase B, so animations are a nice-to-have, not a blocker.
+        them sequentially keeps us under PixelLab's concurrent-job ceiling.
+
+        Failures PROPAGATE — the SQS worker's retry/DLQ owns them. With
+        SIGNUP_ANIMATIONS == {"walk"} there are no "others" to continue with,
+        and swallowing the failure would let the pipeline mark the agent
+        ``spriteStatus="complete"`` on the Phase B static placeholder (silent
+        degradation, invisible to the boot sweep). The agent keeps operating
+        on the Phase B static sprite between retries.
         """
         results: dict[str, dict[str, list[bytes]]] = {}
         items = list(SIGNUP_ANIMATIONS.items())
         for idx, (name, _config) in enumerate(items):
-            try:
-                frames = await self.generate_animation(character_id, name, on_progress=on_progress, max_attempts=30)
-                results[name] = frames
-                logger.info("Signup animation %s: %d/%d directions", name, len(frames), len(CARDINAL_4))
-            except PixelLabCreditError:
-                raise
-            except Exception:
-                logger.exception("Signup animation %r failed for %s — continuing", name, character_id)
-                results[name] = {}
+            frames = await self.generate_animation(character_id, name, on_progress=on_progress, max_attempts=30)
+            results[name] = frames
+            logger.info("Signup animation %s: %d/%d directions", name, len(frames), len(CARDINAL_4))
         return results
 
     async def fetch_all_rotations(self, character_id: str) -> dict[str, bytes]:

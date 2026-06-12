@@ -9,7 +9,10 @@ These tests confirm:
   in the ANIMATION_REGISTRY with a pixellabCharacterId present.
 * When ``ACTIVITY_ANIMATION_GENERATION`` is False, enqueue is skipped.
 * When pixellabCharacterId is absent, the warning path fires (no enqueue).
-* Dedup via ``_custom_anim_in_progress`` prevents double-enqueues.
+
+Dedup is owned by the worker's idempotent re-check (``run_animation_job``
+skips when the animation already exists on the agent row) — duplicate SQS
+messages are cheap, so there is no in-process in-progress set anymore.
 """
 
 from unittest.mock import MagicMock, patch
@@ -49,8 +52,6 @@ async def test_activity_start_enqueues_animation_when_flag_on():
 
     activity = _make_activity()
     agent = _make_agent()
-    # Clear in-progress set to avoid cross-test pollution
-    act._custom_anim_in_progress.clear()
 
     with (
         patch("core.services.activity_service.get_activity", return_value=activity),
@@ -91,7 +92,6 @@ async def test_activity_start_skips_animation_when_flag_off():
 
     activity = _make_activity()
     agent = _make_agent()
-    act._custom_anim_in_progress.clear()
 
     with (
         patch("core.services.activity_service.get_activity", return_value=activity),
@@ -134,7 +134,6 @@ async def test_activity_start_skips_animation_when_no_char_id():
     agent = _make_agent(char_id=None)
     # Remove pixellabCharacterId entirely to test the missing-key path
     agent.pop("pixellabCharacterId", None)
-    act._custom_anim_in_progress.clear()
 
     with (
         patch("core.services.activity_service.get_activity", return_value=activity),

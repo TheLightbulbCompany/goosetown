@@ -1679,7 +1679,6 @@ from core.services.activity_service import (  # noqa: E402, F401
     _activity_tasks,
     _activity_timer,
     _clear_activity_and_notify,
-    _custom_anim_in_progress,
     _handle_agent_activity,
     complete_activity_from_startup,
     restart_activity_timer,

@@ -141,12 +141,12 @@ async def test_transport_error_retries_never_raises():
 
 
 # ---------------------------------------------------------------------------
-# 4xx -> returns after first attempt (no retry)
+# 4xx -> returns after first attempt (no retry) but logs ERROR loudly
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_4xx_returns_after_first_attempt_no_retry():
+async def test_4xx_returns_after_first_attempt_no_retry_and_logs_error(caplog):
     transport = _MockTransport(status_code=403)
 
     with patch("sprite_worker.backend_sink.settings") as mock_settings:
@@ -157,11 +157,17 @@ async def test_4xx_returns_after_first_attempt_no_retry():
 
             client = httpx.AsyncClient(transport=transport)
             sink = HttpSpriteEventSink(client=client)
-            await sink.progress("agent-003", "test")
+            with caplog.at_level("ERROR", logger="sprite_worker.backend_sink"):
+                await sink.progress("agent-003", "test")
 
     # Only one request, no retries for 4xx
     assert len(transport.requests) == 1
     mock_sleep.assert_not_awaited()
+    # ...but a rejection is loud: silent 4xx would invisibly drop all events.
+    error_records = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(error_records) == 1
+    assert "rejected with 403" in error_records[0].getMessage()
+    assert "x-ws-lambda-secret" in error_records[0].getMessage()
 
 
 # ---------------------------------------------------------------------------

@@ -132,10 +132,9 @@ export class GooseTownStage extends cdk.Stage {
     });
 
     // Sprite worker — SQS-backed durable pipeline (spec 2026-06-11).
-    // Depends on Cluster, Auth, Database, Storage. Deploys after Compute so
-    // the physical queue name (`goosetown-${env}-sprite-jobs`) exists before
-    // the backend producer starts — though both sides resolve by name at
-    // runtime, ordering is belt-and-suspenders.
+    // Depends on Cluster, Auth, Database, Storage. No dependency on
+    // ComputeStack — producer/consumer meet only through the queue's
+    // physical name (`goosetown-${env}-sprite-jobs`) at runtime.
     new SpriteWorkerStack(this, `goosetown-${env}-sprite-worker`, {
       stackName: `goosetown-${env}-sprite-worker`,
       environment: env,

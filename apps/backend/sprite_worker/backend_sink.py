@@ -34,7 +34,18 @@ class HttpSpriteEventSink:
         for attempt in range(_RETRIES):
             try:
                 resp = await self._client.post(self._url, json=payload, headers=headers)
+                if resp.status_code < 400:
+                    return
                 if resp.status_code < 500:
+                    # 4xx is deterministic — retrying won't help, but a silent
+                    # return would invisibly drop EVERY sprite event (e.g. a 403
+                    # if the shared secret is wired backend-side but not here).
+                    logger.error(
+                        "sprite-event POST rejected with %d — check x-ws-lambda-secret wiring (type=%s agent=%s)",
+                        resp.status_code,
+                        payload.get("type"),
+                        str(payload.get("agent_id"))[:8],
+                    )
                     return
                 logger.warning(
                     "sprite-event POST -> %d (attempt %d/%d)",

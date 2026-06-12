@@ -260,6 +260,50 @@ async def test_create_failure_propagates_and_status_left_at_creating():
     assert "a-1" not in sprite_pipeline._resume_in_flight
 
 
+async def test_walk_generation_failure_propagates_after_phase_b():
+    """Phase B succeeds (static sprite ready) but queue_signup_animations
+    raises — the failure must propagate out of run_signup_pipeline so the SQS
+    worker's retry/DLQ owns it.  The agent keeps operating on the Phase B
+    static sprite between retries; the last sprite_status write is "animating"
+    (never "complete") and advance_phase is never called with "alive"."""
+    row = {
+        "id": "a-1",
+        "spriteStatus": "queued",
+        "appearance": "a goose",
+        "pixellabCharacterId": "char-1",
+        # No spriteUrl — Phase B runs and succeeds via rotations below.
+    }
+    ts = _make_service(row)
+    sink = _make_sink()
+
+    pxl = MagicMock()
+    pxl.create_character = AsyncMock()
+    pxl.fetch_all_rotations = AsyncMock(return_value=dict(_FOUR_ROTATIONS))
+    pxl.queue_signup_animations = AsyncMock(side_effect=RuntimeError("walk generation persistently failing"))
+
+    with _patched_pipeline(pxl, ts) as (advance, _):
+        with pytest.raises(RuntimeError, match="persistently failing"):
+            await run_signup_pipeline("a-1", sink=sink)
+
+    # Phase B completed: phase advanced to "static" with the static sheet.
+    static_calls = [c for c in advance.call_args_list if c.args[1] == "static"]
+    assert len(static_calls) == 1
+
+    # Last sprite_status write is "animating" — the resume pointer; never "complete".
+    status_writes = [
+        c.kwargs["sprite_status"] for c in ts.update_agent_state.call_args_list if "sprite_status" in c.kwargs
+    ]
+    assert status_writes[-1] == "animating"
+    assert "complete" not in status_writes
+
+    # advance_phase must NOT have been called with "alive" — job is not done.
+    alive_calls = [c for c in advance.call_args_list if c.args[1] == "alive"]
+    assert len(alive_calls) == 0
+
+    # Guard drained even on failure.
+    assert "a-1" not in sprite_pipeline._resume_in_flight
+
+
 # ---------------------------------------------------------------------------
 # 4b. Empty pipeline output — raises, does NOT advance to alive
 # ---------------------------------------------------------------------------

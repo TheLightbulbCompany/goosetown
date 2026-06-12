@@ -122,6 +122,12 @@ export class SpriteWorkerStack extends cdk.Stack {
       cluster: props.cluster,
       taskDefinition: taskDef,
       desiredCount: 1,
+      // Stop-then-start on deploys: two concurrent workers would each run a
+      // boot sweep + their own "global" semaphore, double-generating against
+      // PixelLab during the overlap. A ~1 min generation gap is fine — jobs
+      // are durable in SQS.
+      minHealthyPercent: 0,
+      maxHealthyPercent: 100,
       assignPublicIp: false,
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       circuitBreaker: { rollback: true },
