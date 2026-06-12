@@ -279,7 +279,7 @@ async def test_post_job_bad_max_price_string_coerced_to_zero(handler_setup):
     with patch("core.config.settings") as mock_settings:
         mock_settings.WS_STRICT_VALIDATION = False
         mock_settings.ENVIRONMENT = "dev"
-        mock_settings.WS_LAMBDA_SECRET = ""
+        mock_settings.WS_LAMBDA_SECRET = ""  # nosec B105: empty test stub, not a real secret
         result = await handle_ws_message(request, raw)
 
     assert result == {"statusCode": 200, "body": _SENTINEL_RESULT}
@@ -320,7 +320,7 @@ async def test_review_job_missing_accept_passes_none(handler_setup):
     with patch("core.config.settings") as mock_settings:
         mock_settings.WS_STRICT_VALIDATION = False
         mock_settings.ENVIRONMENT = "dev"
-        mock_settings.WS_LAMBDA_SECRET = ""
+        mock_settings.WS_LAMBDA_SECRET = ""  # nosec B105: empty test stub, not a real secret
         result = await handle_ws_message(request, raw)
 
     assert result == {"statusCode": 200, "body": _SENTINEL_RESULT}
