@@ -149,10 +149,6 @@ class TownAgentWsManager:
         """Return all currently registered agent connections."""
         return list(self._by_connection.values())
 
-    def all_connections(self) -> list[AgentConnection]:
-        """Snapshot of all live agent connections (for Exchange broadcasts)."""
-        return list(self._by_connection.values())
-
 
 # Module-level singleton
 _town_agent_ws_manager: TownAgentWsManager | None = None

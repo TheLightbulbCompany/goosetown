@@ -321,7 +321,20 @@ async def post_job(agent_conn: Any, title: str, description: str, max_price: int
         "updatedAt": _now_iso(),
         "bidWindowEndsAt": Decimal(str(now + BID_WINDOW_SEC)),
     }
-    dynamo.jobs_table().put_item(Item=job)
+    try:
+        dynamo.jobs_table().put_item(Item=job)
+    except Exception:
+        credit_wallet(agent_conn.agent_id, max_price, "ESCROW_REFUND", job_id)
+        logger.exception("post_job: job write failed after escrow debit — refunded %s", job_id)
+        return _notify_outcome(
+            agent_conn,
+            "post_job",
+            {
+                "status": "rejected",
+                "reason": "internal_error",
+                "message": "The Exchange clerk fumbled the paperwork — your crumbs were refunded. Try again.",
+            },
+        )
     TownService().update_agent_state(agent_conn.agent_id, jobs_posted=int(agent.get("jobsPosted", 0)) + 1)
     _schedule(job_id, BID_WINDOW_SEC, _close_bid_window)
 
@@ -335,7 +348,7 @@ async def post_job(agent_conn: Any, title: str, description: str, max_price: int
         "consumer_name": agent_conn.agent_name,
         "bid_window_sec": int(BID_WINDOW_SEC),
     }
-    for conn in get_town_agent_ws_manager().all_connections():
+    for conn in get_town_agent_ws_manager().connected_agents():
         if conn.agent_id != agent_conn.agent_id:
             mailbox.notify_connection(conn.connection_id, broadcast)
 
@@ -537,7 +550,7 @@ async def review_job(agent_conn: Any, job_id: str, accept: bool, reason: str) ->
             {"status": "rejected", "reason": "not_delivered", "message": "There is no delivery to review yet."},
         )
     outcome = "SUCCESS" if accept else "FAILURE_PROVIDER"
-    await _settle(job, outcome, reason=reason)
+    await _settle(job, outcome, reason=reason, rejected_by_consumer=not accept)
     return _notify_outcome(
         agent_conn,
         "review_job",
@@ -574,6 +587,7 @@ async def _close_bid_window(job_id: str) -> None:
     if winner is None:
         if not _flip_status(job_id, "OPEN", "EXPIRED"):
             return
+        _cancel_timer(job_id)
         credit_wallet(consumer_id, max_price, "ESCROW_REFUND", job_id)
         _apply_mood(consumer_id, "job_expired_consumer")
         mailbox.notify(
@@ -651,7 +665,7 @@ async def _review_timeout(job_id: str) -> None:
     await _settle(job, "SUCCESS_AUTO")
 
 
-async def _settle(job: dict, outcome: str, reason: str = "") -> None:
+async def _settle(job: dict, outcome: str, reason: str = "", rejected_by_consumer: bool = False) -> None:
     """Single settlement path for accept / auto-accept / reject."""
     job_id = job["id"]
     success = outcome in ("SUCCESS", "SUCCESS_AUTO")
@@ -684,6 +698,13 @@ async def _settle(job: dict, outcome: str, reason: str = "") -> None:
         credit_wallet(consumer_id, agreed, "ESCROW_REFUND", job_id)
         _update_trust(provider_id, "FAILURE_PROVIDER", completed_delta=0, failed_delta=1)
         _apply_mood(provider_id, "job_failed_provider")
+        if rejected_by_consumer:
+            svc = TownService()
+            consumer = svc.get_town_agent_by_id(consumer_id) or {}
+            svc.update_agent_state(
+                consumer_id,
+                rejections_issued=int(consumer.get("rejectionsIssued", 0)) + 1,
+            )
         failed = {
             "event": "job_failed",
             "job_id": job_id,

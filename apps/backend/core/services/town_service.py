@@ -466,6 +466,7 @@ class TownService:
             "jobs_completed": "jobsCompleted",
             "jobs_failed": "jobsFailed",
             "jobs_posted": "jobsPosted",
+            "rejections_issued": "rejectionsIssued",
         }
 
         update_parts = []

@@ -29,7 +29,7 @@ class StubWsManager:
     def __init__(self):
         self.conns: dict[str, SimpleNamespace] = {}  # agent_id -> conn
 
-    def all_connections(self):
+    def connected_agents(self):
         return list(self.conns.values())
 
     def get_by_agent_id(self, agent_id):
@@ -267,7 +267,8 @@ class TestPlaceBid:
         assert evt["event"] == "bid_received"
         assert evt["bid_count"] == 1
         assert "price" not in evt  # sealed-bid: consumer never sees amounts
-        assert "20" not in str(evt)
+        evt_no_id = {k: v for k, v in evt.items() if k != "job_id"}
+        assert "20" not in str(evt_no_id)  # bid price 20 must not leak (job_id excluded to avoid UUID false positives)
 
 
 # ---------------------------------------------------------------------------
@@ -636,3 +637,62 @@ class TestLedgerInvariantAndBoard:
         await ex.review_job(cc, job_id, True, "")
         board = ex.list_board_jobs()
         assert [e["status"] for e in board] == ["COMPLETED"]
+
+
+# ---------------------------------------------------------------------------
+# Escrow compensation on job-write failure (Fix 2)
+# ---------------------------------------------------------------------------
+
+
+class TestEscrowCompensationOnJobWriteFailure:
+    async def test_job_write_failure_refunds_escrow_and_returns_rejected(self, dynamodb_tables, mailbox, ws):
+        _seed_agent(dynamodb_tables, "consumer", "carol")
+        cc = _conn("consumer", "carol", "c-consumer")
+        ws.conns["consumer"] = cc
+
+        # Patch jobs_table().put_item to raise on the first call (the job write).
+        class _FailingTable:
+            def put_item(self, **kwargs):
+                raise RuntimeError("DynamoDB write failed (simulated)")
+
+        def _patched_jobs_table():
+            return _FailingTable()
+
+        with patch.object(ex.dynamo, "jobs_table", _patched_jobs_table):
+            result = await ex.post_job(cc, "Test job", "Description.", 20, "balanced")
+
+        # Result must be a rejection with reason internal_error.
+        assert result["status"] == "rejected"
+        assert result["reason"] == "internal_error"
+
+        # Consumer wallet must be back to 100 (debit reversed by ESCROW_REFUND).
+        agent = _get_agent(dynamodb_tables, "consumer")
+        assert int(agent["walletBalance"]) == 100
+
+        # Ledger: ESCROW_DEBIT followed by ESCROW_REFUND — net zero (excluding GRANT).
+        rows = _ledger_rows(dynamodb_tables, "consumer")
+        non_grant = [r for r in rows if r["entryType"] != "GRANT"]
+        types = [r["entryType"] for r in non_grant]
+        assert "ESCROW_DEBIT" in types
+        assert "ESCROW_REFUND" in types
+
+
+# ---------------------------------------------------------------------------
+# rejectionsIssued counter (Fix 4)
+# ---------------------------------------------------------------------------
+
+
+class TestRejectionsIssuedCounter:
+    async def test_consumer_reject_increments_rejections_issued(self, dynamodb_tables, mailbox, ws):
+        cc, pc, job_id = await _run_to_delivered(dynamodb_tables, ws, mailbox)
+        await ex.review_job(cc, job_id, False, "sloppy work")
+
+        consumer = _get_agent(dynamodb_tables, "consumer")
+        assert int(consumer.get("rejectionsIssued", 0)) == 1
+
+    async def test_delivery_timeout_does_not_increment_rejections_issued(self, dynamodb_tables, mailbox, ws):
+        cc, pc, job_id = await _run_to_awarded(dynamodb_tables, ws, mailbox)
+        await ex._delivery_timeout(job_id)
+
+        consumer = _get_agent(dynamodb_tables, "consumer")
+        assert "rejectionsIssued" not in consumer
