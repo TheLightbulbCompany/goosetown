@@ -17,7 +17,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Requ
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from core.auth import AuthContext, get_current_user
-from core.services import goals_service, stances_service, town_mood_engine
+from core.services import exchange_service, goals_service, stances_service, town_mood_engine
 from core.services.game_server_client import get_game_server_client
 from core.services.owner_chat_service import (
     OwnerChatService,
@@ -1622,6 +1622,40 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
                 agent_id=agent_conn.agent_id,
                 target_agent_id=target_agent_id,
                 text=text,
+            )
+            return {"statusCode": 200, "body": result}
+        elif action == "post_job":
+            result = await exchange_service.post_job(
+                agent_conn,
+                title=body.get("title", ""),
+                description=body.get("description", ""),
+                max_price=int(body.get("max_price", 0)),
+                strategy=body.get("strategy") or "balanced",
+            )
+            return {"statusCode": 200, "body": result}
+        elif action == "bid":
+            result = await exchange_service.place_bid(
+                agent_conn,
+                job_id=body.get("job_id", ""),
+                price=int(body.get("price", 0)),
+                confidence=float(body.get("confidence", 0.5) or 0.5),
+                pitch=body.get("pitch", "") or "",
+            )
+            return {"statusCode": 200, "body": result}
+        elif action == "cancel_job":
+            result = await exchange_service.cancel_job(agent_conn, job_id=body.get("job_id", ""))
+            return {"statusCode": 200, "body": result}
+        elif action == "deliver_job":
+            result = await exchange_service.deliver_job(
+                agent_conn, job_id=body.get("job_id", ""), deliverable=body.get("deliverable", "")
+            )
+            return {"statusCode": 200, "body": result}
+        elif action == "review_job":
+            result = await exchange_service.review_job(
+                agent_conn,
+                job_id=body.get("job_id", ""),
+                accept=bool(body.get("accept")),
+                reason=body.get("reason", "") or "",
             )
             return {"statusCode": 200, "body": result}
         # ``idle`` and ``context_transition`` fall through with no extra work:
