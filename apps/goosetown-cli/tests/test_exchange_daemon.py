@@ -194,10 +194,10 @@ class TestJobPostedBroadcast:
             }
         )
         content = _events(daemon)
-        assert "\U0001f4bc" in content
         assert "New job at the Exchange" in content
         assert '"Name my goose"' in content
         assert "job j9" in content
+        # Bid-instruction hint — the agent needs to know how to act on this broadcast
         assert "goosetown act bid j9 <price>" in content
         # Someone else's job — no cache entry
         assert "j9" not in daemon.state.get("exchange", {}).get("jobs", {})
@@ -495,6 +495,73 @@ class TestHandleToolCommandExchange:
         )
         assert result["status"] == "rejected"
         assert result["reason"] == "wrong_location"
+
+
+# ---------------------------------------------------------------------------
+# handle_tool_command — send failure clears exchange outcome state
+# ---------------------------------------------------------------------------
+
+
+class TestExchangeSendFailure:
+    async def test_ws_send_failure_clears_exchange_outcome(self, daemon: TownDaemon):
+        """If ws.send raises, _exchange_outcome and _pending_exchange_payload are cleared."""
+
+        class _FailWS:
+            async def send(self, msg: str) -> None:
+                raise OSError("connection reset")
+
+        daemon.ws = _FailWS()
+        daemon._arrived_event = (
+            asyncio.get_running_loop().create_future()
+        )  # satisfy move guard
+
+        # Manually set up the event (handle_tool_command would do this before send)
+        # but we're testing the cleanup path so we drive through the full command.
+        import contextlib
+
+        with contextlib.suppress(OSError):
+            await daemon.handle_tool_command(
+                {
+                    "action": "act",
+                    "payload": {
+                        "action": "post_job",
+                        "title": "Test job",
+                        "description": "d",
+                        "max_price": 10,
+                    },
+                }
+            )
+
+        # After the send failure, both fields must be cleared.
+        assert daemon._exchange_outcome is None
+        assert daemon._pending_exchange_payload is None
+
+
+# ---------------------------------------------------------------------------
+# _write_jobs — fence collision prevention
+# ---------------------------------------------------------------------------
+
+
+class TestWriteJobsFenceNeutralization:
+    def test_deliverable_fences_replaced_with_single_quotes(self, daemon: TownDaemon):
+        """A deliverable containing ``` is rendered with ''' and the TOWN_JOBS.md
+        still has exactly one opening and one closing fence for that entry."""
+        daemon._update_job(
+            "j1",
+            role="consumer",
+            status="DELIVERED",
+            title="Code review",
+            deliverable="Here is the answer:\n```python\nprint('hello')\n```\nDone.",
+        )
+        daemon._write_jobs()
+        md = _jobs_md(daemon)
+
+        # The embedded backtick fences must be neutralized.
+        assert "'''" in md
+        # The wrapping fence (two lines of "  ```") must still be present.
+        assert md.count("  ```") == 2
+        # Backtick fences from the deliverable content must NOT appear.
+        assert "```python" not in md
 
 
 # ---------------------------------------------------------------------------

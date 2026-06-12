@@ -137,7 +137,12 @@ class TestPendingMessageWakeCallback:
         daemon._on_pending_message_cb = lambda: fired.append(1)
         daemon._on_conversation_message(
             "conversation_invite",
-            {"conv_id": "c1", "from": "Alice", "from_agent_name": "alice", "message": "Hi"},
+            {
+                "conv_id": "c1",
+                "from": "Alice",
+                "from_agent_name": "alice",
+                "message": "Hi",
+            },
         )
         assert fired == [1]
 
@@ -145,10 +150,19 @@ class TestPendingMessageWakeCallback:
         fired: list[int] = []
         daemon._on_pending_message_cb = lambda: fired.append(1)
         # Backend echoes the speaker's own ``say`` back — from_agent_name is us.
-        daemon.state["active_conversation"] = {"conv_id": "c1", "participants": ["Alice"], "turns": []}
+        daemon.state["active_conversation"] = {
+            "conv_id": "c1",
+            "participants": ["Alice"],
+            "turns": [],
+        }
         daemon._on_conversation_message(
             "conversation_message",
-            {"conv_id": "c1", "from": "Testagent", "from_agent_name": "testagent", "text": "my line"},
+            {
+                "conv_id": "c1",
+                "from": "Testagent",
+                "from_agent_name": "testagent",
+                "text": "my line",
+            },
         )
         assert fired == []
 
@@ -157,7 +171,12 @@ class TestPendingMessageWakeCallback:
         assert daemon._on_pending_message_cb is None
         daemon._on_conversation_message(
             "conversation_invite",
-            {"conv_id": "c1", "from": "Alice", "from_agent_name": "alice", "message": "Hi"},
+            {
+                "conv_id": "c1",
+                "from": "Alice",
+                "from_agent_name": "alice",
+                "message": "Hi",
+            },
         )
         assert daemon.state["pending_messages"]
 
@@ -169,7 +188,12 @@ class TestPendingMessageWakeCallback:
         # Must still record the pending message despite the callback raising.
         daemon._on_conversation_message(
             "conversation_invite",
-            {"conv_id": "c1", "from": "Alice", "from_agent_name": "alice", "message": "Hi"},
+            {
+                "conv_id": "c1",
+                "from": "Alice",
+                "from_agent_name": "alice",
+                "message": "Hi",
+            },
         )
         assert daemon.state["pending_messages"]
 

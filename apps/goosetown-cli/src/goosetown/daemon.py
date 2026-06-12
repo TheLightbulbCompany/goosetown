@@ -835,7 +835,12 @@ class TownDaemon:
         )
 
     def _on_bid_received(self, data: dict) -> None:
-        """Consumer-side: a sealed bid landed on our job."""
+        """Consumer-side: a sealed bid landed on our job.
+
+        The wallet is intentionally untouched here: bids are sealed and move no
+        funds.  Money only transfers at award time (escrow deducted from
+        consumer) and at settlement (provider paid, consumer refunded if any).
+        """
         job_id = data.get("job_id", "?")
         title = data.get("title", "?")
         bid_count = data.get("bid_count", "?")
@@ -852,6 +857,12 @@ class TownDaemon:
         The consumer's copy may include a ``balance`` field when a partial
         escrow refund was issued (max_price > agreed_price). Update the
         wallet cache when present (Fix 3: wallet freshness on award).
+
+        The wallet update intentionally lives in the *consumer* branch only:
+        at award time the provider has not yet been paid — funds are still in
+        escrow.  The provider's wallet is updated later via ``job_completed``
+        (settlement) or ``job_failed`` (refund), both of which carry a
+        ``balance`` field for whichever side received money.
         """
         job_id = data.get("job_id", "?")
         title = data.get("title", "?")
@@ -1031,9 +1042,11 @@ class TownDaemon:
             lines.append(line)
             deliverable = job.get("deliverable")
             if deliverable:
+                # Deliverables are rendered inside a fence; neutralize embedded fences (LLM-read doc).
+                safe = str(deliverable).replace("```", "'''")
                 lines.append("  Deliverable:")
                 lines.append("  ```")
-                lines += [f"  {dl}" for dl in str(deliverable).splitlines()]
+                lines += [f"  {dl}" for dl in safe.splitlines()]
                 lines.append("  ```")
         lines.append("")
 
@@ -1658,7 +1671,19 @@ class TownDaemon:
                 self._pending_exchange_payload = dict(payload)
 
             _log.info("Sending via WS: %s", msg[:100])
-            await self.ws.send(msg)
+            try:
+                await self.ws.send(msg)
+            except Exception:
+                # On send failure, clear any exchange outcome state we set up
+                # so stale futures / payloads don't leak into the next invocation.
+                # Chat and move outcome futures are left as-is (their callers
+                # already handle cancellation / timeout in the finally blocks
+                # below). Exchange outcome is extra state we must clean up here
+                # because we never reach the exchange_outcome_future branch.
+                if exchange_outcome_future is not None:
+                    self._exchange_outcome = None
+                    self._pending_exchange_payload = None
+                raise
             _log.info("WS send complete")
 
             if payload.get("action") == "end_conversation":

@@ -13,7 +13,9 @@ from goosetown.core import _parse_owner_ref
 
 
 def test_remainder_captures_ref_and_text():
-    args = _build_parser().parse_args(["act", "reply_owner", "--ref=abc123", "hello", "there"])
+    args = _build_parser().parse_args(
+        ["act", "reply_owner", "--ref=abc123", "hello", "there"]
+    )
     assert args.command == "act"
     assert args.action == "reply_owner"
     # REMAINDER passes --ref through as opaque args for the handler to parse.
