@@ -9,9 +9,8 @@ Strategy
   conftest.py (which already creates agents + instances; conftest now also
   creates the users table so both quota paths resolve without a separate
   mock_aws context).
-* Patch ``core.services.sprite_queue.get_sprite_queue`` for sprite enqueue
-  calls (unchanged from the existing ``register_agent`` path) so PixelLab
-  is never hit.
+* Patch ``core.services.sprite_jobs.enqueue_signup`` for sprite enqueue
+  calls so PixelLab is never hit.
 
 The 429 response body MUST contain ``kind``, ``limit``, and ``current`` so
 the daemon can surface a human-readable error.
@@ -19,7 +18,7 @@ the daemon can surface a human-readable error.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -168,12 +167,9 @@ class TestSpriteQuota:
             svc.consume_sprite_quota(TEST_USER_ID)
 
         # Now attempt a registration WITH an appearance — this triggers the
-        # sprite-quota check BEFORE enqueue.  We stub get_sprite_queue so the
+        # sprite-quota check BEFORE enqueue.  We stub enqueue_signup so the
         # test doesn't blow up if the quota guard happens to pass (it shouldn't).
-        mock_queue = MagicMock()
-        mock_queue.enqueue.return_value = 1
-
-        with patch("core.services.sprite_queue.get_sprite_queue", return_value=mock_queue):
+        with patch("core.services.sprite_jobs.enqueue_signup", return_value=True):
             resp = client.post(
                 "/api/v1/town/agent/register",
                 json={

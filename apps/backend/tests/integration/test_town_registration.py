@@ -27,7 +27,7 @@ async def test_registration_sets_static_phase_before_animations():
     We simulate a hung Phase C by making queue_signup_animations sleep for 30 s and
     cancelling with a 1.5 s timeout, then assert the Phase B state was already written.
     """
-    from core.services.sprite_pipeline import _sprite_pipeline_task
+    from core.services.sprite_pipeline import LocalSpriteEventSink, run_signup_pipeline
 
     agent_id = "test-agent-id"
 
@@ -79,7 +79,7 @@ async def test_registration_sets_static_phase_before_animations():
 
     fake_s3_key = f"sprites/{agent_id}/walk.png"
 
-    # Patch everything that _sprite_pipeline_task imports or calls at runtime.
+    # Patch everything that run_signup_pipeline imports or calls at runtime.
     # The function does lazy imports, so we patch at the source module level.
     # asyncio.sleep is patched to a no-op so the polling loops don't take real time.
     async def _instant_sleep(_secs=0):
@@ -87,7 +87,7 @@ async def test_registration_sets_static_phase_before_animations():
 
     with (
         patch("core.services.pixellab_service.PixelLabService", return_value=mock_pxl),
-        # `_sprite_pipeline_task` lives in `core.services.sprite_pipeline`.
+        # `run_signup_pipeline` lives in `core.services.sprite_pipeline`.
         # TownService, get_game_server_client, and get_town_agent_ws_manager
         # are imported at the top of that module — so patch by that module's
         # namespace (patching where the NAME IS LOOKED UP, not where it's
@@ -133,7 +133,7 @@ async def test_registration_sets_static_phase_before_animations():
         # Phase C (queue_signup_animations) will be cancelled by the TimeoutError.
         try:
             await asyncio.wait_for(
-                _sprite_pipeline_task(agent_id, "Test Agent", "a pixel art warrior"),
+                run_signup_pipeline(agent_id, sink=LocalSpriteEventSink()),
                 timeout=1.5,
             )
         except asyncio.TimeoutError:

@@ -411,14 +411,6 @@ class OwnerMessageRequest(BaseModel):
     text: str
 
 
-# `_sprite_pipeline_task` lives in `core/services/sprite_pipeline.py` — moved
-# out to break the circular import with `sprite_queue`. Re-exported here so
-# callers inside this module (and external patches like the test suite) can
-# still reference `routers.town._sprite_pipeline_task` during the grace period
-# while we migrate off the old path.
-from core.services.sprite_pipeline import _sprite_pipeline_task  # noqa: E402, F401
-
-
 @router.post("/agent/register")
 async def register_agent(
     request: AgentRegisterRequest = Body(...),
@@ -468,8 +460,9 @@ async def register_agent(
             _agent_id = agent["id"]
 
             _existing = service.get_town_agent_by_id(_agent_id)
-            _in_progress = ("creating", "building_static", "static_ready", "animating", "downloading")
-            if _existing and _existing.get("spriteStatus") in _in_progress:
+            from core.services.sprite_jobs import IN_PROGRESS_STATUSES
+
+            if _existing and _existing.get("spriteStatus") in IN_PROGRESS_STATUSES:
                 logger.info(
                     "Sprite generation in progress for %s (%s)",
                     _agent_id,
@@ -479,14 +472,13 @@ async def register_agent(
                 _appearance = request.appearance
                 _display_name = request.display_name
 
-                from core.services.sprite_queue import get_sprite_queue
+                from core.services import sprite_jobs
 
-                queue = get_sprite_queue()
-                position = queue.enqueue(_agent_id, _display_name, _appearance)
-                if position > 0:
+                queued = sprite_jobs.enqueue_signup(_agent_id, _display_name, _appearance)
+                if queued:
                     _send_to_daemon(
                         _agent_id,
-                        {"event": "sprite_progress", "status": f"Queued for sprite generation (position {position})"},
+                        {"event": "sprite_progress", "status": "Queued for sprite generation"},
                     )
 
     # Best-effort SQS queue creation for WorldGM personal events.
@@ -514,9 +506,10 @@ async def register_agent(
 
 
 # `resume_sprite_generation` lives in `core.services.sprite_pipeline`
-# alongside `_sprite_pipeline_task` (sub-project #3 final slice,
-# 2026-04-23). Re-imported here so the router module remains a one-stop
-# back-compat surface for any external caller.
+# (sub-project #3 final slice, 2026-04-23). Re-imported here so the router
+# module remains a one-stop back-compat surface for any external caller.
+# Used by the admin recomposite endpoint; the regenerate endpoint now uses
+# sprite_jobs.enqueue_signup (Task 7).
 from core.services.sprite_pipeline import resume_sprite_generation  # noqa: E402, F401
 
 
@@ -822,10 +815,8 @@ async def regenerate_sprite(agent_id: str):
     Unlike /recomposite-sprites (which re-downloads existing frames, no credits),
     this creates a BRAND-NEW PixelLab character — it COSTS generation credits.
     Use it when an agent's existing character is broken/hangs (re-composite can't
-    fix that). Passing ``character_id=None`` resets resume_sprite_generation to
-    the ``creating`` phase: create_character -> animate -> download -> composite
-    -> upload. Bounded by a generous timeout (generation+polling legitimately
-    takes minutes) so a true hang can't wedge the task forever.
+    fix that). Clears pixellabCharacterId + sets spriteStatus="queued" so the
+    SQS sprite worker starts from the ``creating`` phase.
 
     Gated to dev (403 elsewhere). Single-agent only — not a batch.
     """
@@ -839,34 +830,15 @@ async def regenerate_sprite(agent_id: str):
     if not agent:
         raise HTTPException(status_code=404, detail="agent not found")
 
-    appearance = agent.get("appearance") or ""
     display_name = agent.get("displayName") or agent.get("agentName") or "agent"
 
-    async def _run() -> None:
-        from core.services.pixellab_service import PixelLabCreditError
+    # Clear existing PixelLab character so the worker creates a fresh one.
+    # force=True bypasses the conditional DDB claim — state is already reset.
+    service.update_agent_state(agent_id, sprite_status="queued", pixellab_character_id=None)
+    from core.services import sprite_jobs
 
-        try:
-            await asyncio.wait_for(
-                resume_sprite_generation(agent_id, None, appearance, display_name, "creating"),
-                # A full from-scratch generation legitimately takes ~15-20 min
-                # (create + wait for the 4-direction character + queue + generate
-                # all signup animations + download + composite + upload). 600s was
-                # far too short and cancelled it mid-animation-queue. Now that the
-                # event-loop ConnectTimeout (#365) and task-churn (#366) hangs are
-                # fixed, this is just a generous backstop against a true hang.
-                timeout=1800,
-            )
-        except TimeoutError:
-            logger.warning("regenerate-sprite: timed out for %s", agent_id)
-        except PixelLabCreditError:
-            logger.error("ALARM: PixelLab credits exhausted during sprite generation for %s", agent_id)
-        except Exception:
-            logger.exception("regenerate-sprite: failed for %s", agent_id)
-
-    task = asyncio.create_task(_run())
-    _recomposite_tasks.add(task)
-    task.add_done_callback(_recomposite_tasks.discard)
-    return {"agent_id": agent_id, "status": "regenerating", "display_name": display_name}
+    sent = sprite_jobs.enqueue_signup(agent_id, agent.get("displayName", ""), agent.get("appearance", ""), force=True)
+    return {"agent_id": agent_id, "ok": sent, "status": "regenerating", "display_name": display_name}
 
 
 @router.get("/agent/{agent_id}/owner-chat")
@@ -1708,7 +1680,6 @@ from core.services.activity_service import (  # noqa: E402, F401
     _activity_timer,
     _clear_activity_and_notify,
     _custom_anim_in_progress,
-    _generate_activity_animation,
     _handle_agent_activity,
     complete_activity_from_startup,
     restart_activity_timer,

@@ -1,7 +1,6 @@
 """Tests for the resume-aware, sink-driven sprite pipeline (durable-sprite-pipeline Task 6).
 
-``run_signup_pipeline`` replaces the linear ``_sprite_pipeline_task`` flow with a
-worker-runnable version:
+``run_signup_pipeline`` is the resume-aware, worker-runnable pipeline:
 
 * The agent ROW is the source of truth (display_name / appearance / char_id /
   status are read from DynamoDB, not from caller args).
@@ -10,9 +9,7 @@ worker-runnable version:
   directly — the SQS sprite worker passes an HTTP sink, in-backend callers pass
   ``LocalSpriteEventSink``.
 * Failures PROPAGATE (the worker releases the SQS message for redelivery) and
-  ``spriteStatus`` is left where it was — it is the resume pointer. The old
-  swallow-and-clear-status contract lives only in the legacy
-  ``_sprite_pipeline_task`` wrapper.
+  ``spriteStatus`` is left where it was — it is the resume pointer.
 
 Mocking style follows ``test_resume_dedup.py`` / ``test_resume_recomposite.py``:
 function-local imports are patched at their source modules

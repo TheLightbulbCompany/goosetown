@@ -45,6 +45,23 @@ logger = logging.getLogger(__name__)
 
 _MAX_CONVERSATION_TURNS = 20
 
+
+def _maybe_enqueue_talking(agent_row: dict | None) -> None:
+    """Lazy 'talking' generation on first conversation (fast/slow split,
+    spec 2026-06-11). Gated by the same flag as activity animations so dev
+    never generates against the shared PixelLab account."""
+    from core.config import settings
+    from core.services import sprite_jobs
+
+    if not settings.ACTIVITY_ANIMATION_GENERATION or not agent_row:
+        return
+    if "talking" in (agent_row.get("spriteAnimations") or {}):
+        return
+    if not agent_row.get("pixellabCharacterId"):
+        return
+    sprite_jobs.enqueue_animation(agent_row["id"], "talking")
+
+
 # Auto-end a conversation after this many seconds of silence (no new ``say``
 # turn from any participant, no ``join_conversation`` from a new joiner).
 # Default 180s: a two-turn exchange between local-model agents (~30-90s per
@@ -384,6 +401,14 @@ async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
         target_id,
         location,
     )
+
+    # Lazy-enqueue 'talking' animation for both participants on their first
+    # conversation. Non-fatal: a failed enqueue must never block chat.
+    try:
+        _maybe_enqueue_talking(initiator)
+        _maybe_enqueue_talking(target)
+    except Exception:
+        logger.debug("_maybe_enqueue_talking failed (non-fatal)", exc_info=True)
 
     # Start the silence timer. Reset on every ``say`` / ``join_conversation``;
     # if it fires, ``_inactivity_timeout`` calls ``_finalize_conversation``

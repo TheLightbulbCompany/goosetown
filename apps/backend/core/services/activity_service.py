@@ -7,9 +7,6 @@ bringing the router below 1700 lines.
 Functions:
 * ``_handle_agent_activity`` — validates and starts a timed activity
   (called from the ``handle_ws_message`` dispatch ladder).
-* ``_generate_activity_animation`` — background PixelLab task that lazily
-  generates a missing activity animation (e.g. "reading", "cooking") for
-  any ``ANIMATION_REGISTRY`` entry (template or v3).
 * ``_activity_timer`` — the asyncio task that runs while an activity is
   active, resolves at completion, and emits the result to the daemon.
 * ``_clear_activity_and_notify`` — shared cleanup helper used by timer
@@ -39,7 +36,7 @@ from core.services.activity_registry import apply_activity_effect, get_activity
 from core.services.daemon_bridge import _send_to_daemon
 from core.services.daemon_mailbox import get_daemon_mailbox
 from core.services.game_server_client import get_game_server_client
-from core.services.pixellab_service import ANIMATION_REGISTRY, PixelLabService
+from core.services.pixellab_service import ANIMATION_REGISTRY
 from core.services.town_mood_engine import apply_event, decayed_mood
 from core.services.town_service import TownService
 
@@ -147,6 +144,8 @@ async def _handle_agent_activity(connection_id: str, activity_name: str, agent_c
     # --- Trigger lazy activity animation generation if needed ---
     activity_anim = activity.animation
     if activity_anim in ANIMATION_REGISTRY:
+        from core.config import settings
+
         agent_animations = agent.get("spriteAnimations") or {}
         anim_key = (agent_id, activity_anim)
         char_id = agent.get("pixellabCharacterId") or agent.get("pixellab_character_id")
@@ -158,17 +157,14 @@ async def _handle_agent_activity(connection_id: str, activity_name: str, agent_c
             char_id or "MISSING",
         )
         if activity_anim not in agent_animations and anim_key not in _custom_anim_in_progress:
-            if char_id:
+            if not settings.ACTIVITY_ANIMATION_GENERATION:
+                logger.info("Activity animation generation disabled — skipping %s", activity_anim)
+            elif char_id:
                 _custom_anim_in_progress.add(anim_key)
-                logger.info(
-                    "Triggering lazy animation generation: %s for agent %s (char %s)",
-                    activity_anim,
-                    agent_id,
-                    char_id,
-                )
-                gen_task = asyncio.create_task(_generate_activity_animation(agent_id, char_id, activity_anim))
-                _activity_tasks.add(gen_task)
-                gen_task.add_done_callback(_activity_tasks.discard)
+                from core.services import sprite_jobs
+
+                sprite_jobs.enqueue_animation(agent_id, activity_anim)
+                logger.info("Enqueued lazy animation %s for agent %s", activity_anim, agent_id)
             else:
                 logger.warning(
                     "Cannot trigger activity animation %s for agent %s: no pixellabCharacterId in DB",
@@ -201,115 +197,6 @@ async def _handle_agent_activity(connection_id: str, activity_name: str, agent_c
                 logger.warning("[agent:%s] Failed to clear stuck activity %s", agent_id[:8], activity.name)
 
     task.add_done_callback(_on_timer_done)
-
-
-async def _generate_activity_animation(agent_id: str, character_id: str, animation_name: str) -> None:
-    """Background task: generate an activity's animation end-to-end.
-
-    Covers ANY ``ANIMATION_REGISTRY`` entry — template or v3 — by delegating
-    to ``PixelLabService.generate_animation``, which handles both modes behind
-    the global concurrency gate and returns ``{direction: [png_bytes]}``. The
-    frames are composited into a spritesheet, uploaded to S3, and merged into
-    the agent's ``spriteAnimations``.
-
-    Previously this early-returned for any animation not in ``CUSTOM_ANIMATIONS``,
-    silently skipping template-based activity animations — that gate is now on
-    ``ANIMATION_REGISTRY`` membership instead.
-    """
-    from core.config import settings
-    from core.services.sprite_storage import composite_v2_animation, upload_sprites_to_s3
-
-    config = ANIMATION_REGISTRY.get(animation_name)
-    if not config:
-        return
-
-    pxl = PixelLabService()
-    service = TownService()
-
-    # Set a visible "learning" status on the agent so the frontend's
-    # apartment card can render "Learning to cook…" instead of "Idle"
-    # while we wait 1-3 minutes for PixelLab to generate the sprite.
-    # Cleared in the ``finally`` block so both the success and failure
-    # paths leave the agent without a stale status string.
-    learning_status = f"Learning to {animation_name}…"
-    try:
-        service.update_agent_state(agent_id, status_message=learning_status)
-    except Exception:
-        logger.warning("Could not set learning status for agent %s", agent_id, exc_info=True)
-
-    try:
-        # Generate the whole animation (all 4 directions) in one gated call.
-        # generate_animation handles template + v3 uniformly and returns
-        # {direction: [png_bytes]} once the jobs complete.
-        direction_frames = await pxl.generate_animation(character_id, animation_name)
-
-        if not direction_frames:
-            logger.warning("No frames generated for activity animation %s (agent %s)", animation_name, agent_id)
-            return
-
-        for direction, frames in direction_frames.items():
-            logger.info("Got %d frames for %s/%s", len(frames), animation_name, direction)
-
-        # Composite into spritesheet (CPU-bound PIL work — offload off the event loop)
-        result = await asyncio.to_thread(composite_v2_animation, direction_frames)
-        if result is None:
-            logger.warning("Failed to composite %s for agent %s", animation_name, agent_id)
-            return
-
-        png_bytes, frame_count = result
-        all_sheets = {animation_name: (png_bytes, frame_count)}
-
-        # Upload spritesheet to S3
-        uploaded = await asyncio.to_thread(upload_sprites_to_s3, all_sheets, agent_id, settings.SPRITE_S3_BUCKET)
-
-        # Merge into existing spriteAnimations
-        agent = service.get_town_agent_by_id(agent_id)
-        existing = (agent.get("spriteAnimations") or {}) if agent else {}
-
-        for anim_name, info in uploaded.items():
-            registry_entry = ANIMATION_REGISTRY.get(anim_name, {})
-            existing[anim_name] = {
-                "url": f"{settings.SPRITE_CDN_URL}/{info['key']}",
-                "frameCount": info["frame_count"],
-                "fps": int(registry_entry.get("fps", 8)),
-            }
-
-        service.update_agent_state(agent_id, sprite_animations=existing)
-        logger.info("Custom animation %s ready for agent %s", animation_name, agent_id)
-
-        # Push the full sprite_animations dict to the game server so the
-        # next world_state broadcast carries the new URL. Without this the
-        # game server's per-peer ``sprite_animations`` cache is frozen at
-        # whatever it was when the agent first connected (typically just
-        # walk + idle + talking), so viewers never load the new spritesheet
-        # even though it's on S3 and in DynamoDB. ``sprite_pipeline.py``
-        # does the same thing after its initial bake — this mirrors that.
-        try:
-            gs_client = get_game_server_client()
-            await gs_client.update_agent_sprites(agent_id, existing)
-        except Exception:
-            logger.exception("Failed to push sprite update to game server for %s", agent_id)
-
-        # Push sprites_updated to daemon and viewers
-        get_daemon_mailbox().notify(
-            agent_id,
-            {
-                "event": "sprites_updated",
-                "agent_id": agent_id,
-                "animations": existing,
-            },
-        )
-
-    except Exception:
-        logger.exception("Custom animation generation failed: %s for agent %s", animation_name, agent_id)
-    finally:
-        _custom_anim_in_progress.discard((agent_id, animation_name))
-        # Always clear the learning status so a crashed generation doesn't
-        # leave the agent stuck "Learning to cook…" forever.
-        try:
-            service.update_agent_state(agent_id, status_message=None)
-        except Exception:
-            logger.warning("Could not clear learning status for agent %s", agent_id, exc_info=True)
 
 
 async def _activity_timer(

@@ -35,13 +35,13 @@ def _make_register_request(agent_name="test-agent", display_name="Test Agent", a
 
 
 @patch("core.services.sqs_drainer.create_agent_queue")
-@patch("core.services.sprite_queue.get_sprite_queue")
+@patch("core.services.sprite_jobs.enqueue_signup")
 @patch("core.services.user_service.UserService")
 @patch("routers.town.TownService")
 def test_register_agent_calls_create_agent_queue(
     mock_town_service_cls,
     mock_user_service_cls,
-    mock_get_sprite_queue,
+    mock_enqueue_signup,
     mock_create_queue,
 ):
     """register_agent should call sqs_drainer.create_agent_queue after opt_in."""

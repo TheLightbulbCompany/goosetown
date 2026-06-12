@@ -32,17 +32,10 @@ Failure contract: exceptions PROPAGATE (the SQS worker releases the message
 for redelivery) and ``spriteStatus`` is left where it was — it is the resume
 pointer. This includes the case where generation yields no animations at all
 (``RuntimeError`` raised so the SQS worker retries rather than silently
-completing without a sprite). The legacy swallow-and-clear-status contract
-survives in TWO temporary places kept for backward compatibility until Task 7:
+completing without a sprite).
 
-* ``_sprite_pipeline_task`` wrapper (kept for the in-memory SpriteQueue until
-  Task 7 rewires callers to SQS).
-* ``resume_sprite_generation`` (kept for the admin regenerate/recomposite
-  endpoints and ``main.py`` startup recovery until Task 7 rewires them).
-
-The module also still owns ``resume_sprite_generation`` — used by the admin
-regenerate ("creating") and recomposite ("downloading") endpoints and the
-``main.py`` startup recovery until Task 7 rewires them.
+The module also owns ``resume_sprite_generation`` — used by the admin
+recomposite ("downloading") endpoint.
 """
 
 from __future__ import annotations
@@ -376,8 +369,8 @@ async def run_animation_job(agent_id: str, anim_name: str, *, sink: SpriteEventS
         )
 
         # Re-read the row before merging: generation takes minutes and other
-        # animations may have landed meanwhile (same pattern as
-        # activity_service._generate_activity_animation). Merge into a COPY.
+        # animations may have landed meanwhile (concurrent worker runs).
+        # Merge into a COPY.
         fresh = service.get_town_agent_by_id(str(agent_id))
         merged = dict(((fresh or agent).get("spriteAnimations")) or {})
         registry_entry = ANIMATION_REGISTRY.get(anim_name, {})
@@ -395,23 +388,6 @@ async def run_animation_job(agent_id: str, anim_name: str, *, sink: SpriteEventS
         _resume_in_flight.discard(agent_id)
 
 
-async def _sprite_pipeline_task(agent_id: str, display_name: str, appearance: str) -> None:
-    """Legacy wrapper for the in-memory SpriteQueue (deleted in the next
-    commit). Preserves the old swallow-and-clear-status contract so existing
-    callers/tests keep passing until they're rewired to SQS."""
-    # Args kept for caller compat only (SpriteQueue); row is the source of
-    # truth. The wrapper and SpriteQueue are deleted together in the next commit.
-    del display_name, appearance
-    try:
-        await run_signup_pipeline(agent_id, sink=LocalSpriteEventSink())
-    except Exception:
-        logger.exception("Sprite generation failed for agent %s", agent_id)
-        try:
-            TownService().update_agent_state(agent_id, sprite_status=None)
-        except Exception:
-            logger.debug("Failed to clear sprite_status for %s", agent_id, exc_info=True)
-
-
 async def resume_sprite_generation(
     agent_id: str,
     character_id: str | None,
@@ -421,10 +397,10 @@ async def resume_sprite_generation(
 ) -> None:
     """Resume an interrupted sprite generation from a specific phase.
 
-    Called from startup recovery (``main.py:_reconnect_active_agents``)
-    when an agent has a non-complete ``spriteStatus`` — meaning the
-    pipeline was mid-flight when the backend restarted. Picks up at
-    whichever phase is applicable and runs to completion.
+    Used by the admin recomposite endpoint (``/admin/recomposite-sprites``)
+    to re-download existing PixelLab frames and rebuild the spritesheet
+    without consuming new generation credits.  Picks up at the phase
+    passed as ``current_status`` and runs to completion.
     """
     from core.config import settings
     from core.services.pixellab_service import ANIMATION_REGISTRY, PixelLabService
