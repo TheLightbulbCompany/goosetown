@@ -26,11 +26,74 @@ const WS_URL: string | null = import.meta.env.VITE_WS_URL ?? null;
 
 const POLL_INTERVAL = 2000;
 
+// ---------------------------------------------------------------------------
+// Anonymous-viewer-token cache
+//
+// This token is public (grants WS subscription only), so it is safe to cache
+// at module scope and reuse across multiple hook instances or re-renders. The
+// cache is intentionally module-level: it survives React re-renders and is
+// shared across all hook consumers on the same page. We also mirror it into
+// sessionStorage so a hard-navigate on the same tab can skip the round-trip.
+//
+// The prefetch promise is stored separately so concurrent callers awaiting the
+// first fetch coalesce onto the single in-flight request rather than issuing N
+// redundant fetches.
+// ---------------------------------------------------------------------------
+const SESSION_KEY = 'gt_anon_viewer_token';
+
+let _anonTokenCache: string | null = (() => {
+  try {
+    return sessionStorage.getItem(SESSION_KEY);
+  } catch {
+    return null;
+  }
+})();
+let _anonTokenInflight: Promise<string | null> | null = null;
+
+function prefetchAnonViewerToken(): Promise<string | null> {
+  if (_anonTokenCache) return Promise.resolve(_anonTokenCache);
+  if (_anonTokenInflight) return _anonTokenInflight;
+  _anonTokenInflight = fetch(`${API_URL}/town/anonymous-viewer-token`)
+    .then((r) => (r.ok ? (r.json() as Promise<{ token?: string }>) : Promise.resolve<{ token?: string }>({})))
+    .then((body) => {
+      const t = body.token ?? null;
+      if (t) {
+        _anonTokenCache = t;
+        try { sessionStorage.setItem(SESSION_KEY, t); } catch { /* private browsing */ }
+      }
+      _anonTokenInflight = null;
+      return t;
+    })
+    .catch(() => {
+      _anonTokenInflight = null;
+      return null;
+    });
+  return _anonTokenInflight;
+}
+
 export function useTownState(getToken?: () => Promise<string | null>, userId?: string | null): {
   game: TownGameState | undefined;
 } {
   const [game, setGame] = useState<TownGameState>();
   const wsConnectedRef = useRef(false);
+
+  // Kick off the anonymous-viewer-token fetch immediately on mount so the token
+  // is ready (or already in-flight) by the time the WS connect() logic needs
+  // it. Authenticated users skip this path (getToken wins), but the prefetch is
+  // cheap — it hits the cache synchronously if the tab was already used this
+  // session. No cleanup needed: the module-level cache persists intentionally.
+  useEffect(() => {
+    if (!WS_URL) return; // no WS configured — REST-only mode, token unused
+    if (!getToken) {
+      // Definitely an anonymous viewer — start the fetch right away.
+      void prefetchAnonViewerToken();
+    } else {
+      // Signed-in user: Clerk getToken is primary, but prefetch the anon token
+      // as a fallback in case Clerk fails (fire-and-forget, errors swallowed
+      // inside prefetchAnonViewerToken).
+      void prefetchAnonViewerToken();
+    }
+  }, []); // mount only — intentionally ignores getToken reference changes
 
   // Process incoming state data (from REST or WS)
   const processState = useCallback(
@@ -84,13 +147,12 @@ export function useTownState(getToken?: () => Promise<string | null>, userId?: s
       // Fall back to anonymous viewer token (signed-out users, or Clerk
       // ``getToken`` failure). The endpoint is public; the resulting token
       // grants WS subscription only — no act / chat / register paths.
+      // We reuse the module-level prefetch that was kicked off at mount, so
+      // this await is typically instantaneous (cache hit) rather than a serial
+      // round-trip that would add latency after the WASM download finishes.
       if (!token && !cancelled) {
         try {
-          const r = await fetch(`${API_URL}/town/anonymous-viewer-token`);
-          if (r.ok) {
-            const body: { token?: string } = await r.json();
-            token = body.token ?? null;
-          }
+          token = await prefetchAnonViewerToken();
         } catch (err) {
           console.warn('[GooseTown] anonymous-viewer-token fetch failed:', err);
           /* retry on next reconnect */
@@ -253,16 +315,43 @@ export function useTownState(getToken?: () => Promise<string | null>, userId?: s
   }, [getToken, processState, userId]);
 
   // -- REST polling fallback --------------------------------------------------
+  //
+  // Improvements:
+  //   1. Pauses while the tab is hidden — avoids wasted network requests when
+  //      the user has backgrounded the tab.
+  //   2. Immediately re-polls when the tab becomes visible — catches up without
+  //      waiting up to 2 s for the next scheduled tick.
+  //   3. Uses a single timer ref to prevent double-scheduling if the
+  //      visibilitychange handler fires while a scheduled tick is pending.
   useEffect(() => {
     let cancelled = false;
+    const timerRef: { id: ReturnType<typeof setTimeout> | null } = { id: null };
+
+    const schedule = (delay = POLL_INTERVAL) => {
+      if (timerRef.id !== null) clearTimeout(timerRef.id);
+      timerRef.id = setTimeout(() => {
+        timerRef.id = null;
+        void poll();
+      }, delay);
+    };
 
     const poll = async () => {
       if (cancelled) return;
-      // Skip REST polling when WebSocket is actively delivering state updates
-      if (wsConnectedRef.current) {
-        if (!cancelled) setTimeout(poll, POLL_INTERVAL);
+
+      // Pause while the tab is hidden — skip the fetch and reschedule so we
+      // resume automatically on the next tick (the visibilitychange handler
+      // will also trigger an immediate refetch when the tab is shown again).
+      if (document.visibilityState === 'hidden') {
+        schedule();
         return;
       }
+
+      // Skip REST polling when WebSocket is actively delivering state updates.
+      if (wsConnectedRef.current) {
+        schedule();
+        return;
+      }
+
       try {
         const [stateRes, descRes] = await Promise.all([
           fetch(`${API_URL}/town/state`),
@@ -277,12 +366,30 @@ export function useTownState(getToken?: () => Promise<string | null>, userId?: s
       } catch {
         /* retry on next interval */
       }
-      if (!cancelled) setTimeout(poll, POLL_INTERVAL);
+
+      if (!cancelled) schedule();
     };
 
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (cancelled) return;
+      // Cancel any pending scheduled tick and poll immediately so the UI
+      // catches up the moment the user returns to the tab.
+      if (timerRef.id !== null) {
+        clearTimeout(timerRef.id);
+        timerRef.id = null;
+      }
+      void poll();
+    };
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
     void poll();
+
     return () => {
       cancelled = true;
+      if (timerRef.id !== null) clearTimeout(timerRef.id);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, [processState]);
 
