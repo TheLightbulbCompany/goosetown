@@ -62,12 +62,18 @@ def choose_winner(bids: dict[str, dict], max_price: int, trust_by_agent: dict[st
     return ranked[0][2]
 
 
-def updated_trust(old: float, outcome: str) -> float:
-    """EMA toward the outcome's attribution score (AEX recency-weighting, simplified)."""
+def updated_trust(old: float, outcome: str, alpha: float = TRUST_EMA_ALPHA) -> float:
+    """EMA toward the outcome's attribution score (AEX recency-weighting, simplified).
+
+    ``alpha`` defaults to ``TRUST_EMA_ALPHA`` (0.2).  Pass a smaller value to
+    dampen the update — used by the counterparty-diversity heuristic in
+    ``exchange_service._update_trust`` when the provider and consumer have
+    repeatedly paired with each other (anti-farming).
+    """
     score = OUTCOME_SCORES.get(outcome)
     if score is None:
         return old
-    return round((1 - TRUST_EMA_ALPHA) * old + TRUST_EMA_ALPHA * score, 4)
+    return round((1 - alpha) * old + alpha * score, 4)
 
 
 def trust_tier(trust: float, jobs_completed: int) -> str:

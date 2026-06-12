@@ -140,19 +140,27 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _ledger_append(agent_id: str, entry_type: str, amount: int, balance_after: int, ref_id: str) -> None:
+def _ledger_append(
+    agent_id: str,
+    entry_type: str,
+    amount: int,
+    balance_after: int,
+    ref_id: str,
+    counterparty_id: str | None = None,
+) -> None:
+    item: dict[str, Any] = {
+        "id": str(uuid.uuid4()),
+        "agentId": agent_id,
+        "entryType": entry_type,
+        "amount": amount,
+        "balanceAfter": balance_after,
+        "refId": ref_id,
+        "createdAt": _now_iso(),
+    }
+    if counterparty_id is not None:
+        item["counterpartyId"] = counterparty_id
     try:
-        dynamo.ledger_table().put_item(
-            Item={
-                "id": str(uuid.uuid4()),
-                "agentId": agent_id,
-                "entryType": entry_type,
-                "amount": amount,
-                "balanceAfter": balance_after,
-                "refId": ref_id,
-                "createdAt": _now_iso(),
-            }
-        )
+        dynamo.ledger_table().put_item(Item=item)
     except Exception:
         logger.error(
             "Ledger append failed (balance already moved!): agent=%s type=%s amount=%d ref=%s",
@@ -344,7 +352,13 @@ def debit_wallet(agent_id: str, amount: int, entry_type: str, ref_id: str) -> in
     return new_balance
 
 
-def credit_wallet(agent_id: str, amount: int, entry_type: str, ref_id: str) -> int:
+def credit_wallet(
+    agent_id: str,
+    amount: int,
+    entry_type: str,
+    ref_id: str,
+    counterparty_id: str | None = None,
+) -> int:
     """Atomic credit. Returns new balance."""
     ensure_signup_grant(agent_id)
     table = dynamo.agents_table()
@@ -359,7 +373,7 @@ def credit_wallet(agent_id: str, amount: int, entry_type: str, ref_id: str) -> i
     except table.meta.client.exceptions.ConditionalCheckFailedException as exc:
         raise AgentNotFound(f"agent {agent_id[:8]} not found") from exc
     new_balance = int(resp["Attributes"]["walletBalance"])
-    _ledger_append(agent_id, entry_type, amount, new_balance, ref_id)
+    _ledger_append(agent_id, entry_type, amount, new_balance, ref_id, counterparty_id=counterparty_id)
     return new_balance
 
 
@@ -504,17 +518,57 @@ def _apply_mood(agent_id: str, event: str) -> None:
     svc.update_agent_mood_energy(agent_id, mood, energy)
 
 
-def _update_trust(agent_id: str, outcome: str, completed_delta: int, failed_delta: int) -> None:
+def _count_recent_same_counterparty_payouts(agent_id: str, counterparty_id: str) -> int:
+    """Count PAYOUT ledger rows for *agent_id* whose counterpartyId == *counterparty_id*
+    among the most recent 20 entries (reverse-chronological via the GSI).
+
+    Rows without a ``counterpartyId`` attribute (written before Wave 1) are
+    treated as diverse counterparties — they do not contribute to the repeat
+    count and therefore never trigger dampening on legacy data.
+    """
+    resp = dynamo.ledger_table().query(
+        IndexName="agentId-createdAt-index",
+        KeyConditionExpression=Key("agentId").eq(agent_id),
+        ScanIndexForward=False,
+        Limit=20,
+    )
+    return sum(
+        1
+        for row in resp.get("Items", [])
+        if row.get("entryType") == "PAYOUT" and row.get("counterpartyId") == counterparty_id
+    )
+
+
+def _update_trust(
+    agent_id: str,
+    outcome: str,
+    completed_delta: int,
+    failed_delta: int,
+    counterparty_id: str | None = None,
+) -> None:
     # trustScore is an EMA, so it's inherently read-modify-write. Guard the
     # write with an optimistic ConditionExpression on the value we read and
     # retry on conflict, so two jobs settling concurrently for one agent
     # can't drop an outcome (codex P2 on PR #386). Counters use atomic ADD.
+
+    # Cheap repeat-counterparty damping: if this provider has received ≥3 PAYOUT
+    # rows from the same consumer in their recent ledger history, halve the EMA
+    # alpha for this update.  This discourages farming (same pair repeatedly
+    # transacting to inflate trust) without requiring a full social-graph
+    # analysis.  Pre-Wave-1 rows without counterpartyId count as diverse.
+    # Revisit with real graph analysis if farming appears in production data.
+    alpha = exchange_scoring.TRUST_EMA_ALPHA
+    if counterparty_id is not None:
+        same_pair_count = _count_recent_same_counterparty_payouts(agent_id, counterparty_id)
+        if same_pair_count >= 3:
+            alpha = exchange_scoring.TRUST_EMA_ALPHA / 2
+
     table = dynamo.agents_table()
     for _ in range(3):
         agent = TownService().get_town_agent_by_id(agent_id) or {}
         old_raw = agent.get("trustScore")
         old = float(old_raw) if old_raw is not None else exchange_scoring.INITIAL_TRUST
-        new_trust = exchange_scoring.updated_trust(old, outcome)
+        new_trust = exchange_scoring.updated_trust(old, outcome, alpha=alpha)
         condition = "attribute_exists(id) AND " + (
             "attribute_not_exists(trustScore)" if old_raw is None else "trustScore = :old"
         )
@@ -1395,8 +1449,9 @@ async def _delivery_timeout(job_id: str) -> None:
     agreed = int(job.get("agreedPrice", 0))
     provider_id = job.get("providerId", "")
     consumer_id = job["consumerId"]
-    consumer_balance = credit_wallet(consumer_id, agreed, "ESCROW_REFUND", job_id)
-    _update_trust(provider_id, "FAILURE_PROVIDER", completed_delta=0, failed_delta=1)
+    # ESCROW_REFUND: counterparty is the provider (consumer is being refunded due to provider failure)
+    consumer_balance = credit_wallet(consumer_id, agreed, "ESCROW_REFUND", job_id, counterparty_id=provider_id)
+    _update_trust(provider_id, "FAILURE_PROVIDER", completed_delta=0, failed_delta=1, counterparty_id=consumer_id)
     _apply_mood(provider_id, "job_failed_provider")
     failed = {
         "event": "job_failed",
@@ -1450,10 +1505,11 @@ async def _settle(
 
     if success:
         fee = exchange_scoring.platform_fee(agreed)
-        provider_balance = credit_wallet(provider_id, agreed - fee, "PAYOUT", job_id)
+        # PAYOUT: counterparty is the consumer (they commissioned the work)
+        provider_balance = credit_wallet(provider_id, agreed - fee, "PAYOUT", job_id, counterparty_id=consumer_id)
         # TOWN has no running balance — balanceAfter 0 by convention.
         _ledger_append(TOWN_ACCOUNT, "FEE", fee, 0, job_id)
-        _update_trust(provider_id, outcome, completed_delta=1, failed_delta=0)
+        _update_trust(provider_id, outcome, completed_delta=1, failed_delta=0, counterparty_id=consumer_id)
         _apply_mood(provider_id, "job_completed_provider")
         _apply_mood(consumer_id, "job_completed_consumer")
         completed: dict[str, Any] = {
@@ -1473,8 +1529,9 @@ async def _settle(
         mailbox.notify(provider_id, {**completed, "balance": provider_balance})
         mailbox.notify(consumer_id, completed)
     else:
-        consumer_balance = credit_wallet(consumer_id, agreed, "ESCROW_REFUND", job_id)
-        _update_trust(provider_id, "FAILURE_PROVIDER", completed_delta=0, failed_delta=1)
+        # ESCROW_REFUND on consumer rejection: counterparty is the provider (who failed)
+        consumer_balance = credit_wallet(consumer_id, agreed, "ESCROW_REFUND", job_id, counterparty_id=provider_id)
+        _update_trust(provider_id, "FAILURE_PROVIDER", completed_delta=0, failed_delta=1, counterparty_id=consumer_id)
         _apply_mood(provider_id, "job_failed_provider")
         if rejected_by_consumer:
             _bump_counter(consumer_id, "rejectionsIssued")
