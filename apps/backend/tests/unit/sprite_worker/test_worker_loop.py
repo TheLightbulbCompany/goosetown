@@ -23,36 +23,64 @@ from sprite_worker.processor import Outcome
 def _make_sqs():
     sqs = MagicMock()
     sqs.delete_message = MagicMock()
+    sqs.send_message = MagicMock()
     sqs.change_message_visibility = MagicMock()
     return sqs
 
 
+def _make_msg(receipt: str = "receipt-123", body: str = '{"agent_id": "abc"}') -> dict:
+    return {"ReceiptHandle": receipt, "Body": body}
+
+
 def test_apply_outcome_delete_calls_delete_message():
     sqs = _make_sqs()
-    worker_main._apply_outcome(sqs, "https://q", "receipt-123", Outcome.DELETE)
+    worker_main._apply_outcome(sqs, "https://q", _make_msg("receipt-123"), Outcome.DELETE)
     sqs.delete_message.assert_called_once_with(QueueUrl="https://q", ReceiptHandle="receipt-123")
+    sqs.send_message.assert_not_called()
     sqs.change_message_visibility.assert_not_called()
 
 
 def test_apply_outcome_release_calls_nothing():
     sqs = _make_sqs()
-    worker_main._apply_outcome(sqs, "https://q", "receipt-456", Outcome.RELEASE)
+    worker_main._apply_outcome(sqs, "https://q", _make_msg("receipt-456"), Outcome.RELEASE)
     sqs.delete_message.assert_not_called()
+    sqs.send_message.assert_not_called()
     sqs.change_message_visibility.assert_not_called()
 
 
-def test_apply_outcome_credit_pause_extends_visibility_and_emits_metric():
+def test_apply_outcome_credit_pause_reenqueues_and_deletes():
+    """CREDIT_PAUSE must re-enqueue with DelaySeconds=900, delete the original,
+    emit the credit metric, and never call change_message_visibility."""
     sqs = _make_sqs()
-    with patch.object(worker_main, "_emit_credit_metric") as mock_metric:
-        worker_main._apply_outcome(sqs, "https://q", "receipt-789", Outcome.CREDIT_PAUSE)
+    msg_body = '{"agent_id": "xyz"}'
+    msg = _make_msg("receipt-789", msg_body)
 
-    sqs.change_message_visibility.assert_called_once_with(
-        QueueUrl="https://q",
-        ReceiptHandle="receipt-789",
-        VisibilityTimeout=worker_main.CREDIT_PAUSE_SECONDS,
-    )
+    # Track call order to assert send happens before delete.
+    parent = MagicMock()
+    parent.attach_mock(sqs.send_message, "send_message")
+    parent.attach_mock(sqs.delete_message, "delete_message")
+
+    with patch.object(worker_main, "_emit_credit_metric") as mock_metric:
+        worker_main._apply_outcome(sqs, "https://q", msg, Outcome.CREDIT_PAUSE)
+
     mock_metric.assert_called_once()
-    sqs.delete_message.assert_not_called()
+    sqs.send_message.assert_called_once_with(
+        QueueUrl="https://q",
+        MessageBody=msg_body,
+        DelaySeconds=worker_main.CREDIT_PAUSE_SECONDS,
+    )
+    sqs.delete_message.assert_called_once_with(QueueUrl="https://q", ReceiptHandle="receipt-789")
+    sqs.change_message_visibility.assert_not_called()
+
+    # send must precede delete in the call order.
+    call_names = [c[0] for c in parent.mock_calls]
+    assert call_names.index("send_message") < call_names.index("delete_message")
+
+
+def test_apply_outcome_credit_pause_delay_seconds_is_sqs_maximum():
+    """CREDIT_PAUSE_SECONDS must equal 900, which is the SQS maximum DelaySeconds.
+    Values > 900 cause an API error, so this constant must not be bumped."""
+    assert worker_main.CREDIT_PAUSE_SECONDS == 900
 
 
 # ---------------------------------------------------------------------------

@@ -9,6 +9,14 @@ Recovery model: SQS redelivery is primary (visibility lapse -> retry -> DLQ
 after 3 receives). The boot sweep is a backstop for rows whose SQS send
 failed and for pre-migration stuck rows; a permanently-failing agent costs
 one redelivery cycle per worker restart, bounded by the DLQ (alarmed).
+
+Credit-pause recovery: on a PixelLab 402 the worker re-enqueues the message
+as a fresh SQS message with a 15-minute delay, then deletes the original.
+A fresh message resets the receive count, so a prolonged credit outage cycles
+every 15 minutes indefinitely without burning the 3-receive DLQ budget.
+Jobs auto-resume after the next 15-minute window once credits are topped up.
+Genuine processing failures (not 402s) still count against the DLQ budget
+and dead-letter normally after 3 receives.
 """
 
 from __future__ import annotations
@@ -102,12 +110,23 @@ async def _heartbeat(sqs, queue_url: str, receipt: str, stop: asyncio.Event) -> 
                 logger.warning("Heartbeat visibility extension failed", exc_info=True)
 
 
-def _apply_outcome(sqs, queue_url: str, receipt: str, outcome: Outcome) -> None:
+def _apply_outcome(sqs, queue_url: str, msg: dict, outcome: Outcome) -> None:
+    receipt = msg["ReceiptHandle"]
+    body = msg["Body"]
     if outcome is Outcome.DELETE:
         sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt)
     elif outcome is Outcome.CREDIT_PAUSE:
         _emit_credit_metric()
-        sqs.change_message_visibility(QueueUrl=queue_url, ReceiptHandle=receipt, VisibilityTimeout=CREDIT_PAUSE_SECONDS)
+        # Re-enqueue a fresh copy with the max SQS delay and delete the
+        # original. A fresh message resets the receive count, so a prolonged
+        # credit outage cycles every 15 min indefinitely instead of burning
+        # the 3-receive DLQ budget — jobs genuinely auto-resume after a
+        # credit top-up. Send-then-delete ordering: a failed delete yields a
+        # duplicate, which the worker's idempotent processing absorbs.
+        # CREDIT_PAUSE_SECONDS = 900 == SQS maximum DelaySeconds; >900 is an
+        # API error.
+        sqs.send_message(QueueUrl=queue_url, MessageBody=body, DelaySeconds=CREDIT_PAUSE_SECONDS)
+        sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt)
     # RELEASE: do nothing — visibility lapses naturally (<=5 min), 3 receives -> DLQ.
 
 
@@ -121,7 +140,7 @@ async def _handle(sqs, queue_url: str, msg: dict, sink) -> None:
         stop.set()
         await hb
     try:
-        await asyncio.to_thread(_apply_outcome, sqs, queue_url, receipt, outcome)
+        await asyncio.to_thread(_apply_outcome, sqs, queue_url, msg, outcome)
     except Exception:
         logger.exception("Failed to apply outcome %s", outcome)
 

@@ -142,7 +142,7 @@ export class SpriteWorkerStack extends cdk.Stack {
         evaluationPeriods: 1,
         treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
         alarmDescription:
-          "Sprite jobs are dead-lettering (3 failed attempts each). Check PixelLab credits/status and sprite-worker logs. See RUNBOOK.md.",
+          "Sprite jobs are dead-lettering (3 genuine processing failures each). Credit-paused jobs never reach the DLQ — they re-enqueue with a fresh receive count. Check sprite-worker logs for the root cause. See RUNBOOK.md.",
       });
       dlqAlarm.addAlarmAction(new cw_actions.SnsAction(props.alarmTopic));
 

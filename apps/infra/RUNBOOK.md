@@ -19,9 +19,9 @@ aws sso login --profile isol8-admin
 | `goosetown-{env}-backend-task-missing` | `AWS/ApplicationELB/HealthyHostCount` < desired (1 dev / 2 prod) for 5 min | `goosetown-{env}-alarms` | Backend ALB has fewer healthy targets than desired. Either the Fargate task is down or it's failing `/health`. REST API and WebSocket forwarding are unavailable either way. |
 | `goosetown-{env}-nat-port-errors` | ErrorPortAllocation >= 1 in 5 min | `goosetown-{env}-alarms` | NAT gateway port exhaustion or AZ-level fault. Private-subnet egress (backend → Clerk, PixelLab, DynamoDB endpoint) may be degraded. Awareness-only in dev — see issue #165. |
 | `goosetown-{env}-sprite-dlq-depth` | DLQ `ApproximateNumberOfMessagesVisible` >= 1 | `goosetown-{env}-alarms` | Sprite job failed 3 times and landed in the DLQ. Inspect the message, fix the root cause, then redrive (section 19). |
-| `goosetown-{env}-sprite-backlog-age` | `ApproximateAgeOfOldestMessage` > 1800s (30 min) | `goosetown-{env}-alarms` | Sprite jobs are not being processed fast enough — worker may be down, PixelLab may be rate-limiting, or a credit exhaustion is causing 15-min visibility pauses. |
+| `goosetown-{env}-sprite-backlog-age` | `ApproximateAgeOfOldestMessage` > 1800s (30 min) | `goosetown-{env}-alarms` | Sprite jobs are not being processed fast enough — worker may be down, PixelLab may be rate-limiting, or a credit exhaustion is causing 15-min re-enqueue cycles. |
 | `goosetown-{env}-sprite-worker-missing` | Sprite worker CPUUtilization SampleCount < 1 for 5 min | `goosetown-{env}-alarms` | Sprite worker Fargate task is missing. Restart via section 19. |
-| `goosetown-{env}-sprite-credit-exhausted` | `GooseTown/SpriteWorker:CreditExhausted` sum >= 1 | `goosetown-{env}-alarms` | PixelLab returned 402. Top up credits; queued jobs will resume automatically within 15 min (visibility pause). See section 19 for recovery steps. |
+| `goosetown-{env}-sprite-credit-exhausted` | `GooseTown/SpriteWorker:CreditExhausted` sum >= 1 | `goosetown-{env}-alarms` | PixelLab returned 402. Top up credits; queued jobs are re-enqueued with a 15-minute delay and auto-resume. Receive count resets each cycle so credit outages never dead-letter jobs. See section 19 for recovery steps. |
 
 SNS subscriptions are managed manually per environment:
 
@@ -875,8 +875,8 @@ aws logs tail /ecs/goosetown-{env}-sprite-worker \
 ### Credit-exhaustion alarm response (`GooseTown/SpriteWorker:CreditExhausted`)
 
 1. Top up PixelLab credits at https://pixellab.ai (account login required).
-2. No manual action needed for the queue — the worker releases the message with a 15-min visibility delay when it hits a 402, so generation pauses rather than churning to DLQ. Jobs auto-resume within 15 min of the credit top-up.
-3. If the alarm fired multiple times (many 402s), check whether the DLQ was also triggered — if so, redrive after topping up.
+2. No manual action needed for the queue — on a 402 the worker re-enqueues the message as a fresh SQS message with a 15-minute delay, then deletes the original. A fresh message resets the receive count, so credit outages cycle every 15 minutes indefinitely without burning the 3-receive DLQ budget. Jobs auto-resume within 15 minutes of the credit top-up.
+3. If the DLQ alarm also fired alongside this alarm, those messages represent genuine processing failures (not credit outages). Redrive them after fixing the underlying cause.
 
 ### Per-env PixelLab API key split (one-time human action)
 
