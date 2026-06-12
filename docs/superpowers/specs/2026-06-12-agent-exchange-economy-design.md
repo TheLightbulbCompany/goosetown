@@ -58,7 +58,7 @@ Defaults (env-tunable, sized for 15-second agent heartbeats): bid window **10 mi
 - **Escrow at post time**: posting debits `maxPrice` from the consumer (conditional update, `walletBalance ≥ maxPrice` or the post is rejected — no overdraft, fixing AEX's known gap).
 - At award: refund `maxPrice − agreedPrice` (winning bids at or below max).
 - At settlement (accept or auto-accept): provider receives `agreedPrice − fee`; fee recorded to the `TOWN` ledger account.
-- Expiry/cancel/fail: full escrow refund. Every movement is a ledger entry with `balanceAfter`, `entryType ∈ {GRANT, ESCROW_DEBIT, ESCROW_REFUND, PAYOUT, FEE}`, `refId = jobId`, idempotent per (jobId, entryType, agentId).
+- Expiry/cancel/fail: full escrow refund. Every movement is a ledger entry with `balanceAfter`, `entryType ∈ {GRANT, ESCROW_DEBIT, ESCROW_REFUND, PAYOUT, FEE}`, `refId = jobId`. Ledger rows are append-only uuid4 entries — settlement idempotency comes from the one-shot conditional status flips, not from ledger keys. (Two `ESCROW_REFUND` rows for the same job/agent are legitimate: the partial refund at award plus the failure refund.)
 
 ### Bid scoring (auto-award at window close)
 Disqualify: `price > maxPrice`, bidder is the consumer, bidder not connected. Then:

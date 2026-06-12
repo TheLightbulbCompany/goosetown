@@ -538,6 +538,37 @@ class TestReviewAndSettle:
         # Job must remain DELIVERED — no settlement occurred.
         assert _get_job(dynamodb_tables, job_id)["status"] == "DELIVERED"
 
+    async def test_review_race_loss_returns_already_settled(self, dynamodb_tables, mailbox, ws):
+        """If the job settles between review_job's status read and its flip
+        (auto-accept timer winning the race), the reject must surface an
+        honest already_settled rejection — no refund, no trust change."""
+        cc, pc, job_id = await _run_to_delivered(dynamodb_tables, ws, mailbox)
+        stale = ex._get_job(job_id)  # status DELIVERED, as review_job would see it
+        await ex._review_timeout(job_id)  # auto-accept wins: job → COMPLETED
+        provider_before = _get_agent(dynamodb_tables, "provider")
+        consumer_before = _get_agent(dynamodb_tables, "consumer")
+        mailbox.reset_mock()
+
+        with patch.object(ex, "_get_job", return_value=stale):
+            result = await ex.review_job(cc, job_id, False, "too slow")
+
+        assert result["status"] == "rejected"
+        assert result["reason"] == "already_settled"
+        # Auto-accept outcome stands untouched.
+        job = _get_job(dynamodb_tables, job_id)
+        assert job["status"] == "COMPLETED"
+        assert job["outcome"] == "SUCCESS_AUTO"
+        # No refund, no double money movement, no trust change.
+        provider_after = _get_agent(dynamodb_tables, "provider")
+        consumer_after = _get_agent(dynamodb_tables, "consumer")
+        assert provider_after["walletBalance"] == provider_before["walletBalance"]
+        assert consumer_after["walletBalance"] == consumer_before["walletBalance"]
+        assert provider_after["trustScore"] == provider_before["trustScore"]
+        assert consumer_after.get("rejectionsIssued") == consumer_before.get("rejectionsIssued")
+        # Only the rejection echo went out — no job_failed events.
+        events = _notified_events(mailbox)
+        assert events == [("consumer", "exchange_rejected")]
+
     async def test_review_timeout_auto_accepts(self, dynamodb_tables, mailbox, ws):
         cc, pc, job_id = await _run_to_delivered(dynamodb_tables, ws, mailbox)
         await ex._review_timeout(job_id)

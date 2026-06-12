@@ -105,6 +105,33 @@ class TestPostJob:
     def test_empty_description_dies(self):
         _run_expecting_die("post_job", ["10", "title", "  "])
 
+    def test_strategy_flag_included_in_payload(self):
+        payload = _run_cmd_act(
+            "post_job", ["--strategy=lowest_price", "40", "title", "desc"]
+        )
+        assert payload["strategy"] == "lowest_price"
+        assert payload["max_price"] == 40
+        assert payload["title"] == "title"
+
+    def test_strategy_best_quality_ok(self):
+        payload = _run_cmd_act(
+            "post_job", ["--strategy=best_quality", "40", "title", "desc"]
+        )
+        assert payload["strategy"] == "best_quality"
+
+    def test_strategy_balanced_ok(self):
+        payload = _run_cmd_act(
+            "post_job", ["--strategy=balanced", "40", "title", "desc"]
+        )
+        assert payload["strategy"] == "balanced"
+
+    def test_strategy_omitted_not_in_payload(self):
+        payload = _run_cmd_act("post_job", ["40", "title", "desc"])
+        assert "strategy" not in payload
+
+    def test_invalid_strategy_dies(self):
+        _run_expecting_die("post_job", ["--strategy=cheapest", "40", "title", "desc"])
+
 
 class TestBid:
     def test_payload_minimal(self):

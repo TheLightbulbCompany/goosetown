@@ -1067,6 +1067,16 @@ class TownDaemon:
                     "<your work>"
                 )
             lines.append(line)
+            description = job.get("description")
+            if description and job.get("status") == "AWARDED":
+                # The work spec is rendered inside a fence while the job is
+                # active; neutralize embedded fences (LLM-read doc), same as
+                # deliverables above.
+                safe = str(description).replace("```", "'''")
+                lines.append("  Job spec:")
+                lines.append("  ```")
+                lines += [f"  {dl}" for dl in safe.splitlines()]
+                lines.append("  ```")
         lines.append("")
 
         self._write_workspace_file("TOWN_JOBS.md", "\n".join(lines) + "\n")

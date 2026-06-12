@@ -86,6 +86,26 @@ def _parse_confidence(rest: list[str]) -> tuple[float | None, list[str]]:
     return None, rest
 
 
+_VALID_STRATEGIES = ("balanced", "lowest_price", "best_quality")
+
+
+def _parse_strategy(rest: list[str]) -> tuple[str | None, list[str]]:
+    """Pull a leading ``--strategy=<name>`` off ``act post_job`` args.
+
+    Modeled on ``_parse_confidence``. Returns ``(strategy_or_None,
+    remaining_args)``. Dies on an unknown strategy name.
+    """
+    if rest and rest[0].startswith("--strategy="):
+        raw = rest[0][len("--strategy=") :]
+        if raw not in _VALID_STRATEGIES:
+            _die(
+                f"Invalid --strategy value: '{raw}'",
+                f"Strategy must be one of: {', '.join(_VALID_STRATEGIES)}",
+            )
+        return raw, rest[1:]
+    return None, rest
+
+
 # ---------------------------------------------------------------------------
 # websockets bootstrap / availability check
 # ---------------------------------------------------------------------------
@@ -590,7 +610,12 @@ def cmd_act(args: argparse.Namespace) -> None:
             "text": text,
         }
     elif action == "post_job":
-        usage = 'Usage: goosetown act post_job <max_price> "<title>" "<description...>"'
+        usage = (
+            "Usage: goosetown act post_job "
+            "[--strategy=balanced|lowest_price|best_quality] "
+            '<max_price> "<title>" "<description...>"'
+        )
+        strategy, rest = _parse_strategy(rest)
         if len(rest) < 3:
             _die(
                 usage,
@@ -619,6 +644,8 @@ def cmd_act(args: argparse.Namespace) -> None:
             "description": description[:4096],
             "max_price": max_price,
         }
+        if strategy is not None:
+            payload["strategy"] = strategy
     elif action == "bid":
         usage = (
             "Usage: goosetown act bid [--confidence=0.X] <job_id> <price> [pitch...]"

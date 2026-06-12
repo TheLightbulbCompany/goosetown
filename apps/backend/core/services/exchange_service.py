@@ -590,7 +590,18 @@ async def review_job(agent_conn: Any, job_id: str, accept: bool | None, reason: 
             {"status": "rejected", "reason": "not_delivered", "message": "There is no delivery to review yet."},
         )
     outcome = "SUCCESS" if accept else "FAILURE_PROVIDER"
-    await _settle(job, outcome, reason=reason, rejected_by_consumer=not accept)
+    if not await _settle(job, outcome, reason=reason, rejected_by_consumer=not accept):
+        # Lost the race against the auto-accept timer (or a concurrent review):
+        # the job was already settled between our status read and the flip.
+        return _notify_outcome(
+            agent_conn,
+            "review_job",
+            {
+                "status": "rejected",
+                "reason": "already_settled",
+                "message": "This job was already settled (auto-accept may have fired first).",
+            },
+        )
     return _notify_outcome(
         agent_conn,
         "review_job",
@@ -723,12 +734,17 @@ async def _review_timeout(job_id: str) -> None:
     await _settle(job, "SUCCESS_AUTO")
 
 
-async def _settle(job: dict, outcome: str, reason: str = "", rejected_by_consumer: bool = False) -> None:
-    """Single settlement path for accept / auto-accept / reject."""
+async def _settle(job: dict, outcome: str, reason: str = "", rejected_by_consumer: bool = False) -> bool:
+    """Single settlement path for accept / auto-accept / reject.
+
+    Returns True if this call won the DELIVERED→terminal status flip (and
+    therefore moved money / updated trust), False if another path (review
+    verb vs auto-accept timer) settled the job first.
+    """
     job_id = job["id"]
     success = outcome in ("SUCCESS", "SUCCESS_AUTO")
     if not _flip_status(job_id, "DELIVERED", "COMPLETED" if success else "FAILED", {"outcome": outcome}):
-        return  # another path (review vs auto-accept timer) won the race
+        return False  # another path (review vs auto-accept timer) won the race
     _cancel_timer(job_id)
     mailbox = get_daemon_mailbox()
     agreed = int(job.get("agreedPrice", 0))
@@ -773,6 +789,7 @@ async def _settle(job: dict, outcome: str, reason: str = "", rejected_by_consume
         # Consumer copy includes updated balance (they received the refund); provider's does not.
         mailbox.notify(provider_id, failed)
         mailbox.notify(consumer_id, {**failed, "balance": consumer_balance})
+    return True
 
 
 # ---------------------------------------------------------------------------

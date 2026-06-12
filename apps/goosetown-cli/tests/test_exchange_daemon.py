@@ -249,6 +249,47 @@ class TestJobAwarded:
         content = _events(daemon)
         assert "awarded to rival" in content
 
+    def test_winner_sees_job_spec_in_town_jobs(self, daemon: TownDaemon):
+        """The cached description renders as a 'Job spec:' fenced block while
+        the job is AWARDED, and stops rendering once the job settles."""
+        self._award(daemon, provider=True)
+        md = _jobs_md(daemon)
+        assert "  Job spec:" in md
+        assert "  A haiku about dusk." in md
+
+        daemon._handle_event(
+            {
+                "event": "job_completed",
+                "job_id": "j1",
+                "title": "Write a haiku",
+                "payout": 27,
+                "fee": 3,
+            }
+        )
+        md = _jobs_md(daemon)
+        assert "Job spec:" not in md
+        assert "A haiku about dusk." not in md
+
+    def test_job_spec_fences_neutralized(self, daemon: TownDaemon):
+        """Embedded ``` in the spec is neutralized to ''' (same as deliverables)."""
+        daemon._handle_event(
+            {
+                "event": "job_awarded",
+                "job_id": "j9",
+                "title": "Code job",
+                "agreed_price": 10,
+                "deadline_sec": 600,
+                "provider_name": "testagent",
+                "consumer_name": "othergoose",
+                "description": "Write this:\n```python\nprint('hi')\n```\nThanks.",
+            }
+        )
+        md = _jobs_md(daemon)
+        assert "'''" in md
+        assert "```python" not in md
+        # Exactly one wrapping fence pair for the spec block.
+        assert md.count("  ```") == 2
+
     def test_role_by_id_when_names_ambiguous(self, daemon: TownDaemon):
         daemon._agent_id = "uuid-me"
         daemon._handle_event(
