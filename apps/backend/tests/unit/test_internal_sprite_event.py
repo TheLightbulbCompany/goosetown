@@ -1,0 +1,258 @@
+"""Endpoint tests for POST /api/v1/town/internal/sprite-event.
+
+Covers:
+  1. type=progress → _send_to_daemon called with sprite_progress + status.
+  2. type=static_ready → apply_sprite_update awaited with ("a-1", "static_ready").
+  3. type=animations_updated → apply_sprite_update awaited with kind="animations_updated".
+  4. Auth: prod env + WS_LAMBDA_SECRET set — missing/wrong header → 403,
+     correct header → 200.
+  5. Invalid type value → 422 (Pydantic Literal enforcement).
+
+Auth bypass: in dev (ENVIRONMENT=dev, WS_LAMBDA_SECRET="") the gate is
+skipped — same semantics as /ws-message tested in test_town_endpoints.py.
+The prod-path auth tests patch settings inline to simulate a non-dev env.
+"""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from fastapi.testclient import TestClient
+
+_URL = "/api/v1/town/internal/sprite-event"
+
+# In dev + empty WS_LAMBDA_SECRET the gate is skipped entirely; this empty
+# header value triggers no auth check in dev.
+_DEV_HEADERS: dict[str, str] = {"x-ws-lambda-secret": ""}
+
+
+# ---------------------------------------------------------------------------
+# Fixture
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def client(dynamodb_tables):
+    """Bare TestClient — no Clerk auth override needed (endpoint is internal)."""
+    from main import app
+
+    yield TestClient(app)
+
+
+# ---------------------------------------------------------------------------
+# Case 1: type=progress
+# ---------------------------------------------------------------------------
+
+
+class TestProgressEvent:
+    def test_progress_calls_send_to_daemon(self, client):
+        """`type=progress` must call _send_to_daemon with sprite_progress event."""
+        captured: list[dict] = []
+
+        def fake_send(agent_id, payload):
+            captured.append({"agent_id": agent_id, "payload": payload})
+            return True
+
+        with patch("routers.town._send_to_daemon", side_effect=fake_send):
+            resp = client.post(
+                _URL,
+                json={"agent_id": "agent-abc", "type": "progress", "status": "walk 2/4"},
+                headers=_DEV_HEADERS,
+            )
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"ok": True}
+        assert len(captured) == 1
+        assert captured[0]["agent_id"] == "agent-abc"
+        assert captured[0]["payload"]["event"] == "sprite_progress"
+        assert captured[0]["payload"]["status"] == "walk 2/4"
+
+    def test_progress_status_defaults_to_empty_string(self, client):
+        """Missing status field defaults to empty string in the daemon payload."""
+        captured: list[dict] = []
+
+        def fake_send(agent_id, payload):
+            captured.append(payload)
+            return True
+
+        with patch("routers.town._send_to_daemon", side_effect=fake_send):
+            resp = client.post(
+                _URL,
+                json={"agent_id": "agent-xyz", "type": "progress"},
+                headers=_DEV_HEADERS,
+            )
+
+        assert resp.status_code == 200, resp.text
+        assert captured[0]["status"] == ""
+
+
+# ---------------------------------------------------------------------------
+# Case 2 & 3: type=static_ready / animations_updated → apply_sprite_update
+# ---------------------------------------------------------------------------
+
+
+class TestSpriteReadyEvents:
+    @pytest.mark.parametrize("kind", ["static_ready", "animations_updated"])
+    def test_non_progress_calls_apply_sprite_update(self, client, kind):
+        """`type={kind}` must call apply_sprite_update with the agent_id and kind.
+
+        apply_sprite_update is imported lazily inside the endpoint body, so we
+        patch at the canonical source module rather than ``routers.town``.
+        """
+        mock_apply = AsyncMock()
+
+        with patch("core.services.sprite_update_apply.apply_sprite_update", mock_apply):
+            resp = client.post(
+                _URL,
+                json={"agent_id": "agent-1", "type": kind},
+                headers=_DEV_HEADERS,
+            )
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"ok": True}
+        mock_apply.assert_awaited_once_with("agent-1", kind)
+
+    def test_static_ready_does_not_call_send_to_daemon(self, client):
+        """apply_sprite_update path must NOT directly call _send_to_daemon from
+        the endpoint layer (it may call it internally, but that's tested
+        separately in test_sprite_update_apply.py)."""
+        mock_apply = AsyncMock()
+        send_calls: list = []
+
+        def fake_send(aid, payload):
+            send_calls.append(payload)
+            return True
+
+        with (
+            patch("core.services.sprite_update_apply.apply_sprite_update", mock_apply),
+            patch("routers.town._send_to_daemon", side_effect=fake_send),
+        ):
+            resp = client.post(
+                _URL,
+                json={"agent_id": "agent-1", "type": "static_ready"},
+                headers=_DEV_HEADERS,
+            )
+
+        assert resp.status_code == 200
+        # The endpoint layer itself must not call _send_to_daemon for non-progress types
+        assert send_calls == [], f"Unexpected _send_to_daemon calls: {send_calls}"
+
+
+# ---------------------------------------------------------------------------
+# Case 4: Auth gate (prod env + secret set)
+# ---------------------------------------------------------------------------
+
+
+class TestAuthGate:
+    def test_missing_header_returns_403_in_prod(self, client):
+        """In prod env with WS_LAMBDA_SECRET set, missing header → 403."""
+        from core.config import settings
+
+        original_env = settings.ENVIRONMENT
+        original_secret = settings.WS_LAMBDA_SECRET
+        settings.ENVIRONMENT = "prod"
+        settings.WS_LAMBDA_SECRET = "super-secret-123"
+        try:
+            resp = client.post(
+                _URL,
+                json={"agent_id": "a1", "type": "progress"},
+                # No x-ws-lambda-secret header
+            )
+        finally:
+            settings.ENVIRONMENT = original_env
+            settings.WS_LAMBDA_SECRET = original_secret
+
+        assert resp.status_code == 403
+
+    def test_wrong_header_returns_403_in_prod(self, client):
+        """In prod env with WS_LAMBDA_SECRET set, wrong value → 403."""
+        from core.config import settings
+
+        original_env = settings.ENVIRONMENT
+        original_secret = settings.WS_LAMBDA_SECRET
+        settings.ENVIRONMENT = "prod"
+        settings.WS_LAMBDA_SECRET = "super-secret-123"
+        try:
+            resp = client.post(
+                _URL,
+                json={"agent_id": "a1", "type": "progress"},
+                headers={"x-ws-lambda-secret": "wrong-value"},
+            )
+        finally:
+            settings.ENVIRONMENT = original_env
+            settings.WS_LAMBDA_SECRET = original_secret
+
+        assert resp.status_code == 403
+
+    def test_correct_header_returns_200_in_prod(self, client):
+        """In prod env with correct header → 200."""
+        from core.config import settings
+
+        original_env = settings.ENVIRONMENT
+        original_secret = settings.WS_LAMBDA_SECRET
+        settings.ENVIRONMENT = "prod"
+        settings.WS_LAMBDA_SECRET = "super-secret-123"
+        try:
+            with patch("routers.town._send_to_daemon", return_value=True):
+                resp = client.post(
+                    _URL,
+                    json={"agent_id": "a1", "type": "progress", "status": "test"},
+                    headers={"x-ws-lambda-secret": "super-secret-123"},
+                )
+        finally:
+            settings.ENVIRONMENT = original_env
+            settings.WS_LAMBDA_SECRET = original_secret
+
+        assert resp.status_code == 200
+
+    def test_dev_mode_no_secret_skips_gate(self, client):
+        """Dev env + empty WS_LAMBDA_SECRET → gate skipped entirely, no header needed."""
+        from core.config import settings
+
+        # This is the normal conftest state (ENVIRONMENT=dev, WS_LAMBDA_SECRET="")
+        assert settings.ENVIRONMENT == "dev"
+        assert settings.WS_LAMBDA_SECRET == ""
+
+        with patch("routers.town._send_to_daemon", return_value=True):
+            resp = client.post(
+                _URL,
+                json={"agent_id": "a1", "type": "progress"},
+                # No header at all — should be allowed
+            )
+
+        assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Case 5: Invalid type value → 422
+# ---------------------------------------------------------------------------
+
+
+class TestInputValidation:
+    def test_invalid_type_returns_422(self, client):
+        """A type value not in the Literal set → 422 from Pydantic."""
+        resp = client.post(
+            _URL,
+            json={"agent_id": "agent-1", "type": "explode_the_sprites"},
+            headers=_DEV_HEADERS,
+        )
+        assert resp.status_code == 422
+
+    def test_missing_agent_id_returns_422(self, client):
+        """Missing required agent_id → 422."""
+        resp = client.post(
+            _URL,
+            json={"type": "progress"},
+            headers=_DEV_HEADERS,
+        )
+        assert resp.status_code == 422
+
+    def test_missing_type_returns_422(self, client):
+        """Missing required type → 422."""
+        resp = client.post(
+            _URL,
+            json={"agent_id": "agent-1"},
+            headers=_DEV_HEADERS,
+        )
+        assert resp.status_code == 422

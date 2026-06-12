@@ -11,7 +11,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
@@ -1642,6 +1642,53 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
             logger.warning("[agent:%s] Raw command forward failed: %s", agent_conn.agent_id[:8], exc)
 
     return {"statusCode": 200}
+
+
+# ===========================================================================
+# Internal seam: sprite worker → backend
+# ===========================================================================
+
+
+class SpriteEventRequest(BaseModel):
+    agent_id: str
+    type: Literal["progress", "static_ready", "animations_updated"]
+    status: str | None = None
+
+
+@router.post("/internal/sprite-event")
+async def internal_sprite_event(request: SpriteEventRequest, raw_request: Request):
+    """Sprite-worker → backend seam (spec 2026-06-11 §4).
+
+    The sprite worker owns PixelLab API calls and DynamoDB writes
+    (spriteStatus / spriteUrl / spriteAnimations / onboardingPhase). This
+    endpoint applies the backend-process side effects the worker cannot reach:
+    updating the in-memory phase-lattice cache, pushing sprites to the game
+    server, and notifying the daemon.
+
+    Same shared-secret gate as ``/ws-message`` (and the same known caveat:
+    ``WS_LAMBDA_SECRET`` is not yet wired end-to-end through CDK — see
+    ``core/config.py``'s ``WS_LAMBDA_SECRET`` note).
+    """
+    from core.config import settings
+
+    # In non-dev environments, require shared secret from the sprite worker.
+    # In dev, skip if WS_LAMBDA_SECRET is unset (local dev ergonomics).
+    if settings.ENVIRONMENT != "dev" or settings.WS_LAMBDA_SECRET:
+        provided = raw_request.headers.get("x-ws-lambda-secret", "")
+        if provided != settings.WS_LAMBDA_SECRET:
+            raise HTTPException(status_code=403, detail="Invalid or missing WS lambda secret")
+
+    if request.type == "progress":
+        _send_to_daemon(
+            request.agent_id,
+            {"event": "sprite_progress", "status": request.status or ""},
+        )
+    else:
+        from core.services.sprite_update_apply import apply_sprite_update
+
+        await apply_sprite_update(request.agent_id, request.type)
+
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
