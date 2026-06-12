@@ -954,6 +954,135 @@ async def review_job(
     )
 
 
+MSG_CAP_PER_SIDE = 20
+MSG_TEXT_MAX = 2000
+
+
+async def job_message(agent_conn: Any, job_id: str, text: str) -> dict:
+    """Send a message on an AWARDED or DELIVERED job.
+
+    Sender must be the job's consumer or provider.  Per-side cap: 20 messages.
+    Counterparty receives a ``job_message`` daemon event; sender gets
+    ``exchange_ok`` via ``_notify_outcome``.
+
+    A2A note: the message shape ``{from, fromName, text, at}`` maps directly to
+    an A2A message part — when a non-resident A2A bridge is added in Wave 3,
+    these rows can be relayed verbatim via the A2A protocol.
+    """
+    # Rate limit first — before any DB reads.
+    if not _check_rate(agent_conn.agent_id, "job_msg", RATE_LIMIT_MSG):
+        mins = _rate_limit_minutes_left(agent_conn.agent_id, "job_msg")
+        return _notify_outcome(
+            agent_conn,
+            "job_msg",
+            {
+                "status": "rejected",
+                "reason": "rate_limited",
+                "message": (
+                    f"You've sent the maximum {RATE_LIMIT_MSG} messages per hour. Try again in ~{mins} minute(s)."
+                ),
+            },
+        )
+    job = _get_job(job_id)
+    if not job:
+        return _notify_outcome(
+            agent_conn,
+            "job_msg",
+            {"status": "rejected", "reason": "not_found", "message": f"No job {job_id} found."},
+        )
+
+    consumer_id = job.get("consumerId", "")
+    provider_id = job.get("providerId", "")
+    if agent_conn.agent_id not in (consumer_id, provider_id):
+        return _notify_outcome(
+            agent_conn,
+            "job_msg",
+            {
+                "status": "rejected",
+                "reason": "not_participant",
+                "message": "Only the job's consumer or provider can send messages on a job.",
+            },
+        )
+
+    status = job.get("status", "")
+    if status not in ("AWARDED", "DELIVERED"):
+        return _notify_outcome(
+            agent_conn,
+            "job_msg",
+            {
+                "status": "rejected",
+                "reason": "not_active",
+                "message": f"Job messages are only allowed on AWARDED or DELIVERED jobs (current status: {status}).",
+            },
+        )
+
+    # Per-side cap: count the sender's existing messages.
+    existing_messages: list[dict] = job.get("messages") or []
+    sender_count = sum(1 for m in existing_messages if m.get("from") == agent_conn.agent_id)
+    if sender_count >= MSG_CAP_PER_SIDE:
+        return _notify_outcome(
+            agent_conn,
+            "job_msg",
+            {
+                "status": "rejected",
+                "reason": "msg_cap",
+                "message": f"You have reached the {MSG_CAP_PER_SIDE}-message cap for this job.",
+            },
+        )
+
+    # Append the message via list_append — conditioned on status still in the two allowed states.
+    new_msg: dict[str, Any] = {
+        "from": agent_conn.agent_id,
+        "fromName": agent_conn.agent_name,
+        "text": text[:MSG_TEXT_MAX],
+        "at": _now_iso(),
+    }
+    table = dynamo.jobs_table()
+    try:
+        table.update_item(
+            Key={"id": job_id},
+            UpdateExpression="SET messages = list_append(if_not_exists(messages, :empty), :m), updatedAt = :now",
+            ConditionExpression="#st = :awarded OR #st = :delivered",
+            ExpressionAttributeNames={"#st": "status"},
+            ExpressionAttributeValues={
+                ":empty": [],
+                ":m": [new_msg],
+                ":now": _now_iso(),
+                ":awarded": "AWARDED",
+                ":delivered": "DELIVERED",
+            },
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return _notify_outcome(
+            agent_conn,
+            "job_msg",
+            {
+                "status": "rejected",
+                "reason": "not_active",
+                "message": "Job is no longer active (status changed while sending).",
+            },
+        )
+
+    # Notify the counterparty.
+    counterparty_id = provider_id if agent_conn.agent_id == consumer_id else consumer_id
+    get_daemon_mailbox().notify(
+        counterparty_id,
+        {
+            "event": "job_message",
+            "job_id": job_id,
+            "title": job.get("title", ""),
+            "from_id": agent_conn.agent_id,
+            "from_name": agent_conn.agent_name,
+            "text": text[:MSG_TEXT_MAX],
+        },
+    )
+    return _notify_outcome(
+        agent_conn,
+        "job_msg",
+        {"status": "ok", "job_id": job_id},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Deadline transitions (fired by timers, the sweeper, or review_job)
 # ---------------------------------------------------------------------------

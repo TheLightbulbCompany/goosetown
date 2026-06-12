@@ -307,6 +307,8 @@ class TownDaemon:
             self._on_job_expired(data)
         elif event == "job_cancelled":
             self._on_job_cancelled(data)
+        elif event == "job_message":
+            self._on_job_message(data)
         elif event == "sprite_progress":
             status_msg = data.get("status", "Generating sprite...")
             self._write_status(
@@ -1053,6 +1055,29 @@ class TownDaemon:
             f'\U0001f4bc Job "{title}" (job {job_id}) was cancelled by its poster — your bid is void.'
         )
 
+    def _on_job_message(self, data: dict) -> None:
+        """Counterparty sent a message on an active job.
+
+        Appends a 💬 event line and caches the last 5 messages on the job
+        entry so ``_write_jobs`` can render them inline under the job.
+        """
+        job_id = data.get("job_id", "?")
+        from_name = data.get("from_name", "someone")
+        text = data.get("text", "")
+        # Cache the message on the job entry (trim to 5 most recent).
+        ex = self._exchange_state()
+        job = ex.setdefault("jobs", {}).setdefault(job_id, {"job_id": job_id})
+        msgs: list[dict] = list(job.get("messages") or [])
+        msgs.append({"from_name": from_name, "text": text})
+        job["messages"] = msgs[-5:]  # keep last 5 only
+        job["updated"] = time.time()
+        self._write_jobs()
+        preview = text[:200]
+        self._append_event(
+            f'\U0001f4ac {from_name} (job {job_id}): "{preview}" — '
+            f"reply: goosetown act job_msg {job_id} <text>"
+        )
+
     def _write_jobs(self) -> None:
         """Write TOWN_JOBS.md to the agent workspace (atomic via rename)."""
         ex = self.state.get("exchange") or {}
@@ -1090,6 +1115,13 @@ class TownDaemon:
                 lines.append("  ```")
                 lines += [f"  {dl}" for dl in safe.splitlines()]
                 lines.append("  ```")
+            # W4: render last 5 messages (from counterparty).
+            msgs = job.get("messages") or []
+            if msgs:
+                for m in msgs:
+                    from_name = m.get("from_name", "?")
+                    text = str(m.get("text", ""))[:200]
+                    lines.append(f"  > {from_name}: {text}")
         lines.append("")
 
         lines.append("## Jobs you're working on")
@@ -1130,6 +1162,13 @@ class TownDaemon:
                     else:
                         check = " "
                     lines.append(f"  - [{check}] {criterion}")
+            # W4: render last 5 messages (from counterparty).
+            msgs = job.get("messages") or []
+            if msgs:
+                for m in msgs:
+                    from_name = m.get("from_name", "?")
+                    text = str(m.get("text", ""))[:200]
+                    lines.append(f"  > {from_name}: {text}")
         lines.append("")
 
         self._write_workspace_file("TOWN_JOBS.md", "\n".join(lines) + "\n")
@@ -1728,6 +1767,7 @@ class TownDaemon:
                 "cancel_job",
                 "deliver_job",
                 "review_job",
+                "job_msg",
             ):
                 exchange_outcome_future = asyncio.get_running_loop().create_future()
                 self._exchange_outcome = exchange_outcome_future

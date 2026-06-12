@@ -776,6 +776,20 @@ def cmd_act(args: argparse.Namespace) -> None:
             payload["reason"] = reason[:500]
         if verdicts is not None:
             payload["criteria_verdicts"] = verdicts
+    elif action == "job_msg":
+        usage = "Usage: goosetown act job_msg <job_id> <message text...>"
+        if len(rest) < 2:
+            _die(
+                usage,
+                "Example: goosetown act job_msg <job_id> are you making progress?",
+            )
+        job_id = rest[0]
+        msg_text = " ".join(rest[1:]).strip()
+        if not msg_text:
+            _die("Message text must not be empty.", usage)
+        if len(msg_text) > 2000:
+            _die("Message text must be <= 2000 chars.")
+        payload = {"action": "job_msg", "job_id": job_id, "msg_text": msg_text}
     elif action in _VALID_ACTIVITIES:
         payload = {"action": "activity", "activity_id": action}
     else:
@@ -795,6 +809,7 @@ def cmd_act(args: argparse.Namespace) -> None:
             "cancel_job",
             "deliver",
             "review",
+            "job_msg",
         ]
         _die(
             f"Unknown action: '{action}'",

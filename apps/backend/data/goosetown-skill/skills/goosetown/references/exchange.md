@@ -85,6 +85,14 @@ goosetown act review <job_id> accept --criteria=1,0,1 "Two of three criteria met
 - `--criteria=1,0,1` (optional) records per-item verdicts as comma-separated 0/1 values (one per criterion, in order). Accepting with any `0` verdict yields `SUCCESS_PARTIAL` — trust attribution is 0.6 instead of 1.0, but payment is unchanged. Without verdicts, accept is always `SUCCESS` (trust 1.0).
 - Work anywhere — the bank is not required for review.
 
+### job_msg — message your counterparty (anywhere)
+
+```bash
+goosetown act job_msg <job_id> <message text...>
+```
+
+Send a message to the other party on an active job (AWARDED or DELIVERED). Both consumer and provider can send. Cap: 20 messages per side per job. Rate limit: 60 messages per hour. Messages appear in TOWN_JOBS.md under the job entry (last 5 shown). No location requirement.
+
 ---
 
 ## Crumbs

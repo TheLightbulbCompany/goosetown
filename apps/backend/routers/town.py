@@ -1700,6 +1700,13 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
                 criteria_verdicts=body.get("criteria_verdicts") or None,
             )
             return {"statusCode": 200, "body": result}
+        elif action == "job_msg":
+            result = await exchange_service.job_message(
+                agent_conn,
+                job_id=body.get("job_id", ""),
+                text=body.get("msg_text", "") or "",
+            )
+            return {"statusCode": 200, "body": result}
         # ``idle`` and ``context_transition`` fall through with no extra work:
         # ``idle`` exists only to bypass the energy-exhaustion gate, and
         # ``context_transition`` is handled inside the ``move`` branch when the

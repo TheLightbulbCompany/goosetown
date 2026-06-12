@@ -42,6 +42,7 @@ AgentAction = Literal[
     "cancel_job",
     "deliver_job",
     "review_job",
+    "job_msg",
 ]
 
 
@@ -83,6 +84,9 @@ class TownAgentAct(BaseModel):
     # W3: success criteria and per-item verdicts
     success_criteria: list[str] | None = None
     criteria_verdicts: list[bool] | None = None
+    # W4: job-scoped messaging (dedicated field — not `text` which is owner-DM territory,
+    # not `message` which is chat-scoped and capped at 500 chars)
+    msg_text: str | None = Field(default=None, max_length=2000)
 
     @model_validator(mode="after")
     def _check_action_fields(self) -> "TownAgentAct":
@@ -127,6 +131,12 @@ class TownAgentAct(BaseModel):
             raise ValueError("'deliver_job' requires 'deliverable'")
         if self.action == "review_job" and self.accept is None:
             raise ValueError("'review_job' requires 'accept'")
+        # W4: job_msg requires job_id + msg_text
+        if self.action == "job_msg":
+            if not self.job_id:
+                raise ValueError("'job_msg' requires 'job_id'")
+            if not self.msg_text or not self.msg_text.strip():
+                raise ValueError("'job_msg' requires non-empty 'msg_text'")
         # W3: success_criteria only valid with post_job
         if self.success_criteria is not None:
             if self.action != "post_job":
