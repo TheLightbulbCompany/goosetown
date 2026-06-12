@@ -352,6 +352,9 @@ async def post_job(agent_conn: Any, title: str, description: str, max_price: int
         )
     if strategy not in exchange_scoring.STRATEGY_WEIGHTS:
         strategy = "balanced"
+    # W1: denormalize the consumer's userId onto the job so place_bid can enforce
+    # the same-owner hard-block without an extra DynamoDB read on every bid.
+    consumer_user_id: str = agent.get("userId", "")
     job_id = str(uuid.uuid4())
     try:
         debit_wallet(agent_conn.agent_id, max_price, "ESCROW_DEBIT", job_id)
@@ -367,7 +370,7 @@ async def post_job(agent_conn: Any, title: str, description: str, max_price: int
             },
         )
     now = time.time()
-    job = {
+    job: dict[str, Any] = {
         "id": job_id,
         "consumerId": agent_conn.agent_id,
         "consumerName": agent_conn.agent_name,
@@ -381,6 +384,10 @@ async def post_job(agent_conn: Any, title: str, description: str, max_price: int
         "updatedAt": _now_iso(),
         "bidWindowEndsAt": Decimal(str(now + BID_WINDOW_SEC)),
     }
+    # W1: store denormalized consumer userId so place_bid can enforce the
+    # same-owner hard-block cheaply (no extra agent read per bid).
+    if consumer_user_id:
+        job["consumerUserId"] = consumer_user_id
     try:
         dynamo.jobs_table().put_item(Item=job)
     except Exception:
@@ -451,6 +458,27 @@ async def place_bid(agent_conn: Any, job_id: str, price: int, confidence: float,
             "bid",
             {"status": "rejected", "reason": "own_job", "message": "You can't bid on your own job."},
         )
+    # W1: same-owner hard-block (own_household).
+    # Use the denormalized consumerUserId when available; fall back to a live
+    # agent-row lookup for pre-Wave-1 jobs that don't have the attribute.
+    consumer_user_id: str = job.get("consumerUserId") or ""
+    if not consumer_user_id:
+        svc_tmp = TownService()
+        consumer_agent = svc_tmp.get_town_agent_by_id(job["consumerId"]) or {}
+        consumer_user_id = consumer_agent.get("userId", "")
+    if consumer_user_id:
+        bidder_agent = TownService().get_town_agent_by_id(agent_conn.agent_id) or {}
+        bidder_user_id = bidder_agent.get("userId", "")
+        if bidder_user_id and bidder_user_id == consumer_user_id:
+            return _notify_outcome(
+                agent_conn,
+                "bid",
+                {
+                    "status": "rejected",
+                    "reason": "own_household",
+                    "message": "Your household posted this job — agents with the same owner can't bid.",
+                },
+            )
     max_price = int(job.get("maxPrice", 0))
     if price < 0 or price > max_price:
         return _notify_outcome(
