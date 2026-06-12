@@ -265,7 +265,17 @@ func _physics_process(delta: float) -> void:
 		var fps: float = cfg.get("fps", DEFAULT_FPS)
 		var fc: int = cfg.get("frame_count", DEFAULT_FRAME_COUNT)
 
-		if _is_moving or _current_animation != "walk":
+		# Advance frames when:
+		#   (a) the agent is physically moving,
+		#   (b) a non-walk animation is playing (dedicated activity sheet loaded), OR
+		#   (c) an activity is active but the proper sheet is missing so we're
+		#       falling back to walk — cycle walk frames so the agent looks alive
+		#       rather than freezing on frame 0 (BUG 2: frozen "talking" sprites).
+		var activity_override: bool = (
+			current_activity != ""
+			and current_activity in ACTIVITY_ANIMATION
+		)
+		if _is_moving or _current_animation != "walk" or activity_override:
 			_anim_timer += delta
 			if _anim_timer >= 1.0 / fps:
 				_anim_timer -= 1.0 / fps
@@ -321,14 +331,66 @@ func move_to(x: float, y: float, facing_json: String, speed: float) -> void:
 func update_state(data: Dictionary) -> void:
 	var text: String = str(data.get("speechText", ""))
 	if text != "" and text != speech_text:
+		# Store the full text so a future "click to expand" feature can use it.
+		# TODO: hook _on_bubble_clicked to show the full `speech_text` in a React
+		# overlay when the user clicks the bubble (full conversation expansion —
+		# not built here, will be wired on the React side).
 		speech_text = text
-		speech_text_label.text = text
+		speech_text_label.text = _truncate_for_bubble(text)
 		_show_speech_bubble()
 		if nameplate:
 			nameplate.visible = false
 	elif text == "":
 		speech_text = ""
 		_hide_speech_bubble()
+
+
+## Return a display-safe excerpt of ``text`` for the speech bubble (BUG 5).
+## Keeps at most the first ~2 sentences OR ~120 characters, whichever is
+## shorter, appending "…" when the full text was truncated.
+## The full original text is preserved in ``speech_text`` for future use.
+func _truncate_for_bubble(text: String) -> String:
+	const MAX_CHARS: int = 120
+	const MAX_SENTENCES: int = 2
+
+	# Split on sentence-ending punctuation followed by a space so we don't split
+	# mid-word on e.g. "Dr. Smith". Delimiters tried in order: ". ", "! ", "? ".
+	var delimiters: Array[String] = [". ", "! ", "? "]
+	var sentence_ends: Array[int] = []
+	for delim in delimiters:
+		var search_start: int = 0
+		while true:
+			var idx: int = text.find(delim, search_start)
+			if idx == -1:
+				break
+			# Record the position AFTER the delimiter (end of the sentence incl. punct).
+			sentence_ends.append(idx + delim.length() - 1)
+			search_start = idx + delim.length()
+
+	# Sort ascending so we can pick the Nth sentence boundary.
+	sentence_ends.sort()
+
+	# Candidate cut point = end of the MAX_SENTENCES-th sentence (0-indexed).
+	var sentence_cut: int = -1
+	if sentence_ends.size() >= MAX_SENTENCES:
+		sentence_cut = sentence_ends[MAX_SENTENCES - 1] + 1  # +1 to include trailing space-or-end
+
+	# Hard-char cut at MAX_CHARS.
+	var char_cut: int = MAX_CHARS if text.length() > MAX_CHARS else -1
+
+	# Pick the shortest valid cut.
+	var cut: int = -1
+	if sentence_cut != -1 and char_cut != -1:
+		cut = mini(sentence_cut, char_cut)
+	elif sentence_cut != -1:
+		cut = sentence_cut
+	elif char_cut != -1:
+		cut = char_cut
+
+	if cut == -1 or cut >= text.length():
+		return text  # Text already short enough — return as-is.
+
+	return text.substr(0, cut).rstrip(" ") + "…"
 
 
 func _show_speech_bubble() -> void:
