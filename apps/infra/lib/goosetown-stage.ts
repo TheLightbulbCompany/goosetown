@@ -12,6 +12,7 @@ import { ApiStack } from "./stacks/api-stack";
 import { ObservabilityStack } from "./stacks/observability-stack";
 import { EventingStack } from "./stacks/eventing-stack";
 import { WorldgmStack } from "./stacks/worldgm-stack";
+import { SpriteWorkerStack } from "./stacks/sprite-worker-stack";
 
 export interface GooseTownStageProps extends cdk.StageProps {
   environment: string;
@@ -128,6 +129,22 @@ export class GooseTownStage extends cdk.Stage {
       alarmTopic: observability.snsTopic,
       worldBusArn: eventing.bus.eventBusArn,
       tables: database.tables,
+    });
+
+    // Sprite worker — SQS-backed durable pipeline (spec 2026-06-11).
+    // Depends on Cluster, Auth, Database, Storage. Deploys after Compute so
+    // the physical queue name (`goosetown-${env}-sprite-jobs`) exists before
+    // the backend producer starts — though both sides resolve by name at
+    // runtime, ordering is belt-and-suspenders.
+    new SpriteWorkerStack(this, `goosetown-${env}-sprite-worker`, {
+      stackName: `goosetown-${env}-sprite-worker`,
+      environment: env,
+      cluster: clusterStack.cluster,
+      vpc: network.vpc,
+      secrets: auth.secrets,
+      tables: database.tables,
+      spriteBucket: storage.spriteBucket,
+      alarmTopic: observability.snsTopic,
     });
 
     cdk.Tags.of(this).add("Project", "goosetown");
