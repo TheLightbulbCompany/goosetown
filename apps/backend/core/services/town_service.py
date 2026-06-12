@@ -1186,6 +1186,68 @@ class TownService:
             return None
         return _decimal_to_native(resp.get("Attributes", {}))
 
+    def append_human_message_to_conversation(
+        self,
+        conv_id: str,
+        speaker_display_name: str,
+        text: str,
+    ) -> Optional[dict]:
+        """Append a *human visitor* turn to an active conversation's public log.
+
+        A logged-in user can drop a line into an ongoing resident↔resident
+        conversation. Unlike :meth:`append_message_to_conversation`, this:
+
+        * tags the ``publicLog`` entry with ``speakerType: "human"`` so
+          readers (the resident brain, the frontend log) can distinguish a
+          real person from a resident,
+        * increments a *separate* ``humanTurnCount`` counter and **does not**
+          touch ``turnCount`` — the agent turn-cap (``_MAX_CONVERSATION_TURNS``)
+          must not be advanced by a visitor, or a chatty user could prematurely
+          auto-end the conversation,
+        * leaves ``lastSpeakerId`` untouched — that field drives the
+          agents-only "don't speak twice in a row" rule in ``_handle_say``; a
+          human turn should never block the next resident from replying.
+
+        ``humanTurnCount`` is initialised to 0 if absent via ``if_not_exists``
+        so older conversation rows (created before this field existed) upgrade
+        in place.
+
+        Args:
+            conv_id: Conversation UUID.
+            speaker_display_name: Display name label for this turn (derived
+                from the authenticated user, never the request body).
+            text: The message text.
+
+        Returns:
+            Updated conversation record as a plain dict, or ``None`` if the
+            conversation does not exist or is not active.
+        """
+        table = dynamo.conversations_table()
+        now = _now_iso()
+        new_entry = {"speaker": speaker_display_name, "text": text, "speakerType": "human"}
+        try:
+            resp = table.update_item(
+                Key={"id": conv_id},
+                UpdateExpression=(
+                    "SET publicLog = list_append(publicLog, :entry), "
+                    "humanTurnCount = if_not_exists(humanTurnCount, :zero) + :one, "
+                    "updatedAt = :now"
+                ),
+                ConditionExpression="attribute_exists(id) AND #s = :active",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={
+                    ":entry": [new_entry],
+                    ":zero": 0,
+                    ":one": 1,
+                    ":now": now,
+                    ":active": "active",
+                },
+                ReturnValues="ALL_NEW",
+            )
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            return None
+        return _decimal_to_native(resp.get("Attributes", {}))
+
     def join_conversation(self, conv_id: str, agent_id: str) -> Optional[dict]:
         """Add an agent to an active conversation's participants list.
 

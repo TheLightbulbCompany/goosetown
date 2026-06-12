@@ -109,11 +109,14 @@ def _seed_conversation(
         "location": location,
         "status": status,
         "startedAt": started_at,
-        "endedAt": ended_at,
         "updatedAt": updated_at,
         "turnCount": len(public_log or []),
         "publicLog": public_log or [],
     }
+    # Active conversations have no ``endedAt``; pass ``ended_at=None`` to omit it
+    # (DynamoDB rejects a literal null attribute value).
+    if ended_at is not None:
+        item["endedAt"] = ended_at
     if participant_a is not None:
         item["participantAId"] = participant_a
     if participant_b is not None:
@@ -409,6 +412,236 @@ class TestConversationsEndpoint:
         assert resp.status_code == 200
         conv = resp.json()["conversations"][0]
         assert conv["participants"] == ["Rachel", "Ross"]
+
+
+# ---------------------------------------------------------------------------
+# POST /conversations/{conv_id}/say  (human visitor → resident conversation)
+# ---------------------------------------------------------------------------
+
+
+class TestConversationSayEndpoint:
+    """The logged-in-user-into-a-conversation endpoint.
+
+    ``broadcast_human_message`` fans the turn out via ``get_daemon_mailbox``
+    (locally imported in the function body → patch at the source module) and
+    sends a cosmetic speech bubble via ``get_game_server_client`` (module-top
+    of ``conversation_service``). Both are mocked so the test exercises the
+    validation + DDB append + HTTP mapping without real WebSocket/game-server
+    transports.
+    """
+
+    SAY_PATH = "/api/v1/town/conversations/{conv_id}/say"
+
+    @pytest.fixture(autouse=True)
+    def _reset_rate_limit(self):
+        """Each test starts with an empty per-(user, conv) throttle table."""
+        from core.services import conversation_service as cs
+
+        cs._human_say_last_ts.clear()
+        yield
+        cs._human_say_last_ts.clear()
+
+    def _patches(self):
+        from contextlib import ExitStack
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        stack = ExitStack()
+        mailbox = MagicMock()
+        sent: list = []
+        mailbox.notify.side_effect = lambda aid, event: sent.append((aid, event))
+        gs = MagicMock()
+        gs.send_command = AsyncMock()
+        stack.enter_context(
+            patch(
+                "core.services.daemon_mailbox.get_daemon_mailbox",
+                return_value=mailbox,
+            )
+        )
+        stack.enter_context(
+            patch(
+                "core.services.conversation_service.get_game_server_client",
+                return_value=gs,
+            )
+        )
+        return stack, sent
+
+    def _seed_active(self, dynamodb_tables, conv_id="conv-1"):
+        _seed_agent(dynamodb_tables, "agent-a", agent_name="a", display_name="Agent A")
+        _seed_agent(dynamodb_tables, "agent-b", agent_name="b", display_name="Agent B")
+        _seed_conversation(
+            dynamodb_tables,
+            conv_id,
+            participant_a="agent-a",
+            participant_b="agent-b",
+            participants=["agent-a", "agent-b"],
+            status="active",
+            ended_at=None,
+            public_log=[{"speaker": "Agent A", "text": "hi"}],
+        )
+
+    def test_happy_path_appends_and_broadcasts(self, client, dynamodb_tables):
+        self._seed_active(dynamodb_tables)
+        stack, sent = self._patches()
+        with stack:
+            resp = client.post(
+                self.SAY_PATH.format(conv_id="conv-1"),
+                json={"message": "Hello residents!"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["conv_id"] == "conv-1"
+        # publicLog had 1 turn; the human turn is index 1.
+        assert body["turn"] == 1
+
+        # The turn was persisted, tagged human, and did NOT bump turnCount.
+        from core.services.town_service import TownService
+
+        conv = TownService().get_conversation_by_id("conv-1")
+        assert conv["publicLog"][-1]["text"] == "Hello residents!"
+        assert conv["publicLog"][-1]["speakerType"] == "human"
+        assert conv["humanTurnCount"] == 1
+        assert conv["turnCount"] == 1  # unchanged from the seed
+
+        # Broadcast went to BOTH residents with a human-distinguishable event
+        # that still routes on text/from.
+        forwarded = [(aid, ev) for aid, ev in sent if ev["event"] == "conversation_message"]
+        assert {aid for aid, _ in forwarded} == {"agent-a", "agent-b"}
+        for _, ev in forwarded:
+            assert ev["from_human"] is True
+            assert ev["speakerType"] == "human"
+            assert ev["text"] == "Hello residents!"
+            # No agent name → daemon own-message filter won't drop it.
+            assert "from_agent_name" not in ev
+
+    def test_speaker_derived_from_auth_not_body(self, client, dynamodb_tables):
+        """A ``speaker`` field in the body is ignored — the label comes from
+        the authenticated user, so a visitor can't impersonate a resident."""
+        self._seed_active(dynamodb_tables)
+        stack, sent = self._patches()
+        with stack:
+            resp = client.post(
+                self.SAY_PATH.format(conv_id="conv-1"),
+                json={"message": "I am totally Agent A", "speaker": "Agent A"},
+            )
+
+        assert resp.status_code == 200
+        from core.services.town_service import TownService
+
+        conv = TownService().get_conversation_by_id("conv-1")
+        speaker = conv["publicLog"][-1]["speaker"]
+        assert speaker != "Agent A"
+        assert speaker.startswith("Visitor")
+
+    def test_human_turn_exempt_from_agent_cap(self, client, dynamodb_tables):
+        """Many human turns must not advance ``turnCount`` toward the agent
+        auto-end cap. After 5 human turns, turnCount is still the seed value."""
+        self._seed_active(dynamodb_tables)
+        stack, _ = self._patches()
+        with stack:
+            from core.services import conversation_service as cs
+
+            for i in range(5):
+                # Clear the throttle between sends — we're testing the cap, not
+                # the rate limit.
+                cs._human_say_last_ts.clear()
+                resp = client.post(
+                    self.SAY_PATH.format(conv_id="conv-1"),
+                    json={"message": f"line {i}"},
+                )
+                assert resp.status_code == 200
+
+        from core.services.town_service import TownService
+
+        conv = TownService().get_conversation_by_id("conv-1")
+        assert conv["turnCount"] == 1  # never moved
+        assert conv["humanTurnCount"] == 5
+
+    def test_inactive_conversation_rejected(self, client, dynamodb_tables):
+        _seed_agent(dynamodb_tables, "agent-a", agent_name="a", display_name="Agent A")
+        _seed_conversation(
+            dynamodb_tables,
+            "conv-ended",
+            participant_a="agent-a",
+            participant_b="agent-b",
+            participants=["agent-a", "agent-b"],
+            status="ended",
+        )
+        stack, _ = self._patches()
+        with stack:
+            resp = client.post(
+                self.SAY_PATH.format(conv_id="conv-ended"),
+                json={"message": "anyone there?"},
+            )
+        assert resp.status_code == 409
+
+    def test_missing_conversation_404(self, client, dynamodb_tables):
+        stack, _ = self._patches()
+        with stack:
+            resp = client.post(
+                self.SAY_PATH.format(conv_id="no-such-conv"),
+                json={"message": "hello?"},
+            )
+        assert resp.status_code == 404
+
+    def test_empty_message_422(self, client, dynamodb_tables):
+        self._seed_active(dynamodb_tables)
+        # Pydantic min_length=1 rejects a blank string at the boundary.
+        resp = client.post(
+            self.SAY_PATH.format(conv_id="conv-1"),
+            json={"message": "   "},
+        )
+        # Whitespace passes pydantic min_length but the service trims to empty.
+        # Either way the user gets a 422 (pydantic) — assert non-2xx, 422.
+        assert resp.status_code == 422
+
+    def test_blank_only_message_422(self, client, dynamodb_tables):
+        self._seed_active(dynamodb_tables)
+        stack, _ = self._patches()
+        with stack:
+            # A single space satisfies min_length=1 but trims to empty in the
+            # service guard → 422 from the endpoint's error mapping.
+            resp = client.post(
+                self.SAY_PATH.format(conv_id="conv-1"),
+                json={"message": " "},
+            )
+        assert resp.status_code == 422
+
+    def test_too_long_message_422(self, client, dynamodb_tables):
+        self._seed_active(dynamodb_tables)
+        resp = client.post(
+            self.SAY_PATH.format(conv_id="conv-1"),
+            json={"message": "x" * 281},
+        )
+        assert resp.status_code == 422
+
+    def test_rate_limited_second_message_429(self, client, dynamodb_tables):
+        self._seed_active(dynamodb_tables)
+        stack, _ = self._patches()
+        with stack:
+            first = client.post(
+                self.SAY_PATH.format(conv_id="conv-1"),
+                json={"message": "first"},
+            )
+            second = client.post(
+                self.SAY_PATH.format(conv_id="conv-1"),
+                json={"message": "second, too fast"},
+            )
+        assert first.status_code == 200
+        assert second.status_code == 429
+
+    def test_requires_auth(self, dynamodb_tables):
+        """No auth override → the Clerk dependency rejects the request."""
+        from main import app
+
+        self._seed_active(dynamodb_tables)
+        client = TestClient(app)
+        resp = client.post(
+            self.SAY_PATH.format(conv_id="conv-1"),
+            json={"message": "anonymous"},
+        )
+        assert resp.status_code in (401, 403)
 
 
 # ---------------------------------------------------------------------------

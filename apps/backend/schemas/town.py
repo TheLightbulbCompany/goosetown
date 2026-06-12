@@ -99,6 +99,28 @@ class TownConversationsListResponse(BaseModel):
     conversations: List[TownConversationResponse]
 
 
+class HumanSayRequest(BaseModel):
+    """A logged-in user's message into an ongoing resident conversation.
+
+    The speaker identity is derived from the authenticated user server-side,
+    NOT from this body — there is deliberately no ``speaker`` field, so a
+    visitor cannot impersonate a resident. The 280-char bound matches
+    ``conversation_service.HUMAN_MESSAGE_MAX_CHARS`` and is enforced again in
+    the service layer; the pydantic bound here turns an over-long body into a
+    422 at the boundary.
+    """
+
+    message: str = Field(..., min_length=1, max_length=280)
+
+
+class HumanSayResponse(BaseModel):
+    """Acknowledgement that a user's turn was appended and broadcast."""
+
+    ok: bool
+    conv_id: str
+    turn: int
+
+
 class ApartmentAgentState(BaseModel):
     """Agent state for the apartment view."""
 

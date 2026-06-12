@@ -430,11 +430,18 @@ class TownDaemon:
                 f'CHAT_INVITE from {data.get("from", "?")} — "{data.get("message", "")}" (conv_id: {conv_id})'
             )
         else:
+            # Carry ``speakerType`` through into the rendered turn so the
+            # resident brain (and TOWN_STATUS.md readers) can tell a human
+            # visitor's line apart from a resident's. A logged-in user dropping
+            # a message into the conversation arrives as ``speakerType="human"``;
+            # ordinary resident turns omit it (defaults to a normal turn).
+            turn = {"speaker": data.get("from", "?"), "text": data.get("text", "")}
+            speaker_type = data.get("speakerType")
+            if speaker_type:
+                turn["speakerType"] = speaker_type
             active = self.state.get("active_conversation", {})
             if active.get("conv_id") == conv_id:
-                active.setdefault("turns", []).append(
-                    {"speaker": data.get("from", "?"), "text": data.get("text", "")}
-                )
+                active.setdefault("turns", []).append(turn)
                 participants = active.setdefault("participants", [])
                 speaker = data.get("from")
                 if speaker and speaker not in participants:
@@ -443,9 +450,7 @@ class TownDaemon:
                 self.state["active_conversation"] = {
                     "conv_id": conv_id,
                     "participants": [data.get("from", "?")],
-                    "turns": [
-                        {"speaker": data.get("from", "?"), "text": data.get("text", "")}
-                    ],
+                    "turns": [turn],
                 }
             self._append_event(
                 f'CHAT_MESSAGE {data.get("from", "?")} — "{data.get("text", "")}" '
@@ -1479,9 +1484,7 @@ class TownDaemon:
 
             keepalive_task = asyncio.create_task(self._keepalive_loop())
             socket_task = (
-                asyncio.create_task(self.run_socket_server())
-                if serve_socket
-                else None
+                asyncio.create_task(self.run_socket_server()) if serve_socket else None
             )
             try:
                 await ws_task
