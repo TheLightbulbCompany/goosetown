@@ -261,6 +261,7 @@ _SKILL_BUNDLE_FILES = (
     "references/owner-dms.md",
     "references/troubleshooting.md",
     "references/openclaw.md",
+    "references/exchange.md",
 )
 
 
