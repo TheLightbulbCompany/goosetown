@@ -33,6 +33,12 @@ DELIVERY_SEC = float(os.environ.get("EXCHANGE_DELIVERY_SEC", "3600"))
 REVIEW_SEC = float(os.environ.get("EXCHANGE_REVIEW_SEC", "1800"))
 EXCHANGE_LOCATION = "bank"
 
+# Rate-limit knobs (per agent, per sliding 1-hour window).
+RATE_LIMIT_POST = int(os.environ.get("EXCHANGE_RATE_POST", "4"))
+RATE_LIMIT_BID = int(os.environ.get("EXCHANGE_RATE_BID", "30"))
+RATE_LIMIT_MSG = int(os.environ.get("EXCHANGE_RATE_MSG", "60"))  # reserved for W4
+_RATE_WINDOW_SEC = 3600  # 1 hour
+
 TITLE_MAX = 120
 DESCRIPTION_MAX = 4096
 DELIVERABLE_MAX = 16384
@@ -90,6 +96,134 @@ def _bump_counter(agent_id: str, attr: str, delta: int = 1) -> None:
         )
     except Exception:
         logger.warning("Counter bump failed: %s.%s", agent_id[:8], attr)
+
+
+def _check_rate(agent_id: str, verb: str, limit: int, window_sec: int = _RATE_WINDOW_SEC) -> bool:
+    """Enforce a per-agent windowed rate limit using a DynamoDB map attr.
+
+    Uses the ``exchangeOps`` map on the agent row.  Each verb gets its own
+    sub-entry ``{windowStart: epoch_int, count: n}`` stored under
+    ``exchangeOps.{verb}``.
+
+    Algorithm (read → conditional SET, multi-task safe):
+
+    1. Initialise the parent ``exchangeOps`` map with ``if_not_exists`` so the
+       sub-key SET in step 2 never hits a missing-parent error.
+    2. Read the agent row (ConsistentRead) to get the current entry.
+    3. Four paths:
+       A. No entry → SET {now, 1} guarded on ``attribute_not_exists(exchangeOps.#v)``.
+       B. Window expired → SET {now, 1} guarded on ``exchangeOps.#v = :old_entry``
+          (the whole sub-map as the optimistic guard, since DynamoDB only supports
+          comparisons on map values via the top-level key, not nested sub-attrs
+          in ConditionExpression paths).
+       C. Count < limit → SET {wstart, count+1} guarded on the same whole-entry
+          equality.
+       D. Count >= limit → return False (caller rejects).
+
+    The guard in paths B and C conditions on the entire sub-map matching what
+    we read; any concurrent modification (reset or increment) will fail the
+    condition, so we fall back to a re-read and retry once more before giving up
+    (always in favour of the action when there is genuine ambiguity).
+
+    Returns True when the action is allowed (counter incremented), False when
+    the agent has hit the limit for this verb in the current window.
+    """
+    table = dynamo.agents_table()
+    now = int(time.time())
+    window_start_floor = now - window_sec  # entries older than this are expired
+
+    # Step 1: lazily initialise the parent map so sub-key SET never fails.
+    try:
+        table.update_item(
+            Key={"id": agent_id},
+            UpdateExpression="SET exchangeOps = if_not_exists(exchangeOps, :empty)",
+            ConditionExpression="attribute_exists(id)",
+            ExpressionAttributeValues={":empty": {}},
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        # Agent row missing — caller surfaces this; don't block the action.
+        return True
+
+    def _read_entry() -> dict | None:
+        row = table.get_item(Key={"id": agent_id}, ConsistentRead=True).get("Item") or {}
+        ops: dict = row.get("exchangeOps") or {}
+        return ops.get(verb)
+
+    def _try_set(entry_before: dict | None, new_entry: dict) -> bool:
+        """Conditional SET guarded on exchangeOps.#v equalling entry_before (or absent).
+
+        DynamoDB supports comparing a map sub-key path (exchangeOps.#v) against a
+        whole-value expression attribute value, which lets us use the previously
+        read map value as an optimistic lock without relying on nested sub-attribute
+        paths in the condition (not universally supported by moto).
+        """
+        try:
+            if entry_before is None:
+                table.update_item(
+                    Key={"id": agent_id},
+                    UpdateExpression="SET exchangeOps.#v = :new",
+                    ConditionExpression="attribute_not_exists(exchangeOps.#v)",
+                    ExpressionAttributeNames={"#v": verb},
+                    ExpressionAttributeValues={":new": new_entry},
+                )
+            else:
+                table.update_item(
+                    Key={"id": agent_id},
+                    UpdateExpression="SET exchangeOps.#v = :new",
+                    ConditionExpression="exchangeOps.#v = :old",
+                    ExpressionAttributeNames={"#v": verb},
+                    ExpressionAttributeValues={":old": entry_before, ":new": new_entry},
+                )
+            return True
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            return False
+
+    for _attempt in range(3):
+        entry = _read_entry()
+        if entry is None:
+            # Path A: first use — claim the first slot.
+            if _try_set(None, {"windowStart": now, "count": 1}):
+                return True
+            continue  # lost the race to another task; re-read
+
+        w_start = int(entry.get("windowStart", 0))
+        count = int(entry.get("count", 0))
+
+        if w_start <= window_start_floor:
+            # Path B: window expired — reset.
+            if _try_set(entry, {"windowStart": now, "count": 1}):
+                return True
+            continue  # another task reset; re-read
+
+        if count >= limit:
+            # Path D: genuinely rate-limited.
+            return False
+
+        # Path C: window live, count < limit — increment.
+        if _try_set(entry, {"windowStart": w_start, "count": count + 1}):
+            return True
+        # Concurrent increment: re-read and retry.
+
+    # Exhausted retries — allow (don't penalise on internal contention).
+    logger.warning("_check_rate: retries exhausted for %s.%s — allowing", agent_id[:8], verb)
+    return True
+
+
+def _rate_limit_minutes_left(agent_id: str, verb: str, window_sec: int = _RATE_WINDOW_SEC) -> int:
+    """Return minutes until the current rate-limit window resets (for rejection messages)."""
+    try:
+        table = dynamo.agents_table()
+        agent_row = table.get_item(Key={"id": agent_id}, ConsistentRead=True).get("Item") or {}
+        ops: dict = agent_row.get("exchangeOps") or {}
+        entry: dict | None = ops.get(verb)
+        if not entry:
+            return 0
+        window_start = int(entry.get("windowStart", 0))
+        elapsed = int(time.time()) - window_start
+        remaining_sec = max(0, window_sec - elapsed)
+        return max(1, math.ceil(remaining_sec / 60))
+    except Exception:
+        return 60  # safe fallback
 
 
 def ensure_signup_grant(agent_id: str) -> None:
@@ -350,6 +484,20 @@ async def post_job(agent_conn: Any, title: str, description: str, max_price: int
             "post_job",
             {"status": "rejected", "reason": "bad_price", "message": "max_price must be at least 1 crumb."},
         )
+    # W2: rate limit — check before any wallet movement.
+    if not _check_rate(agent_conn.agent_id, "post_job", RATE_LIMIT_POST):
+        mins = _rate_limit_minutes_left(agent_conn.agent_id, "post_job")
+        return _notify_outcome(
+            agent_conn,
+            "post_job",
+            {
+                "status": "rejected",
+                "reason": "rate_limited",
+                "message": (
+                    f"You've posted the maximum {RATE_LIMIT_POST} jobs per hour. Try again in ~{mins} minute(s)."
+                ),
+            },
+        )
     if strategy not in exchange_scoring.STRATEGY_WEIGHTS:
         strategy = "balanced"
     # W1: denormalize the consumer's userId onto the job so place_bid can enforce
@@ -517,6 +665,18 @@ async def place_bid(agent_conn: Any, job_id: str, price: int, confidence: float,
             },
         )
     confidence = max(0.0, min(1.0, confidence))
+    # W2: rate limit — check before any wallet movement or state write.
+    if not _check_rate(agent_conn.agent_id, "bid", RATE_LIMIT_BID):
+        mins = _rate_limit_minutes_left(agent_conn.agent_id, "bid")
+        return _notify_outcome(
+            agent_conn,
+            "bid",
+            {
+                "status": "rejected",
+                "reason": "rate_limited",
+                "message": f"You've placed the maximum {RATE_LIMIT_BID} bids per hour. Try again in ~{mins} minute(s).",
+            },
+        )
 
     bid = {
         "price": price,
