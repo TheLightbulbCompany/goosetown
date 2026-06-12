@@ -28,6 +28,19 @@ class Settings:
     PIXELLAB_POOL_MAX_CONNECTIONS: int = int(os.environ.get("PIXELLAB_POOL_MAX_CONNECTIONS", "10"))
     PIXELLAB_POOL_MAX_KEEPALIVE: int = int(os.environ.get("PIXELLAB_POOL_MAX_KEEPALIVE", "5"))
 
+    # ── Durable sprite pipeline (spec 2026-06-11) ──────────────────────────
+    # Gates ALL lazy-animation enqueues (activity anims + the talking hook).
+    # Dev runs with "false" so it never burns the shared PixelLab account on
+    # lazy generation; signup walk generation is unaffected.
+    ACTIVITY_ANIMATION_GENERATION: bool = os.environ.get("ACTIVITY_ANIMATION_GENERATION", "true").lower() != "false"
+    SPRITE_JOBS_QUEUE_NAME: str = os.environ.get(
+        "SPRITE_JOBS_QUEUE_NAME", f"goosetown-{os.getenv('ENVIRONMENT', 'dev')}-sprite-jobs"
+    )
+    SPRITE_WORKER_MAX_CONCURRENT_PIPELINES: int = int(os.environ.get("SPRITE_WORKER_MAX_CONCURRENT_PIPELINES", "2"))
+    # Base URL of the backend ALB, used by the sprite worker to POST
+    # /town/internal/sprite-event. Empty in the backend itself.
+    BACKEND_INTERNAL_URL: str = os.environ.get("BACKEND_INTERNAL_URL", "")
+
     def validate(self) -> None:
         """Validate required env vars. Raises RuntimeError in non-dev environments if critical vars are missing."""
         if self.ENVIRONMENT == "dev":
