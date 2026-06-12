@@ -30,8 +30,9 @@ class Settings:
 
     # ── Durable sprite pipeline (spec 2026-06-11) ──────────────────────────
     # Gates ALL lazy-animation enqueues (activity anims + the talking hook).
-    # Dev runs with "false" so it never burns the shared PixelLab account on
-    # lazy generation; signup walk generation is unaffected.
+    # Default true; the dev backend sets ACTIVITY_ANIMATION_GENERATION=false
+    # via CDK (compute-stack) so dev never burns the shared PixelLab account
+    # on lazy generation. Signup walk generation is unaffected by this flag.
     ACTIVITY_ANIMATION_GENERATION: bool = os.environ.get("ACTIVITY_ANIMATION_GENERATION", "true").lower() != "false"
     SPRITE_JOBS_QUEUE_NAME: str = os.environ.get(
         "SPRITE_JOBS_QUEUE_NAME", f"goosetown-{os.getenv('ENVIRONMENT', 'dev')}-sprite-jobs"
