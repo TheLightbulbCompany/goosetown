@@ -39,9 +39,17 @@ async def lifespan(app: FastAPI):
     sprite_queue = get_sprite_queue()
     sprite_queue.start()
 
+    # Start Exchange deadline sweeper
+    import asyncio
+
+    from core.services.exchange_service import exchange_sweeper_loop
+
+    app.state.exchange_sweeper = asyncio.create_task(exchange_sweeper_loop())
+
     yield
 
     # Cleanup
+    app.state.exchange_sweeper.cancel()
     await sprite_queue.stop()
     await relay.stop()
     gs_client = get_game_server_client()
