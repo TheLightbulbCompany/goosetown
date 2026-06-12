@@ -95,6 +95,28 @@ class TestClaimSpriteJob:
         # Must guard that the agent row exists before claiming
         assert "attribute_exists(id)" in condition
 
+    def test_claim_condition_covers_all_in_progress_statuses(self, svc_with_mock_table):
+        """The NOT-IN guard must list every in-progress status — dropping one
+        would let a second producer double-enqueue an agent mid-pipeline.
+        Mirrors sprite_jobs.IN_PROGRESS_STATUSES (kept in sync by hand because
+        DynamoDB condition expressions can't import constants)."""
+        svc, mock_table = svc_with_mock_table
+        mock_table.update_item.return_value = {}
+
+        svc.claim_sprite_job("agent-1")
+
+        values = mock_table.update_item.call_args.kwargs["ExpressionAttributeValues"]
+        statuses = {values[f":s{i}"] for i in range(6)}
+        assert statuses == {
+            "queued",
+            "creating",
+            "building_static",
+            "static_ready",
+            "animating",
+            "downloading",
+        }
+        assert values[":null_type"] == "NULL"
+
     # ------------------------------------------------------------------
     # Behaviour 2: conditional check failure → False (already claimed)
     # ------------------------------------------------------------------
