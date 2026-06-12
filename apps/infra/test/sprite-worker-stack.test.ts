@@ -145,6 +145,17 @@ describe("SpriteWorkerStack — SQS queue config", () => {
       ReceiveMessageWaitTimeSeconds: 20,
     });
   });
+
+  test("main queue retains messages 4 days, DLQ 14 days", () => {
+    template.hasResourceProperties("AWS::SQS::Queue", {
+      QueueName: "goosetown-dev-sprite-jobs",
+      MessageRetentionPeriod: 4 * 24 * 3600,
+    });
+    template.hasResourceProperties("AWS::SQS::Queue", {
+      QueueName: "goosetown-dev-sprite-jobs-dlq",
+      MessageRetentionPeriod: 14 * 24 * 3600,
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
