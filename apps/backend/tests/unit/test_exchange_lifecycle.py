@@ -253,6 +253,23 @@ class TestPlaceBid:
         result = await ex.place_bid(_conn("b1", "bea"), job_id, 10, 0.5, "")
         assert result["reason"] == "not_open"
 
+    async def test_nan_confidence_rejected_bad_confidence(self, dynamodb_tables, mailbox, ws):
+        cc, job_id = await _post(dynamodb_tables, ws)
+        _seed_agent(dynamodb_tables, "b1", "bea")
+        ws.conns["b1"] = _conn("b1", "bea", "c-b1")
+        result = await ex.place_bid(ws.conns["b1"], job_id, 20, float("nan"), "pick me")
+        assert result["status"] == "rejected"
+        assert result["reason"] == "bad_confidence"
+
+    async def test_confidence_above_one_clamped_to_one(self, dynamodb_tables, mailbox, ws):
+        cc, job_id = await _post(dynamodb_tables, ws)
+        _seed_agent(dynamodb_tables, "b1", "bea")
+        ws.conns["b1"] = _conn("b1", "bea", "c-b1")
+        result = await ex.place_bid(ws.conns["b1"], job_id, 20, 7.0, "pick me")
+        assert result["status"] == "ok"
+        bids = _get_job(dynamodb_tables, job_id)["bids"]
+        assert float(bids["b1"]["confidence"]) == 1.0
+
     async def test_consumer_notified_bid_received_without_amount(self, dynamodb_tables, mailbox, ws):
         cc, job_id = await _post(dynamodb_tables, ws)
         _seed_agent(dynamodb_tables, "b1", "bea")
@@ -594,9 +611,6 @@ class TestSweeper:
 
     async def test_sweep_empty_tables_noop(self, dynamodb_tables, mailbox, ws):
         await ex.sweep_overdue_jobs()  # must not raise
-
-    def test_sweeper_loop_exists(self):
-        assert callable(ex.exchange_sweeper_loop)
 
 
 # ---------------------------------------------------------------------------

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import time
 import uuid
@@ -75,6 +76,20 @@ def _ledger_append(agent_id: str, entry_type: str, amount: int, balance_after: i
             ref_id,
         )
         raise
+
+
+def _bump_counter(agent_id: str, attr: str, delta: int = 1) -> None:
+    """Atomic counter bump (multi-task safe; same pattern as the wallet)."""
+    try:
+        dynamo.agents_table().update_item(
+            Key={"id": agent_id},
+            UpdateExpression="ADD #a :d",
+            ConditionExpression="attribute_exists(id)",
+            ExpressionAttributeNames={"#a": attr},
+            ExpressionAttributeValues={":d": delta},
+        )
+    except Exception:
+        logger.warning("Counter bump failed: %s.%s", agent_id[:8], attr)
 
 
 def ensure_signup_grant(agent_id: str) -> None:
@@ -166,9 +181,10 @@ async def _timer_task(job_id: str, delay: float, fn: Callable[[str], Awaitable[N
     except asyncio.CancelledError:
         return
     finally:
-        # Clear the registry entry in the SAME task that owns it, whether we
-        # fired or were cancelled (mirrors conversation_service).
-        _timers.pop(job_id, None)
+        # Only pop the registry entry if THIS task still owns it — a replacement
+        # timer (from _schedule) may have already claimed the slot.
+        if _timers.get(job_id) is asyncio.current_task():
+            _timers.pop(job_id, None)
     try:
         await fn(job_id)
     except Exception:
@@ -257,12 +273,13 @@ def _update_trust(agent_id: str, outcome: str, completed_delta: int, failed_delt
     svc = TownService()
     agent = svc.get_town_agent_by_id(agent_id) or {}
     new_trust = exchange_scoring.updated_trust(float(agent.get("trustScore", exchange_scoring.INITIAL_TRUST)), outcome)
-    svc.update_agent_state(
-        agent_id,
-        trust_score=new_trust,
-        jobs_completed=int(agent.get("jobsCompleted", 0)) + completed_delta,
-        jobs_failed=int(agent.get("jobsFailed", 0)) + failed_delta,
-    )
+    # trustScore EMA written via update_agent_state (single SET expression).
+    # Counter columns use atomic ADD so concurrent tasks don't lose increments.
+    svc.update_agent_state(agent_id, trust_score=new_trust)
+    if completed_delta:
+        _bump_counter(agent_id, "jobsCompleted", completed_delta)
+    if failed_delta:
+        _bump_counter(agent_id, "jobsFailed", failed_delta)
 
 
 # ---------------------------------------------------------------------------
@@ -335,7 +352,7 @@ async def post_job(agent_conn: Any, title: str, description: str, max_price: int
                 "message": "The Exchange clerk fumbled the paperwork — your crumbs were refunded. Try again.",
             },
         )
-    TownService().update_agent_state(agent_conn.agent_id, jobs_posted=int(agent.get("jobsPosted", 0)) + 1)
+    _bump_counter(agent_conn.agent_id, "jobsPosted")
     _schedule(job_id, BID_WINDOW_SEC, _close_bid_window)
 
     broadcast = {
@@ -408,6 +425,17 @@ async def place_bid(agent_conn: Any, job_id: str, price: int, confidence: float,
             "bid",
             {"status": "rejected", "reason": "not_open", "message": "Bidding on this job has closed."},
         )
+    if not math.isfinite(confidence):
+        return _notify_outcome(
+            agent_conn,
+            "bid",
+            {
+                "status": "rejected",
+                "reason": "bad_confidence",
+                "message": "confidence must be a finite number between 0 and 1.",
+            },
+        )
+    confidence = max(0.0, min(1.0, confidence))
 
     bid = {
         "price": price,
@@ -699,12 +727,7 @@ async def _settle(job: dict, outcome: str, reason: str = "", rejected_by_consume
         _update_trust(provider_id, "FAILURE_PROVIDER", completed_delta=0, failed_delta=1)
         _apply_mood(provider_id, "job_failed_provider")
         if rejected_by_consumer:
-            svc = TownService()
-            consumer = svc.get_town_agent_by_id(consumer_id) or {}
-            svc.update_agent_state(
-                consumer_id,
-                rejections_issued=int(consumer.get("rejectionsIssued", 0)) + 1,
-            )
+            _bump_counter(consumer_id, "rejectionsIssued")
         failed = {
             "event": "job_failed",
             "job_id": job_id,
@@ -731,6 +754,17 @@ async def sweep_overdue_jobs() -> None:
 
     Every transition is a status-conditional flip, so racing an in-memory
     timer (or a concurrent sweep) is safe — exactly one side wins.
+
+    Crash-window note (accepted at current scale):
+    (a) This function only retries *deadline transitions* (status flips). A
+        crash between a status flip and its money movement (PAYOUT / ESCROW_REFUND)
+        strands the escrow detectably — the ledger will have no PAYOUT or
+        ESCROW_REFUND row whose refId matches the job_id — but the sweep does
+        not self-heal that gap. Reconcile-on-sweep is the upgrade path when
+        traffic warrants it.
+    (b) Each GSI query fetches only the first page (no pagination). Items that
+        span multiple pages are handled on a later pass. Acceptable at town scale
+        where the number of concurrently open/awarded/delivered jobs is small.
     """
     now = time.time()
     table = dynamo.jobs_table()
