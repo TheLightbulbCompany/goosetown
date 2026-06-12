@@ -556,6 +556,55 @@ def _count_recent_same_counterparty_payouts(agent_id: str, counterparty_id: str)
     )
 
 
+def get_ledger_tail(agent_id: str, limit: int = 15) -> list[dict]:
+    """Return the most recent *limit* ledger rows for *agent_id*, newest-first.
+
+    Uses the ``agentId-createdAt-index`` GSI with ``ScanIndexForward=False``
+    (same pattern as ``_count_recent_same_counterparty_payouts``).
+    Rows are returned as plain dicts with camelCase keys mapped to the
+    public shape expected by the ledger endpoint.
+    """
+    resp = dynamo.ledger_table().query(
+        IndexName="agentId-createdAt-index",
+        KeyConditionExpression=Key("agentId").eq(agent_id),
+        ScanIndexForward=False,
+        Limit=limit,
+    )
+    rows = []
+    for item in resp.get("Items", []):
+        rows.append(
+            {
+                "type": item.get("entryType", ""),
+                "amount": int(item.get("amount", 0)),
+                "balance_after": int(item.get("balanceAfter", 0)),
+                "ref_id": item.get("refId", ""),
+                "at": item.get("createdAt", ""),
+            }
+        )
+    return rows
+
+
+def _emit_economy_event(tag: str, summary: str, location: str = "bank", **detail: Any) -> None:
+    """Emit a world-feed economy event. Import is lazy (core must not couple to worldgm at module load).
+
+    Never raises — EventBridge absent in tests/local must not break the economy.
+    """
+    try:
+        # Lazy import: core/services must not import worldgm at module level.
+        # No existing 'from worldgm' imports exist under core/ — this lazy pattern
+        # is the approved approach (see task spec).
+        from worldgm import event_publisher
+
+        event_publisher.emit_world_event(
+            tag=tag,
+            detail=dict(detail),
+            location=location,
+            summary=summary,
+        )
+    except Exception:
+        logger.debug("_emit_economy_event suppressed error for tag=%s", tag)
+
+
 def _update_trust(
     agent_id: str,
     outcome: str,
@@ -720,6 +769,15 @@ async def post_job(
         )
     _bump_counter(agent_conn.agent_id, "jobsPosted")
     _schedule(job_id, BID_WINDOW_SEC, _close_bid_window)
+    _emit_economy_event(
+        "economy.job_posted",
+        summary=f'{agent_conn.agent_name} posted "{job["title"]}" at the Exchange — up to {max_price} crumbs',
+        location=EXCHANGE_LOCATION,
+        job_id=job_id,
+        consumer_name=agent_conn.agent_name,
+        title=job["title"],
+        max_price=max_price,
+    )
 
     broadcast: dict[str, Any] = {
         "event": "job_posted",
@@ -1403,6 +1461,13 @@ async def _close_bid_window_once(job_id: str, guard_revision: bool) -> bool:
         for aid in post_flip_bids:
             mailbox.notify(aid, {"event": "bid_lost", "job_id": job_id, "title": job.get("title", "")})
             _apply_mood(aid, "bid_lost")
+        _emit_economy_event(
+            "economy.job_expired",
+            summary=f'"{job.get("title", "")}" expired with no takers',
+            location=EXCHANGE_LOCATION,
+            job_id=job_id,
+            consumer_id=consumer_id,
+        )
         return True
 
     agreed = int(live_bids[winner]["price"])
@@ -1457,6 +1522,15 @@ async def _close_bid_window_once(job_id: str, guard_revision: bool) -> bool:
         if aid != winner:
             mailbox.notify(aid, {"event": "bid_lost", "job_id": job_id, "title": job.get("title", "")})
             _apply_mood(aid, "bid_lost")
+    _emit_economy_event(
+        "economy.job_awarded",
+        summary=f'{provider_name} won "{job.get("title", "")}" for {agreed} crumbs',
+        location=EXCHANGE_LOCATION,
+        job_id=job_id,
+        provider_name=provider_name,
+        consumer_name=job.get("consumerName", ""),
+        agreed_price=agreed,
+    )
 
     _schedule(job_id, DELIVERY_SEC, _delivery_timeout)
     return True
@@ -1489,6 +1563,14 @@ async def _delivery_timeout(job_id: str) -> None:
     mailbox.notify(provider_id, failed)
     # Consumer copy includes updated balance after the delivery-timeout refund.
     mailbox.notify(consumer_id, {**failed, "balance": consumer_balance})
+    _emit_economy_event(
+        "economy.job_failed",
+        summary=f'"{job.get("title", "")}" fell through',
+        location=EXCHANGE_LOCATION,
+        job_id=job_id,
+        provider_id=provider_id,
+        consumer_id=consumer_id,
+    )
 
 
 async def _review_timeout(job_id: str) -> None:
@@ -1553,6 +1635,16 @@ async def _settle(
         # didn't move at settle — it moved at award when the partial refund was issued).
         mailbox.notify(provider_id, {**completed, "balance": provider_balance})
         mailbox.notify(consumer_id, completed)
+        provider_display = job.get("providerName", provider_id)
+        _emit_economy_event(
+            "economy.job_completed",
+            summary=f'{provider_display} delivered "{job.get("title", "")}" — paid {agreed - fee} crumbs',
+            location=EXCHANGE_LOCATION,
+            job_id=job_id,
+            provider_id=provider_id,
+            consumer_id=consumer_id,
+            payout=agreed - fee,
+        )
     else:
         # ESCROW_REFUND on consumer rejection: counterparty is the provider (who failed)
         consumer_balance = credit_wallet(consumer_id, agreed, "ESCROW_REFUND", job_id, counterparty_id=provider_id)
@@ -1574,6 +1666,14 @@ async def _settle(
         # Consumer copy includes updated balance (they received the refund); provider's does not.
         mailbox.notify(provider_id, failed)
         mailbox.notify(consumer_id, {**failed, "balance": consumer_balance})
+        _emit_economy_event(
+            "economy.job_failed",
+            summary=f'"{job.get("title", "")}" fell through',
+            location=EXCHANGE_LOCATION,
+            job_id=job_id,
+            provider_id=provider_id,
+            consumer_id=consumer_id,
+        )
     return True
 
 

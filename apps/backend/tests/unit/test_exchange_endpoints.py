@@ -382,3 +382,96 @@ class TestApartmentWalletFields:
         assert resp.status_code == 200
         agent = next(a for a in resp.json()["agents"] if a["agent_id"] == "a-wallet-4")
         assert agent["trust_tier"] == "reliable"
+
+
+# ---------------------------------------------------------------------------
+# Owner ledger endpoint: GET /town/agent/{agent_id}/ledger
+# ---------------------------------------------------------------------------
+
+
+class TestOwnerLedgerEndpoint:
+    """Tests for GET /town/agent/{agent_id}/ledger (Task A)."""
+
+    def test_owner_sees_entries_newest_first(self, client, dynamodb_tables):
+        """Owner fetching their agent's ledger gets entries newest-first."""
+        agent_id = "ledger-agent-1"
+        _seed_agent(dynamodb_tables, agent_id=agent_id, wallet_balance=90)
+        # Seed two ledger rows with distinct createdAt to verify ordering.
+        ledger_table = dynamodb_tables.Table("goosetown-ledger")
+        ledger_table.put_item(
+            Item={
+                "id": "row-old",
+                "agentId": agent_id,
+                "entryType": "GRANT",
+                "amount": 100,
+                "balanceAfter": 100,
+                "refId": "signup",
+                "createdAt": "2026-06-01T10:00:00+00:00",
+            }
+        )
+        ledger_table.put_item(
+            Item={
+                "id": "row-new",
+                "agentId": agent_id,
+                "entryType": "ESCROW_DEBIT",
+                "amount": -10,
+                "balanceAfter": 90,
+                "refId": "job-xyz",
+                "createdAt": "2026-06-01T11:00:00+00:00",
+            }
+        )
+
+        resp = client.get(f"/api/v1/town/agent/{agent_id}/ledger")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+
+        # Top-level wallet fields present.
+        assert "balance" in body
+        assert "trust_tier" in body
+        assert "trust_score" in body
+        assert "entries" in body
+
+        entries = body["entries"]
+        assert len(entries) >= 2
+        # Newest (2026-06-01T11:…) must come before oldest (2026-06-01T10:…).
+        ats = [e["at"] for e in entries]
+        assert ats[0] > ats[1], "Entries must be newest-first"
+
+        # Each entry has required fields.
+        for entry in entries:
+            for field in ("type", "amount", "balance_after", "ref_id", "at"):
+                assert field in entry, f"Missing entry field: {field}"
+
+    def test_non_owner_gets_403(self, dynamodb_tables):
+        """A Clerk user who does not own the agent must receive 403."""
+        from core.auth import AuthContext, get_current_user
+        from main import app
+
+        agent_id = "ledger-agent-403"
+        _seed_agent(dynamodb_tables, agent_id=agent_id, user_id="user-victim")
+
+        app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user-attacker")
+        try:
+            client_local = TestClient(app)
+            resp = client_local.get(f"/api/v1/town/agent/{agent_id}/ledger")
+            assert resp.status_code == 403
+        finally:
+            app.dependency_overrides.pop(get_current_user, None)
+
+    def test_missing_agent_gets_404(self, client, dynamodb_tables):
+        """Requesting a ledger for a non-existent agent returns 404."""
+        resp = client.get("/api/v1/town/agent/does-not-exist/ledger")
+        assert resp.status_code == 404
+
+    def test_empty_ledger_returns_empty_list_and_signup_grant_balance(self, client, dynamodb_tables):
+        """Agent with no ledger rows → empty entries list; signup grant self-heals balance to 100."""
+        agent_id = "ledger-agent-empty"
+        _seed_agent(dynamodb_tables, agent_id=agent_id)  # no walletBalance seeded
+
+        resp = client.get(f"/api/v1/town/agent/{agent_id}/ledger")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        # get_wallet self-heals the signup grant (100 crumbs).
+        assert body["balance"] == 100
+        # After the grant the ledger has exactly the GRANT row.
+        assert isinstance(body["entries"], list)

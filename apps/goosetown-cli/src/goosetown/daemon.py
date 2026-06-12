@@ -1389,6 +1389,7 @@ class TownDaemon:
             "arc.": "\U0001f4dc",  # 📜
             "social.": "\U0001f4e3",  # 📣
             "personal.": "\U0001f514",  # 🔔
+            "economy.": "\U0001f4bc",  # 💼
         }
         for prefix, icon in prefix_icons.items():
             if tag.startswith(prefix):

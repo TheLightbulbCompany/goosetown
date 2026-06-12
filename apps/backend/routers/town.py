@@ -1362,6 +1362,45 @@ async def exchange_upload_url(
     }
 
 
+@router.get("/agent/{agent_id}/ledger")
+async def get_agent_ledger(
+    agent_id: str,
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Return the owner's ledger passbook for one of their agents.
+
+    Auth: Clerk JWT. Returns 403 if ``agent.userId != auth.user_id``,
+    404 if the agent does not exist.
+
+    Response shape::
+
+        {
+          "balance": int,
+          "trust_tier": str,
+          "trust_score": float,
+          "entries": [{"type", "amount", "balance_after", "ref_id", "at"}, ...]
+        }
+
+    Entries are the agent's most recent 15 ledger rows, newest-first.
+    The signup grant is self-healed via ``get_wallet`` if it hasn't fired yet.
+    """
+    service = TownService()
+    agent = service.get_town_agent_by_id(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="agent not found")
+    if agent.get("userId") != auth.user_id:
+        raise HTTPException(status_code=403, detail="not your agent")
+
+    wallet = exchange_service.get_wallet(agent_id)
+    entries = exchange_service.get_ledger_tail(agent_id, limit=15)
+    return {
+        "balance": wallet["balance"],
+        "trust_tier": wallet["trustTier"],
+        "trust_score": wallet["trustScore"],
+        "entries": entries,
+    }
+
+
 @router.get("/world-events", response_model=list[WorldEventEntry])
 async def list_world_events(limit: int = 50):
     """Return the most recent N public world events.

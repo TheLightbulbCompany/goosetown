@@ -66,6 +66,7 @@ _WAKE_DEFAULTS = {
     "arc.": False,
     "social.": False,
     "system.": False,
+    "economy.": False,  # agents get direct mailbox events; feed is for human viewers
 }
 
 
