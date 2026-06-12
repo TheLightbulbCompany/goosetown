@@ -1,0 +1,138 @@
+/**
+ * database-stack.test.ts
+ *
+ * Exchange tables: verify that the jobs and ledger DynamoDB tables are
+ * synthesised with the correct primary keys and GSIs.
+ */
+
+import * as cdk from "aws-cdk-lib";
+import { Template, Match } from "aws-cdk-lib/assertions";
+import { DatabaseStack } from "../lib/stacks/database-stack";
+
+function buildTestApp(env: string): Template {
+  const app = new cdk.App();
+  const stack = new DatabaseStack(app, `goosetown-${env}-database`, {
+    stackName: `goosetown-${env}-database`,
+    environment: env,
+    env: { account: "123456789012", region: "us-east-1" },
+  });
+  return Template.fromStack(stack);
+}
+
+describe("DatabaseStack — jobs table (GooseTown Exchange)", () => {
+  test("dev jobs table exists with correct name and PK", () => {
+    const template = buildTestApp("dev");
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "goosetown-dev-jobs",
+      KeySchema: Match.arrayWith([
+        Match.objectLike({ AttributeName: "id", KeyType: "HASH" }),
+      ]),
+      BillingMode: "PAY_PER_REQUEST",
+    });
+  });
+
+  test("prod jobs table exists with correct name", () => {
+    const template = buildTestApp("prod");
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "goosetown-prod-jobs",
+      BillingMode: "PAY_PER_REQUEST",
+    });
+  });
+
+  test("jobs table has status-createdAt-index GSI", () => {
+    const template = buildTestApp("dev");
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "goosetown-dev-jobs",
+      GlobalSecondaryIndexes: Match.arrayWith([
+        Match.objectLike({
+          IndexName: "status-createdAt-index",
+          KeySchema: Match.arrayWith([
+            Match.objectLike({ AttributeName: "status", KeyType: "HASH" }),
+            Match.objectLike({ AttributeName: "createdAt", KeyType: "RANGE" }),
+          ]),
+        }),
+      ]),
+    });
+  });
+
+  test("prod jobs table has PITR enabled", () => {
+    const template = buildTestApp("prod");
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "goosetown-prod-jobs",
+      PointInTimeRecoverySpecification: {
+        PointInTimeRecoveryEnabled: true,
+      },
+    });
+  });
+
+  test("dev jobs table does NOT have PITR enabled", () => {
+    const template = buildTestApp("dev");
+    const tables = template.findResources("AWS::DynamoDB::Table");
+    const jobsTable = Object.values(tables).find(
+      (t: any) => t?.Properties?.TableName === "goosetown-dev-jobs"
+    ) as any;
+    const pitr =
+      jobsTable?.Properties?.PointInTimeRecoverySpecification
+        ?.PointInTimeRecoveryEnabled;
+    expect(pitr).toBeFalsy();
+  });
+});
+
+describe("DatabaseStack — ledger table (GooseTown Exchange)", () => {
+  test("dev ledger table exists with correct name and PK", () => {
+    const template = buildTestApp("dev");
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "goosetown-dev-ledger",
+      KeySchema: Match.arrayWith([
+        Match.objectLike({ AttributeName: "id", KeyType: "HASH" }),
+      ]),
+      BillingMode: "PAY_PER_REQUEST",
+    });
+  });
+
+  test("prod ledger table exists with correct name", () => {
+    const template = buildTestApp("prod");
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "goosetown-prod-ledger",
+      BillingMode: "PAY_PER_REQUEST",
+    });
+  });
+
+  test("ledger table has agentId-createdAt-index GSI", () => {
+    const template = buildTestApp("dev");
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "goosetown-dev-ledger",
+      GlobalSecondaryIndexes: Match.arrayWith([
+        Match.objectLike({
+          IndexName: "agentId-createdAt-index",
+          KeySchema: Match.arrayWith([
+            Match.objectLike({ AttributeName: "agentId", KeyType: "HASH" }),
+            Match.objectLike({ AttributeName: "createdAt", KeyType: "RANGE" }),
+          ]),
+        }),
+      ]),
+    });
+  });
+
+  test("prod ledger table has PITR enabled", () => {
+    const template = buildTestApp("prod");
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "goosetown-prod-ledger",
+      PointInTimeRecoverySpecification: {
+        PointInTimeRecoveryEnabled: true,
+      },
+    });
+  });
+
+  test("dev ledger table does NOT have PITR enabled", () => {
+    const template = buildTestApp("dev");
+    const tables = template.findResources("AWS::DynamoDB::Table");
+    const ledgerTable = Object.values(tables).find(
+      (t: any) => t?.Properties?.TableName === "goosetown-dev-ledger"
+    ) as any;
+    const pitr =
+      ledgerTable?.Properties?.PointInTimeRecoverySpecification
+        ?.PointInTimeRecoveryEnabled;
+    expect(pitr).toBeFalsy();
+  });
+});
