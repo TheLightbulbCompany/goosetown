@@ -371,7 +371,10 @@ async def run_signup_pipeline(
 async def run_animation_job(agent_id: str, anim_name: str, *, sink: SpriteEventSink) -> None:
     """Generate ONE lazy animation end-to-end (activity anims, idle, talking).
     Idempotent: skips if the animation already exists on the agent row.
-    Raises on transient PixelLab failure (the worker releases the message)."""
+    Raises on transient PixelLab failure AND on empty/uncompositable output
+    (the worker releases the message for redelivery; 3 strikes → DLQ). The
+    quiet early-returns are reserved for terminally un-processable messages:
+    missing agent, no character id, already-present or unknown animation."""
     from core.config import settings
     from core.services.pixellab_service import ANIMATION_REGISTRY, PixelLabService
     from core.services.sprite_storage import (
@@ -409,14 +412,17 @@ async def run_animation_job(agent_id: str, anim_name: str, *, sink: SpriteEventS
         pxl = PixelLabService()
         direction_frames = await pxl.generate_animation(char_id, anim_name)
         if not direction_frames:
-            logger.warning("No frames generated for animation %s (agent %s)", anim_name, agent_id)
-            return
+            # generate_animation returns {} on an all-jobs timeout/failure
+            # without raising. Returning normally here would DELETE the SQS
+            # message and leave the animation permanently missing — raise so
+            # redelivery retries and 3 strikes reach the DLQ (same contract
+            # as the signup walk guard).
+            raise RuntimeError(f"animation {anim_name!r} produced no frames for agent {agent_id}")
 
         # CPU-bound PIL work — offload off the event loop.
         sheet = await asyncio.to_thread(composite_animation_spritesheet, direction_frames)
         if sheet is None:
-            logger.warning("Failed to composite %s for agent %s", anim_name, agent_id)
-            return
+            raise RuntimeError(f"failed to composite animation {anim_name!r} for agent {agent_id}")
         png_bytes, frame_count = sheet
 
         s3_key = await asyncio.to_thread(

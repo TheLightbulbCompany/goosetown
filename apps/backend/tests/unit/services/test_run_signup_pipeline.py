@@ -488,6 +488,28 @@ async def test_run_animation_job_happy_path_merges_and_notifies():
     sink.sprite_updated.assert_awaited_once_with("a-1", "animations_updated")
 
 
+async def test_run_animation_job_empty_frames_raises_for_redelivery():
+    """generate_animation can return {} on an all-jobs timeout WITHOUT raising.
+    That must NOT delete the SQS message (the animation would be permanently
+    missing) — run_animation_job raises so the worker releases for retry."""
+    row = {"id": "a-1", "pixellabCharacterId": "char-1", "spriteAnimations": {}}
+    ts = _make_service(row)
+    sink = _make_sink()
+
+    pxl = MagicMock()
+    pxl.generate_animation = AsyncMock(return_value={})
+
+    with _patched_pipeline(pxl, ts), pytest.raises(RuntimeError, match="produced no frames"):
+        await run_animation_job("a-1", "reading", sink=sink)
+
+    ts.update_agent_state.assert_not_called()
+    sink.sprite_updated.assert_not_awaited()
+    # The in-flight guard must be drained even on the raise path.
+    from core.services.sprite_pipeline import _resume_in_flight
+
+    assert "a-1" not in _resume_in_flight
+
+
 async def test_run_animation_job_skips_when_animation_already_present():
     row = {
         "id": "a-1",
