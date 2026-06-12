@@ -1066,3 +1066,148 @@ class TestBidRevisionGuard:
         assert calls["n"] >= 3
         # Escrow 60, agreed 10 -> 50 refunded: consumer back to 90.
         assert int(_get_agent(dynamodb_tables, "consumer")["walletBalance"]) == 90
+
+
+# ---------------------------------------------------------------------------
+# Persisted-deadline enforcement in verb paths (codex P2)
+# ---------------------------------------------------------------------------
+
+
+class TestPersistedDeadlineEnforcement:
+    """Verb paths must enforce persisted deadline attrs, not just rely on the
+    in-memory timer — so they're correct after a backend restart."""
+
+    # ------------------------------------------------------------------
+    # place_bid: past bidWindowEndsAt → window_closed rejection + settle
+    # ------------------------------------------------------------------
+
+    async def test_place_bid_past_deadline_rejected_window_closed(self, dynamodb_tables, mailbox, ws):
+        """place_bid after bidWindowEndsAt has passed returns window_closed and
+        drives _close_bid_window inline (job settles to AWARDED or EXPIRED)."""
+        cc, job_id = await _post(dynamodb_tables, ws, max_price=30)
+        # Seed a connected bidder so the window closes to AWARDED (not EXPIRED).
+        _seed_agent(dynamodb_tables, "b1", "bea")
+        ws.conns["b1"] = _conn("b1", "bea", "c-b1")
+        await ex.place_bid(ws.conns["b1"], job_id, 20, 0.8, "first bid")
+        # Backdate the persisted deadline to the past (no timer fires).
+        dynamodb_tables.Table("goosetown-jobs").update_item(
+            Key={"id": job_id},
+            UpdateExpression="SET bidWindowEndsAt = :past",
+            ExpressionAttributeValues={":past": Decimal(str(time.time() - 60))},
+        )
+        mailbox.reset_mock()
+
+        # A second bidder tries to bid — should be rejected because window is past.
+        _seed_agent(dynamodb_tables, "b2", "bob")
+        ws.conns["b2"] = _conn("b2", "bob", "c-b2")
+        result = await ex.place_bid(ws.conns["b2"], job_id, 15, 0.9, "late bid")
+
+        # (a) Rejection reason is window_closed.
+        assert result["status"] == "rejected"
+        assert result["reason"] == "window_closed"
+        # (b) Overdue transition fired: job is now settled (AWARDED because b1 was live).
+        job = _get_job(dynamodb_tables, job_id)
+        assert job["status"] in ("AWARDED", "EXPIRED")
+
+    async def test_place_bid_past_deadline_no_bids_job_expires(self, dynamodb_tables, mailbox, ws):
+        """If there are no live bids when place_bid triggers the overdue close,
+        the job must expire and the consumer must be refunded."""
+        cc, job_id = await _post(dynamodb_tables, ws, max_price=30)
+        # Backdate the deadline; no bids have been placed.
+        dynamodb_tables.Table("goosetown-jobs").update_item(
+            Key={"id": job_id},
+            UpdateExpression="SET bidWindowEndsAt = :past",
+            ExpressionAttributeValues={":past": Decimal(str(time.time() - 60))},
+        )
+        mailbox.reset_mock()
+
+        _seed_agent(dynamodb_tables, "b1", "bea")
+        ws.conns["b1"] = _conn("b1", "bea", "c-b1")
+        result = await ex.place_bid(ws.conns["b1"], job_id, 20, 0.8, "too late")
+
+        assert result["status"] == "rejected"
+        assert result["reason"] == "window_closed"
+        # Job must be EXPIRED and consumer refunded.
+        assert _get_job(dynamodb_tables, job_id)["status"] == "EXPIRED"
+        assert int(_get_agent(dynamodb_tables, "consumer")["walletBalance"]) == 100
+
+    async def test_place_bid_future_deadline_accepted(self, dynamodb_tables, mailbox, ws):
+        """A bid placed while the persisted deadline is still in the future must
+        succeed normally — deadline guard must not fire for future deadlines."""
+        cc, job_id = await _post(dynamodb_tables, ws, max_price=30)
+        _seed_agent(dynamodb_tables, "b1", "bea")
+        ws.conns["b1"] = _conn("b1", "bea", "c-b1")
+        result = await ex.place_bid(ws.conns["b1"], job_id, 20, 0.8, "on time")
+        assert result["status"] == "ok"
+
+    # ------------------------------------------------------------------
+    # deliver_job: past deliveryDeadlineAt → deadline_passed + FAILED
+    # ------------------------------------------------------------------
+
+    async def test_deliver_job_past_deadline_rejected_deadline_passed(self, dynamodb_tables, mailbox, ws):
+        """deliver_job after deliveryDeadlineAt has passed returns deadline_passed,
+        fires _delivery_timeout inline, and leaves the job as FAILED with the
+        consumer refunded."""
+        cc, pc, job_id = await _run_to_awarded(dynamodb_tables, ws, mailbox)
+        # Backdate the delivery deadline.
+        dynamodb_tables.Table("goosetown-jobs").update_item(
+            Key={"id": job_id},
+            UpdateExpression="SET deliveryDeadlineAt = :past",
+            ExpressionAttributeValues={":past": Decimal(str(time.time() - 60))},
+        )
+        mailbox.reset_mock()
+
+        result = await ex.deliver_job(pc, job_id, "too late delivery")
+
+        # (a) Rejection reason is deadline_passed.
+        assert result["status"] == "rejected"
+        assert result["reason"] == "deadline_passed"
+        # (b) Overdue transition fired: job is now FAILED.
+        job = _get_job(dynamodb_tables, job_id)
+        assert job["status"] == "FAILED"
+        # (b) Consumer was refunded the agreed price.
+        assert int(_get_agent(dynamodb_tables, "consumer")["walletBalance"]) == 100
+
+    async def test_deliver_job_future_deadline_accepted(self, dynamodb_tables, mailbox, ws):
+        """deliver_job within the delivery deadline must succeed normally."""
+        cc, pc, job_id = await _run_to_awarded(dynamodb_tables, ws, mailbox)
+        result = await ex.deliver_job(pc, job_id, "on-time delivery")
+        assert result["status"] == "ok"
+        assert _get_job(dynamodb_tables, job_id)["status"] == "DELIVERED"
+
+    # ------------------------------------------------------------------
+    # review_job: past reviewDeadlineAt → review_window_closed + COMPLETED
+    # ------------------------------------------------------------------
+
+    async def test_review_job_past_deadline_rejected_review_window_closed(self, dynamodb_tables, mailbox, ws):
+        """review_job after reviewDeadlineAt has passed returns review_window_closed,
+        fires _review_timeout inline (auto-accept), and leaves the job as COMPLETED
+        with the provider paid — NOT FAILED."""
+        cc, pc, job_id = await _run_to_delivered(dynamodb_tables, ws, mailbox)
+        # Backdate the review deadline.
+        dynamodb_tables.Table("goosetown-jobs").update_item(
+            Key={"id": job_id},
+            UpdateExpression="SET reviewDeadlineAt = :past",
+            ExpressionAttributeValues={":past": Decimal(str(time.time() - 60))},
+        )
+        mailbox.reset_mock()
+
+        result = await ex.review_job(cc, job_id, False, "too slow")
+
+        # (a) Rejection reason is review_window_closed.
+        assert result["status"] == "rejected"
+        assert result["reason"] == "review_window_closed"
+        # (b) Auto-accept fired: job is COMPLETED (not FAILED), provider paid.
+        job = _get_job(dynamodb_tables, job_id)
+        assert job["status"] == "COMPLETED"
+        assert job["outcome"] == "SUCCESS_AUTO"
+        # (b) Provider received the payout.
+        fee = exchange_scoring.platform_fee(20)
+        assert int(_get_agent(dynamodb_tables, "provider")["walletBalance"]) == 100 + 20 - fee
+
+    async def test_review_job_future_deadline_accepted(self, dynamodb_tables, mailbox, ws):
+        """review_job within the review window must succeed normally."""
+        cc, pc, job_id = await _run_to_delivered(dynamodb_tables, ws, mailbox)
+        result = await ex.review_job(cc, job_id, True, "")
+        assert result["status"] == "ok"
+        assert _get_job(dynamodb_tables, job_id)["status"] == "COMPLETED"

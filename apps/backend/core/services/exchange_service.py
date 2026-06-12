@@ -468,6 +468,16 @@ async def place_bid(agent_conn: Any, job_id: str, price: int, confidence: float,
             "bid",
             {"status": "rejected", "reason": "not_open", "message": "Bidding on this job has closed."},
         )
+    # Deadline guard: enforce the persisted bidWindowEndsAt even when the
+    # in-memory timer hasn't fired yet (e.g. after a backend restart).
+    bid_deadline = float(job.get("bidWindowEndsAt") or 0)
+    if bid_deadline and time.time() > bid_deadline:
+        await _close_bid_window(job_id)  # idempotent — settles the overdue window now
+        return _notify_outcome(
+            agent_conn,
+            "bid",
+            {"status": "rejected", "reason": "window_closed", "message": "Bidding closed for this job."},
+        )
     if not math.isfinite(confidence):
         return _notify_outcome(
             agent_conn,
@@ -590,6 +600,20 @@ async def deliver_job(agent_conn: Any, job_id: str, deliverable: str) -> dict:
             "deliver_job",
             {"status": "rejected", "reason": "not_awarded", "message": "This job is not awaiting delivery."},
         )
+    # Deadline guard: enforce the persisted deliveryDeadlineAt even when the
+    # in-memory timer hasn't fired yet (e.g. after a backend restart).
+    delivery_deadline = float(job.get("deliveryDeadlineAt") or 0)
+    if delivery_deadline and time.time() > delivery_deadline:
+        await _delivery_timeout(job_id)  # idempotent — fails and refunds now
+        return _notify_outcome(
+            agent_conn,
+            "deliver_job",
+            {
+                "status": "rejected",
+                "reason": "deadline_passed",
+                "message": "The delivery deadline passed — the job was failed and the poster refunded.",
+            },
+        )
     deliverable = (deliverable or "")[:DELIVERABLE_MAX]
     if not _flip_status(
         job_id,
@@ -652,6 +676,20 @@ async def review_job(agent_conn: Any, job_id: str, accept: bool | None, reason: 
             agent_conn,
             "review_job",
             {"status": "rejected", "reason": "not_delivered", "message": "There is no delivery to review yet."},
+        )
+    # Deadline guard: enforce the persisted reviewDeadlineAt even when the
+    # in-memory timer hasn't fired yet (e.g. after a backend restart).
+    review_deadline = float(job.get("reviewDeadlineAt") or 0)
+    if review_deadline and time.time() > review_deadline:
+        await _review_timeout(job_id)  # idempotent — auto-accepts and pays provider
+        return _notify_outcome(
+            agent_conn,
+            "review_job",
+            {
+                "status": "rejected",
+                "reason": "review_window_closed",
+                "message": "The review window passed — the delivery was auto-accepted and the provider paid.",
+            },
         )
     outcome = "SUCCESS" if accept else "FAILURE_PROVIDER"
     if not await _settle(job, outcome, reason=reason, rejected_by_consumer=not accept):
