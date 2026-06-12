@@ -182,6 +182,9 @@ func _on_world_state(data: Dictionary) -> void:
 
 			agent.setup(agent_id, url, x, y, facing_str, display_name)
 			agents[agent_id] = agent
+			# BUG 1 diagnostic: log the agent_id/name/url pairing at spawn time so we
+			# can verify the world_state is giving us the correct name↔sprite URL pair.
+			print("[spawn] id=%s name=%s url=%s" % [agent_id, display_name, url])
 			print("AgentManager: Spawned %s at (%d, %d) via world_state (scale=%.2f)" % [display_name, int(x), int(y), agent_scale])
 
 			# Set initial activity state (agent may already be mid-activity)
@@ -266,6 +269,10 @@ func _on_sprite_loaded(args: Array) -> void:
 	var image: Image = Image.new()
 	if image.load_png_from_buffer(raw) == OK:
 		var tex: ImageTexture = ImageTexture.create_from_image(image)
+		# BUG 1 diagnostic: log which agent node (by name) is about to receive this
+		# sprite so we can correlate agent_id ↔ display_name ↔ image dimensions at
+		# load time and catch any mismatch between name-label and sprite assignment.
+		print("[sprite] id=%s name=%s anim=%s %dx%d" % [agent_id, agents[agent_id].display_name, animation_name, image.get_width(), image.get_height()])
 		agents[agent_id].set_spritesheet(tex, animation_name)
 		print("AgentManager: Loaded %s spritesheet for %s (%dx%d)" % [animation_name, agent_id, image.get_width(), image.get_height()])
 
