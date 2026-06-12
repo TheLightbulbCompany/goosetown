@@ -27,27 +27,20 @@ const WS_URL: string | null = import.meta.env.VITE_WS_URL ?? null;
 const POLL_INTERVAL = 2000;
 
 // ---------------------------------------------------------------------------
-// Anonymous-viewer-token cache
+// Anonymous-viewer-token cache (in-memory, per page load)
 //
 // This token is public (grants WS subscription only), so it is safe to cache
 // at module scope and reuse across multiple hook instances or re-renders. The
 // cache is intentionally module-level: it survives React re-renders and is
-// shared across all hook consumers on the same page. We also mirror it into
-// sessionStorage so a hard-navigate on the same tab can skip the round-trip.
+// shared across all hook consumers on the same page. It is NOT persisted to
+// sessionStorage on purpose — the token can expire, and a fresh page load
+// should re-fetch rather than risk reusing a stale token across navigations.
 //
 // The prefetch promise is stored separately so concurrent callers awaiting the
 // first fetch coalesce onto the single in-flight request rather than issuing N
 // redundant fetches.
 // ---------------------------------------------------------------------------
-const SESSION_KEY = 'gt_anon_viewer_token';
-
-let _anonTokenCache: string | null = (() => {
-  try {
-    return sessionStorage.getItem(SESSION_KEY);
-  } catch {
-    return null;
-  }
-})();
+let _anonTokenCache: string | null = null;
 let _anonTokenInflight: Promise<string | null> | null = null;
 
 function prefetchAnonViewerToken(): Promise<string | null> {
@@ -57,10 +50,7 @@ function prefetchAnonViewerToken(): Promise<string | null> {
     .then((r) => (r.ok ? (r.json() as Promise<{ token?: string }>) : Promise.resolve<{ token?: string }>({})))
     .then((body) => {
       const t = body.token ?? null;
-      if (t) {
-        _anonTokenCache = t;
-        try { sessionStorage.setItem(SESSION_KEY, t); } catch { /* private browsing */ }
-      }
+      if (t) _anonTokenCache = t;
       _anonTokenInflight = null;
       return t;
     })
