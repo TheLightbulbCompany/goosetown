@@ -1752,6 +1752,8 @@ def list_board_jobs() -> list[dict]:
             "provider_name": item.get("providerName") or "",
             "created_at": item.get("createdAt", ""),
             "bid_count": len(item.get("bids") or {}),
+            # Epoch seconds; frontend's town-clock strip drains against this.
+            "bid_window_ends_at": float(item.get("bidWindowEndsAt") or 0) or None,
         }
 
     out: list[dict] = []
