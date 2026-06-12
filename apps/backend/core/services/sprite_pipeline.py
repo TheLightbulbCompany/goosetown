@@ -122,6 +122,12 @@ async def run_signup_pipeline(
     pointer. Also raises ``RuntimeError`` when generation yields no animations
     at all (Phase B returned no rotations AND Phase C returned no frames) so
     the SQS worker retries rather than silently completing with no sprite.
+    Raises ``RuntimeError`` even in the no-exception empty-output case: when
+    ``queue_signup_animations`` returns normally but with empty frame dicts
+    for one or more signup animations — the Phase B static placeholder in
+    ``initial_sprite_animations`` would otherwise let the composite loop
+    silently complete with ``spriteStatus="complete"`` on the old static sheet
+    without the SQS retry/DLQ path ever seeing the failure.
     Never clears ``spriteStatus`` on failure.
 
     ``fallback_display_name`` and ``fallback_appearance`` are one-shot fallbacks
@@ -133,7 +139,7 @@ async def run_signup_pipeline(
     the register-path gap where ``opt_in`` did not persist ``appearance``.
     """
     from core.config import settings
-    from core.services.pixellab_service import ANIMATION_REGISTRY, PixelLabService
+    from core.services.pixellab_service import ANIMATION_REGISTRY, SIGNUP_ANIMATIONS, PixelLabService
     from core.services.sprite_storage import (
         build_static_spritesheet_from_rotations,
         composite_animation_spritesheet,
@@ -286,6 +292,14 @@ async def run_signup_pipeline(
         signup_frames: dict[str, dict[str, list[bytes]]] = await pxl.queue_signup_animations(
             char_id, on_progress=_anim_progress
         )
+
+        # queue_signup_animations propagates exceptions, but an all-jobs-
+        # timeout returns empty frame dicts without raising. An empty walk
+        # must not silently complete on the Phase B static placeholder —
+        # raise so SQS redelivery retries and 3 strikes reach the DLQ.
+        missing = [name for name in SIGNUP_ANIMATIONS if not signup_frames.get(name)]
+        if missing:
+            raise RuntimeError(f"signup animation(s) {missing} produced no frames for agent {agent_id}")
 
         service.update_agent_state(agent_id, sprite_status="downloading")
         await sink.progress(agent_id, "Compositing sprites...")

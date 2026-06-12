@@ -176,8 +176,12 @@ async def test_resume_skips_create_and_phase_b_and_preserves_existing_animations
     sink.sprite_updated.assert_any_await("a-1", "animations_updated")
 
 
-async def test_resume_walk_url_falls_back_to_existing_sprite_url():
-    """No walk frames come back on resume → spriteUrl must not regress to ''."""
+async def test_resume_walk_url_empty_queue_raises_not_completes():
+    """No walk frames come back on resume (queue_signup_animations returns {}) →
+    the new per-animation guard must raise RuntimeError so the SQS worker retries
+    rather than silently completing on the existing static spriteUrl.
+    Previously this test asserted the URL-fallback path; the URL-fallback is now
+    unreachable because missing frames are caught first."""
     row = {
         "id": "a-1",
         "spriteStatus": "downloading",
@@ -195,12 +199,15 @@ async def test_resume_walk_url_falls_back_to_existing_sprite_url():
     pxl.queue_signup_animations = AsyncMock(return_value={})
 
     with _patched_pipeline(pxl, ts):
-        await run_signup_pipeline("a-1", sink=sink)
+        with pytest.raises(RuntimeError, match="signup animation"):
+            await run_signup_pipeline("a-1", sink=sink)
 
-    # idle survives because initial_sprite_animations seeds from the existing row's spriteAnimations.
+    # sprite_status must never reach "complete".
     complete_calls = [c for c in ts.update_agent_state.call_args_list if c.kwargs.get("sprite_status") == "complete"]
-    assert len(complete_calls) == 1
-    assert complete_calls[0].kwargs["sprite_url"] == "https://cdn/old-walk.png"
+    assert len(complete_calls) == 0
+
+    # Guard drained.
+    assert "a-1" not in sprite_pipeline._resume_in_flight
 
 
 # ---------------------------------------------------------------------------
@@ -331,7 +338,9 @@ async def test_no_animations_output_raises_and_does_not_advance_alive():
     pxl.queue_signup_animations = AsyncMock(return_value={})  # Phase C produces nothing
 
     with _patched_pipeline(pxl, ts) as (advance, _):
-        with pytest.raises(RuntimeError, match="sprite pipeline produced no animations"):
+        # The new per-animation check fires first (before the full_sprite_animations
+        # guard) because queue_signup_animations returned {} — no walk frames.
+        with pytest.raises(RuntimeError, match="signup animation"):
             await run_signup_pipeline("a-1", sink=sink)
 
     # advance_phase must NOT have been called with "alive" — job is not done.
@@ -343,6 +352,103 @@ async def test_no_animations_output_raises_and_does_not_advance_alive():
     assert len(animations_updated_calls) == 0
 
     # Guard drained even on failure.
+    assert "a-1" not in sprite_pipeline._resume_in_flight
+
+
+# ---------------------------------------------------------------------------
+# 4c. Empty walk output with Phase B static placeholder already seeded
+#     (codex P2 — the no-exception empty-output failure mode)
+# ---------------------------------------------------------------------------
+
+
+async def test_empty_walk_frames_raises_not_silently_completes_on_static_placeholder():
+    """Phase B succeeds (static sprite + walk placeholder seeded into
+    initial_sprite_animations), but queue_signup_animations returns
+    {"walk": {}} — empty frame dict — without raising.
+
+    The composite loop skips the empty entry, leaving full_sprite_animations
+    with only the Phase B static placeholder.  The existing
+    ``if not full_sprite_animations`` guard does NOT fire because the dict is
+    non-empty (it has the static placeholder).  The new per-animation check
+    must catch this and raise RuntimeError so the SQS worker retries instead
+    of silently completing spriteStatus="complete" on the static sheet.
+
+    Assertions:
+    - pytest.raises(RuntimeError) matching the new message.
+    - update_agent_state never called with sprite_status="complete".
+    - advance_phase never called with "alive".
+    - In-flight guard drained.
+    """
+    row = {
+        "id": "a-1",
+        "spriteStatus": "queued",
+        "appearance": "a goose",
+        "pixellabCharacterId": "char-1",
+        # No spriteUrl — Phase B runs and seeds the static placeholder.
+    }
+    ts = _make_service(row)
+    sink = _make_sink()
+
+    pxl = MagicMock()
+    pxl.create_character = AsyncMock()
+    # Phase B: rotations come back so the static placeholder is seeded.
+    pxl.fetch_all_rotations = AsyncMock(return_value=dict(_FOUR_ROTATIONS))
+    # Phase C: queue_signup_animations returns without raising, but with empty frames.
+    pxl.queue_signup_animations = AsyncMock(return_value={"walk": {}})
+
+    with _patched_pipeline(pxl, ts) as (advance, _):
+        with pytest.raises(RuntimeError, match="signup animation"):
+            await run_signup_pipeline("a-1", sink=sink)
+
+    # sprite_status must never reach "complete".
+    status_writes = [
+        c.kwargs["sprite_status"] for c in ts.update_agent_state.call_args_list if "sprite_status" in c.kwargs
+    ]
+    assert "complete" not in status_writes, f"unexpected 'complete' write: {status_writes}"
+
+    # advance_phase must NOT have been called with "alive".
+    alive_calls = [c for c in advance.call_args_list if c.args[1] == "alive"]
+    assert len(alive_calls) == 0
+
+    # In-flight guard must be drained.
+    assert "a-1" not in sprite_pipeline._resume_in_flight
+
+
+async def test_walk_frames_present_completes_successfully():
+    """Sanity regression: the happy path (walk frames present) is unaffected by
+    the new per-animation check.  Pipeline must advance to "alive" and fire
+    sink.sprite_updated("animations_updated")."""
+    row = {
+        "id": "a-1",
+        "spriteStatus": "queued",
+        "appearance": "a pixel-art goose in a suit",
+        "pixellabCharacterId": "char-1",
+        # No spriteUrl — Phase B runs.
+    }
+    ts = _make_service(row)
+    sink = _make_sink()
+
+    pxl = MagicMock()
+    pxl.create_character = AsyncMock()
+    pxl.fetch_all_rotations = AsyncMock(return_value=dict(_FOUR_ROTATIONS))
+    # Walk frames present — new guard must not fire.
+    pxl.queue_signup_animations = AsyncMock(return_value={"walk": dict(_FOUR_DIR_FRAMES)})
+
+    with _patched_pipeline(pxl, ts) as (advance, _):
+        await run_signup_pipeline("a-1", sink=sink)
+
+    # Pipeline completed: sprite_status="complete" written.
+    complete_calls = [c for c in ts.update_agent_state.call_args_list if c.kwargs.get("sprite_status") == "complete"]
+    assert len(complete_calls) == 1
+
+    # advance_phase called with "alive".
+    alive_calls = [c for c in advance.call_args_list if c.args[1] == "alive"]
+    assert len(alive_calls) == 1
+
+    # Sink notified.
+    sink.sprite_updated.assert_any_await("a-1", "animations_updated")
+
+    # In-flight guard drained.
     assert "a-1" not in sprite_pipeline._resume_in_flight
 
 
