@@ -700,13 +700,16 @@ async def test_no_appearance_anywhere_releases_claim_and_returns():
     ts.release_sprite_claim.assert_called_once_with("a-1")
 
 
-async def test_no_appearance_release_returns_false_logs_and_returns():
-    """release_sprite_claim returns False (worker already advanced the status)
-    — the pipeline must log and return without calling update_agent_state
-    with sprite_status=None (don't clobber the worker's progress)."""
+async def test_no_appearance_nonqueued_status_is_cleared():
+    """release_sprite_claim returns False (row status isn't "queued" — e.g. a
+    pre-migration row stuck at "creating" with no char_id and no appearance,
+    re-enqueued by the boot sweep). The pipeline must clear sprite_status so
+    the row doesn't loop sweep→no-op→delete forever; a future register attempt
+    (which persists appearance) can then re-claim. Safe: single worker process
+    + per-agent in-flight guard means no concurrent pipeline for this agent."""
     row = {
         "id": "a-1",
-        "spriteStatus": "queued",
+        "spriteStatus": "creating",
     }
     ts = _make_service(row)
     ts.release_sprite_claim = MagicMock(return_value=False)
@@ -720,6 +723,6 @@ async def test_no_appearance_release_returns_false_logs_and_returns():
 
     pxl.create_character.assert_not_awaited()
     ts.release_sprite_claim.assert_called_once_with("a-1")
-    # Must NOT have tried to clobber sprite_status.
-    status_clobber_calls = [c for c in ts.update_agent_state.call_args_list if c.kwargs.get("sprite_status") is None]
-    assert not status_clobber_calls, f"unexpected sprite_status=None writes: {status_clobber_calls}"
+    # The stuck non-queued status must be cleared.
+    status_clear_calls = [c for c in ts.update_agent_state.call_args_list if c.kwargs.get("sprite_status") is None]
+    assert status_clear_calls, "expected a sprite_status=None clear for the stuck row"

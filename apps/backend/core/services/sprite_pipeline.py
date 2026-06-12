@@ -188,20 +188,22 @@ async def run_signup_pipeline(
         if not char_id:
             if not appearance:
                 logger.warning("run_signup_pipeline: agent %s has no appearance — cannot create character", agent_id)
-                # Release the spriteStatus="queued" claim so a future register
-                # attempt can re-enqueue.  The release is conditional on the
-                # row still being exactly "queued" — if another delivery already
-                # advanced the status (returns False) there's nothing to do:
-                # that delivery is running (or will run) the create path and
-                # will either succeed or retry via the DLQ.  Best-effort: swallow
-                # any DDB error so the worker doesn't flag this as a retriable
-                # failure (the message is terminally un-processable without
-                # appearance; retrying would just loop).
+                # Clear the in-progress status so a future register attempt
+                # (which now persists appearance) can re-claim and re-enqueue.
+                # Conditional release covers the normal "queued" claim; the
+                # unconditional fallback covers pre-migration rows stuck at
+                # e.g. "creating" with neither char_id nor appearance — the
+                # boot sweep re-enqueues those as-is, and without this clear
+                # they'd loop sweep→no-op→delete forever. Safe to clear: this
+                # is the only worker process and the per-agent in-flight guard
+                # means no other pipeline is running for this agent right now.
+                # Best-effort: swallow DDB errors so the worker doesn't treat
+                # a terminally un-processable message as retriable.
                 try:
-                    released = service.release_sprite_claim(agent_id)
-                    if not released:
+                    if not service.release_sprite_claim(agent_id):
+                        service.update_agent_state(agent_id, sprite_status=None)
                         logger.info(
-                            "run_signup_pipeline: claim for %s already advanced — leaving status as-is",
+                            "run_signup_pipeline: cleared stuck non-queued status for %s (no appearance)",
                             agent_id,
                         )
                 except Exception:
