@@ -7,7 +7,7 @@ import json
 import logging
 
 from core.services.pixellab_service import PixelLabCreditError
-from core.services.sprite_pipeline import run_animation_job, run_signup_pipeline
+from core.services.sprite_pipeline import SpriteEventSink, run_animation_job, run_signup_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ class Outcome(enum.Enum):
 _active: set[str] = set()
 
 
-async def process_message(raw_body: str, *, sink) -> Outcome:
+async def process_message(raw_body: str, *, sink: SpriteEventSink) -> Outcome:
     try:
         body = json.loads(raw_body)
     except (json.JSONDecodeError, TypeError):

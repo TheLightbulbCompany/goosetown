@@ -49,7 +49,8 @@ class HttpSpriteEventSink:
                     attempt + 1,
                     _RETRIES,
                 )
-            await asyncio.sleep(1.5 * (attempt + 1))
+            if attempt + 1 < _RETRIES:
+                await asyncio.sleep(1.5 * (attempt + 1))
         logger.error(
             "sprite-event POST gave up: type=%s agent=%s",
             payload.get("type"),

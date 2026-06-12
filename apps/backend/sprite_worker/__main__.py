@@ -67,6 +67,8 @@ def _boot_sweep() -> int:
 
     swept = 0
     try:
+        # Active agents only, deliberately: a deactivated agent doesn't need a
+        # sprite; reactivation re-enters the normal register/connect enqueue path.
         agents = TownService().get_all_active_agents()
     except Exception:
         logger.exception("Boot sweep: agent scan failed — continuing without sweep")
@@ -140,6 +142,17 @@ async def main() -> None:
     sink = HttpSpriteEventSink()
     tasks: set[asyncio.Task] = set()
 
+    def _on_handle_done(task: asyncio.Task) -> None:
+        # Surface handler crashes immediately instead of as a GC-time
+        # "Task exception was never retrieved" warning. The message itself is
+        # safe either way: un-deleted -> visibility lapse -> redelivery.
+        tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc:
+            logger.error("sprite-worker: message handler crashed: %s", exc, exc_info=exc)
+
     await asyncio.to_thread(_boot_sweep)
 
     while not _should_exit:
@@ -161,7 +174,7 @@ async def main() -> None:
         for msg in resp.get("Messages", []):
             task = asyncio.create_task(_handle(sqs, queue_url, msg, sink))
             tasks.add(task)
-            task.add_done_callback(tasks.discard)
+            task.add_done_callback(_on_handle_done)
 
     if tasks:
         logger.info("Draining %d in-flight job(s) before exit (25s budget)...", len(tasks))
