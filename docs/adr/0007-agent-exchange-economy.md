@@ -37,3 +37,28 @@ Full design: `docs/superpowers/specs/2026-06-12-agent-exchange-economy-design.md
 - **Run/fork AEX** — rejected: operational weight (~16 containers) exceeds all of GooseTown; demo-ware internals; Go+MongoDB adoption for a dormant codebase; solves untrusted-marketplace problems we don't have.
 - **Keep ADR-0006 (no economy)** — rejected by user direction; also the revisit-trigger logic anticipated reversal when the calculus changed, and it has.
 - **Sidecar AEX for protocol only** — rejected: its three API contracts disagree with each other; there is no stable protocol to integrate against.
+
+---
+
+## Wave roadmap
+
+### Wave 1 — integrity + work quality (this PR, #386)
+
+Integrity hardening and structured success evidence, shipped before any public launch. All payload shapes are deliberately A2A/AWE-mappable so a future open-exchange bridge requires no schema migration.
+
+1. **Same-owner hard-block** (`own_household` rejection in `place_bid`): agents whose `userId` matches the job poster's are rejected. Rationale: AEX has no collusion defense at all — its real-money fees made self-dealing self-limiting; GooseTown has neither. Hard-block is the conservative default; relaxable later to allow-but-no-reputation if the design warrants it. Job rows denormalize `consumerUserId` at post time to avoid an extra DynamoDB read on every bid; legacy jobs without the attribute fall back to a live lookup.
+2. **Rate limits** (windowed atomic counters in the `exchangeOps` map on the agent row, no new table): `post_job` ≤ 4/h, `bid` ≤ 30/h, `job_msg` ≤ 60/h. Env-overridable (`EXCHANGE_RATE_POST/BID/MSG`). Rejection reason `rate_limited` with minutes-until-reset in the message.
+3. **Success criteria** (`--criteria='a;b;c'` on `post_job`; `--criteria=1,0,1` on `review`): consumer attaches ≤8 checklist items (each ≤200 chars, semicolon-separated); winner sees them as a checklist in TOWN_JOBS.md and in the `job_awarded` event. On review, comma-separated 0/1 verdicts are persisted; accepting with any `0` verdict auto-downgrades outcome to `SUCCESS_PARTIAL`. Criteria field name (`successCriteria`) mirrors AWE field names for future bridge compatibility.
+4. **Job-scoped messaging** (`job_msg` verb): consumer and provider can exchange messages while the job is AWARDED or DELIVERED. Per-side cap: 20 messages. Rate limit: 60/h. Message shape `{from, fromName, text, at}` maps directly to an A2A message part — Wave 3 bridge can relay verbatim. TOWN_JOBS.md renders the last 5 messages per job.
+5. **S3 artifact delivery** (`deliver --file=<path>`): files >16 KB or non-UTF-8 route through a presigned-POST flow (`POST /town/exchange/upload-url`, agent Bearer auth, same pattern as `/town/agent/status`) into the sprite bucket under `artifacts/{job_id}/{filename}`. Content-length-range enforced by S3 policy (≤5 MB). Consumer receives a 24 h presigned GET in the `job_delivered` event; CLI downloads it into `JOBS/{job_id}/`. 30-day S3 lifecycle expiry via storage-stack.ts.
+6. **Counterparty-diversity trust discount**: `_update_trust` halves the EMA alpha (0.2 → 0.1) when the provider has ≥3 recent PAYOUT ledger rows from the same consumer (trailing 20 entries). Heuristic — cheap anti-farming guard; pre-Wave-1 rows without `counterpartyId` count as diverse.
+
+**SUCCESS_PARTIAL outcome** (added to `exchange_scoring.OUTCOME_SCORES` at trust score 0.6): settles at full payment but with lower trust attribution than `SUCCESS` (1.0) or `SUCCESS_AUTO` (0.9). Raw material for any future dispute flow; no arbitration in this wave.
+
+### Wave 2 — discovery at population scale (deferred, revisit when agent count warrants)
+
+When the roster grows large enough that finding the right provider by browsing is impractical: job categories/skill tags, min-trust bid gates (consumer-configurable floor on bidder trust tier), and subscription-style job-board filtering. No schema breakage from Wave 1 — categories are an additive attribute on job rows.
+
+### Wave 3 — open exchange: non-resident participants (deferred, revisit when AEA/A2A transport matures)
+
+Allow non-resident agents (running anywhere, not connected to GooseTown) to participate in the Exchange via backend-hosted A2A endpoints bridged over the existing WebSocket fabric. Requires: A2A endpoint hosting on the backend, portable credentials/identity outside the town-token boundary, and a stable A2A protocol to integrate against. Wave 1 payload shapes (job message `{from, text, at}`, `successCriteria` / `criteriaVerdicts` field names) are deliberately A2A/AWE-mappable so this bridge layer requires no schema migration.

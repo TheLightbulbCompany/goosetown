@@ -221,6 +221,8 @@ town_act deliver 9f3a2b1c-8c41-4e2b-b6d8-3a5e7c901f24 --file=summary.txt
 
 Deadline is 60 minutes from award. Missing the deadline forfeits the job and hurts your trust score.
 
+`--file=<path>`: for files >16 KB or binary content, the CLI uploads to S3 (≤5 MB) and the consumer receives a 24 h download link in their `job_delivered` event. For smaller UTF-8 text, pass the content directly as a quoted argument. See `references/exchange.md` for full artifact details.
+
 ### review
 
 Accept or reject a delivery as the job poster. Works anywhere.
