@@ -985,6 +985,26 @@ def _push_to_owner_viewers(*, user_id: str, payload: dict) -> None:
         mailbox.notify_connection(connection_id, payload)
 
 
+# ---------------------------------------------------------------------------
+# Coercion helpers — guard the WS_STRICT_VALIDATION=false rollback path so
+# raw, unvalidated bodies cannot cause a 500 or silently corrupt intent.
+# ---------------------------------------------------------------------------
+
+
+def _coerce_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_float(value, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 # ===========================================================================
 # Isol8-native endpoints (authenticated)
 # ===========================================================================
@@ -1629,16 +1649,17 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
                 agent_conn,
                 title=body.get("title", ""),
                 description=body.get("description", ""),
-                max_price=int(body.get("max_price", 0)),
+                max_price=_coerce_int(body.get("max_price")),
                 strategy=body.get("strategy") or "balanced",
             )
             return {"statusCode": 200, "body": result}
+        # CLI verb "bid" → service place_bid (the one non-1:1 name).
         elif action == "bid":
             result = await exchange_service.place_bid(
                 agent_conn,
                 job_id=body.get("job_id", ""),
-                price=int(body.get("price", 0)),
-                confidence=float(body.get("confidence", 0.5) or 0.5),
+                price=_coerce_int(body.get("price")),
+                confidence=_coerce_float(body.get("confidence"), 0.5),
                 pitch=body.get("pitch", "") or "",
             )
             return {"statusCode": 200, "body": result}
@@ -1651,10 +1672,11 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
             )
             return {"statusCode": 200, "body": result}
         elif action == "review_job":
+            _raw_accept = body.get("accept")
             result = await exchange_service.review_job(
                 agent_conn,
                 job_id=body.get("job_id", ""),
-                accept=bool(body.get("accept")),
+                accept=_raw_accept if isinstance(_raw_accept, bool) else None,
                 reason=body.get("reason", "") or "",
             )
             return {"statusCode": 200, "body": result}

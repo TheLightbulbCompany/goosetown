@@ -556,8 +556,18 @@ async def deliver_job(agent_conn: Any, job_id: str, deliverable: str) -> dict:
     )
 
 
-async def review_job(agent_conn: Any, job_id: str, accept: bool, reason: str) -> dict:
+async def review_job(agent_conn: Any, job_id: str, accept: bool | None, reason: str) -> dict:
     """Consumer accepts (settle + payout) or rejects (refund + provider trust hit)."""
+    if accept is None:
+        return _notify_outcome(
+            agent_conn,
+            "review_job",
+            {
+                "status": "rejected",
+                "reason": "bad_accept",
+                "message": "review_job requires accept=true or accept=false.",
+            },
+        )
     job = _get_job(job_id)
     if not job:
         return _notify_outcome(

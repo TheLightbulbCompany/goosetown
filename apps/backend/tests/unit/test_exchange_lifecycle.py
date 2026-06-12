@@ -511,6 +511,15 @@ class TestReviewAndSettle:
         result = await ex.review_job(cc, job_id, True, "")
         assert result["reason"] == "not_delivered"
 
+    async def test_review_job_accept_none_rejected_bad_accept_job_stays_delivered(self, dynamodb_tables, mailbox, ws):
+        """accept=None (missing from unvalidated body) → rejected bad_accept; job stays DELIVERED."""
+        cc, pc, job_id = await _run_to_delivered(dynamodb_tables, ws, mailbox)
+        result = await ex.review_job(cc, job_id, None, "")
+        assert result["status"] == "rejected"
+        assert result["reason"] == "bad_accept"
+        # Job must remain DELIVERED — no settlement occurred.
+        assert _get_job(dynamodb_tables, job_id)["status"] == "DELIVERED"
+
     async def test_review_timeout_auto_accepts(self, dynamodb_tables, mailbox, ws):
         cc, pc, job_id = await _run_to_delivered(dynamodb_tables, ws, mailbox)
         await ex._review_timeout(job_id)

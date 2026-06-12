@@ -11,7 +11,6 @@ Each test asserts:
 
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -246,4 +245,88 @@ async def test_review_job_dispatches_to_service(handler_setup):
     )
 
 
-_ = asyncio  # referenced by pytest.mark.asyncio markers indirectly
+# ---------------------------------------------------------------------------
+# Coercion / strict-validation-off safety tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_post_job_bad_max_price_string_coerced_to_zero(handler_setup):
+    """post_job with max_price='abc' in a raw body is coerced to 0, not 500.
+
+    This exercises the WS_STRICT_VALIDATION=false rollback path — strict
+    validation is patched off so the untyped body reaches the dispatch ladder.
+    """
+    from fastapi import Request
+
+    from routers.town import WsMessageRequest, handle_ws_message
+
+    request = WsMessageRequest(
+        connectionId="conn-abc",
+        principalId="user-1",
+        body={
+            "type": "town_agent_act",
+            "action": "post_job",
+            "title": "Bad price test",
+            "description": "Should coerce gracefully",
+            "max_price": "abc",
+            "strategy": "balanced",
+        },
+    )
+    raw = MagicMock(spec=Request)
+    raw.headers = {}
+
+    with patch("core.config.settings") as mock_settings:
+        mock_settings.WS_STRICT_VALIDATION = False
+        mock_settings.ENVIRONMENT = "dev"
+        mock_settings.WS_LAMBDA_SECRET = ""
+        result = await handle_ws_message(request, raw)
+
+    assert result == {"statusCode": 200, "body": _SENTINEL_RESULT}
+    handler_setup.mock_exchange.post_job.assert_called_once_with(
+        handler_setup.agent_conn,
+        title="Bad price test",
+        description="Should coerce gracefully",
+        max_price=0,
+        strategy="balanced",
+    )
+
+
+@pytest.mark.asyncio
+async def test_review_job_missing_accept_passes_none(handler_setup):
+    """review_job with accept absent passes accept=None to the service.
+
+    This exercises the WS_STRICT_VALIDATION=false rollback path — strict
+    validation is patched off so the body without 'accept' reaches the dispatch
+    ladder, which must pass None rather than raising or silently coercing.
+    """
+    from fastapi import Request
+
+    from routers.town import WsMessageRequest, handle_ws_message
+
+    request = WsMessageRequest(
+        connectionId="conn-abc",
+        principalId="user-1",
+        body={
+            "type": "town_agent_act",
+            "action": "review_job",
+            "job_id": "job-no-accept",
+            "reason": "forgot to include accept",
+        },
+    )
+    raw = MagicMock(spec=Request)
+    raw.headers = {}
+
+    with patch("core.config.settings") as mock_settings:
+        mock_settings.WS_STRICT_VALIDATION = False
+        mock_settings.ENVIRONMENT = "dev"
+        mock_settings.WS_LAMBDA_SECRET = ""
+        result = await handle_ws_message(request, raw)
+
+    assert result == {"statusCode": 200, "body": _SENTINEL_RESULT}
+    handler_setup.mock_exchange.review_job.assert_called_once_with(
+        handler_setup.agent_conn,
+        job_id="job-no-accept",
+        accept=None,
+        reason="forgot to include accept",
+    )
