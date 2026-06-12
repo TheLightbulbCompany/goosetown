@@ -547,6 +547,8 @@ async def deliver_job(agent_conn: Any, job_id: str, deliverable: str) -> dict:
             "job_id": job_id,
             "title": job.get("title", ""),
             "deliverable": deliverable,  # full text — this is how the consumer receives the work
+            "provider_id": agent_conn.agent_id,
+            "consumer_id": job["consumerId"],
         },
     )
     return _notify_outcome(
@@ -630,7 +632,13 @@ async def _close_bid_window(job_id: str) -> None:
         _apply_mood(consumer_id, "job_expired_consumer")
         mailbox.notify(
             consumer_id,
-            {"event": "job_expired", "job_id": job_id, "title": job.get("title", ""), "refunded": max_price},
+            {
+                "event": "job_expired",
+                "job_id": job_id,
+                "title": job.get("title", ""),
+                "refunded": max_price,
+                "consumer_id": consumer_id,
+            },
         )
         return
 
@@ -660,6 +668,8 @@ async def _close_bid_window(job_id: str) -> None:
         "deadline_sec": int(DELIVERY_SEC),
         "provider_name": provider_name,
         "consumer_name": job.get("consumerName", ""),
+        "provider_id": winner,
+        "consumer_id": consumer_id,
     }
     mailbox.notify(winner, {**awarded, "description": job.get("description", "")})
     mailbox.notify(consumer_id, awarded)
@@ -690,6 +700,8 @@ async def _delivery_timeout(job_id: str) -> None:
         "job_id": job_id,
         "title": job.get("title", ""),
         "reason": "delivery_timeout",
+        "provider_id": provider_id,
+        "consumer_id": job["consumerId"],
     }
     mailbox.notify(provider_id, failed)
     mailbox.notify(job["consumerId"], failed)
@@ -729,6 +741,8 @@ async def _settle(job: dict, outcome: str, reason: str = "", rejected_by_consume
             "title": job.get("title", ""),
             "payout": agreed - fee,
             "fee": fee,
+            "provider_id": provider_id,
+            "consumer_id": consumer_id,
         }
         mailbox.notify(provider_id, completed)
         mailbox.notify(consumer_id, completed)
@@ -743,6 +757,8 @@ async def _settle(job: dict, outcome: str, reason: str = "", rejected_by_consume
             "job_id": job_id,
             "title": job.get("title", ""),
             "reason": reason or "rejected",
+            "provider_id": provider_id,
+            "consumer_id": consumer_id,
         }
         mailbox.notify(provider_id, failed)
         mailbox.notify(consumer_id, failed)
