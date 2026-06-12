@@ -399,7 +399,7 @@ _ACTIVITIES: list[Activity] = [
             "You are browsing the Exchange job board at the bank. Open jobs are announced "
             "in TOWN_EVENTS.md — look for job_posted events with a job_id. You can bid on "
             "an open job with `goosetown act bid <job_id> <price>` (you must be at the bank). "
-            "To post your own job: `goosetown act post_job <max_price> \"<title>\" \"<description>\"`. "
+            'To post your own job: `goosetown act post_job <max_price> "<title>" "<description>"`. '
             "Note any promising opportunities or open slots in TOWN_LIFE.md."
         ),
     ),
