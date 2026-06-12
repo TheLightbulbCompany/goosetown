@@ -12,7 +12,7 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
-def _make_sink(transport: httpx.AsyncBaseTransport, secret: str = "test-secret"):
+def _make_sink(transport: httpx.AsyncBaseTransport, secret: str = "test-secret"):  # nosec B107: dummy shared-secret fixture, not a real credential
     """Build an HttpSpriteEventSink with a mock transport and injected secret."""
     from sprite_worker.backend_sink import HttpSpriteEventSink
 
@@ -47,11 +47,11 @@ class _MockTransport(httpx.AsyncBaseTransport):
 @pytest.mark.asyncio
 async def test_progress_posts_correct_payload():
     transport = _MockTransport(status_code=200)
-    sink = _make_sink(transport, secret="my-secret")
+    sink = _make_sink(transport, secret="my-secret")  # nosec B106: dummy shared-secret fixture, not a real credential
 
     with patch("sprite_worker.backend_sink.settings") as mock_settings:
         mock_settings.BACKEND_INTERNAL_URL = "http://backend:8000"
-        mock_settings.WS_LAMBDA_SECRET = "my-secret"
+        mock_settings.WS_LAMBDA_SECRET = "my-secret"  # nosec B105: dummy shared-secret fixture, not a real credential
         # Re-create so the URL is baked in with the patched settings
         from sprite_worker.backend_sink import HttpSpriteEventSink
 
@@ -78,7 +78,7 @@ async def test_sprite_updated_posts_correct_payload():
 
     with patch("sprite_worker.backend_sink.settings") as mock_settings:
         mock_settings.BACKEND_INTERNAL_URL = "http://backend:8000"
-        mock_settings.WS_LAMBDA_SECRET = "sec"
+        mock_settings.WS_LAMBDA_SECRET = "sec"  # nosec B105: dummy shared-secret fixture, not a real credential
         from sprite_worker.backend_sink import HttpSpriteEventSink
 
         client = httpx.AsyncClient(transport=transport)
@@ -105,7 +105,7 @@ async def test_500_retries_then_gives_up_without_raising():
 
     with patch("sprite_worker.backend_sink.settings") as mock_settings:
         mock_settings.BACKEND_INTERNAL_URL = "http://backend:8000"
-        mock_settings.WS_LAMBDA_SECRET = ""
+        mock_settings.WS_LAMBDA_SECRET = ""  # nosec B105: dummy shared-secret fixture, not a real credential
         with patch("sprite_worker.backend_sink.asyncio.sleep", new_callable=AsyncMock):
             from sprite_worker.backend_sink import _RETRIES, HttpSpriteEventSink
 
@@ -128,7 +128,7 @@ async def test_transport_error_retries_never_raises():
 
     with patch("sprite_worker.backend_sink.settings") as mock_settings:
         mock_settings.BACKEND_INTERNAL_URL = "http://backend:8000"
-        mock_settings.WS_LAMBDA_SECRET = ""
+        mock_settings.WS_LAMBDA_SECRET = ""  # nosec B105: dummy shared-secret fixture, not a real credential
         with patch("sprite_worker.backend_sink.asyncio.sleep", new_callable=AsyncMock):
             from sprite_worker.backend_sink import _RETRIES, HttpSpriteEventSink
 
@@ -151,7 +151,7 @@ async def test_4xx_returns_after_first_attempt_no_retry_and_logs_error(caplog):
 
     with patch("sprite_worker.backend_sink.settings") as mock_settings:
         mock_settings.BACKEND_INTERNAL_URL = "http://backend:8000"
-        mock_settings.WS_LAMBDA_SECRET = ""
+        mock_settings.WS_LAMBDA_SECRET = ""  # nosec B105: dummy shared-secret fixture, not a real credential
         with patch("sprite_worker.backend_sink.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             from sprite_worker.backend_sink import HttpSpriteEventSink
 
@@ -167,7 +167,7 @@ async def test_4xx_returns_after_first_attempt_no_retry_and_logs_error(caplog):
     error_records = [r for r in caplog.records if r.levelname == "ERROR"]
     assert len(error_records) == 1
     assert "rejected with 403" in error_records[0].getMessage()
-    assert "x-ws-lambda-secret" in error_records[0].getMessage()
+    assert "shared-secret header" in error_records[0].getMessage()
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +181,7 @@ async def test_no_secret_header_when_empty():
 
     with patch("sprite_worker.backend_sink.settings") as mock_settings:
         mock_settings.BACKEND_INTERNAL_URL = "http://backend:8000"
-        mock_settings.WS_LAMBDA_SECRET = ""
+        mock_settings.WS_LAMBDA_SECRET = ""  # nosec B105: dummy shared-secret fixture, not a real credential
         from sprite_worker.backend_sink import HttpSpriteEventSink
 
         client = httpx.AsyncClient(transport=transport)

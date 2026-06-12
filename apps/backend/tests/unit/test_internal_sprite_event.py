@@ -152,7 +152,7 @@ class TestAuthGate:
         original_env = settings.ENVIRONMENT
         original_secret = settings.WS_LAMBDA_SECRET
         settings.ENVIRONMENT = "prod"
-        settings.WS_LAMBDA_SECRET = "super-secret-123"
+        settings.WS_LAMBDA_SECRET = "super-secret-123"  # nosec B105: dummy shared-secret fixture, not a real credential
         try:
             resp = client.post(
                 _URL,
@@ -172,7 +172,7 @@ class TestAuthGate:
         original_env = settings.ENVIRONMENT
         original_secret = settings.WS_LAMBDA_SECRET
         settings.ENVIRONMENT = "prod"
-        settings.WS_LAMBDA_SECRET = "super-secret-123"
+        settings.WS_LAMBDA_SECRET = "super-secret-123"  # nosec B105: dummy shared-secret fixture, not a real credential
         try:
             resp = client.post(
                 _URL,
@@ -192,7 +192,7 @@ class TestAuthGate:
         original_env = settings.ENVIRONMENT
         original_secret = settings.WS_LAMBDA_SECRET
         settings.ENVIRONMENT = "prod"
-        settings.WS_LAMBDA_SECRET = "super-secret-123"
+        settings.WS_LAMBDA_SECRET = "super-secret-123"  # nosec B105: dummy shared-secret fixture, not a real credential
         try:
             with patch("routers.town._send_to_daemon", return_value=True):
                 resp = client.post(
@@ -212,7 +212,7 @@ class TestAuthGate:
 
         # This is the normal conftest state (ENVIRONMENT=dev, WS_LAMBDA_SECRET="")
         assert settings.ENVIRONMENT == "dev"
-        assert settings.WS_LAMBDA_SECRET == ""
+        assert settings.WS_LAMBDA_SECRET == ""  # nosec B105: dummy shared-secret fixture, not a real credential
 
         with patch("routers.town._send_to_daemon", return_value=True):
             resp = client.post(

@@ -40,8 +40,11 @@ class HttpSpriteEventSink:
                     # 4xx is deterministic — retrying won't help, but a silent
                     # return would invisibly drop EVERY sprite event (e.g. a 403
                     # if the shared secret is wired backend-side but not here).
+                    # nosemgrep: python.lang.security.audit.logging.logger-credential-leak
                     logger.error(
-                        "sprite-event POST rejected with %d — check x-ws-lambda-secret wiring (type=%s agent=%s)",
+                        "sprite-event POST rejected with %d"
+                        " — check the worker/backend shared-secret header wiring"
+                        " (type=%s agent=%s)",
                         resp.status_code,
                         payload.get("type"),
                         str(payload.get("agent_id"))[:8],
