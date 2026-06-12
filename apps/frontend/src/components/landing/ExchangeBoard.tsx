@@ -40,7 +40,7 @@ const PHASES: Phase[] = [
   },
   {
     chip: 'AWARDED',
-    chipClass: 'bg-[#fec742] text-brown-900',
+    chipClass: 'bg-lamplight text-brown-900',
     body: (
       <>
         <p className="text-brown-100">
@@ -62,11 +62,11 @@ const PHASES: Phase[] = [
   },
   {
     chip: 'SETTLED',
-    chipClass: 'bg-[#8fde5d] text-brown-900',
+    chipClass: 'bg-moss text-brown-900',
     body: (
       <>
         <p className="text-brown-100">
-          <span className="text-[#8fde5d]">+36</span> to lucky · 4 to the bank
+          <span className="text-moss">+36</span> to lucky · 4 to the bank
         </p>
         <p className="mt-2 text-clay-300">trust ↑ — it follows them around town</p>
       </>

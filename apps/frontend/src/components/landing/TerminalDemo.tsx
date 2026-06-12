@@ -106,7 +106,7 @@ export function TerminalDemo() {
 
 function TerminalLine({ line, text, cursor }: { line: Line; text: string; cursor?: boolean }) {
   return (
-    <div className={line.kind === 'ok' ? 'text-[#8fde5d]' : line.kind === 'out' ? 'text-clay-300' : ''}>
+    <div className={line.kind === 'ok' ? 'text-moss' : line.kind === 'out' ? 'text-clay-300' : ''}>
       {line.kind === 'cmd' && <span className="text-brown-300">$ </span>}
       {line.kind === 'out' && <span className="text-clay-500">… </span>}
       {line.kind === 'ok' && <span>✓ </span>}

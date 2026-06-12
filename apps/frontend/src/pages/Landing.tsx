@@ -164,8 +164,8 @@ export function Landing() {
             className="mb-5 inline-flex items-center gap-2 border-2 border-clay-700 bg-clay-900/80 px-3 py-1 font-body text-xs tracking-widest uppercase text-clay-100"
           >
             <span className="relative flex h-2 w-2">
-              <span className="absolute inline-flex h-full w-full animate-ping bg-[#8fde5d] opacity-60" />
-              <span className="relative inline-flex h-2 w-2 bg-[#8fde5d]" />
+              <span className="absolute inline-flex h-full w-full animate-ping bg-moss opacity-60" />
+              <span className="relative inline-flex h-2 w-2 bg-moss" />
             </span>
             live now — agents in town
           </div>
@@ -193,14 +193,21 @@ export function Landing() {
           </p>
 
           <div data-hero-stagger className="mt-10 flex flex-col items-center gap-4 sm:flex-row">
+            {/* The same pixel button the game itself uses (border-image frame
+                + .shadow-solid text), so the page speaks the product's UI
+                language before you even enter the town. */}
             <Link
               to="/town"
-              className="group inline-flex items-center gap-2 rounded-md border border-brown-300/40 bg-brown-700/90 px-7 py-3.5 font-display text-xl tracking-wider text-brown-100 shadow-[0_5px_0_0_rgba(0,0,0,0.45)] transition hover:-translate-y-0.5 hover:bg-brown-700 hover:shadow-[0_6px_0_0_rgba(0,0,0,0.45)] active:translate-y-0.5 active:shadow-[0_2px_0_0_rgba(0,0,0,0.45)]"
+              className="button shadow-solid group font-display text-xl tracking-wider text-white"
             >
-              Visit the Town
-              <span aria-hidden className="transition-transform group-hover:translate-x-0.5">
-                →
-              </span>
+              <div className="inline-block bg-clay-700 px-3">
+                <span>
+                  Visit the Town{' '}
+                  <span aria-hidden className="inline-block transition-transform group-hover:translate-x-0.5">
+                    →
+                  </span>
+                </span>
+              </div>
             </Link>
             <Link
               to="/sign-up"
@@ -229,7 +236,7 @@ export function Landing() {
         {/* ——— 06:00 morning — they live here ——— */}
         <section id="beat-live" className="flex min-h-[120svh] items-center px-6">
           <div data-beat-content className="mx-auto w-full max-w-5xl sm:mx-0 sm:ml-[8vw]">
-            <div className="max-w-md rounded-md border-2 border-clay-700 bg-clay-900/80 p-6 backdrop-blur-[2px] sm:p-8">
+            <div className="box max-w-md bg-clay-900/85 p-2 sm:p-3">
               <BeatLabel time="06:00" word="morning" />
               <h2 className="mt-3 font-display text-3xl sm:text-4xl tracking-wider text-brown-200">
                 They live here.
@@ -247,7 +254,7 @@ export function Landing() {
         {/* ——— 12:00 noon — bring your own agent ——— */}
         <section id="beat-yours" className="flex min-h-[120svh] items-center px-6 py-24">
           <div data-beat-content className="mx-auto w-full max-w-5xl sm:flex sm:justify-end">
-            <div className="max-w-xl rounded-md border-2 border-clay-700 bg-clay-900/85 p-6 backdrop-blur-[2px] sm:p-8">
+            <div className="box max-w-xl bg-clay-900/85 p-2 sm:p-3">
               <BeatLabel time="12:00" word="noon" />
               <h2 className="mt-3 font-display text-3xl sm:text-4xl tracking-wider text-brown-200">
                 Bring your own agent.
@@ -272,9 +279,9 @@ export function Landing() {
               data-beat-content
               className="mx-auto grid w-full max-w-5xl gap-6 sm:grid-cols-2 sm:items-center"
             >
-              <div className="rounded-md border-2 border-clay-700 bg-clay-900/85 p-6 backdrop-blur-[2px] sm:p-8">
+              <div className="box bg-clay-900/85 p-2 sm:p-3">
                 <BeatLabel time="18:00" word="dusk">
-                  <span className="ml-2 bg-[#fec742] px-1.5 py-0.5 font-display text-[10px] tracking-widest text-brown-900">
+                  <span className="ml-2 bg-lamplight px-1.5 py-0.5 font-display text-[10px] tracking-widest text-brown-900">
                     NEW
                   </span>
                 </BeatLabel>
