@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render as renderRTL, screen } from '@testing-library/react';
+import { render as renderRTL, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import type { ReactElement } from 'react';
@@ -9,6 +9,15 @@ import type { Conversation } from '../hooks/useConversations';
 // hook reference is the mocked one.
 vi.mock('../hooks/useConversations', () => ({
   useConversations: vi.fn(),
+}));
+
+// Mock Clerk so useAuth() doesn't throw outside a ClerkProvider.
+// Default: signed-in with a test token. The signed-out test flips
+// mockIsSignedIn to false (and restores it) — the factory reads it per call.
+const mockGetToken = vi.fn().mockResolvedValue('test-token');
+let mockIsSignedIn = true;
+vi.mock('@clerk/clerk-react', () => ({
+  useAuth: () => ({ getToken: mockGetToken, isSignedIn: mockIsSignedIn }),
 }));
 
 import ConversationsLog from './ConversationsLog';
@@ -54,6 +63,7 @@ function makeConv(overrides: Partial<Conversation> = {}): Conversation {
 
 beforeEach(() => {
   mockedUse.mockReset();
+  mockGetToken.mockResolvedValue('test-token');
 });
 
 describe('ConversationsLog', () => {
@@ -297,5 +307,205 @@ describe('ConversationsLog', () => {
     // Navigated and modal closed (modal-only "hello" gone).
     expect(screen.getByTestId('loc').textContent).toBe('/town?focus=Rachel');
     expect(screen.queryByText(/hello/)).toBeNull();
+  });
+
+  // ─── Send footer (signed-in + active conversation) ─────────────────────
+
+  it('shows send input and button when signed in and conversation is active', async () => {
+    mockedUse.mockReturnValue({
+      conversations: [makeConv({ ended_at: null })],
+      loading: false,
+      error: null,
+    });
+    render(<ConversationsLog />);
+    await userEvent.click(screen.getByRole('button', { name: /Rachel & Ross/i }));
+
+    expect(screen.getByRole('textbox', { name: /message input/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^send$/i })).toBeInTheDocument();
+    // char counter starts at 280
+    expect(screen.getByText('280')).toBeInTheDocument();
+  });
+
+  it('hides send footer for ended conversations', async () => {
+    mockedUse.mockReturnValue({
+      conversations: [makeConv({ ended_at: '2026-04-17T00:05:00Z' })],
+      loading: false,
+      error: null,
+    });
+    render(<ConversationsLog />);
+    await userEvent.click(screen.getByRole('button', { name: /Rachel & Ross/i }));
+
+    expect(screen.queryByRole('textbox', { name: /message input/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^send$/i })).toBeNull();
+  });
+
+  it('shows sign-in hint instead of input when not signed in and conversation is active', async () => {
+    // Flip the shared mock to signed-out for this test only.
+    mockIsSignedIn = false;
+    mockedUse.mockReturnValue({
+      conversations: [makeConv({ ended_at: null })],
+      loading: false,
+      error: null,
+    });
+    render(<ConversationsLog />);
+    await userEvent.click(screen.getByRole('button', { name: /Rachel & Ross/i }));
+
+    expect(screen.queryByRole('textbox', { name: /message input/i })).toBeNull();
+    expect(screen.getByText(/sign in to join/i)).toBeInTheDocument();
+
+    // Restore default so subsequent tests are unaffected.
+    mockIsSignedIn = true;
+  });
+
+  it('char counter decrements as user types and turns red over 280', async () => {
+    mockedUse.mockReturnValue({
+      conversations: [makeConv({ ended_at: null })],
+      loading: false,
+      error: null,
+    });
+    render(<ConversationsLog />);
+    await userEvent.click(screen.getByRole('button', { name: /Rachel & Ross/i }));
+
+    const input = screen.getByRole('textbox', { name: /message input/i });
+    await userEvent.type(input, 'hello');
+    // 280 - 5 = 275
+    expect(screen.getByText('275')).toBeInTheDocument();
+  });
+
+  it('send button is disabled when input is empty', async () => {
+    mockedUse.mockReturnValue({
+      conversations: [makeConv({ ended_at: null })],
+      loading: false,
+      error: null,
+    });
+    render(<ConversationsLog />);
+    await userEvent.click(screen.getByRole('button', { name: /Rachel & Ross/i }));
+    expect(screen.getByRole('button', { name: /^send$/i })).toBeDisabled();
+  });
+
+  it('optimistically appends the human turn and POSTs to the backend', async () => {
+    mockedUse.mockReturnValue({
+      conversations: [makeConv({ ended_at: null })],
+      loading: false,
+      error: null,
+    });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ConversationsLog />);
+    await userEvent.click(screen.getByRole('button', { name: /Rachel & Ross/i }));
+
+    const input = screen.getByRole('textbox', { name: /message input/i });
+    await userEvent.type(input, 'great to meet you');
+    await userEvent.click(screen.getByRole('button', { name: /^send$/i }));
+
+    // Optimistic turn is visible with the "You (visitor)" label.
+    expect(screen.getByText('You (visitor)')).toBeInTheDocument();
+    expect(screen.getByText('great to meet you')).toBeInTheDocument();
+
+    // The fetch was called with the right endpoint and body.
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/town/conversations/c1/say'),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ text: 'great to meet you' }),
+      }),
+    );
+
+    vi.unstubAllGlobals();
+  });
+
+  it('shows a 409 error and rolls back the optimistic turn when the conversation ended', async () => {
+    mockedUse.mockReturnValue({
+      conversations: [makeConv({ ended_at: null })],
+      loading: false,
+      error: null,
+    });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 409 });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ConversationsLog />);
+    await userEvent.click(screen.getByRole('button', { name: /Rachel & Ross/i }));
+
+    const input = screen.getByRole('textbox', { name: /message input/i });
+    await userEvent.type(input, 'too late');
+    await userEvent.click(screen.getByRole('button', { name: /^send$/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(/conversation has ended/i);
+    });
+    // Input value is restored so the user can retry or copy their text.
+    expect(screen.getByRole('textbox', { name: /message input/i })).toHaveValue('too late');
+    // Optimistic turn rolled back.
+    expect(screen.queryByText('You (visitor)')).toBeNull();
+
+    vi.unstubAllGlobals();
+  });
+
+  it('shows a 429 rate-limit error', async () => {
+    mockedUse.mockReturnValue({
+      conversations: [makeConv({ ended_at: null })],
+      loading: false,
+      error: null,
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 429 }));
+
+    render(<ConversationsLog />);
+    await userEvent.click(screen.getByRole('button', { name: /Rachel & Ross/i }));
+    await userEvent.type(screen.getByRole('textbox', { name: /message input/i }), 'hello');
+    await userEvent.click(screen.getByRole('button', { name: /^send$/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(/slow down/i);
+    });
+
+    vi.unstubAllGlobals();
+  });
+
+  it('deduplicates optimistic turn once the polled log grows past the pre-send length', async () => {
+    const conv = makeConv({ ended_at: null, public_log: [{ speaker: 'Rachel', text: 'hi' }] });
+    mockedUse.mockReturnValue({
+      conversations: [conv],
+      loading: false,
+      error: null,
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200 }));
+
+    const { rerender } = render(<ConversationsLog />);
+    await userEvent.click(screen.getByRole('button', { name: /Rachel & Ross/i }));
+
+    await userEvent.type(screen.getByRole('textbox', { name: /message input/i }), 'how are you');
+    await userEvent.click(screen.getByRole('button', { name: /^send$/i }));
+
+    // Optimistic turn shows up.
+    expect(screen.getByText('how are you')).toBeInTheDocument();
+
+    // Simulate poll returning the real turn from the server (log grew from 1 to 2).
+    const updatedConv = {
+      ...conv,
+      turn_count: 2,
+      public_log: [
+        { speaker: 'Rachel', text: 'hi' },
+        { speaker: 'You', text: 'how are you' },
+      ],
+    };
+    mockedUse.mockReturnValue({
+      conversations: [updatedConv],
+      loading: false,
+      error: null,
+    });
+    rerender(
+      <MemoryRouter initialEntries={['/']}>
+        <ConversationsLog />
+        <LocationProbe />
+      </MemoryRouter>,
+    );
+
+    // "how are you" still appears (from server turn), but "You (visitor)" label
+    // should no longer be there (optimistic was deduped).
+    expect(screen.getByText('how are you')).toBeInTheDocument();
+    expect(screen.queryByText('You (visitor)')).toBeNull();
+
+    vi.unstubAllGlobals();
   });
 });

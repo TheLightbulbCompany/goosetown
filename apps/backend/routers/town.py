@@ -32,6 +32,8 @@ from schemas.town import (
     ApartmentAgentState,
     ApartmentResponse,
     ConversationTurn,
+    HumanSayRequest,
+    HumanSayResponse,
     TownConversationResponse,
     TownConversationsListResponse,
     WorldEventEntry,
@@ -1237,6 +1239,73 @@ async def get_conversations(limit: int = 20):
         )
 
     return TownConversationsListResponse(conversations=responses)
+
+
+def _visitor_display_name(user_id: str) -> str:
+    """Friendly, non-spoofable label for a logged-in visitor's conversation turn.
+
+    Clerk's ``AuthContext`` carries only ``user_id`` (no name/email claim), so
+    there's no real display name available server-side. We use a stable
+    ``Visitor-<short>`` label — the short suffix is derived from the user id so
+    two different users dropping into the same conversation are distinguishable
+    in the public log, while never exposing the raw Clerk id. Crucially this is
+    derived from the *authenticated* identity, not the request body, so a user
+    cannot present themselves as a resident.
+    """
+    suffix = "".join(ch for ch in user_id if ch.isalnum())[-4:].lower()
+    return f"Visitor-{suffix}" if suffix else "Visitor"
+
+
+@router.post(
+    "/conversations/{conv_id}/say",
+    response_model=HumanSayResponse,
+)
+async def post_conversation_say(
+    conv_id: str,
+    body: HumanSayRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Let a logged-in user drop a message into an ongoing resident conversation.
+
+    The resident participants' LLM brains see the visitor's line (it lands in
+    each resident daemon's ``pending_messages`` inbox via the same
+    ``conversation_message`` broadcast residents use for each other) and reply
+    on their next tick.
+
+    The speaker name is derived from the authenticated user, NOT from the body
+    — there is no ``speaker`` field on :class:`HumanSayRequest`. The visitor's
+    turn is tagged ``speakerType: "human"`` in the conversation's public log and
+    counted in a separate ``humanTurnCount`` so it never advances the agent
+    turn-cap that auto-ends the conversation.
+
+    Status codes:
+        * 200 — appended and broadcast.
+        * 404 — conversation does not exist.
+        * 409 — conversation has ended.
+        * 422 — empty/blank or over-length message (pydantic + service guard).
+        * 429 — too many messages into this conversation too quickly.
+    """
+    from core.services.conversation_service import broadcast_human_message
+
+    result = await broadcast_human_message(
+        conv_id=conv_id,
+        user_id=auth.user_id,
+        speaker_display=_visitor_display_name(auth.user_id),
+        message=body.message,
+    )
+
+    if result.ok:
+        return HumanSayResponse(ok=True, conv_id=conv_id, turn=result.turn_index or 0)
+
+    error_status = {
+        "conversation_not_found": 404,
+        "conversation_not_active": 409,
+        "rate_limited": 429,
+        "empty_message": 422,
+        "message_too_long": 422,
+    }
+    status_code = error_status.get(result.error or "", 400)
+    raise HTTPException(status_code=status_code, detail=result.error)
 
 
 @router.get("/world-events", response_model=list[WorldEventEntry])

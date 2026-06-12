@@ -151,6 +151,72 @@ class TestAppendMessageToConversation:
 
 
 # ===========================================================================
+# TownService — append_human_message_to_conversation
+# ===========================================================================
+
+
+class TestAppendHumanMessageToConversation:
+    def test_appends_human_tagged_turn(self, dynamodb_tables):
+        svc = TownService()
+        a = _make_agent(svc, "u1", "agent-a", "Agent A")
+        b = _make_agent(svc, "u2", "agent-b", "Agent B")
+
+        conv = svc.create_active_conversation(a["id"], b["id"], "cafe", "Hello", "Agent A")
+        updated = svc.append_human_message_to_conversation(conv["id"], "Visitor-abcd", "Hi residents!")
+
+        assert updated is not None
+        assert updated["publicLog"][-1]["speaker"] == "Visitor-abcd"
+        assert updated["publicLog"][-1]["text"] == "Hi residents!"
+        assert updated["publicLog"][-1]["speakerType"] == "human"
+        assert updated["humanTurnCount"] == 1
+
+    def test_does_not_advance_agent_turn_count(self, dynamodb_tables):
+        """A human turn must NOT bump ``turnCount`` — that drives the agent
+        turn-cap, and a visitor must not be able to push the conversation
+        toward a premature auto-end."""
+        svc = TownService()
+        a = _make_agent(svc, "u1", "agent-a", "Agent A")
+        b = _make_agent(svc, "u2", "agent-b", "Agent B")
+
+        conv = svc.create_active_conversation(a["id"], b["id"], "plaza", "Hello", "Agent A")
+        turn_count_before = conv["turnCount"]
+        last_speaker_before = conv.get("lastSpeakerId")
+
+        updated = svc.append_human_message_to_conversation(conv["id"], "Visitor-abcd", "A line")
+
+        assert updated["turnCount"] == turn_count_before
+        # ``lastSpeakerId`` (agents-only "don't speak twice" key) is untouched.
+        assert updated.get("lastSpeakerId") == last_speaker_before
+
+    def test_human_turn_count_accumulates(self, dynamodb_tables):
+        svc = TownService()
+        a = _make_agent(svc, "u1", "agent-a", "Agent A")
+        b = _make_agent(svc, "u2", "agent-b", "Agent B")
+
+        conv = svc.create_active_conversation(a["id"], b["id"], "library", "Start", "Agent A")
+        svc.append_human_message_to_conversation(conv["id"], "Visitor-abcd", "One")
+        updated = svc.append_human_message_to_conversation(conv["id"], "Visitor-abcd", "Two")
+
+        assert updated["humanTurnCount"] == 2
+
+    def test_returns_none_for_ended_conversation(self, dynamodb_tables):
+        svc = TownService()
+        a = _make_agent(svc, "u1", "agent-a", "Agent A")
+        b = _make_agent(svc, "u2", "agent-b", "Agent B")
+
+        conv = svc.create_active_conversation(a["id"], b["id"], "plaza", "Hi", "Agent A")
+        svc.end_conversation(conv["id"])
+
+        result = svc.append_human_message_to_conversation(conv["id"], "Visitor-abcd", "Too late")
+        assert result is None
+
+    def test_returns_none_for_missing_conversation(self, dynamodb_tables):
+        svc = TownService()
+        result = svc.append_human_message_to_conversation("no-such-id", "Visitor-abcd", "Hello?")
+        assert result is None
+
+
+# ===========================================================================
 # TownService — end_conversation
 # ===========================================================================
 

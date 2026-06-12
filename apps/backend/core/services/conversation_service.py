@@ -551,6 +551,190 @@ async def _handle_say(connection_id: str, body: dict, agent_conn) -> None:
     _schedule_inactivity_timeout(conv_id)
 
 
+# ---------------------------------------------------------------------------
+# Human-visitor messages into a resident↔resident conversation.
+# ---------------------------------------------------------------------------
+
+# Max characters a visitor may send in one turn. Matches a tweet-ish bound:
+# long enough for a real interjection, short enough to keep the resident's
+# prompt (and the rendered speech bubble) tidy.
+HUMAN_MESSAGE_MAX_CHARS = 280
+
+# Minimum seconds between consecutive human messages from the same user into
+# the same conversation. A deliberately small per-(user, conversation) throttle
+# so a user can't machine-gun a resident into a reply-storm. In-memory only —
+# the backend is multi-replica in prod, so this is a best-effort soft guard,
+# not a hard guarantee (acceptable: the agent turn-cap and inactivity timer are
+# the real backstops). State resets on deploy; that's fine for a politeness gate.
+HUMAN_MESSAGE_MIN_INTERVAL_SEC = 3.0
+
+# (user_id, conv_id) -> monotonic timestamp of that user's last accepted
+# message into that conversation.
+_human_say_last_ts: dict[tuple[str, str], float] = {}
+
+
+class HumanSayResult:
+    """Outcome of :func:`broadcast_human_message`.
+
+    A small, explicit result object (rather than raising) so the router can
+    map each failure mode to the right HTTP status without catching service
+    exceptions. ``ok`` is True only when the turn was appended and broadcast.
+    """
+
+    __slots__ = ("ok", "error", "conversation", "turn_index")
+
+    def __init__(
+        self,
+        ok: bool,
+        error: str | None = None,
+        conversation: dict | None = None,
+        turn_index: int | None = None,
+    ) -> None:
+        self.ok = ok
+        self.error = error
+        self.conversation = conversation
+        self.turn_index = turn_index
+
+
+def _human_rate_limited(user_id: str, conv_id: str) -> bool:
+    """Return True if ``user_id`` messaged ``conv_id`` too recently.
+
+    Records the current time as the last-send when it returns False (i.e. when
+    the message is allowed), so the next call within the window is throttled.
+    """
+    import time as _time
+
+    key = (user_id, conv_id)
+    now = _time.monotonic()
+    last = _human_say_last_ts.get(key)
+    if last is not None and (now - last) < HUMAN_MESSAGE_MIN_INTERVAL_SEC:
+        return True
+    _human_say_last_ts[key] = now
+    return False
+
+
+async def broadcast_human_message(
+    conv_id: str,
+    user_id: str,
+    speaker_display: str,
+    message: str,
+) -> HumanSayResult:
+    """Append a logged-in user's line to an active conversation and fan it out.
+
+    Mirrors the resident ``_handle_say`` broadcast path so the resident daemons
+    receive the visitor's turn exactly the way they receive each other's turns —
+    a ``conversation_message`` event lands in each resident's ``pending_messages``
+    inbox, which wakes the brain on the next tick (the brain gate fires when
+    ``pending_messages`` is non-empty). The event carries ``from_human: True``
+    and ``speakerType: "human"`` so the daemon/brain can tell a real person is
+    speaking, while still routing on ``text``/``from`` like any other message.
+
+    Validation order (each maps to an HTTP code in the router):
+
+    * ``empty_message`` — message is blank after trimming (422).
+    * ``message_too_long`` — exceeds ``HUMAN_MESSAGE_MAX_CHARS`` (422).
+    * ``rate_limited`` — same user messaged this conversation within the
+      throttle window (429).
+    * ``conversation_not_found`` — ``conv_id`` doesn't resolve (404).
+    * ``conversation_not_active`` — conversation has ended (409).
+
+    The speaker name is supplied by the caller from the authenticated identity,
+    never the request body, so a visitor cannot impersonate a resident.
+
+    Args:
+        conv_id: Conversation UUID.
+        user_id: Authenticated Clerk user id (for rate-limit keying).
+        speaker_display: Display name to label the turn with.
+        message: The visitor's message (pre-trim).
+
+    Returns:
+        A :class:`HumanSayResult`.
+    """
+    from core.services.daemon_mailbox import get_daemon_mailbox
+
+    text = (message or "").strip()
+    if not text:
+        return HumanSayResult(False, error="empty_message")
+    if len(text) > HUMAN_MESSAGE_MAX_CHARS:
+        return HumanSayResult(False, error="message_too_long")
+
+    if _human_rate_limited(user_id, conv_id):
+        return HumanSayResult(False, error="rate_limited")
+
+    service = TownService()
+    conv = service.get_conversation_by_id(conv_id)
+    if not conv:
+        return HumanSayResult(False, error="conversation_not_found")
+    if conv.get("status") != "active":
+        return HumanSayResult(False, error="conversation_not_active")
+
+    updated = service.append_human_message_to_conversation(conv_id, speaker_display, text)
+    if not updated:
+        # Lost a race — the conversation ended between our read and the
+        # conditional write. Surface it the same as a pre-check failure.
+        return HumanSayResult(False, error="conversation_not_active")
+
+    participants: list[str] = updated.get("participants") or [
+        updated.get("participantAId"),
+        updated.get("participantBId"),
+    ]
+    participants = [p for p in participants if p]
+
+    # The publicLog index of the turn we just appended (0-based). Used as the
+    # event's ``turn`` so the daemon can de-dupe / order. Human turns don't
+    # advance the agent ``turnCount``, so we derive position from publicLog.
+    turn_index = len(updated.get("publicLog") or []) - 1
+
+    mailbox = get_daemon_mailbox()
+    for pid in participants:
+        mailbox.notify(
+            pid,
+            {
+                "event": "conversation_message",
+                "conv_id": conv_id,
+                "from": speaker_display,
+                # No ``from_agent_name`` — the daemon's own-message filter keys
+                # on it, and a human has no agent name, so this correctly lands
+                # in every resident's ``pending_messages`` inbox.
+                "from_human": True,
+                "speakerType": "human",
+                "text": text,
+                "turn": turn_index,
+            },
+        )
+
+    # Send the visitor's line to the game server as a speech bubble so viewers
+    # see it on the map. Cosmetic — never fail the request on a bubble error.
+    # Attribute it to the first resident participant (the game server keys
+    # speech bubbles by agent id; the human has no sprite of their own).
+    if participants:
+        try:
+            gs_client = get_game_server_client()
+            await gs_client.send_command(
+                participants[0],
+                {"cmd": "set_speech", "text": f"{speaker_display}: {text}"},
+            )
+        except Exception:
+            logger.debug(
+                "human-message set_speech failed for conversation %s",
+                conv_id,
+                exc_info=True,
+            )
+
+    # A visitor turn is activity — reset the silence timer so the resident
+    # gets a chance to reply before the inactivity auto-end fires.
+    _schedule_inactivity_timeout(conv_id)
+
+    logger.info(
+        "Conversation %s: human visitor (user %s) said %d chars to %d participant(s)",
+        conv_id,
+        user_id,
+        len(text),
+        len(participants),
+    )
+    return HumanSayResult(True, conversation=updated, turn_index=turn_index)
+
+
 async def _handle_join_conversation(connection_id: str, body: dict, agent_conn) -> None:
     """Handle a join_conversation action — agent joins an existing active conversation.
 

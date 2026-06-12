@@ -125,6 +125,48 @@ class TestConversationInviteTracksParticipants:
         active = daemon.state["active_conversation"]
         assert active["participants"].count("Alice") == 1
 
+    def test_human_visitor_message_carries_speaker_type_and_wakes_brain(
+        self, daemon: TownDaemon
+    ):
+        """A logged-in user's message into the conversation has no
+        ``from_agent_name`` (so it isn't filtered as an own-echo), carries
+        ``speakerType="human"`` through into the rendered turn, and lands in
+        ``pending_messages`` so the brain wakes to reply."""
+        fired: list[int] = []
+        daemon._on_pending_message_cb = lambda: fired.append(1)
+        daemon._on_conversation_message(
+            "conversation_invite",
+            {
+                "conv_id": "c1",
+                "from": "Alice",
+                "from_agent_name": "alice",
+                "message": "Hey!",
+            },
+        )
+        fired.clear()  # isolate the human-message wake from the invite wake
+        daemon._on_conversation_message(
+            "conversation_message",
+            {
+                "conv_id": "c1",
+                "from": "Visitor-ab12",
+                "from_human": True,
+                "speakerType": "human",
+                "text": "Hi! Can you hear me?",
+                "turn": 2,
+            },
+        )
+
+        active = daemon.state["active_conversation"]
+        human_turn = active["turns"][-1]
+        assert human_turn["speaker"] == "Visitor-ab12"
+        assert human_turn["text"] == "Hi! Can you hear me?"
+        assert human_turn["speakerType"] == "human"
+        # No from_agent_name → not filtered as own-echo → in pending + brain woken.
+        assert any(
+            m.get("from_human") for m in daemon.state.get("pending_messages", [])
+        )
+        assert fired == [1]
+
 
 class TestPendingMessageWakeCallback:
     """The optional ``_on_pending_message_cb`` (wired by the worldgm resident
@@ -137,7 +179,12 @@ class TestPendingMessageWakeCallback:
         daemon._on_pending_message_cb = lambda: fired.append(1)
         daemon._on_conversation_message(
             "conversation_invite",
-            {"conv_id": "c1", "from": "Alice", "from_agent_name": "alice", "message": "Hi"},
+            {
+                "conv_id": "c1",
+                "from": "Alice",
+                "from_agent_name": "alice",
+                "message": "Hi",
+            },
         )
         assert fired == [1]
 
@@ -145,10 +192,19 @@ class TestPendingMessageWakeCallback:
         fired: list[int] = []
         daemon._on_pending_message_cb = lambda: fired.append(1)
         # Backend echoes the speaker's own ``say`` back — from_agent_name is us.
-        daemon.state["active_conversation"] = {"conv_id": "c1", "participants": ["Alice"], "turns": []}
+        daemon.state["active_conversation"] = {
+            "conv_id": "c1",
+            "participants": ["Alice"],
+            "turns": [],
+        }
         daemon._on_conversation_message(
             "conversation_message",
-            {"conv_id": "c1", "from": "Testagent", "from_agent_name": "testagent", "text": "my line"},
+            {
+                "conv_id": "c1",
+                "from": "Testagent",
+                "from_agent_name": "testagent",
+                "text": "my line",
+            },
         )
         assert fired == []
 
@@ -157,7 +213,12 @@ class TestPendingMessageWakeCallback:
         assert daemon._on_pending_message_cb is None
         daemon._on_conversation_message(
             "conversation_invite",
-            {"conv_id": "c1", "from": "Alice", "from_agent_name": "alice", "message": "Hi"},
+            {
+                "conv_id": "c1",
+                "from": "Alice",
+                "from_agent_name": "alice",
+                "message": "Hi",
+            },
         )
         assert daemon.state["pending_messages"]
 
@@ -169,7 +230,12 @@ class TestPendingMessageWakeCallback:
         # Must still record the pending message despite the callback raising.
         daemon._on_conversation_message(
             "conversation_invite",
-            {"conv_id": "c1", "from": "Alice", "from_agent_name": "alice", "message": "Hi"},
+            {
+                "conv_id": "c1",
+                "from": "Alice",
+                "from_agent_name": "alice",
+                "message": "Hi",
+            },
         )
         assert daemon.state["pending_messages"]
 
