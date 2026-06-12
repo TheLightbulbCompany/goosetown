@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -50,6 +50,8 @@ async def lifespan(app: FastAPI):
 
     # Cleanup
     app.state.exchange_sweeper.cancel()
+    with suppress(asyncio.CancelledError):
+        await app.state.exchange_sweeper
     await sprite_queue.stop()
     await relay.stop()
     gs_client = get_game_server_client()
