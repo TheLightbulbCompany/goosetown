@@ -939,9 +939,13 @@ class TownDaemon:
     def _download_artifact(self, job_id: str, url: str, name: str) -> str | None:
         """Download a delivered artifact into ``<workspace>/JOBS/{job_id}/``.
 
-        Streams via urllib with a 30s timeout. Returns the local path string,
-        or None on any failure (caller then surfaces the raw URL instead).
+        Streams via urllib with a 30s timeout into a ``.part`` temp file and
+        renames into place on success, so a mid-stream failure never leaves a
+        truncated file at the final artifact path. Returns the local path
+        string, or None on any failure (caller then surfaces the raw URL
+        instead).
         """
+        import contextlib
         import logging
         import urllib.request
 
@@ -955,15 +959,22 @@ class TownDaemon:
             target_dir = self._workspace_path / "JOBS" / safe_job
             target_dir.mkdir(parents=True, exist_ok=True)
             target = target_dir / safe_name
-            with (
-                urllib.request.urlopen(url, timeout=30) as resp,
-                open(target, "wb") as fh,
-            ):
-                while True:
-                    chunk = resp.read(65536)
-                    if not chunk:
-                        break
-                    fh.write(chunk)
+            tmp = target_dir / (safe_name + ".part")
+            try:
+                with (
+                    urllib.request.urlopen(url, timeout=30) as resp,
+                    open(tmp, "wb") as fh,
+                ):
+                    while True:
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            break
+                        fh.write(chunk)
+                tmp.replace(target)
+            except Exception:
+                with contextlib.suppress(OSError):
+                    tmp.unlink()
+                raise
             return str(target)
         except Exception as exc:
             logging.getLogger("town_daemon").warning(

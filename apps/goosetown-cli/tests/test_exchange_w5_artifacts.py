@@ -320,6 +320,35 @@ class TestDaemonArtifactDownload:
         assert "https://s3.example/presigned" in md
         assert "download failed" in _events(daemon)
 
+    def test_midstream_failure_leaves_no_partial_file(self, daemon: TownDaemon):
+        """A failure mid-download must not strand a truncated artifact file."""
+
+        class _BrokenResponse(_FakeResponse):
+            def __init__(self):
+                super().__init__(b"first chunk of bytes")
+                self._reads = 0
+
+            def read(self, n: int = -1) -> bytes:
+                self._reads += 1
+                if self._reads == 1:
+                    return b"first chunk"
+                raise OSError("connection reset mid-stream")
+
+        with patch("urllib.request.urlopen", return_value=_BrokenResponse()):
+            daemon._handle_event(
+                self._delivered_event(
+                    artifact_url="https://s3.example/presigned",
+                    artifact_name="logo.png",
+                )
+            )
+
+        job_dir = daemon._workspace_path / "JOBS" / "job-7"
+        assert not (job_dir / "logo.png").exists()
+        assert not (job_dir / "logo.png.part").exists()
+        md = _jobs_md(daemon)
+        assert "download failed" in md
+        assert "https://s3.example/presigned" in md
+
     def test_text_only_delivery_unchanged(self, daemon: TownDaemon):
         daemon._handle_event(self._delivered_event(deliverable="plain text work"))
         md = _jobs_md(daemon)
