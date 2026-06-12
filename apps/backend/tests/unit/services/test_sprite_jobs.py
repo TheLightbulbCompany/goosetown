@@ -306,9 +306,74 @@ class TestSqsSendFailure:
 
         with patch("core.services.town_service.TownService") as MockTownService:
             MockTownService.return_value.claim_sprite_job.return_value = True
+            MockTownService.return_value.release_sprite_claim.return_value = True
 
             from core.services.sprite_jobs import enqueue_signup
 
+            result = enqueue_signup("a-1", "Ada", "a goose in a suit")
+
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 7: claim release on SQS send failure
+# ---------------------------------------------------------------------------
+
+
+class TestClaimReleaseOnSendFailure:
+    def test_release_called_when_send_fails_after_claim(self, patched_sqs):
+        """When claim succeeds but SQS send fails, release_sprite_claim must be called."""
+        patched_sqs.send_message.side_effect = Exception("timeout")
+
+        with patch("core.services.town_service.TownService") as MockTownService:
+            mock_svc = MockTownService.return_value
+            mock_svc.claim_sprite_job.return_value = True
+            mock_svc.release_sprite_claim.return_value = True
+
+            from core.services.sprite_jobs import enqueue_signup
+
+            enqueue_signup("a-1", "Ada", "a goose in a suit")
+
+        mock_svc.release_sprite_claim.assert_called_once_with("a-1")
+
+    def test_release_not_called_when_force_true_and_send_fails(self, patched_sqs):
+        """force=True skips claim, so release must NOT be called even on send failure."""
+        patched_sqs.send_message.side_effect = Exception("timeout")
+
+        with patch("core.services.town_service.TownService") as MockTownService:
+            mock_svc = MockTownService.return_value
+
+            from core.services.sprite_jobs import enqueue_signup
+
+            enqueue_signup("a-1", "Ada", "a goose in a suit", force=True)
+
+        mock_svc.release_sprite_claim.assert_not_called()
+
+    def test_release_not_called_when_send_succeeds(self, patched_sqs):
+        """When the SQS send succeeds, release_sprite_claim must NOT be called."""
+        with patch("core.services.town_service.TownService") as MockTownService:
+            mock_svc = MockTownService.return_value
+            mock_svc.claim_sprite_job.return_value = True
+
+            from core.services.sprite_jobs import enqueue_signup
+
+            enqueue_signup("a-1", "Ada", "a goose in a suit")
+
+        mock_svc.release_sprite_claim.assert_not_called()
+
+    def test_release_raising_does_not_propagate(self, patched_sqs):
+        """If release_sprite_claim raises, enqueue_signup must still return False
+        without propagating the release exception."""
+        patched_sqs.send_message.side_effect = Exception("timeout")
+
+        with patch("core.services.town_service.TownService") as MockTownService:
+            mock_svc = MockTownService.return_value
+            mock_svc.claim_sprite_job.return_value = True
+            mock_svc.release_sprite_claim.side_effect = Exception("DynamoDB error")
+
+            from core.services.sprite_jobs import enqueue_signup
+
+            # Must not raise
             result = enqueue_signup("a-1", "Ada", "a goose in a suit")
 
         assert result is False

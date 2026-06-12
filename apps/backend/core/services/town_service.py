@@ -539,6 +539,31 @@ class TownService:
                 return False
             raise
 
+    def release_sprite_claim(self, agent_id: str) -> bool:
+        """Undo a ``claim_sprite_job`` whose SQS send failed.
+
+        Conditional on the row still being exactly ``spriteStatus="queued"``
+        so we can never clobber a worker that has already started the job
+        (the worker's first write flips it to "creating"). Returns True if
+        the claim was released, False if the condition did not match (i.e. the
+        worker already picked it up).
+        """
+        from botocore.exceptions import ClientError
+
+        table = dynamo.agents_table()
+        try:
+            table.update_item(
+                Key={"id": agent_id},
+                UpdateExpression="REMOVE spriteStatus",
+                ConditionExpression="spriteStatus = :queued",
+                ExpressionAttributeValues={":queued": "queued"},
+            )
+            return True
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+
     def update_agent_activity(
         self,
         agent_id: str,

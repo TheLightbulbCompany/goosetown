@@ -153,3 +153,89 @@ class TestClaimSpriteJob:
 
         with pytest.raises(ClientError):
             svc.claim_sprite_job("agent-1")
+
+
+class TestReleaseSpriteClaim:
+    """Tests for TownService.release_sprite_claim — conditional REMOVE gate.
+
+    Three behaviours under test:
+    1. Successful release — ``update_item`` succeeds → returns True; uses REMOVE
+       and conditions on spriteStatus="queued".
+    2. Conditional failure (ConditionalCheckFailedException) → returns False
+       (worker already started — don't clobber it).
+    3. Other AWS errors are re-raised so callers can log / handle them.
+    """
+
+    # ------------------------------------------------------------------
+    # Behaviour 1: successful release
+    # ------------------------------------------------------------------
+
+    def test_release_returns_true_on_success(self, svc_with_mock_table):
+        """When update_item succeeds (no exception), release_sprite_claim returns True."""
+        svc, mock_table = svc_with_mock_table
+        mock_table.update_item.return_value = {}
+
+        result = svc.release_sprite_claim("agent-1")
+
+        assert result is True
+
+    def test_release_calls_update_item_with_correct_key(self, svc_with_mock_table):
+        """update_item must be called with Key={"id": agent_id}."""
+        svc, mock_table = svc_with_mock_table
+        mock_table.update_item.return_value = {}
+
+        svc.release_sprite_claim("agent-1")
+
+        call_kwargs = mock_table.update_item.call_args.kwargs
+        assert call_kwargs["Key"] == {"id": "agent-1"}
+
+    def test_release_uses_remove_expression(self, svc_with_mock_table):
+        """UpdateExpression must REMOVE spriteStatus (not SET it to something)."""
+        svc, mock_table = svc_with_mock_table
+        mock_table.update_item.return_value = {}
+
+        svc.release_sprite_claim("agent-1")
+
+        call_kwargs = mock_table.update_item.call_args.kwargs
+        assert "REMOVE" in call_kwargs["UpdateExpression"]
+        assert "spriteStatus" in call_kwargs["UpdateExpression"]
+
+    def test_release_conditions_on_queued_status(self, svc_with_mock_table):
+        """ConditionExpression must only release when spriteStatus is "queued"."""
+        svc, mock_table = svc_with_mock_table
+        mock_table.update_item.return_value = {}
+
+        svc.release_sprite_claim("agent-1")
+
+        call_kwargs = mock_table.update_item.call_args.kwargs
+        assert "ConditionExpression" in call_kwargs
+        assert call_kwargs["ExpressionAttributeValues"][":queued"] == "queued"
+
+    # ------------------------------------------------------------------
+    # Behaviour 2: condition did not match (worker already started)
+    # ------------------------------------------------------------------
+
+    def test_conditional_check_failed_returns_false(self, svc_with_mock_table):
+        """ConditionalCheckFailedException means the worker already started.
+        release_sprite_claim must return False (not raise)."""
+        svc, mock_table = svc_with_mock_table
+        mock_table.update_item.side_effect = _client_error("ConditionalCheckFailedException")
+
+        result = svc.release_sprite_claim("agent-1")
+
+        assert result is False
+
+    # ------------------------------------------------------------------
+    # Behaviour 3: unexpected AWS errors are re-raised
+    # ------------------------------------------------------------------
+
+    def test_other_client_error_is_reraised(self, svc_with_mock_table):
+        """Any ClientError other than ConditionalCheckFailedException must
+        propagate so callers can surface real infrastructure failures."""
+        svc, mock_table = svc_with_mock_table
+        mock_table.update_item.side_effect = _client_error("ProvisionedThroughputExceededException")
+
+        with pytest.raises(ClientError) as exc_info:
+            svc.release_sprite_claim("agent-1")
+
+        assert "ProvisionedThroughputExceededException" in str(exc_info.value)

@@ -9,9 +9,14 @@ replicas only produce.
 Idempotency: ``enqueue_signup`` first claims the job via a conditional
 DynamoDB write (``TownService.claim_sprite_job`` sets spriteStatus="queued"),
 so concurrent producers (register endpoint + connect auto-enqueue racing) send
-at most one message. Write-then-send ordering means a failed send leaves a
-``queued`` row that the worker's boot sweep re-enqueues — self-healing, never
-job-losing.
+at most one message.
+
+Write-then-send ordering: if the SQS send fails *after* the claim, the claim
+is released via ``TownService.release_sprite_claim`` so the *next*
+register/connect attempt re-enqueues immediately rather than waiting for a
+worker restart. The boot sweep remains the backstop for two edge cases: a
+process crash between the claim write and the send (no chance to release), and
+a release call that itself fails (best-effort — logged, not fatal).
 """
 
 from __future__ import annotations
@@ -80,13 +85,15 @@ def enqueue_signup(agent_id: str, display_name: str, appearance: str, *, force: 
     claim — used by the worker boot sweep (re-enqueueing rows already in an
     in-progress status) and by admin regenerate (which clears state first).
     """
+    claimed = False
     if not force:
         from core.services.town_service import TownService
 
         if not TownService().claim_sprite_job(agent_id):
             logger.info("sprite_jobs: %s already queued/in-flight — skipping", agent_id[:8])
             return False
-    return _send(
+        claimed = True
+    sent = _send(
         {
             "schema": 1,
             "kind": "signup",
@@ -96,6 +103,19 @@ def enqueue_signup(agent_id: str, display_name: str, appearance: str, *, force: 
             "enqueued_at": int(time.time()),
         }
     )
+    if claimed and not sent:
+        try:
+            if TownService().release_sprite_claim(agent_id):
+                logger.warning(
+                    "sprite_jobs: released claim for %s after failed send — next attempt will re-enqueue",
+                    agent_id[:8],
+                )
+        except Exception:
+            logger.exception(
+                "sprite_jobs: failed to release claim for %s (boot sweep will recover)",
+                agent_id[:8],
+            )
+    return sent
 
 
 def enqueue_animation(agent_id: str, anim_name: str) -> bool:
