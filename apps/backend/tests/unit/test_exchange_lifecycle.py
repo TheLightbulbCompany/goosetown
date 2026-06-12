@@ -843,3 +843,146 @@ class TestTrustUpdateOptimisticConcurrency:
         # Second attempt re-read 0.6 and compounded: 0.8*0.6 + 0.2*1.0 = 0.68.
         assert float(item["trustScore"]) == pytest.approx(0.68)
         assert calls["n"] >= 2  # first write conflicted, retry landed
+
+
+# ---------------------------------------------------------------------------
+# Race: bids that land between _get_job read and status flip (codex P2)
+# ---------------------------------------------------------------------------
+
+
+class TestLateRacingBidNotifications:
+    """Verify that a bid committed atomically between the pre-read snapshot and
+    the OPEN→terminal status flip receives the correct terminal notification.
+
+    Deterministic approach: monkeypatch ``_get_job`` to return a snapshot that
+    does NOT include the late bidder, while the real DynamoDB table already
+    contains the late bid (written directly).  The code under test will flip the
+    status and iterate the post-flip ALL_NEW bids map — which DOES include the
+    late bid — so the terminal event must reach the late bidder.
+    """
+
+    async def test_late_bid_before_award_flip_gets_bid_lost(self, dynamodb_tables, mailbox, ws):
+        """AWARDED path: snapshot has bidder A only; real table has A + late B.
+        After _close_bid_window, B must receive bid_lost and A's award flow is unaffected."""
+        cc, job_id = await _post(dynamodb_tables, ws, max_price=30)
+        # Seed two agents — A will be in the snapshot, B is the late racer.
+        _seed_agent(dynamodb_tables, "bid-a", "alice", trustScore=Decimal("0.9"))
+        _seed_agent(dynamodb_tables, "bid-b", "brenda")
+        ws.conns["bid-a"] = _conn("bid-a", "alice", "c-a")
+        ws.conns["bid-b"] = _conn("bid-b", "brenda", "c-b")
+
+        # Write A's bid through the normal path so the job item is consistent.
+        await ex.place_bid(ws.conns["bid-a"], job_id, 20, 0.9, "experienced")
+
+        # Write B's bid directly to DynamoDB (simulating the race: B's conditional
+        # write succeeded while the close path was between _get_job and _flip_status).
+        dynamodb_tables.Table("goosetown-jobs").update_item(
+            Key={"id": job_id},
+            UpdateExpression="SET bids.#aid = :bid",
+            ExpressionAttributeNames={"#aid": "bid-b"},
+            ExpressionAttributeValues={
+                ":bid": {
+                    "price": 25,
+                    "confidence": Decimal("0.5"),
+                    "pitch": "late racer",
+                    "bidAt": "2026-06-12T00:00:00+00:00",
+                    "agentName": "brenda",
+                }
+            },
+        )
+
+        # Snapshot visible to _close_bid_window excludes bid-b (simulates the race).
+        real_get_job = ex._get_job(job_id)
+        snapshot_without_b = {**real_get_job, "bids": {k: v for k, v in real_get_job["bids"].items() if k != "bid-b"}}
+
+        mailbox.reset_mock()
+        with patch.object(ex, "_get_job", return_value=snapshot_without_b):
+            await ex._close_bid_window(job_id)
+
+        events = _notified_events(mailbox)
+        # bid-a wins the award (only bidder in the snapshot live_bids).
+        assert ("bid-a", "job_awarded") in events
+        assert ("consumer", "job_awarded") in events
+        # bid-b (the late racer) must receive bid_lost from the post-flip iteration.
+        assert ("bid-b", "bid_lost") in events
+        # bid-a must NOT receive bid_lost.
+        assert ("bid-a", "bid_lost") not in events
+
+    async def test_late_bid_before_expired_flip_gets_bid_lost(self, dynamodb_tables, mailbox, ws):
+        """EXPIRED path: snapshot shows no bids; real table has one late bid.
+        After _close_bid_window, late bidder must receive bid_lost."""
+        cc, job_id = await _post(dynamodb_tables, ws, max_price=30)
+        _seed_agent(dynamodb_tables, "bid-late", "lara")
+        ws.conns["bid-late"] = _conn("bid-late", "lara", "c-late")
+
+        # Write the late bid directly to DynamoDB (race: bid committed before flip).
+        dynamodb_tables.Table("goosetown-jobs").update_item(
+            Key={"id": job_id},
+            UpdateExpression="SET bids.#aid = :bid",
+            ExpressionAttributeNames={"#aid": "bid-late"},
+            ExpressionAttributeValues={
+                ":bid": {
+                    "price": 10,
+                    "confidence": Decimal("0.7"),
+                    "pitch": "too late?",
+                    "bidAt": "2026-06-12T00:00:00+00:00",
+                    "agentName": "lara",
+                }
+            },
+        )
+
+        # Snapshot has no bids (window appeared empty to the close path).
+        real_get_job = ex._get_job(job_id)
+        snapshot_no_bids = {**real_get_job, "bids": {}}
+
+        mailbox.reset_mock()
+        with patch.object(ex, "_get_job", return_value=snapshot_no_bids):
+            await ex._close_bid_window(job_id)
+
+        job = _get_job(dynamodb_tables, job_id)
+        assert job["status"] == "EXPIRED"
+        events = _notified_events(mailbox)
+        # Consumer gets job_expired.
+        assert ("consumer", "job_expired") in events
+        # Late bidder must get bid_lost via post-flip ALL_NEW iteration.
+        assert ("bid-late", "bid_lost") in events
+
+    async def test_late_bid_before_cancel_flip_gets_job_cancelled(self, dynamodb_tables, mailbox, ws):
+        """cancel_job race: snapshot excludes late bidder; real table includes them.
+        Late bidder must receive job_cancelled after the flip."""
+        cc, job_id = await _post(dynamodb_tables, ws, max_price=30)
+        _seed_agent(dynamodb_tables, "bid-c", "caitlin")
+        ws.conns["bid-c"] = _conn("bid-c", "caitlin", "c-c")
+
+        # Write the racing bid directly (simulates commit between _get_job and flip).
+        dynamodb_tables.Table("goosetown-jobs").update_item(
+            Key={"id": job_id},
+            UpdateExpression="SET bids.#aid = :bid",
+            ExpressionAttributeNames={"#aid": "bid-c"},
+            ExpressionAttributeValues={
+                ":bid": {
+                    "price": 15,
+                    "confidence": Decimal("0.6"),
+                    "pitch": "racing in",
+                    "bidAt": "2026-06-12T00:00:00+00:00",
+                    "agentName": "caitlin",
+                }
+            },
+        )
+
+        # Snapshot returned to cancel_job has no bids (race).
+        real_job = ex._get_job(job_id)
+        snapshot_no_bids = {**real_job, "bids": {}}
+
+        mailbox.reset_mock()
+        with patch.object(ex, "_get_job", return_value=snapshot_no_bids):
+            result = await ex.cancel_job(cc, job_id)
+
+        assert result["status"] == "ok"
+        job = _get_job(dynamodb_tables, job_id)
+        assert job["status"] == "CANCELLED"
+        events = _notified_events(mailbox)
+        # The late racer must receive job_cancelled via post-flip iteration.
+        assert ("bid-c", "job_cancelled") in events
+        # Consumer must NOT receive job_cancelled (only exchange_ok from _notify_outcome).
+        assert ("consumer", "job_cancelled") not in events

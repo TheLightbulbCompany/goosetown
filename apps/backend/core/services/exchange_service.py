@@ -216,9 +216,17 @@ def _get_job(job_id: str) -> dict | None:
     return resp.get("Item")
 
 
-def _flip_status(job_id: str, from_status: str, to_status: str, set_extra: dict[str, Any] | None = None) -> bool:
-    """Conditionally flip a job's status. Returns False if the job wasn't in
-    ``from_status`` (another path — timer, sweeper, explicit verb — won)."""
+def _flip_status(job_id: str, from_status: str, to_status: str, set_extra: dict[str, Any] | None = None) -> dict | None:
+    """Conditionally flip a job's status.
+
+    Returns the post-flip item dict (``ReturnValues="ALL_NEW"``) on success, or
+    ``None`` if the job wasn't in ``from_status`` (another path — timer, sweeper,
+    explicit verb — won the race).
+
+    Callers that only care about success/failure can use the returned value in a
+    boolean context (``None`` is falsy, a dict is truthy), so all existing
+    ``if not _flip_status(...)`` call sites remain correct.
+    """
     table = dynamo.jobs_table()
     names = {"#st": "status"}
     values: dict[str, Any] = {":from": from_status, ":to": to_status, ":now": _now_iso()}
@@ -228,16 +236,17 @@ def _flip_status(job_id: str, from_status: str, to_status: str, set_extra: dict[
         values[f":x{i}"] = val
         sets.append(f"#x{i} = :x{i}")
     try:
-        table.update_item(
+        resp = table.update_item(
             Key={"id": job_id},
             UpdateExpression="SET " + ", ".join(sets),
             ConditionExpression="#st = :from",
             ExpressionAttributeNames=names,
             ExpressionAttributeValues=values,
+            ReturnValues="ALL_NEW",
         )
     except table.meta.client.exceptions.ConditionalCheckFailedException:
-        return False
-    return True
+        return None
+    return resp["Attributes"]
 
 
 def _at_exchange(agent_conn: Any) -> bool:
@@ -511,7 +520,8 @@ async def cancel_job(agent_conn: Any, job_id: str) -> dict:
             "cancel_job",
             {"status": "rejected", "reason": "not_consumer", "message": "Only the poster can cancel a job."},
         )
-    if not _flip_status(job_id, "OPEN", "CANCELLED"):
+    flipped = _flip_status(job_id, "OPEN", "CANCELLED")
+    if not flipped:
         return _notify_outcome(
             agent_conn,
             "cancel_job",
@@ -520,7 +530,13 @@ async def cancel_job(agent_conn: Any, job_id: str) -> dict:
     _cancel_timer(job_id)
     balance = credit_wallet(job["consumerId"], int(job["maxPrice"]), "ESCROW_REFUND", job_id)
     mailbox = get_daemon_mailbox()
-    for aid in job.get("bids", {}):
+    # Use the post-flip bids map rather than the pre-read snapshot so that any
+    # bid that raced in between our _get_job read and the status flip (and whose
+    # status=OPEN condition therefore succeeded) is also notified.  DynamoDB
+    # serializes item writes, so every bid whose conditional write committed did
+    # so before our flip committed — the ALL_NEW item is the authoritative set.
+    post_flip_bids: dict = flipped.get("bids") or {}
+    for aid in post_flip_bids:
         mailbox.notify(
             aid,
             {
@@ -669,7 +685,8 @@ async def _close_bid_window(job_id: str) -> None:
     winner = exchange_scoring.choose_winner(live_bids, max_price, trust_by_agent, job.get("strategy", "balanced"))
 
     if winner is None:
-        if not _flip_status(job_id, "OPEN", "EXPIRED"):
+        flipped = _flip_status(job_id, "OPEN", "EXPIRED")
+        if not flipped:
             return
         _cancel_timer(job_id)
         consumer_balance = credit_wallet(consumer_id, max_price, "ESCROW_REFUND", job_id)
@@ -685,11 +702,21 @@ async def _close_bid_window(job_id: str) -> None:
                 "balance": consumer_balance,
             },
         )
+        # Notify any bidders that raced in between our _get_job read and the flip.
+        # DynamoDB serializes item writes: every bid whose status=OPEN condition
+        # succeeded committed BEFORE our flip, so ALL_NEW carries the authoritative
+        # bids map.  The pre-read snapshot ("bids") may have been empty (window
+        # appeared to have no bids), but a late bid could still have committed
+        # atomically before us.
+        post_flip_bids: dict = flipped.get("bids") or {}
+        for aid in post_flip_bids:
+            mailbox.notify(aid, {"event": "bid_lost", "job_id": job_id, "title": job.get("title", "")})
+            _apply_mood(aid, "bid_lost")
         return
 
     agreed = int(live_bids[winner]["price"])
     provider_name = str(live_bids[winner].get("agentName", ""))
-    if not _flip_status(
+    flipped = _flip_status(
         job_id,
         "OPEN",
         "AWARDED",
@@ -699,7 +726,8 @@ async def _close_bid_window(job_id: str) -> None:
             "agreedPrice": agreed,
             "deliveryDeadlineAt": Decimal(str(time.time() + DELIVERY_SEC)),
         },
-    ):
+    )
+    if not flipped:
         return
     consumer_balance_after_award: int | None = None
     if max_price - agreed > 0:
@@ -723,7 +751,12 @@ async def _close_bid_window(job_id: str) -> None:
         awarded if consumer_balance_after_award is None else {**awarded, "balance": consumer_balance_after_award}
     )
     mailbox.notify(consumer_id, consumer_awarded)
-    for aid in bids:
+    # Use the post-flip bids map for loser notifications.  DynamoDB serializes
+    # item writes, so every bid whose status=OPEN condition succeeded committed
+    # BEFORE our AWARDED flip — ALL_NEW is the authoritative set and automatically
+    # covers any bidder that raced in after the pre-read snapshot was taken.
+    post_flip_bids = flipped.get("bids") or {}
+    for aid in post_flip_bids:
         if aid != winner:
             mailbox.notify(aid, {"event": "bid_lost", "job_id": job_id, "title": job.get("title", "")})
             _apply_mood(aid, "bid_lost")
