@@ -93,6 +93,9 @@ var _viewer_interp: bool = false
 var _interp_prev: Vector2 = Vector2.ZERO
 var _interp_target: Vector2 = Vector2.ZERO
 var _interp_start_ms: int = 0
+## Timestamp of the previous _physics_process tick (ms). Used for tab-refocus detection:
+## a wall-clock gap > REFOCUS_DELTA_THRESHOLD_MS means the render loop was paused.
+var _last_physics_ms: int = 0
 ## Nominal time to traverse between two broadcasts. Matches game server broadcast cadence.
 const INTERP_DURATION_MS: int = 2000
 ## Threshold (in pixels) for a journey to count as "walking" in viewer mode.
@@ -106,6 +109,15 @@ const MIN_WALK_INTERP_DIST: float = 4.0
 ## 30 s gives normal network jitter ~15× headroom while still catching the real
 ## case (browser tab backgrounded, render loop frozen, broadcasts queue up).
 const STALE_INTERP_THRESHOLD_MS: int = 30000
+## Wall-clock gap (ms) between consecutive _physics_process ticks that indicates the
+## browser paused the render loop (tab backgrounded). Godot 4.x web exports run
+## _physics_process at a fixed timestep — delta is always ~1/60 s regardless of
+## wall-clock gaps, so delta inspection is useless here. Instead we compare
+## Time.get_ticks_msec() between ticks: a gap > 500 ms is impossible under normal
+## gameplay (60 Hz physics = 16.7 ms/tick) and reliably signals a refocus event.
+## On refocus we snap each agent to _interp_target and reset the interp timers so
+## the NEXT broadcast resumes normal lerping from the correct position.
+const REFOCUS_DELTA_THRESHOLD_MS: int = 500
 ## Cached AtlasTexture instances keyed by "animation/facing" to avoid per-frame allocations
 var _atlas_cache: Dictionary = {}
 
@@ -188,7 +200,25 @@ func _physics_process(delta: float) -> void:
 		# Viewer mode — snapshot interpolation between server broadcasts.
 		# Server broadcasts are authoritative; viewer just smoothly moves
 		# from the previous broadcast position to the latest one.
-		var elapsed_ms: int = Time.get_ticks_msec() - _interp_start_ms
+		#
+		# Tab-refocus snap (BUG 4): Godot 4.x web exports use a fixed physics
+		# timestep so delta is always ~1/60 s — it does NOT balloon on refocus.
+		# Instead we measure the wall-clock gap via Time.get_ticks_msec(). When
+		# the browser backgrounds the tab, _physics_process halts but the WS
+		# keeps delivering world_state, so _interp_target advances while
+		# global_position is frozen. On refocus the lerp would "wind-up slide"
+		# agents from the stale frozen position. Detect this by comparing the
+		# current tick time to _last_physics_ms: a gap > REFOCUS_DELTA_THRESHOLD_MS
+		# (500 ms) is impossible under normal 60 Hz physics and reliably signals
+		# a pause. On detection, snap to _interp_target and reset the interp
+		# window so the next broadcast starts a fresh, correct lerp.
+		var now_ms: int = Time.get_ticks_msec()
+		if _last_physics_ms > 0 and (now_ms - _last_physics_ms) > REFOCUS_DELTA_THRESHOLD_MS:
+			global_position = _interp_target
+			_interp_prev = _interp_target
+			_interp_start_ms = now_ms
+		_last_physics_ms = now_ms
+		var elapsed_ms: int = now_ms - _interp_start_ms
 		var t: float = clampf(float(elapsed_ms) / float(INTERP_DURATION_MS), 0.0, 1.0)
 		var new_pos: Vector2 = _interp_prev.lerp(_interp_target, t)
 		var delta_vec: Vector2 = new_pos - global_position
