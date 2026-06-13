@@ -1887,6 +1887,21 @@ async def exchange_sweeper_loop() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _try_attach_balance(evt: dict, agent_id: str) -> bool:
+    """Best-effort wallet-balance attach for resync events.
+
+    Resync must never fail because the balance read hiccuped — the event is
+    still useful without it. Returns True when attached (caller stops trying
+    for the rest of the resync pass).
+    """
+    try:
+        evt["balance"] = get_wallet(agent_id)["balance"]
+        return True
+    except Exception:
+        logger.debug("Balance attach failed during resync for %s", agent_id[:8])
+        return False
+
+
 def resync_agent_jobs(agent_id: str) -> int:
     """Re-send action-required job events this agent may have missed.
 
@@ -2028,11 +2043,7 @@ def resync_agent_jobs(agent_id: str) -> int:
                             evt["criteria_verdicts"] = verdicts
                         # First money-relevant event for this agent: attach current balance.
                         if not balance_sent:
-                            try:
-                                evt["balance"] = get_wallet(agent_id)["balance"]
-                                balance_sent = True
-                            except Exception:
-                                pass
+                            balance_sent = _try_attach_balance(evt, agent_id)
                         if mailbox.notify(agent_id, evt):
                             sent += 1
                     elif terminal_status == "FAILED":
@@ -2089,11 +2100,7 @@ def resync_agent_jobs(agent_id: str) -> int:
                             evt["criteria_verdicts"] = verdicts
                         # Consumer receives money on failure (escrow refund) — attach balance.
                         if not balance_sent:
-                            try:
-                                evt["balance"] = get_wallet(agent_id)["balance"]
-                                balance_sent = True
-                            except Exception:
-                                pass
+                            balance_sent = _try_attach_balance(evt, agent_id)
                         if mailbox.notify(agent_id, evt):
                             sent += 1
                     elif terminal_status == "EXPIRED":
@@ -2107,11 +2114,7 @@ def resync_agent_jobs(agent_id: str) -> int:
                         }
                         # Consumer receives escrow refund on expiry — attach balance.
                         if not balance_sent:
-                            try:
-                                evt["balance"] = get_wallet(agent_id)["balance"]
-                                balance_sent = True
-                            except Exception:
-                                pass
+                            balance_sent = _try_attach_balance(evt, agent_id)
                         if mailbox.notify(agent_id, evt):
                             sent += 1
                     continue
