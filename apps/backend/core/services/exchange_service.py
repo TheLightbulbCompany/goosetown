@@ -1771,10 +1771,21 @@ def resync_agent_jobs(agent_id: str) -> int:
       (regenerating the 24 h presigned artifact GET when present).
     * providerId == agent_id, status DELIVERED → nothing: the provider's
       waiting-on-review state needs no action.
+    * agent_id in bids AND providerId != agent_id, status in
+      {AWARDED, COMPLETED, FAILED, EXPIRED} → re-notify ``bid_lost`` so a
+      bidder that was offline when the window closed clears its stale [BID]
+      cache entry.
+    * agent_id in bids, status CANCELLED → re-notify ``job_cancelled`` so
+      the same offline-bidder gap is covered for consumer-withdrawn jobs.
 
     Every re-sent event carries ``"resync": True`` so the daemon can update
     its cache without duplicating TOWN_EVENTS lines. Returns the number of
     events delivered. Never raises — resync must never break connect.
+
+    Note: the bid_lost / job_cancelled branches each issue one GSI page query
+    per terminal status (4 statuses + CANCELLED = 5 extra queries per connect).
+    This is acceptable at GooseTown's town scale where concurrent open jobs
+    are in the tens, not thousands.
     """
     try:
         mailbox = get_daemon_mailbox()
@@ -1782,26 +1793,38 @@ def resync_agent_jobs(agent_id: str) -> int:
         sent = 0
 
         for job in _jobs_with_status("AWARDED"):
-            if job.get("providerId") != agent_id:
-                continue
-            awarded: dict[str, Any] = {
-                "event": "job_awarded",
-                "job_id": job["id"],
-                "title": job.get("title", ""),
-                "agreed_price": int(job.get("agreedPrice", 0)),
-                "deadline_sec": max(0, int(float(job.get("deliveryDeadlineAt") or 0) - now)),
-                "provider_name": job.get("providerName", ""),
-                "consumer_name": job.get("consumerName", ""),
-                "provider_id": agent_id,
-                "consumer_id": job.get("consumerId", ""),
-                "description": job.get("description", ""),
-                "resync": True,
-            }
-            success_criteria = job.get("successCriteria")
-            if success_criteria:
-                awarded["success_criteria"] = success_criteria
-            if mailbox.notify(agent_id, awarded):
-                sent += 1
+            if job.get("providerId") == agent_id:
+                # Winner re-notification — existing path.
+                awarded: dict[str, Any] = {
+                    "event": "job_awarded",
+                    "job_id": job["id"],
+                    "title": job.get("title", ""),
+                    "agreed_price": int(job.get("agreedPrice", 0)),
+                    "deadline_sec": max(0, int(float(job.get("deliveryDeadlineAt") or 0) - now)),
+                    "provider_name": job.get("providerName", ""),
+                    "consumer_name": job.get("consumerName", ""),
+                    "provider_id": agent_id,
+                    "consumer_id": job.get("consumerId", ""),
+                    "description": job.get("description", ""),
+                    "resync": True,
+                }
+                success_criteria = job.get("successCriteria")
+                if success_criteria:
+                    awarded["success_criteria"] = success_criteria
+                if mailbox.notify(agent_id, awarded):
+                    sent += 1
+            elif agent_id in (job.get("bids") or {}):
+                # Offline loser: bid window closed and someone else won — re-notify bid_lost.
+                if mailbox.notify(
+                    agent_id,
+                    {
+                        "event": "bid_lost",
+                        "job_id": job["id"],
+                        "title": job.get("title", ""),
+                        "resync": True,
+                    },
+                ):
+                    sent += 1
 
         for job in _jobs_with_status("DELIVERED"):
             if job.get("consumerId") != agent_id:
@@ -1831,6 +1854,47 @@ def resync_agent_jobs(agent_id: str) -> int:
                     logger.exception("Artifact presign failed during resync for job %s", job["id"])
                 delivered_event["artifact_name"] = artifact_key.rsplit("/", 1)[-1]
             if mailbox.notify(agent_id, delivered_event):
+                sent += 1
+
+        # Bid-lost resync for jobs that moved through COMPLETED / FAILED / EXPIRED
+        # while the bidder was offline (bid window already closed, someone else won or
+        # the job expired with no winner / was failed post-delivery).
+        for terminal_status in ("COMPLETED", "FAILED", "EXPIRED"):
+            for job in _jobs_with_status(terminal_status):
+                bids = job.get("bids") or {}
+                if agent_id not in bids:
+                    continue
+                if job.get("providerId") == agent_id:
+                    # The winner receives job_completed / job_failed via the normal
+                    # settlement path; no bid_lost for them.
+                    continue
+                if mailbox.notify(
+                    agent_id,
+                    {
+                        "event": "bid_lost",
+                        "job_id": job["id"],
+                        "title": job.get("title", ""),
+                        "resync": True,
+                    },
+                ):
+                    sent += 1
+
+        # Job-cancelled resync: consumer withdrew the OPEN job while the bidder
+        # was offline. CANCELLED jobs have no providerId (no winner was ever chosen).
+        for job in _jobs_with_status("CANCELLED"):
+            bids = job.get("bids") or {}
+            if agent_id not in bids:
+                continue
+            if mailbox.notify(
+                agent_id,
+                {
+                    "event": "job_cancelled",
+                    "job_id": job["id"],
+                    "title": job.get("title", ""),
+                    "consumer_id": job.get("consumerId", ""),
+                    "resync": True,
+                },
+            ):
                 sent += 1
 
         if sent:

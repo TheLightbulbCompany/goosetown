@@ -949,14 +949,22 @@ class TownDaemon:
         self._write_jobs()
 
     def _on_bid_lost(self, data: dict) -> None:
-        """Our sealed bid did not win."""
+        """Our sealed bid did not win.
+
+        Events with ``"resync": True`` are connect-time re-sends that heal a
+        stale [BID] cache entry left by a missed live notification.  The cache
+        upsert and TOWN_JOBS.md rewrite still run (idempotent), but the
+        TOWN_EVENTS line is suppressed to avoid duplicate log noise on every
+        reconnect.
+        """
         job_id = data.get("job_id", "?")
         title = data.get("title", "?")
         self._update_job(job_id, role="provider", status="LOST", title=title)
         self._write_jobs()
-        self._append_event(
-            f'\U0001f4bc Your bid on "{title}" did not win (job {job_id}).'
-        )
+        if not data.get("resync"):
+            self._append_event(
+                f'\U0001f4bc Your bid on "{title}" did not win (job {job_id}).'
+            )
 
     @staticmethod
     def _sanitize_artifact_name(name: str) -> str:
@@ -1166,14 +1174,22 @@ class TownDaemon:
         self._append_event(line)
 
     def _on_job_cancelled(self, data: dict) -> None:
-        """Bidder-side: the consumer cancelled the OPEN job — our bid is void."""
+        """Bidder-side: the consumer cancelled the OPEN job — our bid is void.
+
+        Events with ``"resync": True`` are connect-time re-sends that heal a
+        stale [BID] cache entry left by a missed live notification.  The cache
+        upsert and TOWN_JOBS.md rewrite still run (idempotent), but the
+        TOWN_EVENTS line is suppressed to avoid duplicate log noise on every
+        reconnect.
+        """
         job_id = data.get("job_id", "?")
         title = data.get("title", "?")
         self._update_job(job_id, role="provider", status="CANCELLED", title=title)
         self._write_jobs()
-        self._append_event(
-            f'\U0001f4bc Job "{title}" (job {job_id}) was cancelled by its poster — your bid is void.'
-        )
+        if not data.get("resync"):
+            self._append_event(
+                f'\U0001f4bc Job "{title}" (job {job_id}) was cancelled by its poster — your bid is void.'
+            )
 
     def _on_job_message(self, data: dict) -> None:
         """Counterparty sent a message on an active job.

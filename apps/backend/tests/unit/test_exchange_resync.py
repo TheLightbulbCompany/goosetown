@@ -173,6 +173,104 @@ class TestResyncAgentJobs:
 
         assert ex.resync_agent_jobs("prov-1") == 0
 
+    # -----------------------------------------------------------------------
+    # New: terminal bid-outcome resync (offline loser gap)
+    # -----------------------------------------------------------------------
+
+    def test_offline_loser_on_awarded_job_gets_bid_lost(self, dynamodb_tables, mailbox):
+        """Bidder that was offline when the window closed and someone else won
+        must receive a resync bid_lost so its stale [BID] entry is cleared."""
+        _seed_job(
+            dynamodb_tables,
+            "j3",
+            status="AWARDED",
+            providerId="winner-1",
+            consumerId="cons-1",
+            bids={"loser-2": {"price": 5}, "winner-1": {"price": 10}},
+        )
+
+        sent = ex.resync_agent_jobs("loser-2")
+
+        assert sent == 1
+        (evt,) = _events_for(mailbox, "loser-2")
+        assert evt["event"] == "bid_lost"
+        assert evt["job_id"] == "j3"
+        assert evt["resync"] is True
+
+    def test_offline_loser_on_completed_job_gets_bid_lost(self, dynamodb_tables, mailbox):
+        """Bidder on a job that has already settled (COMPLETED) also gets resync
+        bid_lost — the bid window closed and the settlement happened while offline."""
+        _seed_job(
+            dynamodb_tables,
+            "j4",
+            status="COMPLETED",
+            providerId="winner-1",
+            consumerId="cons-1",
+            bids={"loser-2": {"price": 5}, "winner-1": {"price": 10}},
+        )
+
+        sent = ex.resync_agent_jobs("loser-2")
+
+        assert sent == 1
+        (evt,) = _events_for(mailbox, "loser-2")
+        assert evt["event"] == "bid_lost"
+        assert evt["resync"] is True
+
+    def test_bidder_on_cancelled_job_gets_job_cancelled(self, dynamodb_tables, mailbox):
+        """Consumer withdrew the job while the bidder was offline — resync
+        job_cancelled so the stale [BID] entry is cleared."""
+        _seed_job(
+            dynamodb_tables,
+            "j5",
+            status="CANCELLED",
+            consumerId="cons-1",
+            bids={"bidder-1": {"price": 8}},
+        )
+
+        sent = ex.resync_agent_jobs("bidder-1")
+
+        assert sent == 1
+        (evt,) = _events_for(mailbox, "bidder-1")
+        assert evt["event"] == "job_cancelled"
+        assert evt["job_id"] == "j5"
+        assert evt["consumer_id"] == "cons-1"
+        assert evt["resync"] is True
+
+    def test_winning_provider_on_awarded_gets_job_awarded_not_bid_lost(self, dynamodb_tables, mailbox):
+        """The winning provider's agent_id is also in bids[], but they must
+        receive job_awarded (existing path) — NOT bid_lost."""
+        _seed_job(
+            dynamodb_tables,
+            "j6",
+            status="AWARDED",
+            providerId="winner-1",
+            consumerId="cons-1",
+            agreedPrice=10,
+            deliveryDeadlineAt=__import__("decimal").Decimal(str(__import__("time").time() + 100)),
+            bids={"winner-1": {"price": 10}},
+        )
+
+        sent = ex.resync_agent_jobs("winner-1")
+
+        assert sent == 1
+        events = _events_for(mailbox, "winner-1")
+        assert len(events) == 1
+        assert events[0]["event"] == "job_awarded"
+
+    def test_agent_not_in_bids_gets_nothing_for_terminal_jobs(self, dynamodb_tables, mailbox):
+        """An agent that never bid on a job must not receive bid_lost."""
+        _seed_job(
+            dynamodb_tables,
+            "j7",
+            status="COMPLETED",
+            providerId="winner-1",
+            consumerId="cons-1",
+            bids={"winner-1": {"price": 10}},
+        )
+
+        assert ex.resync_agent_jobs("stranger") == 0
+        assert mailbox.notify.call_count == 0
+
 
 class TestAwardNotifyFailureLogsWarning:
     async def test_winner_notify_false_logs_heal_on_reconnect(self, dynamodb_tables, mailbox, ws, caplog):

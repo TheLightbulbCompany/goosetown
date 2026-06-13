@@ -1079,3 +1079,90 @@ class TestResyncEvents:
             }
         )
         assert "Fresh award" in _events(daemon)
+
+    def test_resync_bid_lost_flips_cache_to_lost_without_event_line(
+        self, daemon: TownDaemon
+    ):
+        """A resync bid_lost must update the cached [BID] entry to LOST and
+        rewrite TOWN_JOBS.md but must NOT append a TOWN_EVENTS line — otherwise
+        the agent sees duplicate 'did not win' entries on every reconnect."""
+        # Pre-seed the stale [BID] entry the daemon was left with.
+        daemon._update_job("jr4", role="provider", status="BID", title="Stale bid job")
+        daemon._handle_event(
+            {
+                "event": "bid_lost",
+                "job_id": "jr4",
+                "title": "Stale bid job",
+                "resync": True,
+            }
+        )
+
+        # Cache entry must flip to LOST (so TOWN_JOBS.md renders [LOST], not [BID]).
+        assert daemon.state["exchange"]["jobs"]["jr4"]["status"] == "LOST"
+        md = _jobs_md(daemon)
+        assert "[LOST]" in md
+        assert "[BID]" not in md
+
+        # TOWN_EVENTS.md must NOT be written at all, or must not contain the job title.
+        events_path = daemon._workspace_path / "TOWN_EVENTS.md"
+        assert (
+            not events_path.exists() or "Stale bid job" not in events_path.read_text()
+        )
+
+    def test_non_resync_bid_lost_still_writes_event_line(self, daemon: TownDaemon):
+        """A live (non-resync) bid_lost must still append the normal event line."""
+        daemon._update_job("jr5", role="provider", status="BID", title="Live bid job")
+        daemon._handle_event(
+            {
+                "event": "bid_lost",
+                "job_id": "jr5",
+                "title": "Live bid job",
+            }
+        )
+        assert "did not win" in _events(daemon)
+        assert "Live bid job" in _events(daemon)
+
+    def test_resync_job_cancelled_flips_cache_without_event_line(
+        self, daemon: TownDaemon
+    ):
+        """A resync job_cancelled must update the cached [BID] entry to CANCELLED
+        and rewrite TOWN_JOBS.md but must NOT append a TOWN_EVENTS line."""
+        daemon._update_job(
+            "jr6", role="provider", status="BID", title="Cancelled offline job"
+        )
+        daemon._handle_event(
+            {
+                "event": "job_cancelled",
+                "job_id": "jr6",
+                "title": "Cancelled offline job",
+                "consumer_id": "uuid-poster",
+                "resync": True,
+            }
+        )
+
+        assert daemon.state["exchange"]["jobs"]["jr6"]["status"] == "CANCELLED"
+        md = _jobs_md(daemon)
+        assert "[CANCELLED]" in md
+        assert "[BID]" not in md
+
+        events_path = daemon._workspace_path / "TOWN_EVENTS.md"
+        assert (
+            not events_path.exists()
+            or "Cancelled offline job" not in events_path.read_text()
+        )
+
+    def test_non_resync_job_cancelled_still_writes_event_line(self, daemon: TownDaemon):
+        """A live (non-resync) job_cancelled must still append the normal event line."""
+        daemon._update_job(
+            "jr7", role="provider", status="BID", title="Live cancelled job"
+        )
+        daemon._handle_event(
+            {
+                "event": "job_cancelled",
+                "job_id": "jr7",
+                "title": "Live cancelled job",
+                "consumer_id": "uuid-poster",
+            }
+        )
+        assert "cancelled by its poster" in _events(daemon)
+        assert "Live cancelled job" in _events(daemon)
