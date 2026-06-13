@@ -501,6 +501,14 @@ class TownService:
             "jobs_failed": "jobsFailed",
             "jobs_posted": "jobsPosted",
             "rejections_issued": "rejectionsIssued",
+            # Exchange Wave 2 provider profile (ADR-0008). The canonical category
+            # list lives on the agent for display/audit; the QUERYABLE index is the
+            # provider-subscriptions projection (see ProviderDirectory).
+            "is_provider": "isProvider",
+            "provider_skills": "providerSkills",
+            "provider_bio": "providerBio",
+            "min_price": "minPrice",
+            "provider_categories": "providerCategories",
         }
 
         update_parts = []
