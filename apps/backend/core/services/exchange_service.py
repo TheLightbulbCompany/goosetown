@@ -2383,10 +2383,17 @@ def resync_agent_jobs(agent_id: str) -> int:
 # ---------------------------------------------------------------------------
 
 
-def list_board_jobs() -> list[dict]:
+def list_board_jobs(category: str | None = None) -> list[dict]:
     """Exchange board: OPEN jobs newest-first + recent settled history.
 
     Public payload — no deliverables, no bid amounts (sealed-bid).
+
+    ``category`` (Wave 2 Task 6): when given, post-filter OPEN jobs to those
+    whose ``category`` equals the filter OR starts with ``filter + "."``.
+    This implements broad prefix-on-dot matching: filtering by ``technology``
+    shows both ``technology`` and ``technology.code-review`` jobs.  History
+    entries (COMPLETED / FAILED / EXPIRED / CANCELLED) are returned unfiltered
+    so the board always shows recent settlement activity regardless of category.
     """
     table = dynamo.jobs_table()
 
@@ -2398,6 +2405,7 @@ def list_board_jobs() -> list[dict]:
             "max_price": int(item.get("maxPrice", 0)),
             "agreed_price": int(item.get("agreedPrice") or 0),
             "status": item.get("status", ""),
+            "category": item.get("category", DEFAULT_CATEGORY),
             "consumer_name": item.get("consumerName", ""),
             "provider_name": item.get("providerName") or "",
             "created_at": item.get("createdAt", ""),
@@ -2406,6 +2414,15 @@ def list_board_jobs() -> list[dict]:
             "bid_window_ends_at": float(item.get("bidWindowEndsAt") or 0) or None,
         }
 
+    def _category_matches(job_category: str, cat_filter: str) -> bool:
+        """Return True when job_category equals cat_filter or is a direct/deeper child.
+
+        ``technology`` filter matches: ``technology``, ``technology.code-review``,
+        ``technology.code-review.python`` — i.e. the filter is a prefix with a
+        dot boundary.  Sibling categories (``technology-other``) do NOT match.
+        """
+        return job_category == cat_filter or job_category.startswith(cat_filter + ".")
+
     out: list[dict] = []
     resp = table.query(
         IndexName="status-createdAt-index",
@@ -2413,7 +2430,10 @@ def list_board_jobs() -> list[dict]:
         ScanIndexForward=False,
         Limit=50,
     )
-    out.extend(_entry(i) for i in resp.get("Items", []))
+    open_entries = [_entry(i) for i in resp.get("Items", [])]
+    if category is not None:
+        open_entries = [e for e in open_entries if _category_matches(e["category"], category)]
+    out.extend(open_entries)
     for status in ("COMPLETED", "FAILED", "EXPIRED", "CANCELLED"):
         resp = table.query(
             IndexName="status-createdAt-index",

@@ -1276,9 +1276,51 @@ async def get_conversations(limit: int = 20):
 
 
 @router.get("/exchange/jobs")
-async def get_exchange_jobs():
-    """Public Exchange board: open jobs + recent history (frontend polling)."""
-    return {"jobs": exchange_service.list_board_jobs()}
+async def get_exchange_jobs(category: str | None = Query(default=None)):
+    """Public Exchange board: open jobs + recent history (frontend polling).
+
+    ``category`` (optional): when given, OPEN jobs are filtered to those whose
+    ``category`` equals the filter or starts with ``filter + "."``.  History
+    entries are returned unfiltered.  The value is normalised via
+    ``exchange_categories.normalize_category``; an invalid slug returns an
+    empty OPEN set (no 4xx — the board still shows history).
+    """
+    from core.services.exchange_categories import normalize_category as _norm_cat
+
+    norm = _norm_cat(category) if category is not None else None
+    return {"jobs": exchange_service.list_board_jobs(category=norm)}
+
+
+@router.get("/exchange/providers")
+async def get_exchange_providers(
+    category: str | None = Query(default=None),
+    skill: str | None = Query(default=None),
+    min_trust: float = Query(default=0.0),
+):
+    """Public provider directory: agents registered as providers.
+
+    Query params (all optional):
+    - ``category``: slug filter — returns providers subscribed to this
+      category (or any parent, via wildcard-parent expansion).  Value is
+      normalised; invalid slug → empty list (no 4xx).
+    - ``skill``: membership filter against ``providerSkills``.
+    - ``min_trust``: float [0, 1] (clamped); providers below this trust
+      score are excluded.  Values >1 are clamped to 1.0; values <0 to 0.0.
+
+    Returns ``{"providers": [...]}``; each entry is the directory's public
+    profile shape — no wallet balance, no PII (see ProviderDirectory._public_profile).
+    """
+    from core.services.exchange_categories import normalize_category as _norm_cat
+    from core.services.provider_directory import ProviderDirectory
+
+    norm_cat = _norm_cat(category) if category is not None else None
+    clamped_trust = max(0.0, min(1.0, float(min_trust)))
+    providers = ProviderDirectory().search(
+        category=norm_cat,
+        skill=skill if skill else None,
+        min_trust=clamped_trust,
+    )
+    return {"providers": providers}
 
 
 class ExchangeUploadUrlRequest(BaseModel):
