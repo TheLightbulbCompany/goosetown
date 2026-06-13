@@ -24,6 +24,10 @@ module.exports = {
           700: '#3A4466',
           900: '#181425',
         },
+        // Colors from the town itself: grass/settled-job green, and the
+        // window-glow gold (top stop of the game-title gradient).
+        moss: '#8FDE5D',
+        lamplight: '#FEC742',
       },
     },
   },
