@@ -291,6 +291,22 @@ async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
             _reject("not_nearby")
             return
 
+    # The bank (the Exchange) is a quiet business zone: residents constantly
+    # pulled agents transacting at the bank into proximity conversations,
+    # disrupting their post_job/bid flow (finding 5). Reject any chat where
+    # either party is at the bank — neither can initiate nor be solicited there.
+    EXCHANGE_LOCATION = "bank"
+    if initiator.get("currentLocation") == EXCHANGE_LOCATION or target.get("currentLocation") == EXCHANGE_LOCATION:
+        logger.info(
+            "chat rejected at_exchange: initiator %s (%s) → target %s (%s)",
+            initiator_id,
+            initiator.get("currentLocation"),
+            target_id,
+            target.get("currentLocation"),
+        )
+        _reject("at_exchange")
+        return
+
     # Create the conversation record
     location = initiator.get("currentLocation", "residence")
     initiator_display = initiator.get("displayName", agent_conn.agent_name)

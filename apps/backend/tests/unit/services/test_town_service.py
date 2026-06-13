@@ -222,6 +222,44 @@ class TestUpdateAgentState:
         assert result is None
 
 
+class TestGetTownAgentByIdConsistency:
+    """The Exchange location gate needs a strongly-consistent read (finding 2)."""
+
+    def _spy_table(self, monkeypatch):
+        """Wrap agents_table().get_item to record the ConsistentRead kwarg."""
+        real_table = dynamo.agents_table()
+        calls: list[dict] = []
+        real_get_item = real_table.get_item
+
+        def recording_get_item(*args, **kwargs):
+            calls.append(dict(kwargs))
+            return real_get_item(*args, **kwargs)
+
+        wrapper = SimpleNamespace(get_item=recording_get_item)
+        monkeypatch.setattr(dynamo, "agents_table", lambda: wrapper)
+        return calls
+
+    def test_default_read_is_eventually_consistent(self, dynamodb_tables, monkeypatch):
+        svc = TownService()
+        agent = svc.opt_in("user-1", "a1", "A1")
+        calls = self._spy_table(monkeypatch)
+
+        svc.get_town_agent_by_id(agent["id"])
+
+        assert calls and calls[-1].get("ConsistentRead") is False
+
+    def test_consistent_true_passes_consistent_read(self, dynamodb_tables, monkeypatch):
+        svc = TownService()
+        agent = svc.opt_in("user-1", "a1", "A1")
+        calls = self._spy_table(monkeypatch)
+
+        fetched = svc.get_town_agent_by_id(agent["id"], consistent=True)
+
+        assert calls and calls[-1].get("ConsistentRead") is True
+        # moto honours the kwarg and still returns the row.
+        assert fetched is not None and fetched["id"] == agent["id"]
+
+
 class TestUpdateAgentContext:
     def test_town_to_apartment(self, dynamodb_tables):
         svc = TownService()
