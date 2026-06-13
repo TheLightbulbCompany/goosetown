@@ -21,8 +21,8 @@ const SHEETS = [
 ];
 
 const SPRITE_SRC = 48;
-/** Upscale factor for sprites in map space so residents read at town zoom. */
-const SPRITE_SCALE = 1.8;
+/** Sprites are 48 world px in-game; a touch larger reads better here. */
+const SPRITE_SCALE = 1.15;
 
 interface TownCanvasProps {
   /** Mutable scene driven from outside (GSAP scrubs this object). */
@@ -119,7 +119,8 @@ export function TownCanvas({ sceneRef, animate, debugPaths }: TownCanvasProps) {
       if (!loaded || !map.complete || map.naturalWidth === 0) return;
 
       ctx.setTransform(scale, 0, 0, scale, cw / 2 - camX * scale, ch / 2 - camY * scale);
-      ctx.drawImage(map, 0, 0);
+      // The asset is a 2x capture of the Godot scene; draw into world units.
+      ctx.drawImage(map, 0, 0, MAP_W, MAP_H);
 
       if (debugPaths) {
         ctx.strokeStyle = 'rgba(255,0,80,0.85)';
@@ -165,7 +166,7 @@ export function TownCanvas({ sceneRef, animate, debugPaths }: TownCanvasProps) {
         ctx.setTransform(scale, 0, 0, scale, cw / 2 - camX * scale, ch / 2 - camY * scale);
         ctx.globalCompositeOperation = 'screen';
         for (const l of NIGHT_LIGHTS) {
-          const r = 110;
+          const r = 60;
           const g = ctx.createRadialGradient(l.x, l.y, 4, l.x, l.y, r);
           g.addColorStop(0, `rgba(255,196,110,${0.5 * night})`);
           g.addColorStop(0.4, `rgba(255,160,80,${0.22 * night})`);
@@ -177,7 +178,7 @@ export function TownCanvas({ sceneRef, animate, debugPaths }: TownCanvasProps) {
           const a = (0.35 + 0.3 * Math.sin(now / 600 + f.phase)) * night;
           ctx.fillStyle = `rgba(255,236,160,${a.toFixed(3)})`;
           ctx.beginPath();
-          ctx.arc(f.pos.x, f.pos.y, 5, 0, Math.PI * 2);
+          ctx.arc(f.pos.x, f.pos.y, 3, 0, Math.PI * 2);
           ctx.fill();
         }
       }

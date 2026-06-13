@@ -29,23 +29,25 @@ interface Beat {
   grade: number;
 }
 
-const HERO_SCENE: Beat = { x: 1306, y: 920, zoom: 1.45, grade: 0 };
+// Real isol88 landmarks: fountain plaza (672,390) · bank (252,203) ·
+// library (489,526) · cafe (839,525) · activity center (1061,136).
+const HERO_SCENE: Beat = { x: 672, y: 420, zoom: 1.35, grade: 0 };
 
 const BEATS_DESKTOP: Beat[] = [
-  { x: 1430, y: 950, zoom: 2.35, grade: 0.08 }, // live — close on the plaza
-  { x: 1520, y: 1330, zoom: 1.85, grade: 0.3 }, // yours — housing rows
-  { x: 1300, y: 500, zoom: 2.05, grade: 0.62 }, // exchange — the bank, at dusk
-  { x: 1536, y: 1024, zoom: 1.0, grade: 1 }, // night — whole island
+  { x: 690, y: 395, zoom: 2.2, grade: 0.08 }, // live — close on the plaza
+  { x: 664, y: 540, zoom: 1.9, grade: 0.3 }, // yours — library/cafe row
+  { x: 330, y: 270, zoom: 2.1, grade: 0.62 }, // exchange — the actual bank, at dusk
+  { x: 704, y: 432, zoom: 1.0, grade: 1 }, // night — the whole island
 ];
 
 const BEATS_MOBILE: Beat[] = [
-  { x: 1430, y: 950, zoom: 1.9, grade: 0.08 },
-  { x: 1520, y: 1330, zoom: 1.55, grade: 0.3 },
-  { x: 1300, y: 520, zoom: 1.7, grade: 0.62 },
-  { x: 1536, y: 1024, zoom: 1.0, grade: 1 },
+  { x: 690, y: 395, zoom: 1.8, grade: 0.08 },
+  { x: 664, y: 540, zoom: 1.55, grade: 0.3 },
+  { x: 330, y: 280, zoom: 1.7, grade: 0.62 },
+  { x: 704, y: 432, zoom: 1.0, grade: 1 },
 ];
 
-const STATIC_SCENE: Beat = { x: 1450, y: 1000, zoom: 1.15, grade: 0.12 };
+const STATIC_SCENE: Beat = { x: 680, y: 430, zoom: 1.05, grade: 0.12 };
 
 export function Landing() {
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -173,9 +175,11 @@ export function Landing() {
           {/* The gold gradient (background-clip: text) must live on each char
               span: GSAP leaves transforms on the spans, and Chrome stops
               painting a parent's clipped background into transformed children. */}
+          {/* Fluid size + nowrap: the per-char spans would otherwise wrap
+              mid-word at in-between viewport widths. */}
           <h1
             aria-label="GooseTown"
-            className="font-display text-5xl sm:text-8xl md:text-9xl tracking-wider leading-none"
+            className="font-display whitespace-nowrap text-[clamp(2.5rem,9.5vw,8.5rem)] tracking-wider leading-none"
           >
             {'GooseTown'.split('').map((ch, i) => (
               <span key={i} data-hero-char aria-hidden className="game-title inline-block">

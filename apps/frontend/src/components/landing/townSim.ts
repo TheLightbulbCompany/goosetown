@@ -10,8 +10,13 @@
  * Pure logic, no DOM: the canvas component owns rendering.
  */
 
-export const MAP_W = 3072;
-export const MAP_H = 2048;
+/**
+ * World units of the isol88 town map (apps/godot/maps/isol88/Isol88Map.gd
+ * MAP_SIZE). The background asset is a 2x capture of the real Godot scene,
+ * drawn into this world rect, so all coordinates here match the game's.
+ */
+export const MAP_W = 1408;
+export const MAP_H = 864;
 
 export interface Vec {
   x: number;
@@ -86,36 +91,50 @@ export interface RoadPath {
   closed: boolean;
 }
 
+// Traced from the in-game road tiles (see Isol88Map: bank 252,203 ·
+// activity center 1061,136 · plaza/fountain ~672,390 · library 489,526 ·
+// cafe 839,525 · promenade y~624).
 export const ROADS: RoadPath[] = [
-  // Plaza ring around the fountain.
-  { pts: ring(1306, 845, 265, 12), closed: true },
-  // East-west road through the plaza, west arm and east arm.
-  { pts: [{ x: 560, y: 845 }, { x: 1020, y: 845 }], closed: false },
-  { pts: [{ x: 1590, y: 845 }, { x: 2360, y: 845 }], closed: false },
-  // North road from the plaza up to the manor.
-  { pts: [{ x: 1306, y: 330 }, { x: 1306, y: 560 }], closed: false },
-  // Waterfront promenade along the housing rows.
-  { pts: [{ x: 430, y: 1545 }, { x: 2640, y: 1545 }], closed: false },
+  // Plaza loop around the fountain.
+  { pts: ring(672, 390, 82, 10), closed: true },
+  // Bank road: bank steps -> west road -> down -> plaza west entrance.
+  {
+    pts: [
+      { x: 200, y: 272 }, { x: 400, y: 272 }, { x: 400, y: 432 }, { x: 552, y: 426 },
+    ],
+    closed: false,
+  },
+  // Activity-center road: east road -> down -> plaza east entrance.
+  {
+    pts: [
+      { x: 1120, y: 208 }, { x: 952, y: 208 }, { x: 944, y: 432 }, { x: 800, y: 426 },
+    ],
+    closed: false,
+  },
+  // South road from the plaza down to the promenade.
+  { pts: [{ x: 660, y: 480 }, { x: 656, y: 620 }], closed: false },
+  // Promenade between library and cafe.
+  { pts: [{ x: 290, y: 624 }, { x: 1020, y: 624 }], closed: false },
 ];
 
-/** Warm window glows for the night grade (approximate house positions). */
+/** Warm window glows for the night grade (real building positions). */
 export const NIGHT_LIGHTS: Vec[] = [
-  // Bottom housing rows.
-  { x: 430, y: 1320 }, { x: 640, y: 1300 }, { x: 860, y: 1330 },
-  { x: 1080, y: 1300 }, { x: 1320, y: 1330 }, { x: 1560, y: 1300 },
-  { x: 1800, y: 1330 }, { x: 2040, y: 1300 }, { x: 2280, y: 1330 },
-  { x: 2520, y: 1300 },
-  // Around the plaza.
-  { x: 1306, y: 845 }, { x: 1040, y: 700 }, { x: 1580, y: 700 },
-  // North + flanking buildings.
-  { x: 1280, y: 300 }, { x: 1980, y: 420 }, { x: 2330, y: 330 },
-  { x: 700, y: 420 }, { x: 430, y: 560 }, { x: 950, y: 330 },
-  { x: 2050, y: 640 },
+  // Bank + Activity Center (top corners).
+  { x: 215, y: 210 }, { x: 290, y: 210 },
+  { x: 1020, y: 145 }, { x: 1100, y: 145 },
+  // Library + Cafe (bottom row).
+  { x: 450, y: 535 }, { x: 528, y: 535 },
+  { x: 800, y: 535 }, { x: 878, y: 535 },
+  // Houses ringing the plaza.
+  { x: 600, y: 295 }, { x: 672, y: 268 }, { x: 745, y: 295 },
+  { x: 600, y: 428 }, { x: 745, y: 428 },
+  // Fountain + plaza lamps.
+  { x: 672, y: 390 }, { x: 605, y: 355 }, { x: 740, y: 355 },
 ];
 
 const FRAME_SECONDS = 0.14;
 const FRAMES = 6;
-const CHAT_RADIUS = 64;
+const CHAT_RADIUS = 48;
 const CHAT_SECONDS = 4.6;
 const CHAT_COOLDOWN = 18;
 
@@ -135,7 +154,7 @@ export function createWalkers(sheetCount: number, count: number): Walker[] {
       seg,
       t: Math.random(),
       dir: Math.random() < 0.5 ? 1 : -1,
-      speed: 56 + Math.random() * 26,
+      speed: 30 + Math.random() * 16,
       pos: { x: 0, y: 0 },
       facing: ROW_SOUTH,
       frame: Math.floor(Math.random() * FRAMES),
@@ -257,8 +276,8 @@ export function createFireflies(count: number): Firefly[] {
   const flies: Firefly[] = [];
   for (let i = 0; i < count; i++) {
     flies.push({
-      pos: { x: 500 + Math.random() * 2100, y: 600 + Math.random() * 1100 },
-      vel: { x: (Math.random() - 0.5) * 18, y: (Math.random() - 0.5) * 14 },
+      pos: { x: 220 + Math.random() * 980, y: 150 + Math.random() * 580 },
+      vel: { x: (Math.random() - 0.5) * 10, y: (Math.random() - 0.5) * 8 },
       phase: Math.random() * Math.PI * 2,
     });
   }
@@ -269,10 +288,10 @@ export function updateFireflies(flies: Firefly[], dt: number): void {
   for (const f of flies) {
     f.pos.x += f.vel.x * dt;
     f.pos.y += f.vel.y * dt;
-    f.vel.x += (Math.random() - 0.5) * 8 * dt;
-    f.vel.y += (Math.random() - 0.5) * 8 * dt;
-    if (f.pos.x < 400 || f.pos.x > 2680) f.vel.x *= -1;
-    if (f.pos.y < 500 || f.pos.y > 1750) f.vel.y *= -1;
+    f.vel.x += (Math.random() - 0.5) * 5 * dt;
+    f.vel.y += (Math.random() - 0.5) * 5 * dt;
+    if (f.pos.x < 200 || f.pos.x > 1220) f.vel.x *= -1;
+    if (f.pos.y < 130 || f.pos.y > 750) f.vel.y *= -1;
   }
 }
 
