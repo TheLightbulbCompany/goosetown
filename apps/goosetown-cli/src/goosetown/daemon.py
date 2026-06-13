@@ -212,6 +212,12 @@ class TownDaemon:
             dict
         ] = []  # consumed by _handle_world_update
 
+        # Wave 2 (Task 9): harness wake coordinator — event-triggered nudge for
+        # the agent's loop, with per-agent coalescing/single-flight. Built in
+        # run() from TOWN_HARNESS + config (None for in-process/resident runs
+        # and unset until run(); event handlers tolerate None via _request_wake).
+        self._wake_coordinator = None  # WakeCoordinator | None
+
     # ------------------------------------------------------------------
     # File I/O helpers
     # ------------------------------------------------------------------
@@ -250,6 +256,62 @@ class TownDaemon:
     # ------------------------------------------------------------------
     # Event handlers
     # ------------------------------------------------------------------
+
+    def _init_wake_coordinator(self) -> None:
+        """Build the harness WakeCoordinator from TOWN_HARNESS + env (Task 9).
+
+        Idempotent and best-effort: any failure here leaves the coordinator
+        None so the daemon falls back to the heartbeat (the compatibility
+        floor). harnessType comes from ``TOWN_HARNESS`` (injected by ``join``
+        from GOOSETOWN.md's ``harness:`` line); the openclaw gateway URL / http
+        endpoint come from their own env vars.
+        """
+        if self._wake_coordinator is not None:
+            return
+        try:
+            from goosetown.wake import WakeCoordinator, get_wake_adapter
+
+            harness = os.environ.get("TOWN_HARNESS", "claude-code")
+            config = {
+                "workspace_path": str(self._workspace_path)
+                if self._workspace_path
+                else None,
+                "openclaw_gateway_url": os.environ.get("OPENCLAW_GATEWAY_URL", ""),
+                "wake_endpoint": os.environ.get("TOWN_WAKE_ENDPOINT", ""),
+            }
+            adapter = get_wake_adapter(harness, config)
+            self._wake_coordinator = WakeCoordinator(
+                self._agent_name, adapter
+            )
+        except Exception:
+            import logging
+
+            logging.getLogger("town_daemon").debug(
+                "wake coordinator init failed; falling back to heartbeat",
+                exc_info=True,
+            )
+            self._wake_coordinator = None
+
+    def _request_wake(self, thin_context: dict) -> None:
+        """Best-effort harness wake (Task 9): nudge the agent's loop to run now.
+
+        Called *in addition to* writing files on "you should look now" events
+        (job_offered/awarded/delivered, conversation invite/message, owner
+        message) — never instead of. Tolerates a missing coordinator (in-process
+        resident runs, pre-run()) and never raises into the event handler. The
+        WakeCoordinator does the per-agent coalescing/single-flight.
+        """
+        coordinator = self._wake_coordinator
+        if coordinator is None:
+            return
+        try:
+            coordinator.request_wake(thin_context)
+        except Exception:
+            import logging
+
+            logging.getLogger("town_daemon").debug(
+                "wake request failed", exc_info=True
+            )
 
     def _handle_event(self, data: dict) -> None:
         """Dispatch a town_event payload to the appropriate handler."""
@@ -465,6 +527,12 @@ class TownDaemon:
                     logging.getLogger("town_daemon").debug(
                         "on_pending_message callback raised", exc_info=True
                     )
+            # Task 9: wake the harness so the agent replies at conversation
+            # speed instead of waiting for its heartbeat. Only on non-own turns
+            # (our own echoed `say` isn't something to respond to).
+            self._request_wake(
+                {"event": event, "conv_id": data.get("conv_id", "")}
+            )
         conv_id = data.get("conv_id", "")
 
         if event == "conversation_invite":
@@ -524,6 +592,10 @@ class TownDaemon:
         )
 
         self._owner_messages_buffer.append({"text": text, "timestamp": timestamp})
+
+        # Task 9: an owner DM is a "look now" event — wake the harness so the
+        # agent sees OWNER_MESSAGES.md / TOWN_STATUS.md without waiting a beat.
+        self._request_wake({"event": "owner_message", "message_id": message_id})
 
         if self._owner_flush_handle is not None:
             return
@@ -972,6 +1044,12 @@ class TownDaemon:
                     f"for {agreed} crumbs (job {job_id}). Delivery due within {deadline}s."
                 )
         self._write_jobs()
+        # Task 9: award is a "look now" event for both roles — the provider must
+        # start the work, the consumer wants to track it. Suppressed on resync.
+        if not resync:
+            self._request_wake(
+                {"event": "job_awarded", "job_id": job_id, "role": role}
+            )
 
     def _on_bid_lost(self, data: dict) -> None:
         """Our sealed bid did not win.
@@ -1093,6 +1171,9 @@ class TownDaemon:
             f'\U0001f4bc Work delivered for your job "{title}" (job {job_id}).{file_note} '
             f"Read it in TOWN_JOBS.md, then: goosetown act review {job_id} accept|reject"
         )
+        # Task 9: the consumer must review the delivery — wake to look now.
+        # (Resync already returned above, so this only fires on fresh deliveries.)
+        self._request_wake({"event": "job_delivered", "job_id": job_id})
 
     def _on_job_completed(self, data: dict) -> None:
         """Both sides: job settled successfully.
@@ -1296,6 +1377,12 @@ class TownDaemon:
                 f'\U0001f4bc New offer from {consumer_name}: "{title}" — up to '
                 f"{max_price} crumbs (job {job_id}, {category}){invited_note}. "
                 f"See TOWN_OFFERS.md, then: goosetown act bid {job_id} <price>"
+            )
+            # Task 9: wake the harness so the provider reads TOWN_OFFERS.md and
+            # bids inside the competitive window (heartbeat would be too slow).
+            # Suppressed on resync — that's a connect-time re-send, not news.
+            self._request_wake(
+                {"event": "job_offered", "job_id": job_id, "category": category}
             )
 
     def _write_offers(self) -> None:
@@ -2407,6 +2494,11 @@ class TownDaemon:
 
         self._initial_state_event = asyncio.Event()
         self._arrived_event = asyncio.Event()
+
+        # Wave 2 (Task 9): build the harness wake coordinator now that there's a
+        # running loop. harnessType comes from TOWN_HARNESS (injected by `join`
+        # from GOOSETOWN.md); unknown/unset → NoneAdapter (heartbeat floor).
+        self._init_wake_coordinator()
 
         await self._check_alarm()
         print(f"[daemon] Starting up as {self._agent_name}")
