@@ -83,7 +83,7 @@ test.describe('GooseTown smoke', () => {
     //
     // The waits below (engine boot + world-state window + sprite poll) sum
     // well past the suite-default 30s, so this test needs its own budget.
-    test.setTimeout(90_000);
+    test.setTimeout(120_000);
     await page.goto('/town');
     await expect(page.locator('canvas').first()).toBeVisible({ timeout: 20_000 });
 
@@ -97,24 +97,21 @@ test.describe('GooseTown smoke', () => {
       'Live dev deploy predates the JsBridge migration; post-deploy run will enforce.',
     );
 
-    // The canvas mounts well before the Godot engine finishes booting (the
-    // container renders immediately and cached WASM makes the gap tiny but
-    // real), and ``godotUpdateWorldState`` only exists once the engine is
-    // up. Wrapping before that silently installs nothing, so the
-    // world-state wait below could never fire and the test died on its
-    // timeout instead of skipping. Wait for the hook itself, and skip (not
-    // fail) if the engine never comes up — canvas/boot breakage is already
-    // covered by the first smoke test.
-    const engineUp = await page
-      .waitForFunction(
-        () =>
-          typeof (window as unknown as { godotUpdateWorldState?: unknown })
-            .godotUpdateWorldState === 'function',
-        { timeout: 30_000 },
-      )
-      .then(() => true)
-      .catch(() => false);
-    test.skip(!engineUp, 'Godot engine did not boot within 30s.');
+    // The canvas mounts well before the Godot engine finishes booting —
+    // GodotCanvas renders the ``<canvas>`` unconditionally in JSX with a
+    // loading overlay on top, so ``toBeVisible()`` proves nothing about the
+    // engine — and ``godotUpdateWorldState`` only exists once the JsBridge
+    // autoload is up. Wrapping before that silently installs nothing, so
+    // the world-state wait below could never fire and the test died on its
+    // timeout. This wait is a hard assertion, not a skip: a broken Godot
+    // export is exactly the regression class this test exists to catch,
+    // and no other test verifies engine boot.
+    await page.waitForFunction(
+      () =>
+        typeof (window as unknown as { godotUpdateWorldState?: unknown })
+          .godotUpdateWorldState === 'function',
+      { timeout: 45_000 },
+    );
 
     // Watch the latest world_state to learn whether any agent is currently
     // connected. The handler can only fire when an agent is in the broadcast.
