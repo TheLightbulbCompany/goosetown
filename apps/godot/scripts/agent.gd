@@ -185,6 +185,12 @@ const SPEECH_TOP_CLEARANCE: float = 4.0
 func _ready() -> void:
 	if speech_container:
 		speech_container.visible = false
+		# Make the bubble receive mouse input and look clickable.
+		# NinePatchRect defaults to MOUSE_FILTER_STOP (0) in Godot 4 so it already
+		# captures clicks; set it explicitly here so the intent is self-documenting.
+		speech_container.mouse_filter = Control.MOUSE_FILTER_STOP
+		speech_container.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+		speech_container.gui_input.connect(_on_bubble_gui_input)
 	if nameplate:
 		nameplate.visible = false
 	# Connect avoidance callback for RVO steering
@@ -803,3 +809,20 @@ func _on_velocity_computed(safe_velocity: Vector2) -> void:
 	velocity = safe_velocity
 	_update_facing_from_velocity(velocity)
 	move_and_slide()
+
+
+func _on_bubble_gui_input(event: InputEvent) -> void:
+	## Emit a React CustomEvent when the user clicks the speech bubble.
+	## Only fires when the bubble is visible and has content, and only on
+	## left-mouse-button release (to avoid double-firing on press+release).
+	## Guards against an empty agent_id — the event would be meaningless.
+	if not (event is InputEventMouseButton):
+		return
+	var mb: InputEventMouseButton = event as InputEventMouseButton
+	if mb.button_index != MOUSE_BUTTON_LEFT or mb.pressed:
+		return
+	if not speech_container.visible or speech_text == "":
+		return
+	if agent_id == "":
+		return
+	JsBridge.emit_to_react("goosetown_bubble_clicked", {"agentId": agent_id, "agentName": display_name})
