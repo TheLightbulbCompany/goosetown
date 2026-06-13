@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render as renderRTL, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
@@ -61,9 +61,40 @@ function makeConv(overrides: Partial<Conversation> = {}): Conversation {
   };
 }
 
+// Build a fetch mock that resolves the profile call (GET /town/profile) with
+// a chosen nickname, and treats every other request (the /say POST) as a 200.
+// Tests that exercise nickname-prompt / send-error paths pass a custom value or
+// stub fetch themselves.
+function stubFetch(opts: {
+  nickname?: string | null;
+  sayResponse?: { ok: boolean; status: number };
+} = {}) {
+  const { nickname = 'Tester', sayResponse = { ok: true, status: 200 } } = opts;
+  const fetchMock = vi.fn((url: string) => {
+    if (typeof url === 'string' && url.includes('/town/profile')) {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ nickname }),
+      });
+    }
+    return Promise.resolve(sayResponse);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
+
 beforeEach(() => {
   mockedUse.mockReset();
   mockGetToken.mockResolvedValue('test-token');
+  mockIsSignedIn = true;
+  // Default: signed-in user with a nickname, so the message footer is the
+  // default state for existing send-path tests.
+  stubFetch();
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe('ConversationsLog', () => {
@@ -320,10 +351,13 @@ describe('ConversationsLog', () => {
     render(<ConversationsLog />);
     await userEvent.click(screen.getByRole('button', { name: /Rachel & Ross/i }));
 
-    expect(screen.getByRole('textbox', { name: /message input/i })).toBeInTheDocument();
+    // Input appears once the profile fetch resolves with a nickname.
+    expect(await screen.findByRole('textbox', { name: /message input/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^send$/i })).toBeInTheDocument();
     // char counter starts at 280
     expect(screen.getByText('280')).toBeInTheDocument();
+    // The nickname hint is shown.
+    expect(screen.getByText(/speaking as Tester/i)).toBeInTheDocument();
   });
 
   it('hides send footer for ended conversations', async () => {
@@ -366,7 +400,7 @@ describe('ConversationsLog', () => {
     render(<ConversationsLog />);
     await userEvent.click(screen.getByRole('button', { name: /Rachel & Ross/i }));
 
-    const input = screen.getByRole('textbox', { name: /message input/i });
+    const input = await screen.findByRole('textbox', { name: /message input/i });
     await userEvent.type(input, 'hello');
     // 280 - 5 = 275
     expect(screen.getByText('275')).toBeInTheDocument();
@@ -380,7 +414,7 @@ describe('ConversationsLog', () => {
     });
     render(<ConversationsLog />);
     await userEvent.click(screen.getByRole('button', { name: /Rachel & Ross/i }));
-    expect(screen.getByRole('button', { name: /^send$/i })).toBeDisabled();
+    expect(await screen.findByRole('button', { name: /^send$/i })).toBeDisabled();
   });
 
   it('optimistically appends the human turn and POSTs to the backend', async () => {
@@ -389,13 +423,12 @@ describe('ConversationsLog', () => {
       loading: false,
       error: null,
     });
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
-    vi.stubGlobal('fetch', fetchMock);
+    const fetchMock = stubFetch();
 
     render(<ConversationsLog />);
     await userEvent.click(screen.getByRole('button', { name: /Rachel & Ross/i }));
 
-    const input = screen.getByRole('textbox', { name: /message input/i });
+    const input = await screen.findByRole('textbox', { name: /message input/i });
     await userEvent.type(input, 'great to meet you');
     await userEvent.click(screen.getByRole('button', { name: /^send$/i }));
 
@@ -411,8 +444,6 @@ describe('ConversationsLog', () => {
         body: JSON.stringify({ text: 'great to meet you' }),
       }),
     );
-
-    vi.unstubAllGlobals();
   });
 
   it('shows a 409 error and rolls back the optimistic turn when the conversation ended', async () => {
@@ -421,13 +452,12 @@ describe('ConversationsLog', () => {
       loading: false,
       error: null,
     });
-    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 409 });
-    vi.stubGlobal('fetch', fetchMock);
+    stubFetch({ sayResponse: { ok: false, status: 409 } });
 
     render(<ConversationsLog />);
     await userEvent.click(screen.getByRole('button', { name: /Rachel & Ross/i }));
 
-    const input = screen.getByRole('textbox', { name: /message input/i });
+    const input = await screen.findByRole('textbox', { name: /message input/i });
     await userEvent.type(input, 'too late');
     await userEvent.click(screen.getByRole('button', { name: /^send$/i }));
 
@@ -438,8 +468,6 @@ describe('ConversationsLog', () => {
     expect(screen.getByRole('textbox', { name: /message input/i })).toHaveValue('too late');
     // Optimistic turn rolled back.
     expect(screen.queryByText('You (visitor)')).toBeNull();
-
-    vi.unstubAllGlobals();
   });
 
   it('shows a 429 rate-limit error', async () => {
@@ -448,18 +476,19 @@ describe('ConversationsLog', () => {
       loading: false,
       error: null,
     });
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 429 }));
+    stubFetch({ sayResponse: { ok: false, status: 429 } });
 
     render(<ConversationsLog />);
     await userEvent.click(screen.getByRole('button', { name: /Rachel & Ross/i }));
-    await userEvent.type(screen.getByRole('textbox', { name: /message input/i }), 'hello');
+    await userEvent.type(
+      await screen.findByRole('textbox', { name: /message input/i }),
+      'hello',
+    );
     await userEvent.click(screen.getByRole('button', { name: /^send$/i }));
 
     await waitFor(() => {
       expect(screen.getByRole('alert')).toHaveTextContent(/slow down/i);
     });
-
-    vi.unstubAllGlobals();
   });
 
   it('deduplicates optimistic turn once the polled log grows past the pre-send length', async () => {
@@ -469,12 +498,15 @@ describe('ConversationsLog', () => {
       loading: false,
       error: null,
     });
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200 }));
+    stubFetch();
 
     const { rerender } = render(<ConversationsLog />);
     await userEvent.click(screen.getByRole('button', { name: /Rachel & Ross/i }));
 
-    await userEvent.type(screen.getByRole('textbox', { name: /message input/i }), 'how are you');
+    await userEvent.type(
+      await screen.findByRole('textbox', { name: /message input/i }),
+      'how are you',
+    );
     await userEvent.click(screen.getByRole('button', { name: /^send$/i }));
 
     // Optimistic turn shows up.
@@ -505,8 +537,6 @@ describe('ConversationsLog', () => {
     // should no longer be there (optimistic was deduped).
     expect(screen.getByText('how are you')).toBeInTheDocument();
     expect(screen.queryByText('You (visitor)')).toBeNull();
-
-    vi.unstubAllGlobals();
   });
 
   // ─── goosetown_bubble_clicked window event ─────────────────────────────
@@ -586,5 +616,116 @@ describe('ConversationsLog', () => {
     );
 
     expect(screen.queryByRole('button', { name: /close/i })).toBeNull();
+  });
+
+  // ─── Town nickname prompt ──────────────────────────────────────────────
+
+  it('prompts for a nickname (not the message input) when the user has none', async () => {
+    stubFetch({ nickname: null });
+    mockedUse.mockReturnValue({
+      conversations: [makeConv({ ended_at: null })],
+      loading: false,
+      error: null,
+    });
+    render(<ConversationsLog />);
+    await userEvent.click(screen.getByRole('button', { name: /Rachel & Ross/i }));
+
+    // Prompt input shows once the profile fetch resolves with no nickname.
+    expect(
+      await screen.findByRole('textbox', { name: /nickname input/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/choose a nickname to join/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^save$/i })).toBeInTheDocument();
+    // The message input is NOT present while a nickname is missing.
+    expect(screen.queryByRole('textbox', { name: /message input/i })).toBeNull();
+  });
+
+  it('shows the message input (not the prompt) when the user already has a nickname', async () => {
+    stubFetch({ nickname: 'Cosmo' });
+    mockedUse.mockReturnValue({
+      conversations: [makeConv({ ended_at: null })],
+      loading: false,
+      error: null,
+    });
+    render(<ConversationsLog />);
+    await userEvent.click(screen.getByRole('button', { name: /Rachel & Ross/i }));
+
+    expect(
+      await screen.findByRole('textbox', { name: /message input/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/speaking as Cosmo/i)).toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: /nickname input/i })).toBeNull();
+  });
+
+  it('saving a nickname PUTs it and switches to the message input', async () => {
+    const fetchMock = stubFetch({ nickname: null });
+    mockedUse.mockReturnValue({
+      conversations: [makeConv({ ended_at: null })],
+      loading: false,
+      error: null,
+    });
+    render(<ConversationsLog />);
+    await userEvent.click(screen.getByRole('button', { name: /Rachel & Ross/i }));
+
+    const nicknameInput = await screen.findByRole('textbox', { name: /nickname input/i });
+    // The PUT returns the stored nickname.
+    fetchMock.mockImplementation((url: string) => {
+      if (typeof url === 'string' && url.includes('/town/profile/nickname')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ nickname: 'Maverick' }),
+        });
+      }
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ nickname: null }) });
+    });
+
+    await userEvent.type(nicknameInput, 'Maverick');
+    await userEvent.click(screen.getByRole('button', { name: /^save$/i }));
+
+    // PUT was issued to the nickname endpoint with the right body.
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/town/profile/nickname'),
+        expect.objectContaining({
+          method: 'PUT',
+          body: JSON.stringify({ nickname: 'Maverick' }),
+        }),
+      );
+    });
+
+    // After save, the message input replaces the prompt.
+    expect(
+      await screen.findByRole('textbox', { name: /message input/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/speaking as Maverick/i)).toBeInTheDocument();
+  });
+
+  it('shows an inline error when the nickname is rejected (422)', async () => {
+    const fetchMock = stubFetch({ nickname: null });
+    mockedUse.mockReturnValue({
+      conversations: [makeConv({ ended_at: null })],
+      loading: false,
+      error: null,
+    });
+    render(<ConversationsLog />);
+    await userEvent.click(screen.getByRole('button', { name: /Rachel & Ross/i }));
+
+    const nicknameInput = await screen.findByRole('textbox', { name: /nickname input/i });
+    fetchMock.mockImplementation((url: string) => {
+      if (typeof url === 'string' && url.includes('/town/profile/nickname')) {
+        return Promise.resolve({ ok: false, status: 422, json: () => Promise.resolve({}) });
+      }
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ nickname: null }) });
+    });
+
+    await userEvent.type(nicknameInput, 'bad@name');
+    await userEvent.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(/isn't allowed/i);
+    });
+    // Still on the prompt — no message input appeared.
+    expect(screen.queryByRole('textbox', { name: /message input/i })).toBeNull();
   });
 });

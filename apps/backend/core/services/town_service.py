@@ -1,6 +1,7 @@
 """Town service for managing GooseTown agent registration and state (DynamoDB)."""
 
 import logging
+import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -48,6 +49,32 @@ def _decimal_to_native(obj):
     if isinstance(obj, list):
         return [_decimal_to_native(i) for i in obj]
     return obj
+
+
+# Town nicknames are public (they label a user's turns in the public
+# conversation log), so they must be safe to display and impossible to abuse
+# as an impersonation or PII leak. Allowed: 2–20 chars of letters, digits,
+# spaces, ``_`` and ``-``. No leading/trailing whitespace and no ``@`` means
+# email-like strings can never slip through.
+_NICKNAME_RE = re.compile(r"^[A-Za-z0-9 _-]{2,20}$")
+
+
+def validate_nickname(nickname: str) -> Optional[str]:
+    """Return the normalized nickname if valid, else None.
+
+    The only normalization is rejecting leading/trailing whitespace (we do
+    NOT silently strip — a handle the user can't see in full is worse than a
+    clear rejection). ``None``/non-str inputs and anything outside the
+    ``[A-Za-z0-9 _-]{2,20}`` shape (which also excludes ``@`` and ``.``, so
+    email-like strings are rejected) return None so the caller can map to 422.
+    """
+    if not isinstance(nickname, str):
+        return None
+    if nickname != nickname.strip():
+        return None
+    if not _NICKNAME_RE.fullmatch(nickname):
+        return None
+    return nickname
 
 
 def versioned_sprite_url(raw_url: Optional[str], agent: Optional[dict]) -> str:
@@ -717,6 +744,37 @@ class TownService:
             UpdateExpression="SET isActive = :inactive",
             ExpressionAttributeValues={":inactive": "false"},
         )
+
+    def get_nickname(self, user_id: str) -> Optional[str]:
+        """Return the user's public-safe town nickname, or None if unset.
+
+        Stored as ``townNickname`` on the user's active instance row. A user
+        without an active instance (hasn't joined yet) returns None.
+        """
+        instance = self.get_active_instance(user_id)
+        if not instance:
+            return None
+        nickname = instance.get("townNickname")
+        return nickname if isinstance(nickname, str) and nickname else None
+
+    def set_nickname(self, user_id: str, nickname: str) -> str:
+        """Persist the user's town nickname on their active instance row.
+
+        Lazily creates an instance for the user if none exists yet, so a
+        signed-in user can pick a handle before joining. The caller is
+        responsible for validating ``nickname`` (see ``validate_nickname``);
+        this method writes the already-validated value verbatim. Returns the
+        stored nickname.
+        """
+        instance = self.get_active_instance(user_id)
+        if not instance:
+            instance = self.create_instance(user_id)
+        dynamo.instances_table().update_item(
+            Key={"id": instance["id"]},
+            UpdateExpression="SET townNickname = :n",
+            ExpressionAttributeValues={":n": nickname},
+        )
+        return nickname
 
     def get_instance_agents(self, instance_id: str) -> list[dict]:
         """Return all active agents for a given instance."""

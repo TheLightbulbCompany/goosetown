@@ -66,6 +66,13 @@ function sendErrorMessage(status: number): string {
   return `Failed to send (HTTP ${status}).`;
 }
 
+// ─── Nickname error mapping ────────────────────────────────────────────────
+function nicknameErrorMessage(status: number): string {
+  if (status === 422) return "That nickname isn't allowed.";
+  if (status === 401) return 'Sign in to choose a nickname.';
+  return `Failed to save nickname (HTTP ${status}).`;
+}
+
 // ─── ConversationModal ────────────────────────────────────────────────────
 
 interface ConversationModalProps {
@@ -121,6 +128,75 @@ function ConversationModal({
   const [sendError, setSendError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // ─── Town nickname ────────────────────────────────────────────────────
+  // The user's turns appear in the PUBLIC conversation log, so they speak
+  // under a chosen public-safe handle (server-derived, never from the say
+  // body). Fetch the profile once when the modal opens for a signed-in user.
+  // ``nickname === undefined`` means "still loading"; ``null`` means loaded
+  // with no nickname set (→ prompt); a string means ready to speak.
+  const [nickname, setNickname] = useState<string | null | undefined>(undefined);
+  const [nicknameInput, setNicknameInput] = useState('');
+  const [nicknameError, setNicknameError] = useState<string | null>(null);
+  const [savingNickname, setSavingNickname] = useState(false);
+
+  useEffect(() => {
+    if (!isSignedIn) {
+      setNickname(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const token = getToken ? await getToken() : null;
+        const res = await fetch(`${API_URL}/town/profile`, {
+          headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        });
+        if (cancelled) return;
+        if (res.ok) {
+          const data: { nickname: string | null } = await res.json();
+          setNickname(data.nickname ?? null);
+        } else {
+          // Treat a failed fetch as "no nickname" so the user can still set one.
+          setNickname(null);
+        }
+      } catch {
+        if (!cancelled) setNickname(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isSignedIn, getToken]);
+
+  const handleSaveNickname = async () => {
+    const value = nicknameInput.trim();
+    if (!value || savingNickname) return;
+    setNicknameError(null);
+    setSavingNickname(true);
+    try {
+      const token = getToken ? await getToken() : null;
+      const res = await fetch(`${API_URL}/town/profile/nickname`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ nickname: value }),
+      });
+      if (res.ok) {
+        const data: { nickname: string | null } = await res.json();
+        setNickname(data.nickname ?? value);
+        setNicknameInput('');
+      } else {
+        setNicknameError(nicknameErrorMessage(res.status));
+      }
+    } catch {
+      setNicknameError('Network error. Check your connection.');
+    } finally {
+      setSavingNickname(false);
+    }
+  };
 
   const handleSend = async () => {
     const text = inputValue.trim();
@@ -257,8 +333,46 @@ function ConversationModal({
         </div>
 
         {/* Footer */}
-        {isActive && isSignedIn ? (
+        {isActive && isSignedIn && nickname === null ? (
+          // Signed-in user without a public-safe handle yet: prompt for one
+          // before they can speak (their turns land in the PUBLIC log).
           <div className="border-t border-clay-700 bg-clay-800 px-4 py-3">
+            <p className="font-body text-xs text-clay-300 mb-2">
+              Choose a nickname to join the conversation
+            </p>
+            {nicknameError && (
+              <p className="font-body text-xs text-red-400 mb-2" role="alert">
+                {nicknameError}
+              </p>
+            )}
+            <form
+              onSubmit={(e) => { e.preventDefault(); void handleSaveNickname(); }}
+              className="flex gap-2 items-start"
+            >
+              <input
+                type="text"
+                value={nicknameInput}
+                onChange={(e) => { setNicknameInput(e.target.value); setNicknameError(null); }}
+                placeholder="Your nickname…"
+                maxLength={20}
+                disabled={savingNickname}
+                className="flex-1 bg-clay-900 text-brown-100 font-body text-sm px-3 py-2 rounded border border-clay-700 focus:outline-none focus:border-brown-500 disabled:opacity-50"
+                aria-label="Nickname input"
+              />
+              <button
+                type="submit"
+                disabled={savingNickname || nicknameInput.trim().length < 2}
+                className="px-3 py-2 bg-brown-600 hover:bg-brown-500 text-brown-100 rounded font-body text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Save
+              </button>
+            </form>
+          </div>
+        ) : isActive && isSignedIn && typeof nickname === 'string' ? (
+          <div className="border-t border-clay-700 bg-clay-800 px-4 py-3">
+            <p className="font-body text-[10px] text-clay-500 mb-1">
+              speaking as {nickname}
+            </p>
             {sendError && (
               <p className="font-body text-xs text-red-400 mb-2" role="alert">
                 {sendError}
