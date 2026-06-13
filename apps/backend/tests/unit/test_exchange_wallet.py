@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from boto3.dynamodb.conditions import Attr
 
+import core.dynamo as dynamo_mod
 from core.services.exchange_service import (
     SIGNUP_GRANT,
     AgentNotFound,
@@ -237,3 +238,129 @@ class TestConsecutiveDebits:
         assert debit2_row["entryType"] == "ESCROW_DEBIT"
         assert int(debit2_row["amount"]) == -30
         assert int(debit2_row["balanceAfter"]) == SIGNUP_GRANT - 60  # 40
+
+
+# ---------------------------------------------------------------------------
+# Wallet + ledger atomicity (codex P2 #3406959205) — every wallet movement and
+# its ledger row commit in ONE TransactWriteItems; a failed transaction moves
+# nothing, and CAS contention retries with an exact balanceAfter.
+# ---------------------------------------------------------------------------
+
+
+def _transact_cancelled_exc(client, reasons: list[dict]):
+    """Build a TransactionCanceledException with the given CancellationReasons."""
+    return client.exceptions.TransactionCanceledException(
+        {
+            "Error": {"Code": "TransactionCanceledException", "Message": "Transaction cancelled"},
+            "CancellationReasons": reasons,
+        },
+        "TransactWriteItems",
+    )
+
+
+class TestWalletLedgerAtomicity:
+    def test_transact_failure_moves_nothing(self, dynamodb_tables, monkeypatch):
+        """If the transaction fails outright, the debit raises AND the balance
+        is unchanged AND no ledger row exists (the old two-write path could
+        move the balance with no audit row)."""
+        _seed_agent(dynamodb_tables)
+        ensure_signup_grant("agent-1")  # grant up front so the patch only sees the debit
+
+        client = dynamo_mod.get_client().meta.client
+
+        def boom(**kwargs):
+            raise RuntimeError("simulated transact outage")
+
+        monkeypatch.setattr(client, "transact_write_items", boom)
+        with pytest.raises(RuntimeError, match="simulated transact outage"):
+            debit_wallet("agent-1", 30, "ESCROW_DEBIT", "job-1")
+
+        agent = dynamodb_tables.Table("goosetown-agents").get_item(Key={"id": "agent-1"})["Item"]
+        assert int(agent["walletBalance"]) == SIGNUP_GRANT  # balance did NOT move
+        rows = [r for r in _ledger_rows(dynamodb_tables, "agent-1") if r["entryType"] == "ESCROW_DEBIT"]
+        assert rows == []  # and no orphan ledger row
+
+    def test_grant_transact_failure_moves_nothing(self, dynamodb_tables, monkeypatch):
+        """Same atomicity contract for the signup grant."""
+        _seed_agent(dynamodb_tables)
+        client = dynamo_mod.get_client().meta.client
+
+        def boom(**kwargs):
+            raise RuntimeError("simulated transact outage")
+
+        monkeypatch.setattr(client, "transact_write_items", boom)
+        with pytest.raises(RuntimeError, match="simulated transact outage"):
+            ensure_signup_grant("agent-1")
+
+        agent = dynamodb_tables.Table("goosetown-agents").get_item(Key={"id": "agent-1"})["Item"]
+        assert "walletBalance" not in agent
+        assert "signupGrantAt" not in agent
+        assert _ledger_rows(dynamodb_tables, "agent-1") == []
+
+    def test_cas_contention_retries_with_exact_balance_after(self, dynamodb_tables, monkeypatch):
+        """First transact attempt is cancelled by the balance CAS (a concurrent
+        credit moved the balance between read and write); the retry re-reads
+        and lands with an exact balanceAfter."""
+        _seed_agent(dynamodb_tables)
+        ensure_signup_grant("agent-1")
+
+        agents = dynamodb_tables.Table("goosetown-agents")
+        client = dynamo_mod.get_client().meta.client
+        real_transact = client.transact_write_items
+        calls = {"n": 0}
+
+        def contended(**kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # Simulate the concurrent movement the CAS would have caught.
+                agents.update_item(
+                    Key={"id": "agent-1"},
+                    UpdateExpression="ADD walletBalance :d",
+                    ExpressionAttributeValues={":d": 7},
+                )
+                raise _transact_cancelled_exc(client, [{"Code": "ConditionalCheckFailed"}, {"Code": "None"}])
+            return real_transact(**kwargs)
+
+        monkeypatch.setattr(client, "transact_write_items", contended)
+        new_balance = debit_wallet("agent-1", 30, "ESCROW_DEBIT", "job-1")
+
+        assert calls["n"] == 2  # one cancelled attempt + one successful retry
+        assert new_balance == SIGNUP_GRANT + 7 - 30
+        agent = agents.get_item(Key={"id": "agent-1"})["Item"]
+        assert int(agent["walletBalance"]) == SIGNUP_GRANT + 7 - 30
+        rows = [r for r in _ledger_rows(dynamodb_tables, "agent-1") if r["entryType"] == "ESCROW_DEBIT"]
+        assert len(rows) == 1
+        assert int(rows[0]["balanceAfter"]) == SIGNUP_GRANT + 7 - 30  # exact, post-contention
+
+    def test_cas_exhaustion_raises_wallet_contention(self, dynamodb_tables, monkeypatch):
+        """Persistent CAS cancellation exhausts the retries and raises."""
+        _seed_agent(dynamodb_tables)
+        ensure_signup_grant("agent-1")
+        client = dynamo_mod.get_client().meta.client
+
+        def always_cancelled(**kwargs):
+            raise _transact_cancelled_exc(client, [{"Code": "ConditionalCheckFailed"}, {"Code": "None"}])
+
+        monkeypatch.setattr(client, "transact_write_items", always_cancelled)
+        with pytest.raises(RuntimeError, match="wallet contention"):
+            debit_wallet("agent-1", 30, "ESCROW_DEBIT", "job-1")
+
+        agent = dynamodb_tables.Table("goosetown-agents").get_item(Key={"id": "agent-1"})["Item"]
+        assert int(agent["walletBalance"]) == SIGNUP_GRANT  # nothing moved
+
+    def test_non_cas_cancellation_reraises(self, dynamodb_tables, monkeypatch):
+        """Cancellation reasons other than the balance CAS (e.g. a transaction
+        conflict) must propagate, not burn retries."""
+        _seed_agent(dynamodb_tables)
+        ensure_signup_grant("agent-1")
+        client = dynamo_mod.get_client().meta.client
+        calls = {"n": 0}
+
+        def conflicted(**kwargs):
+            calls["n"] += 1
+            raise _transact_cancelled_exc(client, [{"Code": "TransactionConflict"}, {"Code": "None"}])
+
+        monkeypatch.setattr(client, "transact_write_items", conflicted)
+        with pytest.raises(client.exceptions.TransactionCanceledException):
+            credit_wallet("agent-1", 10, "PAYOUT", "job-1")
+        assert calls["n"] == 1  # no retry loop for non-CAS cancellations

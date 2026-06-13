@@ -2,7 +2,8 @@
 
 Domain design ported from open-experiments/agent-exchange (MIT); plumbing
 follows conversation_service (timers + sweeper) and town_service (DDB).
-Money is integer crumbs; every movement is an append-only ledger row.
+Money is integer crumbs; every wallet movement commits atomically with its
+append-only ledger row (one TransactWriteItems via ``_wallet_transact``).
 """
 
 from __future__ import annotations
@@ -157,14 +158,15 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _ledger_append(
+def _ledger_item(
     agent_id: str,
     entry_type: str,
     amount: int,
     balance_after: int,
     ref_id: str,
     counterparty_id: str | None = None,
-) -> None:
+) -> dict[str, Any]:
+    """Build a ledger row dict (single source of truth for the row schema)."""
     item: dict[str, Any] = {
         "id": str(uuid.uuid4()),
         "agentId": agent_id,
@@ -176,11 +178,30 @@ def _ledger_append(
     }
     if counterparty_id is not None:
         item["counterpartyId"] = counterparty_id
+    return item
+
+
+def _ledger_append(
+    agent_id: str,
+    entry_type: str,
+    amount: int,
+    balance_after: int,
+    ref_id: str,
+    counterparty_id: str | None = None,
+) -> None:
+    """Append a ledger row with NO paired wallet movement.
+
+    Only used for synthetic-account rows (the TOWN fee sink), where there is
+    no wallet balance to move. Real wallet movements go through
+    ``_wallet_transact``, which commits the balance update and its ledger row
+    in one DynamoDB transaction.
+    """
+    item = _ledger_item(agent_id, entry_type, amount, balance_after, ref_id, counterparty_id)
     try:
         dynamo.ledger_table().put_item(Item=item)
     except Exception:
         logger.error(
-            "Ledger append failed (balance already moved!): agent=%s type=%s amount=%d ref=%s",
+            "Ledger append failed: agent=%s type=%s amount=%d ref=%s",
             agent_id,
             entry_type,
             amount,
@@ -189,8 +210,93 @@ def _ledger_append(
         raise
 
 
+# CAS attempts for a single wallet movement. Contention on one agent's wallet
+# is rare (an agent acts serially); 5 retries is generous headroom.
+_WALLET_CAS_ATTEMPTS = 5
+
+
+def _wallet_transact(
+    agent_id: str,
+    amount: int,
+    entry_type: str,
+    ref_id: str,
+    *,
+    require_funds: bool,
+    counterparty_id: str | None = None,
+) -> int:
+    """Move ``amount`` crumbs (negative = debit) + append the ledger row atomically.
+
+    The wallet update and its ledger row ride in ONE ``TransactWriteItems``
+    call, so a crash or a failed ledger put can never move crumbs without an
+    audit row (codex P2 #3406959205). ``balanceAfter`` stays exact via a CAS
+    loop: read the current balance, condition the wallet update on the value
+    we read, and re-read + retry when a concurrent movement cancels the
+    transaction.
+
+    Uses the resource-derived client (``table.meta.client``) exactly like
+    ``TownService.opt_in`` — boto3 registers the document-interface
+    transformations on that client, so plain Python dicts serialize correctly.
+
+    Raises ``AgentNotFound`` when the agent row is missing, ``InsufficientFunds``
+    when ``require_funds`` and the balance can't cover the debit (checked
+    BEFORE any write), and ``RuntimeError`` after exhausting CAS retries.
+    Returns the new balance.
+    """
+    table = dynamo.agents_table()
+    client = table.meta.client
+    for _ in range(_WALLET_CAS_ATTEMPTS):
+        row = table.get_item(Key={"id": agent_id}).get("Item")
+        if row is None:
+            raise AgentNotFound(f"agent {agent_id[:8]} not found")
+        has_balance = "walletBalance" in row
+        current = int(row.get("walletBalance") or 0)
+        new_balance = current + amount
+        if require_funds and new_balance < 0:
+            raise InsufficientFunds(f"agent {agent_id[:8]} cannot cover {-amount} crumbs")
+        condition = "attribute_exists(id) AND " + (
+            "walletBalance = :cur" if has_balance else "attribute_not_exists(walletBalance)"
+        )
+        values: dict[str, Any] = {":new": new_balance}
+        if has_balance:
+            values[":cur"] = current
+        try:
+            client.transact_write_items(
+                TransactItems=[
+                    {
+                        "Update": {
+                            "TableName": table.name,
+                            "Key": {"id": agent_id},
+                            "UpdateExpression": "SET walletBalance = :new",
+                            "ConditionExpression": condition,
+                            "ExpressionAttributeValues": values,
+                        }
+                    },
+                    {
+                        "Put": {
+                            "TableName": dynamo.ledger_table().name,
+                            "Item": _ledger_item(
+                                agent_id,
+                                entry_type,
+                                amount,
+                                new_balance,
+                                ref_id,
+                                counterparty_id,
+                            ),
+                        }
+                    },
+                ]
+            )
+        except client.exceptions.TransactionCanceledException as exc:
+            reasons = getattr(exc, "response", {}).get("CancellationReasons", []) or []
+            if any(r.get("Code") == "ConditionalCheckFailed" for r in reasons):
+                continue  # balance moved under us (or row vanished) — re-read and retry
+            raise
+        return new_balance
+    raise RuntimeError(f"wallet contention: agent {agent_id[:8]} CAS retries exhausted ({entry_type} ref={ref_id})")
+
+
 def _bump_counter(agent_id: str, attr: str, delta: int = 1) -> None:
-    """Atomic counter bump (multi-task safe; same pattern as the wallet)."""
+    """Atomic counter bump via ADD (multi-task safe)."""
     try:
         dynamo.agents_table().update_item(
             Key={"id": agent_id},
@@ -332,41 +438,64 @@ def _rate_limit_minutes_left(agent_id: str, verb: str, window_sec: int = _RATE_W
 
 
 def ensure_signup_grant(agent_id: str) -> None:
-    """Grant the one-time signup crumbs. Idempotent on signupGrantAt."""
+    """Grant the one-time signup crumbs. Idempotent on signupGrantAt.
+
+    The balance bump + signupGrantAt stamp + GRANT ledger row commit in one
+    DynamoDB transaction, so the grant can never move crumbs without its
+    audit row. Already-granted and agent-missing are both silent returns,
+    distinguished by re-reading the row after a cancelled transaction.
+    """
     table = dynamo.agents_table()
-    try:
-        resp = table.update_item(
-            Key={"id": agent_id},
-            UpdateExpression=("SET walletBalance = if_not_exists(walletBalance, :z) + :grant, signupGrantAt = :now"),
-            ConditionExpression="attribute_exists(id) AND attribute_not_exists(signupGrantAt)",
-            ExpressionAttributeValues={":z": 0, ":grant": SIGNUP_GRANT, ":now": _now_iso()},
-            ReturnValues="ALL_NEW",
+    client = table.meta.client
+    for _ in range(_WALLET_CAS_ATTEMPTS):
+        row = table.get_item(Key={"id": agent_id}).get("Item")
+        if row is None:
+            return  # agent missing — caller surfaces that elsewhere
+        if row.get("signupGrantAt"):
+            return  # already granted
+        has_balance = "walletBalance" in row
+        current = int(row.get("walletBalance") or 0)
+        new_balance = current + SIGNUP_GRANT
+        condition = "attribute_exists(id) AND attribute_not_exists(signupGrantAt) AND " + (
+            "walletBalance = :cur" if has_balance else "attribute_not_exists(walletBalance)"
         )
-    except table.meta.client.exceptions.ConditionalCheckFailedException:
-        return  # already granted (or agent missing — caller surfaces that elsewhere)
-    _ledger_append(agent_id, "GRANT", SIGNUP_GRANT, int(resp["Attributes"]["walletBalance"]), "signup")
+        values: dict[str, Any] = {":new": new_balance, ":now": _now_iso()}
+        if has_balance:
+            values[":cur"] = current
+        try:
+            client.transact_write_items(
+                TransactItems=[
+                    {
+                        "Update": {
+                            "TableName": table.name,
+                            "Key": {"id": agent_id},
+                            "UpdateExpression": "SET walletBalance = :new, signupGrantAt = :now",
+                            "ConditionExpression": condition,
+                            "ExpressionAttributeValues": values,
+                        }
+                    },
+                    {
+                        "Put": {
+                            "TableName": dynamo.ledger_table().name,
+                            "Item": _ledger_item(agent_id, "GRANT", SIGNUP_GRANT, new_balance, "signup"),
+                        }
+                    },
+                ]
+            )
+        except client.exceptions.TransactionCanceledException:
+            # Cancelled: either another caller granted concurrently (re-read
+            # sees signupGrantAt → return), the agent row vanished (re-read
+            # sees None → return), or the balance CAS lost — loop re-reads
+            # and retries in every case.
+            continue
+        return
+    raise RuntimeError(f"wallet contention: agent {agent_id[:8]} signup-grant CAS retries exhausted")
 
 
 def debit_wallet(agent_id: str, amount: int, entry_type: str, ref_id: str) -> int:
-    """Atomic conditional debit. Raises InsufficientFunds. Returns new balance."""
+    """Debit + ledger row in one transaction. Raises InsufficientFunds. Returns new balance."""
     ensure_signup_grant(agent_id)
-    table = dynamo.agents_table()
-    try:
-        resp = table.update_item(
-            Key={"id": agent_id},
-            UpdateExpression="ADD walletBalance :neg",
-            ConditionExpression="attribute_exists(id) AND walletBalance >= :amt",
-            ExpressionAttributeValues={":neg": -amount, ":amt": amount},
-            ReturnValues="ALL_NEW",
-        )
-    except table.meta.client.exceptions.ConditionalCheckFailedException as exc:
-        check = table.get_item(Key={"id": agent_id})
-        if "Item" not in check:
-            raise AgentNotFound(f"agent {agent_id[:8]} not found") from exc
-        raise InsufficientFunds(f"agent {agent_id[:8]} cannot cover {amount} crumbs") from exc
-    new_balance = int(resp["Attributes"]["walletBalance"])
-    _ledger_append(agent_id, entry_type, -amount, new_balance, ref_id)
-    return new_balance
+    return _wallet_transact(agent_id, -amount, entry_type, ref_id, require_funds=True)
 
 
 def credit_wallet(
@@ -376,22 +505,16 @@ def credit_wallet(
     ref_id: str,
     counterparty_id: str | None = None,
 ) -> int:
-    """Atomic credit. Returns new balance."""
+    """Credit + ledger row in one transaction. Returns new balance."""
     ensure_signup_grant(agent_id)
-    table = dynamo.agents_table()
-    try:
-        resp = table.update_item(
-            Key={"id": agent_id},
-            UpdateExpression="ADD walletBalance :amt",
-            ConditionExpression="attribute_exists(id)",
-            ExpressionAttributeValues={":amt": amount},
-            ReturnValues="ALL_NEW",
-        )
-    except table.meta.client.exceptions.ConditionalCheckFailedException as exc:
-        raise AgentNotFound(f"agent {agent_id[:8]} not found") from exc
-    new_balance = int(resp["Attributes"]["walletBalance"])
-    _ledger_append(agent_id, entry_type, amount, new_balance, ref_id, counterparty_id=counterparty_id)
-    return new_balance
+    return _wallet_transact(
+        agent_id,
+        amount,
+        entry_type,
+        ref_id,
+        require_funds=False,
+        counterparty_id=counterparty_id,
+    )
 
 
 def get_wallet(agent_id: str) -> dict[str, Any]:
@@ -1720,9 +1843,12 @@ async def sweep_overdue_jobs() -> None:
     timer (or a concurrent sweep) is safe — exactly one side wins.
 
     Crash-window note (accepted at current scale):
-    (a) This function only retries *deadline transitions* (status flips). A
-        crash between a status flip and its money movement (PAYOUT / ESCROW_REFUND)
-        strands the escrow detectably — the ledger will have no PAYOUT or
+    (a) This function only retries *deadline transitions* (status flips). Each
+        money movement is itself atomic — the wallet update and its ledger row
+        ride in one TransactWriteItems via ``_wallet_transact``, so crumbs can
+        never move without an audit row. The remaining window is a crash
+        between a status flip and its money movement (PAYOUT / ESCROW_REFUND):
+        that strands the escrow detectably — the ledger will have no PAYOUT or
         ESCROW_REFUND row whose refId matches the job_id — but the sweep does
         not self-heal that gap. Reconcile-on-sweep is the upgrade path when
         traffic warrants it.
