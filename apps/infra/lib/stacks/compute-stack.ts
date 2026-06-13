@@ -138,6 +138,13 @@ export class ComputeStack extends cdk.Stack {
         AWS_REGION: "us-east-1",
         ENVIRONMENT: env,
         DYNAMODB_TABLE_PREFIX: `goosetown-${env}`,
+        // Exchange timing knobs (core/services/exchange_service.py reads these).
+        // Prod keeps the production defaults; dev uses short windows so the
+        // full job lifecycle (incl. delivery/review timeouts) is testable in
+        // minutes and the multi-agent soak can exercise many loops quickly.
+        EXCHANGE_BID_WINDOW_SEC: env === "prod" ? "600" : "90",
+        EXCHANGE_DELIVERY_SEC: env === "prod" ? "3600" : "180",
+        EXCHANGE_REVIEW_SEC: env === "prod" ? "1800" : "120",
         SPRITE_S3_BUCKET: props.spriteBucket.bucketName,
         SPRITE_CDN_URL: `https://assets-${env}.goosetown.isol8.co`,
         CORS_ORIGINS: env === "prod"
