@@ -34,6 +34,8 @@ from schemas.town import (
     ConversationTurn,
     HumanSayRequest,
     HumanSayResponse,
+    NicknameRequest,
+    ProfileResponse,
     TownConversationResponse,
     TownConversationsListResponse,
     WorldEventEntry,
@@ -1241,17 +1243,63 @@ async def get_conversations(limit: int = 20):
     return TownConversationsListResponse(conversations=responses)
 
 
+@router.get("/profile", response_model=ProfileResponse)
+async def get_profile(
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Return the current user's town profile.
+
+    ``nickname`` is ``None`` until the user picks a public-safe handle. The
+    frontend reads this once to decide whether to prompt before letting the
+    user speak in a conversation.
+    """
+    nickname = TownService().get_nickname(auth.user_id)
+    return ProfileResponse(nickname=nickname)
+
+
+@router.put("/profile/nickname", response_model=ProfileResponse)
+async def put_profile_nickname(
+    body: NicknameRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Set the current user's public-safe town nickname.
+
+    The handle labels the user's turns in the public conversation log, so it's
+    validated against ``validate_nickname`` (2–20 chars, letters/digits/spaces/
+    ``_-`` only, no leading/trailing space, no email-like strings). Stored
+    server-side keyed by the authenticated Clerk user_id — never taken from a
+    conversation body — so it can't be spoofed.
+
+    Status codes:
+        * 200 — stored; returns the nickname.
+        * 422 — nickname violates the allowed shape.
+    """
+    from core.services.town_service import validate_nickname
+
+    valid = validate_nickname(body.nickname)
+    if valid is None:
+        raise HTTPException(status_code=422, detail="invalid_nickname")
+
+    stored = TownService().set_nickname(auth.user_id, valid)
+    return ProfileResponse(nickname=stored)
+
+
 def _visitor_display_name(user_id: str) -> str:
     """Friendly, non-spoofable label for a logged-in visitor's conversation turn.
 
-    Clerk's ``AuthContext`` carries only ``user_id`` (no name/email claim), so
-    there's no real display name available server-side. We use a stable
-    ``Visitor-<short>`` label — the short suffix is derived from the user id so
-    two different users dropping into the same conversation are distinguishable
-    in the public log, while never exposing the raw Clerk id. Crucially this is
-    derived from the *authenticated* identity, not the request body, so a user
-    cannot present themselves as a resident.
+    If the user has set a town nickname (``PUT /town/profile/nickname``) we use
+    it — it's already validated to a public-safe shape and stored server-side
+    keyed by the authenticated Clerk id, so it can't be spoofed via the say
+    body. Otherwise we fall back to a stable ``Visitor-<short>`` label: the
+    short suffix is derived from the user id so two different users dropping
+    into the same conversation are distinguishable in the public log, while
+    never exposing the raw Clerk id. Crucially the result is always derived
+    from the *authenticated* identity, not the request body, so a user cannot
+    present themselves as a resident.
     """
+    nickname = TownService().get_nickname(user_id)
+    if nickname:
+        return nickname
     suffix = "".join(ch for ch in user_id if ch.isalnum())[-4:].lower()
     return f"Visitor-{suffix}" if suffix else "Visitor"
 
