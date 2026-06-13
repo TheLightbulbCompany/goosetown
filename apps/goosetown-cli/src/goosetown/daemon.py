@@ -309,6 +309,8 @@ class TownDaemon:
             self._on_job_cancelled(data)
         elif event == "job_message":
             self._on_job_message(data)
+        elif event == "job_offered":
+            self._on_job_offered(data)
         elif event == "sprite_progress":
             status_msg = data.get("status", "Generating sprite...")
             self._write_status(
@@ -840,6 +842,24 @@ class TownDaemon:
             self._update_job(job_id, role="consumer", status="CANCELLED")
         elif verb == "deliver_job" and job_id:
             self._update_job(job_id, role="provider", status="DELIVERED")
+        elif verb == "provider_register":
+            # Wave 2: cache the provider's own profile so TOWN_OFFERS.md can
+            # header it. The backend echo carries the canonical (normalized,
+            # capped) profile — prefer it over the request payload.
+            ex["provider_profile"] = {
+                "skills": list(data.get("skills") or pending.get("skills") or []),
+                "categories": list(
+                    data.get("categories") or pending.get("categories") or []
+                ),
+                "bio": data.get("bio", pending.get("bio", "")) or "",
+                "min_price": data.get("min_price", pending.get("min_price", 0)) or 0,
+            }
+            self._write_offers()
+        elif verb == "provider_off":
+            # No longer a provider — drop the cached profile and rewrite the
+            # inbox header (offers may still be cached but the agent has opted out).
+            ex.pop("provider_profile", None)
+            self._write_offers()
         # review_job: the settlement events (job_completed / job_failed)
         # follow immediately and carry the authoritative status.
         self._write_jobs()
@@ -1230,6 +1250,117 @@ class TownDaemon:
             f'\U0001f4ac {from_name} (job {job_id}): "{preview}" — '
             f"reply: goosetown act job_msg {job_id} <text>"
         )
+
+    def _on_job_offered(self, data: dict) -> None:
+        """Wave 2: a job was offered to us — cache it + write TOWN_OFFERS.md.
+
+        Closes the Task 4 gap: the backend's category matcher (and the consumer
+        ``invite`` path) push ``job_offered`` to subscribed/invited providers,
+        but the daemon had no handler. This handler is the provider's inbox
+        feed:
+
+        - Cache the offer under ``exchange.offers[job_id]`` (the provider's
+          pending OPEN offers — distinct from ``exchange.jobs`` which tracks
+          jobs the agent is *already on*).
+        - Append a 💼 TOWN_EVENTS line so the agent's heartbeat notices it
+          (suppressed on ``resync`` — those are connect-time re-sends that
+          would otherwise duplicate the line on every reconnect, mirroring the
+          job_awarded / bid_lost resync convention).
+        - Rewrite TOWN_OFFERS.md (the standing inbox) via ``_write_offers``.
+        """
+        job_id = data.get("job_id", "?")
+        title = data.get("title", "?")
+        category = data.get("category", "general")
+        max_price = data.get("max_price", "?")
+        consumer_name = data.get("consumer_name", "someone")
+        invited = bool(data.get("invited"))
+
+        ex = self._exchange_state()
+        offers = ex.setdefault("offers", {})
+        offers[job_id] = {
+            "job_id": job_id,
+            "title": title,
+            "category": category,
+            "max_price": max_price,
+            "description": data.get("description", ""),
+            "criteria": data.get("criteria") or [],
+            "consumer_name": consumer_name,
+            "invited": invited,
+            "updated": time.time(),
+        }
+        self._write_offers()
+
+        if not data.get("resync"):
+            invited_note = " (you were invited directly)" if invited else ""
+            self._append_event(
+                f'\U0001f4bc New offer from {consumer_name}: "{title}" — up to '
+                f"{max_price} crumbs (job {job_id}, {category}){invited_note}. "
+                f"See TOWN_OFFERS.md, then: goosetown act bid {job_id} <price>"
+            )
+
+    def _write_offers(self) -> None:
+        """Write TOWN_OFFERS.md — the provider's inbox of OPEN job offers.
+
+        Distinct from TOWN_JOBS.md (jobs you're already ON): this lists jobs
+        you've been *offered* and can still bid on. Each entry is action-first —
+        title, category, budget, the job spec, success criteria, and the exact
+        ``goosetown act bid <job_id> <price>`` line. Atomic via rename
+        (``_write_workspace_file``).
+        """
+        ex = self.state.get("exchange") or {}
+        offers = list((ex.get("offers") or {}).values())
+
+        lines: list[str] = ["# GooseTown Exchange — offers for you", ""]
+        profile = ex.get("provider_profile")
+        if profile:
+            skills = ", ".join(profile.get("skills") or []) or "(none listed)"
+            categories = ", ".join(profile.get("categories") or []) or "(none)"
+            lines.append(
+                f"Your provider profile — skills: {skills}; categories: {categories}"
+            )
+            min_price = profile.get("min_price")
+            if min_price:
+                lines.append(f"Minimum price you'll accept: {min_price} crumbs")
+            lines.append("")
+
+        lines.append("These jobs were pushed to you because they match your categories")
+        lines.append("(or you were invited). Bid on the ones you want:")
+        lines.append("")
+
+        if not offers:
+            lines.append(
+                "- (no open offers right now — check TOWN_EVENTS.md for the latest)"
+            )
+            lines.append("")
+            self._write_workspace_file("TOWN_OFFERS.md", "\n".join(lines) + "\n")
+            return
+
+        # Newest offer first.
+        offers.sort(key=lambda o: o.get("updated", 0), reverse=True)
+        for offer in offers:
+            job_id = offer.get("job_id", "?")
+            title = offer.get("title") or "(untitled)"
+            category = offer.get("category", "general")
+            max_price = offer.get("max_price", "?")
+            invited = " — INVITED directly" if offer.get("invited") else ""
+            consumer = offer.get("consumer_name", "someone")
+            lines.append(f'## "{title}" (job {job_id})')
+            lines.append(
+                f"- Category: {category} · Budget: up to {max_price} crumbs · "
+                f"From: {consumer}{invited}"
+            )
+            description = offer.get("description")
+            if description:
+                lines += self._fenced_block("Job spec:", description)
+            criteria = offer.get("criteria")
+            if criteria:
+                lines.append("  Success criteria:")
+                for criterion in criteria:
+                    lines.append(f"  - {criterion}")
+            lines.append(f"  → goosetown act bid {job_id} <price> [pitch...]")
+            lines.append("")
+
+        self._write_workspace_file("TOWN_OFFERS.md", "\n".join(lines) + "\n")
 
     # ------------------------------------------------------------------
     # TOWN_JOBS.md rendering (v2 — action-first)
@@ -2040,6 +2171,8 @@ class TownDaemon:
                 "deliver_job",
                 "review_job",
                 "job_msg",
+                "provider_register",
+                "provider_off",
             ):
                 exchange_outcome_future = asyncio.get_running_loop().create_future()
                 self._exchange_outcome = exchange_outcome_future

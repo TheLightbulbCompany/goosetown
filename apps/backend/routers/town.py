@@ -1960,6 +1960,18 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
                 provider_id=body.get("provider_id", ""),
             )
             return {"statusCode": 200, "body": result}
+        elif action == "provider_register":
+            result = await exchange_service.register_provider(
+                agent_conn,
+                skills=body.get("skills") or [],
+                categories=body.get("categories") or [],
+                bio=body.get("bio", "") or "",
+                min_price=_coerce_int(body.get("min_price")),
+            )
+            return {"statusCode": 200, "body": result}
+        elif action == "provider_off":
+            result = await exchange_service.unregister_provider(agent_conn)
+            return {"statusCode": 200, "body": result}
         # ``idle`` and ``context_transition`` fall through with no extra work:
         # ``idle`` exists only to bypass the energy-exhaustion gate, and
         # ``context_transition`` is handled inside the ``move`` branch when the

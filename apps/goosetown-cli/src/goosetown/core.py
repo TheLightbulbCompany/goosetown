@@ -152,6 +152,44 @@ def _parse_criteria_verdicts(rest: list[str]) -> tuple[list[bool] | None, list[s
     return None, rest
 
 
+def _parse_category(rest: list[str]) -> tuple[str | None, list[str]]:
+    """Pull ``--category=<slug>`` from ``act post_job`` args (any position).
+
+    Wave 2 (spec §3.2): the AEX category slug the job is filed under, used by
+    the backend's subscription matcher to find providers. Position-independent
+    like every other post_job flag (the 0.4.1 fix). The backend normalizes +
+    defaults to ``general``, so this just forwards a non-empty string.
+    Returns ``(category_or_None, remaining_args)``.
+    """
+    raw, rest = _pop_flag(rest, "--category=")
+    if raw is not None:
+        raw = raw.strip()
+        return (raw or None), rest
+    return None, rest
+
+
+_TAGS_MAX_ITEMS = 8
+_TAG_ITEM_MAX = 40
+
+
+def _parse_tags(rest: list[str]) -> tuple[list[str] | None, list[str]]:
+    """Pull ``--tags=a,b,c`` from ``act post_job`` args (any position).
+
+    Comma-separated free-form tags; each stripped + truncated to 40 chars,
+    empties dropped, capped at 8 items. Returns ``(tags_or_None, remaining_args)``.
+    """
+    raw, rest = _pop_flag(rest, "--tags=")
+    if raw is not None:
+        items = [t.strip()[:_TAG_ITEM_MAX] for t in raw.split(",") if t.strip()]
+        if len(items) > _TAGS_MAX_ITEMS:
+            _die(
+                f"--tags: too many tags ({len(items)}); maximum is {_TAGS_MAX_ITEMS}.",
+                "Separate tags with commas: --tags='fast,cheap'",
+            )
+        return (items if items else None), rest
+    return None, rest
+
+
 _VALID_STRATEGIES = ("balanced", "lowest_price", "best_quality")
 
 
@@ -401,6 +439,9 @@ def _start_daemon(config: dict, agent_dir: Path) -> dict:
     env["TOWN_WS_URL"] = config.get("ws_url", _DEFAULT_WS_URL)
     env["TOWN_AGENT"] = agent_name
     env["TOWN_WORKSPACE"] = config.get("workspace_path", str(agent_dir))
+    # Wave 2: harness type for the wake adapter (Task 9 consumes it). Sourced
+    # from GOOSETOWN.md via load_config; default keeps older configs working.
+    env["TOWN_HARNESS"] = config.get("harness", _DEFAULT_HARNESS)
 
     with open(log_path, "a") as log_fh:
         proc = subprocess.Popen(
@@ -493,6 +534,28 @@ def cmd_join(args: argparse.Namespace) -> None:
             "Pass --appearance 'a pixel art character description' or set the APPEARANCE env var.",
         )
 
+    # Wave 2: harness type records how this agent's loop is woken on town
+    # events (Task 9 consumes it). Stored in GOOSETOWN.md; defaults to
+    # claude-code. Validate early so a typo fails before registration.
+    harness = getattr(args, "harness", None) or _DEFAULT_HARNESS
+    if harness not in _VALID_HARNESSES:
+        _die(
+            f"Invalid --harness value: '{harness}'",
+            f"Harness must be one of: {', '.join(_VALID_HARNESSES)}",
+        )
+
+    # Wave 2: optional one-shot provider setup. Validate the provider payload
+    # up front (categories required) so we fail before registration rather than
+    # after the agent is already in town.
+    provider_payload: dict | None = None
+    if getattr(args, "provider", False):
+        provider_payload = _build_provider_register_payload(
+            getattr(args, "skills", None),
+            getattr(args, "categories", None),
+            getattr(args, "bio", None),
+            getattr(args, "min_price", None),
+        )
+
     body = json.dumps(
         {
             "agent_name": agent_name,
@@ -533,9 +596,11 @@ def cmd_join(args: argparse.Namespace) -> None:
                     f"api_url: {api_url}\n"
                     f"agent: {agent_name}\n"
                     f"workspace_path: {agent_dir}\n"
+                    f"harness: {harness}\n"
                 )
             config = load_config(agent_dir)
             state = _start_daemon(config, agent_dir)
+            _maybe_register_provider(config, agent_dir, provider_payload)
             _out(state)
             return
         _die(f"Registration failed: HTTP {exc.code}", json.dumps(detail))
@@ -559,6 +624,7 @@ def cmd_join(args: argparse.Namespace) -> None:
         f"api_url: {api_url_resp}\n"
         f"agent: {agent_name_resp}\n"
         f"workspace_path: {agent_dir}\n"
+        f"harness: {harness}\n"
     )
 
     life_path = agent_dir / "TOWN_LIFE.md"
@@ -580,6 +646,7 @@ def cmd_join(args: argparse.Namespace) -> None:
         "api_url": api_url_resp,
         "agent": agent_name_resp,
         "workspace_path": str(agent_dir),
+        "harness": harness,
     }
 
     sd = state_dir(agent_name_resp)
@@ -589,13 +656,42 @@ def cmd_join(args: argparse.Namespace) -> None:
         state_file = sd / "state.json"
         if state_file.exists():
             try:
+                _maybe_register_provider(config, agent_dir, provider_payload)
                 _out(json.loads(state_file.read_text()))
                 return
             except json.JSONDecodeError:
                 pass
 
     initial_state = _start_daemon(config, agent_dir)
+    # Wave 2: one-shot provider setup — after the daemon is up, send the
+    # provider_register act (best-effort; the agent is already in town).
+    _maybe_register_provider(config, agent_dir, provider_payload)
     _out(initial_state)
+
+
+def _maybe_register_provider(
+    config: dict, agent_dir: Path, provider_payload: dict | None
+) -> None:
+    """Send the one-shot provider_register after join, if --provider was set.
+
+    Best-effort: a failure here does not unwind the join (the agent is already
+    registered + in town). The outcome is logged via the standard daemon echo;
+    a register failure just means the agent must re-run ``goosetown provider
+    register`` manually.
+    """
+    if not provider_payload:
+        return
+    try:
+        _send_provider_register(config, agent_dir, provider_payload)
+    except Exception as exc:  # noqa: BLE001 — best-effort, must not unwind join
+        print(
+            json.dumps(
+                {
+                    "warning": f"join succeeded but provider register failed: {exc}",
+                    "hint": "Run 'goosetown provider register --categories=... ' to retry.",
+                }
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -807,10 +903,12 @@ def cmd_act(args: argparse.Namespace) -> None:
         usage = (
             "Usage: goosetown act post_job "
             "[--strategy=balanced|lowest_price|best_quality] "
-            "[--criteria='a;b;c'] "
+            "[--category=<slug>] [--tags=a,b] [--criteria='a;b;c'] "
             '<max_price> "<title>" "<description...>"'
         )
         strategy, rest = _parse_strategy(rest)
+        category, rest = _parse_category(rest)
+        tags, rest = _parse_tags(rest)
         criteria, rest = _parse_criteria(rest)
         if len(rest) < 3:
             _die(
@@ -842,6 +940,10 @@ def cmd_act(args: argparse.Namespace) -> None:
         }
         if strategy is not None:
             payload["strategy"] = strategy
+        if category is not None:
+            payload["category"] = category
+        if tags is not None:
+            payload["tags"] = tags
         if criteria is not None:
             payload["success_criteria"] = criteria
     elif action == "bid":
@@ -990,6 +1092,137 @@ def cmd_act(args: argparse.Namespace) -> None:
         _die(f"Failed to communicate with daemon: {exc}")
 
     _out(result)
+
+
+# ---------------------------------------------------------------------------
+# Command: provider (Wave 2 — provider onboarding)
+# ---------------------------------------------------------------------------
+
+_VALID_HARNESSES = ("claude-code", "openclaw", "http", "none")
+_DEFAULT_HARNESS = "claude-code"
+
+
+def _csv_list(raw: str | None, item_max: int) -> list[str]:
+    """Split a comma-separated flag value into a clean list (drops empties)."""
+    if not raw:
+        return []
+    return [item.strip()[:item_max] for item in raw.split(",") if item.strip()]
+
+
+_PROVIDER_SKILL_MAX = 40
+_PROVIDER_CATEGORY_MAX = 64
+_PROVIDER_BIO_MAX = 500
+
+
+def _build_provider_register_payload(
+    skills_raw: str | None,
+    categories_raw: str | None,
+    bio_raw: str | None,
+    min_price_raw: str | None,
+) -> dict:
+    """Assemble + validate a provider_register act payload.
+
+    Shared by ``cmd_provider register/update`` and the ``join --provider``
+    one-shot path so the validation rules live in one place. Categories are the
+    only hard requirement — a provider with no categories is undiscoverable.
+    Dies on missing categories or a bad ``--min-price``.
+    """
+    skills = _csv_list(skills_raw, _PROVIDER_SKILL_MAX)
+    categories = _csv_list(categories_raw, _PROVIDER_CATEGORY_MAX)
+    bio = (bio_raw or "")[:_PROVIDER_BIO_MAX]
+
+    if not categories:
+        _die(
+            "At least one --categories value is required to register as a provider.",
+            "Example: --categories=writing,research",
+        )
+
+    payload: dict = {
+        "action": "provider_register",
+        "skills": skills,
+        "categories": categories,
+        "bio": bio,
+    }
+    if min_price_raw is not None and str(min_price_raw) != "":
+        try:
+            min_price = int(min_price_raw)
+        except (ValueError, TypeError):
+            _die(
+                f"--min-price must be an integer number of crumbs, got '{min_price_raw}'.",
+            )
+        if min_price < 0:
+            _die("--min-price must be >= 0 crumbs.")
+        if min_price > 1_000_000:
+            _die("--min-price must be <= 1000000.")
+        payload["min_price"] = min_price
+    return payload
+
+
+def cmd_provider(args: argparse.Namespace) -> None:
+    """Provider onboarding: register / update / off (Wave 2, spec §3.4).
+
+    ``register`` and ``update`` are the same verb — a re-register replaces the
+    profile and category subscriptions wholesale (the backend rebuilds the
+    subscription projection). ``off`` leaves the marketplace. All three route
+    through the daemon as a ``provider_register`` / ``provider_off`` act, like
+    every other action, and surface the backend's exchange_ok / exchange_rejected
+    outcome.
+    """
+    _ensure_websockets()
+    _require_websockets("provider")
+
+    agent_dir = Path(os.environ.get("AGENT_DIR", str(Path.cwd())))
+    config = load_config(agent_dir)
+    agent_name = config.get("agent", "")
+    sd = state_dir(agent_name)
+    sock_path = sd / "daemon.sock"
+
+    _ensure_daemon(config, agent_dir)
+
+    subcommand = args.provider_command
+    rest = list(args.args or [])
+
+    if subcommand in ("register", "update"):
+        skills_raw, rest = _pop_flag(rest, "--skills=")
+        categories_raw, rest = _pop_flag(rest, "--categories=")
+        bio_raw, rest = _pop_flag(rest, "--bio=")
+        min_price_raw, rest = _pop_flag(rest, "--min-price=")
+        payload = _build_provider_register_payload(
+            skills_raw, categories_raw, bio_raw, min_price_raw
+        )
+    elif subcommand == "off":
+        payload = {"action": "provider_off"}
+    else:
+        _die(
+            f"Unknown provider subcommand: '{subcommand}'",
+            "Subcommands: register, update, off",
+        )
+
+    try:
+        result = ipc_send(sock_path, {"action": "act", "payload": payload})
+    except FileNotFoundError:
+        _die(
+            "Daemon socket not found after startup.",
+            "Try running 'goosetown join <token>' again.",
+        )
+    except Exception as exc:
+        _die(f"Failed to communicate with daemon: {exc}")
+
+    _out(result)
+
+
+def _send_provider_register(config: dict, agent_dir: Path, payload: dict) -> dict:
+    """Send a provider_register act through the daemon (join --provider path).
+
+    Split out so the join one-shot can be tested without spinning a daemon, and
+    so the daemon-start race (socket created after state.json) is handled the
+    same way ``cmd_act`` handles it.
+    """
+    agent_name = config.get("agent", "")
+    sd = state_dir(agent_name)
+    sock_path = sd / "daemon.sock"
+    _ensure_daemon(config, agent_dir)
+    return ipc_send(sock_path, {"action": "act", "payload": payload})
 
 
 # ---------------------------------------------------------------------------

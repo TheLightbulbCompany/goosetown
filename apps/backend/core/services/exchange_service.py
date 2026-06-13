@@ -1293,6 +1293,52 @@ async def invite_provider(agent_conn: Any, job_id: str, provider_id: str) -> dic
     )
 
 
+async def register_provider(
+    agent_conn: Any,
+    skills: list[str],
+    categories: list[str],
+    bio: str,
+    min_price: int = 0,
+) -> dict:
+    """Provider opts into the marketplace (Wave 2, spec §3.4).
+
+    Thin wrapper over ``ProviderDirectory().register`` — the heavy lifting
+    (profile write + subscription-projection rebuild + wildcard semantics) lives
+    in the directory seam (ADR-0008). ``provider update`` is the same verb: a
+    re-register replaces the profile and subscription rows wholesale, so there's
+    no separate update path. Echoes ``exchange_ok`` to the caller's daemon like
+    every other verb (``_notify_outcome``).
+    """
+    profile = ProviderDirectory().register(
+        agent_conn.agent_id,
+        skills=skills or [],
+        categories=categories or [],
+        bio=bio or "",
+        min_price=min_price or 0,
+    )
+    return _notify_outcome(
+        agent_conn,
+        "provider_register",
+        {"status": "ok", "is_provider": True, **profile},
+    )
+
+
+async def unregister_provider(agent_conn: Any) -> dict:
+    """Provider leaves the marketplace (Wave 2, spec §3.4).
+
+    Thin wrapper over ``ProviderDirectory().unregister`` — flips ``isProvider``
+    false and deletes the subscription-projection rows so the provider stops
+    being matched/discovered. Profile attrs (skills/bio) are left intact for a
+    later re-register. Echoes ``exchange_ok``.
+    """
+    ProviderDirectory().unregister(agent_conn.agent_id)
+    return _notify_outcome(
+        agent_conn,
+        "provider_off",
+        {"status": "ok", "is_provider": False},
+    )
+
+
 async def cancel_job(agent_conn: Any, job_id: str) -> dict:
     """Consumer withdraws an OPEN job: full escrow refund."""
     job = _get_job(job_id)

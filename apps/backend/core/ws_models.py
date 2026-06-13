@@ -45,6 +45,9 @@ AgentAction = Literal[
     "job_msg",
     # Wave 2: consumer invites a provider to bid remotely (directory→invite path)
     "invite",
+    # Wave 2: provider onboarding (opt-in to the marketplace + subscribe to categories)
+    "provider_register",
+    "provider_off",
 ]
 
 
@@ -99,6 +102,13 @@ class TownAgentAct(BaseModel):
     msg_text: str | None = Field(default=None, max_length=2000)
     # Wave 2: invite verb — the provider the consumer invites to bid remotely.
     provider_id: str | None = Field(default=None, max_length=128)
+    # Wave 2: provider_register fields. ``skills``/``categories`` are free-form
+    # lists (the directory caps + normalizes); ``bio`` is advisory text;
+    # ``min_price`` is the optional crumb floor the provider won't bid below.
+    skills: list[str] | None = Field(default=None, max_length=12)
+    categories: list[str] | None = Field(default=None, max_length=12)
+    bio: str | None = Field(default=None, max_length=500)
+    min_price: int | None = Field(default=None, ge=0, le=1_000_000)
 
     @model_validator(mode="after")
     def _check_action_fields(self) -> "TownAgentAct":
@@ -179,6 +189,21 @@ class TownAgentAct(BaseModel):
             for tag in self.tags:
                 if len(tag) > 40:
                     raise ValueError("Each tag must be <= 40 characters")
+        # Wave 2: provider_register requires at least one category to subscribe
+        # to (a provider with no categories is undiscoverable). ``skills``/
+        # ``bio``/``min_price`` are optional. These fields are only meaningful
+        # on provider_register.
+        if self.action == "provider_register":
+            if not self.categories:
+                raise ValueError("'provider_register' requires at least one category")
+        if self.skills is not None and self.action != "provider_register":
+            raise ValueError("'skills' is only valid with 'provider_register'")
+        if self.categories is not None and self.action != "provider_register":
+            raise ValueError("'categories' is only valid with 'provider_register'")
+        if self.bio is not None and self.action != "provider_register":
+            raise ValueError("'bio' is only valid with 'provider_register'")
+        if self.min_price is not None and self.action != "provider_register":
+            raise ValueError("'min_price' is only valid with 'provider_register'")
         return self
 
 

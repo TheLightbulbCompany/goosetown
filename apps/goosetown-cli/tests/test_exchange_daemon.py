@@ -46,6 +46,10 @@ def _jobs_md(daemon: TownDaemon) -> str:
     return (daemon._workspace_path / "TOWN_JOBS.md").read_text()
 
 
+def _offers_md(daemon: TownDaemon) -> str:
+    return (daemon._workspace_path / "TOWN_OFFERS.md").read_text()
+
+
 # ---------------------------------------------------------------------------
 # _on_exchange_outcome
 # ---------------------------------------------------------------------------
@@ -1259,3 +1263,131 @@ class TestResyncEvents:
         )
         assert "failed: rejected" in _events(daemon)
         assert "Live failed job" in _events(daemon)
+
+
+# ---------------------------------------------------------------------------
+# Wave 2: job_offered → TOWN_OFFERS.md (the provider inbox)
+# ---------------------------------------------------------------------------
+
+
+class TestJobOffered:
+    def _offer(self, daemon: TownDaemon, **overrides) -> dict:
+        data = {
+            "event": "job_offered",
+            "job_id": "jo1",
+            "title": "Write a haiku",
+            "category": "writing",
+            "max_price": 40,
+            "description": "A haiku about the plaza fountain at dusk.",
+            "consumer_name": "carol",
+        }
+        data.update(overrides)
+        daemon._handle_event(data)
+        return data
+
+    def test_writes_offers_md_with_bid_line(self, daemon: TownDaemon):
+        self._offer(daemon)
+        md = _offers_md(daemon)
+        assert "Write a haiku" in md
+        assert "writing" in md
+        # Budget surfaced (max_price crumbs).
+        assert "40 crumbs" in md
+        # The job spec / description shows so the provider can decide.
+        assert "A haiku about the plaza fountain at dusk." in md
+        # The exact bid command is inline — the provider's primary action.
+        assert "goosetown act bid jo1" in md
+
+    def test_appends_town_events_line(self, daemon: TownDaemon):
+        self._offer(daemon)
+        content = _events(daemon)
+        assert "jo1" in content
+        assert "Write a haiku" in content
+        # The 💼 briefcase glyph marks an exchange line.
+        assert "\U0001f4bc" in content
+
+    def test_caches_offered_job(self, daemon: TownDaemon):
+        self._offer(daemon)
+        offers = daemon.state.get("exchange", {}).get("offers", {})
+        assert "jo1" in offers
+        assert offers["jo1"]["title"] == "Write a haiku"
+        assert offers["jo1"]["category"] == "writing"
+        assert offers["jo1"]["max_price"] == 40
+
+    def test_criteria_rendered_when_present(self, daemon: TownDaemon):
+        self._offer(daemon, criteria=["compare 3 tools", "cite sources"])
+        md = _offers_md(daemon)
+        assert "compare 3 tools" in md
+        assert "cite sources" in md
+
+    def test_invited_flag_surfaced(self, daemon: TownDaemon):
+        self._offer(daemon, invited=True)
+        md = _offers_md(daemon)
+        # An explicit invite is worth flagging to the provider.
+        assert "invited" in md.lower()
+
+    def test_resync_offer_suppresses_event_line(self, daemon: TownDaemon):
+        self._offer(daemon, job_id="jo-resync", title="Resync offer", resync=True)
+        # TOWN_OFFERS.md still reflects the offer (cache updated).
+        md = _offers_md(daemon)
+        assert "Resync offer" in md
+        # But no TOWN_EVENTS line on resync (would duplicate on every reconnect).
+        events_path = daemon._workspace_path / "TOWN_EVENTS.md"
+        assert not events_path.exists() or "Resync offer" not in events_path.read_text()
+
+    def test_multiple_offers_all_rendered(self, daemon: TownDaemon):
+        self._offer(daemon, job_id="jo1", title="First job")
+        self._offer(daemon, job_id="jo2", title="Second job", category="research")
+        md = _offers_md(daemon)
+        assert "First job" in md
+        assert "Second job" in md
+        assert "goosetown act bid jo1" in md
+        assert "goosetown act bid jo2" in md
+
+    def test_provider_profile_header_when_cached(self, daemon: TownDaemon):
+        # When the provider's own profile is cached, TOWN_OFFERS.md headers it.
+        ex = daemon._exchange_state()
+        ex["provider_profile"] = {
+            "skills": ["haiku", "research"],
+            "categories": ["writing", "research"],
+        }
+        self._offer(daemon)
+        md = _offers_md(daemon)
+        assert "haiku" in md
+        assert "writing" in md
+
+    def test_provider_register_ok_caches_profile(self, daemon: TownDaemon):
+        # The provider_register exchange_ok echo caches the profile so the
+        # TOWN_OFFERS.md header can show it.
+        daemon._pending_exchange_payload = {
+            "action": "provider_register",
+            "skills": ["haiku"],
+            "categories": ["writing"],
+        }
+        daemon._handle_event(
+            {
+                "event": "exchange_ok",
+                "verb": "provider_register",
+                "status": "ok",
+                "is_provider": True,
+                "skills": ["haiku"],
+                "categories": ["writing"],
+                "bio": "",
+                "min_price": 0,
+            }
+        )
+        profile = daemon.state["exchange"]["provider_profile"]
+        assert profile["skills"] == ["haiku"]
+        assert profile["categories"] == ["writing"]
+
+    def test_provider_off_ok_clears_profile(self, daemon: TownDaemon):
+        ex = daemon._exchange_state()
+        ex["provider_profile"] = {"skills": ["haiku"], "categories": ["writing"]}
+        daemon._handle_event(
+            {
+                "event": "exchange_ok",
+                "verb": "provider_off",
+                "status": "ok",
+                "is_provider": False,
+            }
+        )
+        assert daemon.state["exchange"].get("provider_profile") is None
