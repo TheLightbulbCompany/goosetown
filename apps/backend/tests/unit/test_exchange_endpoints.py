@@ -514,6 +514,14 @@ def _seed_provider(dynamodb_tables, agent_id: str, skills: list, categories: lis
 class TestProviderDirectoryEndpoint:
     """GET /exchange/providers — public directory (Task 6)."""
 
+    def test_invalid_category_returns_empty_not_all(self, client, dynamodb_tables):
+        """An invalid category slug is an invalid filter → empty, NOT the
+        scan-all fallback (integration-review LOW finding)."""
+        _seed_provider(dynamodb_tables, "prov-x", ["writing"], ["writing"])
+        resp = client.get("/api/v1/town/exchange/providers?category=Has%20Space")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["providers"] == []
+
     def test_no_filter_returns_all_providers(self, client, dynamodb_tables):
         """No query params → all registered providers returned."""
         _seed_provider(dynamodb_tables, "prov-all-1", ["writing"], ["writing"])

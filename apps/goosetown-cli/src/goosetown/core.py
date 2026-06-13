@@ -1082,6 +1082,7 @@ def cmd_act(args: argparse.Namespace) -> None:
             "deliver",
             "review",
             "job_msg",
+            "invite",
         ]
         _die(
             f"Unknown action: '{action}'",

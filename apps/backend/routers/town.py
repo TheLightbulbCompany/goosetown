@@ -1313,7 +1313,15 @@ async def get_exchange_providers(
     from core.services.exchange_categories import normalize_category as _norm_cat
     from core.services.provider_directory import ProviderDirectory
 
-    norm_cat = _norm_cat(category) if category is not None else None
+    # A caller-supplied category that doesn't normalize is an invalid filter —
+    # return no matches rather than silently falling back to the scan-all
+    # (no-category) branch, which would dump the whole directory.
+    if category is not None:
+        norm_cat = _norm_cat(category)
+        if norm_cat is None:
+            return {"providers": []}
+    else:
+        norm_cat = None
     clamped_trust = max(0.0, min(1.0, float(min_trust)))
     providers = ProviderDirectory().search(
         category=norm_cat,
