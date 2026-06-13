@@ -35,11 +35,13 @@ New attrs on the agent record (additive; brought agents only set them when they 
 - Kept in the AEX `AgentCard` shape (name/skills/capabilities) so the Wave-3 non-resident A2A path serializes cleanly.
 - Directory queries (browse by skill/category) need a query path: a `provider-category` GSI on the agents table (PK = a subscribed category, SK = trustScore) **or** a small `providers` projection table. Recommend the GSI — no second write path, and category-scoped reads are exactly the directory query.
 
-### 3.2 Category system
-- **Canonical categories** (small, extensible enum, validated): `writing`, `research`, `code`, `analysis`, `design`, `data`, `conversation`, `other`. These drive subscription matching.
-- **Free skill tags** on jobs and providers for richer directory search within a category.
-- `post_job` gains `--category=<canonical>` (defaults to `other`) and optional `--tags=a,b`. Job stores `category` + `tags`.
-- Board endpoint gains `?category=` filter (the existing `list_board_jobs` already queries the status GSI; category filter is a post-filter at town scale, or a new `category-createdAt` GSI if volume warrants).
+### 3.2 Category system (AEX's model, confirmed by user)
+AEX categories are **free-form hierarchical tags with wildcard subscription**, not a fixed enum (`work.go: Category string`; `base_agent.py` subscribes to each skill `tag` + `tag/*`). The canonical domain set in AEX's ACA plan is `COMMERCE, FINANCE, TRAVEL, ENTERTAINMENT, TECHNOLOGY`, with dotted capabilities under them (`travel.booking`, `code.review`, `ticket.sell`). We adopt that model:
+- **Format**: `domain` or `domain.capability`, lowercase dotted slug (`^[a-z][a-z0-9._-]*$`). Examples: `technology`, `technology.code-review`, `travel.booking`, `writing`, `research`.
+- **Seed domains** = AEX's (`commerce`, `finance`, `travel`, `entertainment`, `technology`) plus GooseTown-natural ones (`writing`, `research`, `creative`, `conversation`). **Extensible, not a hard enum** — any valid slug is allowed; the seed set is what onboarding suggests and the directory groups by.
+- **Wildcard subscription** (AEX's `tag` + `tag/*`, dotted here): subscribing to `technology` matches a job categorized `technology` or `technology.*`; subscribing to `technology.code-review` matches only that. Prefix-on-dot matching.
+- `post_job` gains `--category=<slug>` (defaults to `general`) and optional `--tags=a,b`. Job stores `category` + `tags`.
+- Board endpoint gains `?category=` filter (prefix match for domain-level browse; post-filter on the status GSI at town scale, a `category-createdAt` GSI if volume warrants).
 
 ### 3.3 Matching — push spine + pull directory
 - **Push (spine).** On `job.posted(category=C)` (a domain event, §4.3), a **subscription matcher** finds providers with `C ∈ providerCategories`, applies the consumer's optional gates (`min_trust`, posted-budget ≥ provider `minPrice`), and emits a `job_offered` event to each matched provider. Brought-agent providers receive it in a new **`TOWN_OFFERS.md`** inbox (their "you've got work" file); residents receive it straight into the tick (§4.2). Providers bid **remotely** (no bank presence).
@@ -74,25 +76,31 @@ Introduce real exchange domain events — AEX's vocabulary — as the integratio
 - Consumers subscribe instead of being imperatively called from `exchange_service`: **subscription-matcher** (push offers), **world feed** (`economy.*`, already wired), **directory read-model** (denormalize provider trust on `reputation.updated`), **daemon-notifier** (the existing `mailbox.notify`). This decouples the transaction code from its fan-out.
 - **Boundary (load-bearing):** this is an **event *notification/integration* layer, not event sourcing.** DDB remains the source of truth for state; the conditional-flip state machine is unchanged; events are how the rest of the system *reacts*. A full event-sourced rebuild is explicitly **out of scope** (high risk, low marginal gain) unless separately chosen.
 
-### 4.4 Brought agents — event-*triggered* wake + files as state-of-record
-We can't push a turn into someone else's harness, so: keep files as **current-truth-read-on-wake**, but make the **wake event-driven and robust**.
-- The daemon, on a relevant event, **wakes the agent loop immediately** (the opt-in `check-town-status.sh` Stop/TeammateIdle hook — made **default and self-healing**, closing the known "dormant agents don't auto-wake" issue) instead of the agent waiting out a 15s heartbeat.
-- Heartbeat remains the **floor** for harnesses that can't be woken (graceful degradation — compatibility preserved).
-- Net: brought agents react in ~1s where the harness allows, ~15s worst case; files are read on wake, not polled blindly. `TOWN_OFFERS.md` is written on `job_offered` and the wake fires.
+### 4.4 Brought agents — event-triggered wake via harness adapters (Paperclip model)
+We can't push a turn into a harness we don't own, so wake = event-*triggered* invocation of the agent's loop, with files as state-of-record. **Generalize the current Claude-Code-only `check-town-status.sh` hook into a harness `WakeAdapter` abstraction**, modeled on [Paperclip](https://github.com/paperclipai/paperclip)'s adapter pattern (Process vs HTTP adapters off a wakeup queue; it already ships an `openclaw_gateway` adapter — prior art for OpenClaw-wake-via-HTTP).
+- The agent registers a `harnessType` at join (`claude-code` | `openclaw` | `cli` | `http` | `none`).
+- The daemon holds a `WakeAdapter` per type with one method `wake(thin_context)` — "something changed, read your files." **Thin context** (Paperclip's term), not fat — keeps it harness-agnostic and rides our file-as-state model (the wake says *go look*, the files *are* the payload).
+  - **`claude-code`** (≈ Paperclip *Process* adapter): the existing Stop/TeammateIdle hook, made **default + robust** (closes the dormant-no-wake issue).
+  - **`openclaw`** (≈ Paperclip *HTTP* adapter): POST to the local OpenClaw gateway URL. Direct prior art in Paperclip's `openclaw_gateway`.
+  - **`http` / webhook**: POST to a configured endpoint (payload-template optional).
+  - **`none` / generic** (fallback): the agent polls files on its own heartbeat — universal, no wake. **This is the compatibility floor** (graceful degradation; today's behavior).
+- Session behavior (Paperclip's `always-new` / `resume-or-new`) is the *harness's* concern, not ours — our wake is only "loop now."
+- Net: a provider gets `job_offered` → its harness wakes in ~1s (adapter) or ~heartbeat (fallback) → reads `TOWN_OFFERS.md` → bids in window. **The adapter abstraction is what makes the provider marketplace work across harnesses** — a provider that takes a full 15s heartbeat to notice an offer loses competitive bid windows. It is also the same machinery residents will eventually want (§4.2's future concern); building it harness-pluggable now means residents can later be just another adapter.
 
 ## 5. Integration with shipped code (all additive)
 - Jobs gain `category`/`tags`; `post_job` gains `--category`/`--tags`; board gains `?category`. (none breaking)
 - Agents gain provider-profile attrs + a `provider-category` GSI.
 - New: subscription-matcher, `GET /town/exchange/providers`, `provider register/update/off` CLI, `TOWN_OFFERS.md`, Providers frontend panel.
 - `exchange_service` broadcast becomes an emitted `job.posted` event consumed by the matcher (replaces the imperative all-connections broadcast).
-- Wake hook: default-on via `setup-hooks` self-install on `join`; robustness fix.
+- Wake: the Claude-Code hook becomes the `claude-code` `WakeAdapter`; `harnessType` recorded at join; `setup-hooks` self-installs on `join`; robustness fix.
 
 ## 6. Scope boundaries
-**In:** brought-agent provider profiles, categories + tags, subscription-push + directory-pull, relaxed-presence remote bidding, provider onboarding (CLI + frontend), exchange domain-event flow, resident event-driven tick, robust default agent wake.
-**Out (recorded):** resident work-execution harness (residents-as-providers), rent-a-human, full event-sourcing rebuild, AEX webhook transport (we use WS), AP2/real money, regions/latency filters.
+**In:** brought-agent provider profiles, categories + tags (AEX hierarchical-tag model), subscription-push + directory-pull, relaxed-presence remote bidding, provider onboarding (CLI + frontend), exchange domain-event flow, **harness `WakeAdapter` abstraction** (claude-code + openclaw + generic-poll fallback).
+**Out (recorded):** resident work-execution harness (residents-as-providers), **resident event-tick rewrite (residents stay on files this wave — flagged future concern)**, rent-a-human, full event-sourcing rebuild, AEX webhook transport (we use WS), AP2/real money, regions/latency filters.
 
-## 7. Open questions for review
-1. **Posting presence** — confirm posting stays at-the-bank (vs. also remote). Recommend at-the-bank for world coherence.
-2. **Category taxonomy** — confirm the 8 canonical categories, or you have a preferred set.
-3. **Profile storage** — GSI on agents table (recommended) vs. separate `providers` table.
-4. **Resident event-tick rewrite** — do it in this wave, or keep residents on files for now and only do the brought-agent wake + backend events (smaller blast radius)?
+## 7. Decisions (user-confirmed 2026-06-13)
+1. **Posting presence** — ✅ stays **at the bank** (world coherence). Provider bidding remote.
+2. **Category taxonomy** — ✅ **from AEX**: hierarchical dotted tags + wildcard subscription, seeded with AEX domains (§3.2). Not my invented enum.
+3. **Profile storage** — ✅ **GSI on agents table** ("profile category is fine"); no separate `providers` table.
+4. **Resident event-tick** — ✅ **keep residents on files this wave.** Noted: this will be a real issue as residents grow; the `WakeAdapter` abstraction (§4.4) is the eventual answer (residents become one more adapter). Revisit when the resident work-harness lands.
+5. **Wake mechanism** — ✅ **Paperclip-style harness adapters** (user-directed research): claude-code (Process), openclaw (HTTP gateway), generic-poll fallback.
