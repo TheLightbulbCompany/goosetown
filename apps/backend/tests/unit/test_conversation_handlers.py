@@ -524,6 +524,72 @@ class TestHandleChat:
         assert started_msg["with_display"] == "Marbles"
 
     @pytest.mark.asyncio
+    async def test_target_at_bank_rejects_at_exchange(self):
+        """Finding 5: the bank is a quiet business zone — chatting *toward* an
+        agent at the bank is rejected with ``at_exchange`` (no conversation)."""
+        from routers.town import _handle_chat
+
+        sent: list = []
+        initiator = _make_agent(agent_id="agent-init", current_location="bank")
+        # Initiator elsewhere, target at the bank: still rejected.
+        initiator["currentLocation"] = "plaza"
+        target = _make_agent(agent_id=TARGET_UUID, display_name="Marbles", current_location="bank")
+        svc_mock = MagicMock()
+        svc_mock.get_town_agent_by_id.side_effect = [initiator, target]
+
+        target_conn = SimpleNamespace(agent_id=TARGET_UUID, connection_id="conn-target", agent_name="Marbles")
+        ws_mock = _make_ws_manager_mock({TARGET_UUID: target_conn})
+        # Co-located so the proximity gate passes and only the bank-zone rule fires.
+        gs_mock = _make_gs_mock(cached_states={"agent-init": {"x": 10, "y": 0}, TARGET_UUID: {"x": 12, "y": 0}})
+
+        with (
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
+            patch(SERVICE_PATH, return_value=svc_mock),
+            patch(WS_MANAGER_PATH, return_value=ws_mock),
+            patch(GS_CLIENT_PATH, return_value=gs_mock),
+        ):
+            await _handle_chat(
+                "conn-abc",
+                {"target": TARGET_UUID, "message": "hi"},
+                _make_agent_conn(),
+            )
+
+        assert sent[0][1]["event"] == "chat_rejected"
+        assert sent[0][1]["reason"] == "at_exchange"
+        svc_mock.create_active_conversation.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_initiator_at_bank_rejects_at_exchange(self):
+        """Finding 5: an agent *at* the bank can't initiate a conversation either."""
+        from routers.town import _handle_chat
+
+        sent: list = []
+        initiator = _make_agent(agent_id="agent-init", current_location="bank")
+        target = _make_agent(agent_id=TARGET_UUID, display_name="Marbles", current_location="bank")
+        svc_mock = MagicMock()
+        svc_mock.get_town_agent_by_id.side_effect = [initiator, target]
+
+        target_conn = SimpleNamespace(agent_id=TARGET_UUID, connection_id="conn-target", agent_name="Marbles")
+        ws_mock = _make_ws_manager_mock({TARGET_UUID: target_conn})
+        gs_mock = _make_gs_mock(cached_states={"agent-init": {"x": 10, "y": 0}, TARGET_UUID: {"x": 12, "y": 0}})
+
+        with (
+            patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
+            patch(SERVICE_PATH, return_value=svc_mock),
+            patch(WS_MANAGER_PATH, return_value=ws_mock),
+            patch(GS_CLIENT_PATH, return_value=gs_mock),
+        ):
+            await _handle_chat(
+                "conn-abc",
+                {"target": TARGET_UUID, "message": "hi"},
+                _make_agent_conn(),
+            )
+
+        assert sent[0][1]["event"] == "chat_rejected"
+        assert sent[0][1]["reason"] == "at_exchange"
+        svc_mock.create_active_conversation.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_happy_path_target_offline_still_creates_conversation(self):
         """If target is not connected, conversation still created, no invite sent.
 

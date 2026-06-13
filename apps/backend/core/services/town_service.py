@@ -121,10 +121,17 @@ class TownService:
             return None
         return _decimal_to_native(items[0])
 
-    def get_town_agent_by_id(self, agent_id: str) -> Optional[dict]:
-        """Get a town agent by its UUID."""
+    def get_town_agent_by_id(self, agent_id: str, consistent: bool = False) -> Optional[dict]:
+        """Get a town agent by its UUID.
+
+        ``consistent=True`` issues a DynamoDB strongly-consistent read
+        (``ConsistentRead=True``) so a read immediately after a committed write
+        on the same row never sees stale data. Reserve it for read-after-write
+        gates (e.g. the Exchange location check after a ``move`` arrival); the
+        default eventually-consistent read is cheaper and fine everywhere else.
+        """
         table = dynamo.agents_table()
-        resp = table.get_item(Key={"id": agent_id})
+        resp = table.get_item(Key={"id": agent_id}, ConsistentRead=consistent)
         item = resp.get("Item")
         if not item:
             return None

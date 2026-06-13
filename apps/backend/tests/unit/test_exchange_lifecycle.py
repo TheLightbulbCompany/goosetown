@@ -163,6 +163,23 @@ class TestPostJob:
         result = await ex.post_job(cc, "T", "D", 30, "balanced")
         assert result["reason"] == "not_at_exchange"
 
+    async def test_post_immediately_after_arrival_write_accepted(self, dynamodb_tables, mailbox, ws):
+        """Finding 2: a post_job right after the move-arrival currentLocation write
+        must see the committed location. The location gate uses a strongly-consistent
+        read, so the just-written ``bank`` is visible immediately (no stale reject)."""
+        _seed_agent(dynamodb_tables, "consumer", "carol", location="plaza")
+        cc = _conn("consumer", "carol")
+        ws.conns["consumer"] = cc
+        # Simulate the arrival handler committing currentLocation=bank just before
+        # the post_job comes in (daemon_bridge writes before it notifies the daemon).
+        dynamodb_tables.Table("goosetown-agents").update_item(
+            Key={"id": "consumer"},
+            UpdateExpression="SET currentLocation = :loc",
+            ExpressionAttributeValues={":loc": "bank"},
+        )
+        result = await ex.post_job(cc, "T", "D", 30, "balanced")
+        assert result["status"] == "ok", result
+
     async def test_bad_price_rejected(self, dynamodb_tables, mailbox, ws):
         _seed_agent(dynamodb_tables, "consumer", "carol")
         cc = _conn("consumer", "carol")

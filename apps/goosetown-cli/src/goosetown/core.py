@@ -434,7 +434,18 @@ def _start_daemon(config: dict, agent_dir: Path) -> dict:
 
 
 def _ensure_daemon(config: dict, agent_dir: Path) -> None:
-    """Start daemon if not already running. Returns when daemon is ready."""
+    """Start daemon if not already running. Returns when daemon is ready.
+
+    ``_start_daemon`` returns as soon as the daemon writes ``state.json``, but
+    the daemon creates its Unix socket *after* that. The caller (``cmd_act``)
+    immediately ``ipc_send``s to the socket, so returning right after
+    ``_start_daemon`` raced into "Daemon socket not found" on an act that
+    auto-restarts a crashed daemon (finding 4). Poll for the socket to appear
+    (up to ~5s) before returning; if it never shows, return anyway and let the
+    caller's error path surface it.
+    """
+    import time
+
     agent_name = config.get("agent", "")
     sd = state_dir(agent_name)
     sock_path = sd / "daemon.sock"
@@ -443,6 +454,13 @@ def _ensure_daemon(config: dict, agent_dir: Path) -> None:
         return
 
     _start_daemon(config, agent_dir)
+
+    # Wait for the daemon's Unix socket to exist before returning so the
+    # caller's ipc_send doesn't race the socket's creation.
+    for _ in range(50):  # ~5s at 0.1s steps
+        if sock_path.exists():
+            return
+        time.sleep(0.1)
 
 
 # ---------------------------------------------------------------------------

@@ -630,8 +630,15 @@ def _flip_status(
 
 
 def _at_exchange(agent_conn: Any) -> bool:
-    """Physically at the bank, in the town context (spec: post/bid require presence)."""
-    agent = TownService().get_town_agent_by_id(agent_conn.agent_id) or {}
+    """Physically at the bank, in the town context (spec: post/bid require presence).
+
+    Strongly-consistent read: a ``move bank`` arrival commits ``currentLocation``
+    to DynamoDB *before* the daemon is told it arrived, but an eventually-
+    consistent read can still see the pre-move location and spuriously reject
+    a ``post_job``/``bid`` issued immediately after arrival. ``consistent=True``
+    closes that read-after-write window.
+    """
+    agent = TownService().get_town_agent_by_id(agent_conn.agent_id, consistent=True) or {}
     return agent.get("currentLocation") == EXCHANGE_LOCATION and agent_conn.location_context == "town"
 
 
@@ -797,7 +804,9 @@ async def post_job(
 ) -> dict:
     """Post a job at the Exchange: escrow ``max_price``, open the bid window."""
     mailbox = get_daemon_mailbox()
-    agent = TownService().get_town_agent_by_id(agent_conn.agent_id) or {}
+    # Strongly-consistent read so a post_job issued immediately after a `move bank`
+    # arrival sees the just-committed currentLocation (read-after-write gate).
+    agent = TownService().get_town_agent_by_id(agent_conn.agent_id, consistent=True) or {}
     if agent.get("currentLocation") != EXCHANGE_LOCATION or agent_conn.location_context != "town":
         return _notify_outcome(
             agent_conn,
