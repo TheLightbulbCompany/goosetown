@@ -219,6 +219,43 @@ class TestRemoteBidAuthz:
         result = await ex.place_bid(_conn("sibling", "sam"), job_id, 10, 0.5, "")
         assert result["reason"] == "own_household"
 
+    async def test_offered_provider_not_rejected_on_stale_read(self, dynamodb_tables, mailbox, ws):
+        # Eventual-consistency race (codex P2): the first (default) job read can
+        # return the pre-`ADD offeredTo` image right after the matcher committed.
+        # place_bid must re-read strongly-consistently before rejecting, so a
+        # genuinely-offered off-bank provider isn't told `not_invited`.
+        _register_provider(dynamodb_tables, "sub", "sue", ["writing"], location="library")
+        _, job_id = await _post(dynamodb_tables, ws, category="writing")
+        real_job = _get_job(dynamodb_tables, job_id)
+        assert "sub" in (set(real_job.get("offeredTo") or set()))
+        stale = dict(real_job)
+        stale.pop("offeredTo", None)  # simulate the lagging read replica
+
+        def _staleable(jid, *, consistent=False):
+            return real_job if consistent else stale
+
+        with patch.object(ex, "_get_job", side_effect=_staleable):
+            result = await ex.place_bid(_conn("sub", "sue", ctx="town"), job_id, 20, 0.8, "I write")
+
+        assert result["status"] == "ok", result
+        assert "sub" in _get_job(dynamodb_tables, job_id).get("bids", {})
+
+    async def test_stale_read_still_rejects_truly_uninvited(self, dynamodb_tables, mailbox, ws):
+        # The consistent re-read must not fabricate an offer: a provider absent
+        # from BOTH images is still rejected (the re-read just removes the race).
+        _, job_id = await _post(dynamodb_tables, ws, category="writing")
+        real_job = _get_job(dynamodb_tables, job_id)  # no subscribers → no offeredTo
+        _seed_agent(dynamodb_tables, "ghost", "gail", location="plaza")
+
+        def _staleable(jid, *, consistent=False):
+            return real_job
+
+        with patch.object(ex, "_get_job", side_effect=_staleable):
+            result = await ex.place_bid(_conn("ghost", "gail", ctx="town"), job_id, 10, 0.5, "")
+
+        assert result["status"] == "rejected"
+        assert result["reason"] == "not_invited"
+
     async def test_not_open_rejected_for_offered_provider(self, dynamodb_tables, mailbox, ws):
         # Even an offered provider can't bid once the window closed.
         _register_provider(dynamodb_tables, "sub", "sue", ["writing"], location="library")

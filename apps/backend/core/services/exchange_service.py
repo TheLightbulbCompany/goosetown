@@ -587,8 +587,11 @@ def _cancel_timer(job_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _get_job(job_id: str) -> dict | None:
-    resp = dynamo.jobs_table().get_item(Key={"id": job_id})
+def _get_job(job_id: str, *, consistent: bool = False) -> dict | None:
+    """Fetch a job row. ``consistent=True`` forces a strongly-consistent read —
+    use it for authorization checks that race a just-committed write (e.g. the
+    ``offeredTo`` bid gate right after the matcher's ``ADD offeredTo``)."""
+    resp = dynamo.jobs_table().get_item(Key={"id": job_id}, ConsistentRead=consistent)
     return resp.get("Item")
 
 
@@ -1036,7 +1039,11 @@ async def post_job(
         "title": job["title"],
         "category": job_category,
         "max_price": max_price,
-        "description": job["description"][:300],
+        # Full stored spec (≤DESCRIPTION_MAX) — the daemon renders this as the
+        # TOWN_OFFERS.md "Job spec" the provider prices against, so a 300-char
+        # preview could hide requirements past the cut and lead to a blind bid
+        # (codex P2). The public board keeps a short teaser; offers carry it all.
+        "description": job["description"][:DESCRIPTION_MAX],
         "consumer_name": agent_conn.agent_name,
         # Bid-window deadline so the provider's daemon can prune the offer when it
         # lapses — non-bidders get no terminal event otherwise (codex P2).
@@ -1118,18 +1125,27 @@ async def place_bid(agent_conn: Any, job_id: str, price: int, confidence: float,
     # `offeredTo` attribute is treated as the empty set — no crash.
     offered_to = job.get("offeredTo") or set()
     if not _at_exchange(agent_conn) and agent_conn.agent_id not in offered_to:
-        return _notify_outcome(
-            agent_conn,
-            "bid",
-            {
-                "status": "rejected",
-                "reason": "not_invited",
-                "message": (
-                    "You weren't offered this job and aren't at the Exchange — "
-                    "move to the bank, or wait to be offered a job in your categories."
-                ),
-            },
-        )
+        # The `job` snapshot is eventually-consistent (`_get_job` default). An
+        # off-bank provider that bids in the instant after the matcher/invite
+        # committed `ADD offeredTo` — but before the read replica caught up —
+        # would be wrongly rejected. Re-read the job strongly-consistently and
+        # re-check before rejecting (codex P2).
+        fresh = _get_job(job_id, consistent=True) or job
+        offered_to = fresh.get("offeredTo") or set()
+        if agent_conn.agent_id not in offered_to:
+            return _notify_outcome(
+                agent_conn,
+                "bid",
+                {
+                    "status": "rejected",
+                    "reason": "not_invited",
+                    "message": (
+                        "You weren't offered this job and aren't at the Exchange — "
+                        "move to the bank, or wait to be offered a job in your categories."
+                    ),
+                },
+            )
+        job = fresh  # offer confirmed on the consistent read — use the fresh row
     max_price = int(job.get("maxPrice", 0))
     if price < 0 or price > max_price:
         return _notify_outcome(
@@ -1277,7 +1293,8 @@ async def invite_provider(agent_conn: Any, job_id: str, provider_id: str) -> dic
         "title": job.get("title", ""),
         "category": job.get("category", "general"),
         "max_price": int(job.get("maxPrice", 0)),
-        "description": (job.get("description") or "")[:300],
+        # Full spec for the bid decision (see post_job matcher rationale, codex P2).
+        "description": (job.get("description") or "")[:DESCRIPTION_MAX],
         "consumer_name": agent_conn.agent_name,
         "invited": True,
         "bid_deadline": float(job.get("bidWindowEndsAt") or 0) or None,
@@ -2251,7 +2268,8 @@ def resync_agent_jobs(agent_id: str) -> int:
                 "title": job.get("title", ""),
                 "category": job.get("category", "general"),
                 "max_price": int(job.get("maxPrice", 0)),
-                "description": (job.get("description") or "")[:300],
+                # Full spec on resync too, so the rebuilt offer matches the live one.
+                "description": (job.get("description") or "")[:DESCRIPTION_MAX],
                 "consumer_name": job.get("consumerName", ""),
                 "bid_deadline": float(job.get("bidWindowEndsAt") or 0) or None,
                 "resync": True,

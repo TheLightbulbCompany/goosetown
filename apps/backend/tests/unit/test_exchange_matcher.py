@@ -277,6 +277,23 @@ class TestPostJobOffers:
         assert isinstance(offer["bid_deadline"], float)
         assert offer["bid_deadline"] > 0
 
+    async def test_offer_carries_full_description_not_300_preview(self, dynamodb_tables, mailbox, ws):
+        # The offer event drives the bid decision (TOWN_OFFERS.md "Job spec"), so
+        # it must carry the full stored spec, not a 300-char preview that could
+        # hide later requirements (codex P2).
+        _register_provider(dynamodb_tables, "sub", "sue", ["writing"])
+        _seed_agent(dynamodb_tables, "consumer", "carol")  # post escrows from wallet
+        long_desc = "Spec. " + ("requirement " * 80)  # ~970 chars, well past 300
+        assert len(long_desc) > 300
+        cc = _conn("consumer", "carol", "c-consumer")
+        ws.conns["consumer"] = cc
+        result = await ex.post_job(cc, "Big job", long_desc, 30, "balanced", category="writing")
+        assert result["status"] == "ok"
+        offer = next(c.args[1] for c in mailbox.notify.call_args_list if c.args[1].get("event") == "job_offered")
+        # Full spec delivered (bounded by DESCRIPTION_MAX, which exceeds this).
+        assert offer["description"] == long_desc[: ex.DESCRIPTION_MAX]
+        assert len(offer["description"]) > 300
+
     async def test_notify_failure_does_not_break_post(self, dynamodb_tables, mailbox, ws):
         # mailbox.notify raising must not strand the offer: offeredTo is the
         # durable record and the job still posts ok.
