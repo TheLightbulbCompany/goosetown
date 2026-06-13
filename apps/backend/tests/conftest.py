@@ -181,6 +181,30 @@ def _create_tables(dynamodb):
         BillingMode="PAY_PER_REQUEST",
     )
 
+    # provider-subscriptions — ProviderDirectory membership projection (ADR-0008)
+    # PK category + SK providerSort = trust-desc queries per category without a scan.
+    # GSI providerId-index allows find-and-delete of all rows for a provider.
+    dynamodb.create_table(
+        TableName="goosetown-provider-subscriptions",
+        KeySchema=[
+            {"AttributeName": "category", "KeyType": "HASH"},
+            {"AttributeName": "providerSort", "KeyType": "RANGE"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "category", "AttributeType": "S"},
+            {"AttributeName": "providerSort", "AttributeType": "S"},
+            {"AttributeName": "providerId", "AttributeType": "S"},
+        ],
+        GlobalSecondaryIndexes=[
+            {
+                "IndexName": "providerId-index",
+                "KeySchema": [{"AttributeName": "providerId", "KeyType": "HASH"}],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
 
 @pytest.fixture
 def dynamodb_tables():

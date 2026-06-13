@@ -136,3 +136,64 @@ describe("DatabaseStack — ledger table (GooseTown Exchange)", () => {
     expect(pitr).toBeFalsy();
   });
 });
+
+describe("DatabaseStack — provider-subscriptions table (Wave 2 ProviderDirectory)", () => {
+  test("dev table exists with correct name, PK and SK", () => {
+    const template = buildTestApp("dev");
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "goosetown-dev-provider-subscriptions",
+      KeySchema: Match.arrayWith([
+        Match.objectLike({ AttributeName: "category", KeyType: "HASH" }),
+        Match.objectLike({ AttributeName: "providerSort", KeyType: "RANGE" }),
+      ]),
+      BillingMode: "PAY_PER_REQUEST",
+    });
+  });
+
+  test("prod table exists with correct name", () => {
+    const template = buildTestApp("prod");
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "goosetown-prod-provider-subscriptions",
+      BillingMode: "PAY_PER_REQUEST",
+    });
+  });
+
+  test("table has providerId-index GSI with PK providerId", () => {
+    const template = buildTestApp("dev");
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "goosetown-dev-provider-subscriptions",
+      GlobalSecondaryIndexes: Match.arrayWith([
+        Match.objectLike({
+          IndexName: "providerId-index",
+          KeySchema: Match.arrayWith([
+            Match.objectLike({ AttributeName: "providerId", KeyType: "HASH" }),
+          ]),
+          Projection: Match.objectLike({ ProjectionType: "ALL" }),
+        }),
+      ]),
+    });
+  });
+
+  test("prod table has PITR enabled", () => {
+    const template = buildTestApp("prod");
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "goosetown-prod-provider-subscriptions",
+      PointInTimeRecoverySpecification: {
+        PointInTimeRecoveryEnabled: true,
+      },
+    });
+  });
+
+  test("dev table does NOT have PITR enabled", () => {
+    const template = buildTestApp("dev");
+    const tables = template.findResources("AWS::DynamoDB::Table");
+    const subsTable = Object.values(tables).find(
+      (t: any) =>
+        t?.Properties?.TableName === "goosetown-dev-provider-subscriptions"
+    ) as any;
+    const pitr =
+      subsTable?.Properties?.PointInTimeRecoverySpecification
+        ?.PointInTimeRecoveryEnabled;
+    expect(pitr).toBeFalsy();
+  });
+});
