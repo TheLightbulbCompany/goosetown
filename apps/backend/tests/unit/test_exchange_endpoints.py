@@ -737,9 +737,7 @@ class TestBoardCategoryFilter:
         older match rather than a single capped slice dropping it.
         """
         # One OLD matching job (earliest createdAt).
-        _seed_job_with_category(
-            dynamodb_tables, "old-writing", "writing", created_at="2026-06-01T00:00:00+00:00"
-        )
+        _seed_job_with_category(dynamodb_tables, "old-writing", "writing", created_at="2026-06-01T00:00:00+00:00")
         # A wall of NEWER non-matching jobs (later createdAt sorts ahead).
         for i in range(120):
             _seed_job_with_category(
