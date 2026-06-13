@@ -126,6 +126,29 @@ def _seed_conversation(
     table.put_item(Item=item)
 
 
+def _seed_instance(
+    dynamodb_tables,
+    instance_id: str = "inst-1",
+    user_id: str = TEST_USER_ID,
+    nickname: str | None = None,
+    is_active: str = "true",
+):
+    """Insert a minimal active instance row, optionally with a townNickname."""
+    table = dynamodb_tables.Table("goosetown-instances")
+    item = {
+        "id": instance_id,
+        "userId": user_id,
+        "apartmentUnit": 1,
+        "townToken": f"tok-{instance_id}",
+        "isActive": is_active,
+        "createdAt": "2026-04-17T00:00:00Z",
+    }
+    if nickname is not None:
+        item["townNickname"] = nickname
+    table.put_item(Item=item)
+    return item
+
+
 # ---------------------------------------------------------------------------
 # GET /apartment
 # ---------------------------------------------------------------------------
@@ -534,6 +557,27 @@ class TestConversationSayEndpoint:
         assert speaker != "Agent A"
         assert speaker.startswith("Visitor")
 
+    def test_speaker_uses_stored_nickname_when_set(self, client, dynamodb_tables):
+        """When the user has set a town nickname, the public-log speaker label
+        is that nickname — NOT the ``Visitor-<suffix>`` fallback — and it's
+        still derived from the authenticated identity, not the body."""
+        self._seed_active(dynamodb_tables)
+        _seed_instance(dynamodb_tables, user_id=TEST_USER_ID, nickname="Cosmo")
+        stack, _ = self._patches()
+        with stack:
+            resp = client.post(
+                self.SAY_PATH.format(conv_id="conv-1"),
+                json={"message": "Hi, I'm a visitor"},
+            )
+
+        assert resp.status_code == 200
+        from core.services.town_service import TownService
+
+        conv = TownService().get_conversation_by_id("conv-1")
+        speaker = conv["publicLog"][-1]["speaker"]
+        assert speaker == "Cosmo"
+        assert not speaker.startswith("Visitor")
+
     def test_human_turn_exempt_from_agent_cap(self, client, dynamodb_tables):
         """Many human turns must not advance ``turnCount`` toward the agent
         auto-end cap. After 5 human turns, turnCount is still the seed value."""
@@ -641,6 +685,89 @@ class TestConversationSayEndpoint:
             self.SAY_PATH.format(conv_id="conv-1"),
             json={"message": "anonymous"},
         )
+        assert resp.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
+# GET /profile + PUT /profile/nickname  (town nickname)
+# ---------------------------------------------------------------------------
+
+
+class TestProfileEndpoints:
+    """The user-set public-safe town nickname surface."""
+
+    GET_PATH = "/api/v1/town/profile"
+    PUT_PATH = "/api/v1/town/profile/nickname"
+
+    def test_get_profile_null_when_no_instance(self, client, dynamodb_tables):
+        """A user who hasn't joined (no instance) has no nickname → null."""
+        resp = client.get(self.GET_PATH)
+        assert resp.status_code == 200
+        assert resp.json() == {"nickname": None}
+
+    def test_get_profile_null_when_instance_has_no_nickname(self, client, dynamodb_tables):
+        _seed_instance(dynamodb_tables, user_id=TEST_USER_ID, nickname=None)
+        resp = client.get(self.GET_PATH)
+        assert resp.status_code == 200
+        assert resp.json() == {"nickname": None}
+
+    def test_get_profile_returns_stored_nickname(self, client, dynamodb_tables):
+        _seed_instance(dynamodb_tables, user_id=TEST_USER_ID, nickname="Cosmo")
+        resp = client.get(self.GET_PATH)
+        assert resp.status_code == 200
+        assert resp.json() == {"nickname": "Cosmo"}
+
+    def test_put_nickname_happy_path_persists_on_instance(self, client, dynamodb_tables):
+        _seed_instance(dynamodb_tables, user_id=TEST_USER_ID, nickname=None)
+        resp = client.put(self.PUT_PATH, json={"nickname": "Star Gazer"})
+        assert resp.status_code == 200
+        assert resp.json() == {"nickname": "Star Gazer"}
+
+        # Stored on the user's instance row and readable back via GET.
+        assert client.get(self.GET_PATH).json() == {"nickname": "Star Gazer"}
+
+    def test_put_nickname_creates_instance_if_none_exists(self, client, dynamodb_tables):
+        """A signed-in user can pick a handle before joining — the write
+        lazily creates the instance row."""
+        resp = client.put(self.PUT_PATH, json={"nickname": "Newcomer"})
+        assert resp.status_code == 200
+        assert resp.json() == {"nickname": "Newcomer"}
+        assert client.get(self.GET_PATH).json() == {"nickname": "Newcomer"}
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "a",  # too short (< 2)
+            "x" * 21,  # too long (> 20)
+            " leadingspace",  # leading whitespace
+            "trailingspace ",  # trailing whitespace
+            "with.dot",  # disallowed char
+            "user@email.com",  # email-like
+            "emoji😀here",  # non-ascii
+            "bang!",  # punctuation
+        ],
+    )
+    def test_put_nickname_invalid_returns_422(self, client, dynamodb_tables, bad):
+        resp = client.put(self.PUT_PATH, json={"nickname": bad})
+        assert resp.status_code == 422
+
+    def test_put_nickname_allows_letters_digits_space_underscore_dash(self, client, dynamodb_tables):
+        resp = client.put(self.PUT_PATH, json={"nickname": "Cool_Cat-99 x"})
+        assert resp.status_code == 200
+        assert resp.json() == {"nickname": "Cool_Cat-99 x"}
+
+    def test_get_profile_requires_auth(self, dynamodb_tables):
+        from main import app
+
+        client = TestClient(app)
+        resp = client.get(self.GET_PATH)
+        assert resp.status_code in (401, 403)
+
+    def test_put_nickname_requires_auth(self, dynamodb_tables):
+        from main import app
+
+        client = TestClient(app)
+        resp = client.put(self.PUT_PATH, json={"nickname": "Anon"})
         assert resp.status_code in (401, 403)
 
 

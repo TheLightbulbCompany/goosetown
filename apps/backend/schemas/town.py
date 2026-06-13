@@ -121,6 +121,29 @@ class HumanSayResponse(BaseModel):
     turn: int
 
 
+class ProfileResponse(BaseModel):
+    """The current user's town profile.
+
+    ``nickname`` is ``None`` when the user hasn't picked a public-safe handle
+    yet — the frontend uses that to decide whether to prompt before letting
+    them speak in a conversation.
+    """
+
+    nickname: Optional[str] = None
+
+
+class NicknameRequest(BaseModel):
+    """A user's chosen public-safe town nickname.
+
+    The pydantic bound (2–20 chars) gives a fast boundary rejection; the
+    character-class rules (letters/digits/spaces/``_-`` only, no leading or
+    trailing space, no email-like strings) are enforced in the router via
+    ``town_service.validate_nickname`` so the same rule governs every writer.
+    """
+
+    nickname: str = Field(..., min_length=2, max_length=20)
+
+
 class ApartmentAgentState(BaseModel):
     """Agent state for the apartment view."""
 
