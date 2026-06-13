@@ -1911,6 +1911,13 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
                 text=body.get("msg_text", "") or "",
             )
             return {"statusCode": 200, "body": result}
+        elif action == "invite":
+            result = await exchange_service.invite_provider(
+                agent_conn,
+                job_id=body.get("job_id", ""),
+                provider_id=body.get("provider_id", ""),
+            )
+            return {"statusCode": 200, "body": result}
         # ``idle`` and ``context_transition`` fall through with no extra work:
         # ``idle`` exists only to bypass the energy-exhaustion gate, and
         # ``context_transition`` is handled inside the ``move`` branch when the

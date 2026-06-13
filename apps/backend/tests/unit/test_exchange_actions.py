@@ -60,6 +60,7 @@ def handler_setup():
     mock_exchange.cancel_job = AsyncMock(return_value=_SENTINEL_RESULT)
     mock_exchange.deliver_job = AsyncMock(return_value=_SENTINEL_RESULT)
     mock_exchange.review_job = AsyncMock(return_value=_SENTINEL_RESULT)
+    mock_exchange.invite_provider = AsyncMock(return_value=_SENTINEL_RESULT)
 
     with (
         patch("routers.town.get_town_agent_ws_manager", return_value=ws_manager),
@@ -183,6 +184,36 @@ async def test_cancel_job_dispatches_to_service(handler_setup):
     handler_setup.mock_exchange.cancel_job.assert_called_once_with(
         handler_setup.agent_conn,
         job_id="job-to-cancel",
+    )
+
+
+@pytest.mark.asyncio
+async def test_invite_dispatches_to_service(handler_setup):
+    """invite routes to exchange_service.invite_provider with correct kwargs."""
+    from fastapi import Request
+
+    from routers.town import WsMessageRequest, handle_ws_message
+
+    request = WsMessageRequest(
+        connectionId="conn-abc",
+        principalId="user-1",
+        body={
+            "type": "town_agent_act",
+            "action": "invite",
+            "job_id": "job-xyz-999",
+            "provider_id": "prov-42",
+        },
+    )
+    raw = MagicMock(spec=Request)
+    raw.headers = {}
+
+    result = await handle_ws_message(request, raw)
+
+    assert result == {"statusCode": 200, "body": _SENTINEL_RESULT}
+    handler_setup.mock_exchange.invite_provider.assert_called_once_with(
+        handler_setup.agent_conn,
+        job_id="job-xyz-999",
+        provider_id="prov-42",
     )
 
 

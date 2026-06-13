@@ -1030,18 +1030,17 @@ async def post_job(
 
 
 async def place_bid(agent_conn: Any, job_id: str, price: int, confidence: float, pitch: str) -> dict:
-    """Sealed bid on an OPEN job. Per-bidder last-write-wins; atomic vs window close."""
+    """Sealed bid on an OPEN job. Per-bidder last-write-wins; atomic vs window close.
+
+    Wave 2 (spec §3.5, Task 5): the Wave-1 at-bank requirement is relaxed to
+    **presence OR offer**. A subscribed/invited provider bids *remotely* — it
+    appears in the job's durable ``offeredTo`` String Set (the matcher's record,
+    or an explicit ``invite_provider``). A walk-in at the bank still bids in the
+    casual in-world path even without an offer (presence wins). The check sits
+    AFTER the cheap rejections (own_job / own_household) so a same-owner or
+    self bid is rejected for the right reason regardless of presence.
+    """
     mailbox = get_daemon_mailbox()
-    if not _at_exchange(agent_conn):
-        return _notify_outcome(
-            agent_conn,
-            "bid",
-            {
-                "status": "rejected",
-                "reason": "not_at_exchange",
-                "message": "You must be at the bank (the Exchange) to bid. `act move bank` first.",
-            },
-        )
     job = _get_job(job_id)
     if not job:
         return _notify_outcome(
@@ -1076,6 +1075,24 @@ async def place_bid(agent_conn: Any, job_id: str, price: int, confidence: float,
                     "message": "Your household posted this job — agents with the same owner can't bid.",
                 },
             )
+    # Wave 2 (spec §3.5): presence OR offer. Allow the bid if the bidder is
+    # physically at the bank OR appears in the job's durable `offeredTo` set
+    # (matched by category at post time, or explicitly invited). A missing
+    # `offeredTo` attribute is treated as the empty set — no crash.
+    offered_to = job.get("offeredTo") or set()
+    if not _at_exchange(agent_conn) and agent_conn.agent_id not in offered_to:
+        return _notify_outcome(
+            agent_conn,
+            "bid",
+            {
+                "status": "rejected",
+                "reason": "not_invited",
+                "message": (
+                    "You weren't offered this job and aren't at the Exchange — "
+                    "move to the bank, or wait to be offered a job in your categories."
+                ),
+            },
+        )
     max_price = int(job.get("maxPrice", 0))
     if price < 0 or price > max_price:
         return _notify_outcome(
@@ -1164,6 +1181,81 @@ async def place_bid(agent_conn: Any, job_id: str, price: int, confidence: float,
         agent_conn,
         "bid",
         {"status": "ok", "job_id": job_id, "price": price, "confidence": confidence, "bid_count": bid_count},
+    )
+
+
+async def invite_provider(agent_conn: Any, job_id: str, provider_id: str) -> dict:
+    """Consumer invites a specific provider to bid on its OPEN job.
+
+    Wave 2 (spec §3.5, Task 5): the directory→invite path. The consumer appends
+    *provider_id* to the job's durable ``offeredTo`` String Set (guarded on
+    ``status = OPEN``) so that provider can then bid **remotely** — including an
+    off-category specialist that the category matcher never auto-offered. The
+    ``job_offered`` notify (``invited=True``) is best-effort fan-out on top of
+    the durable ``offeredTo`` record (codex P1: the set is the authz state, the
+    event is recoverable via resync).
+    """
+    job = _get_job(job_id)
+    if not job:
+        return _notify_outcome(
+            agent_conn,
+            "invite",
+            {"status": "rejected", "reason": "not_found", "message": f"No job {job_id} on the board."},
+        )
+    if job["consumerId"] != agent_conn.agent_id:
+        return _notify_outcome(
+            agent_conn,
+            "invite",
+            {"status": "rejected", "reason": "not_consumer", "message": "Only the poster can invite providers."},
+        )
+    if job.get("status") != "OPEN":
+        return _notify_outcome(
+            agent_conn,
+            "invite",
+            {"status": "rejected", "reason": "not_open", "message": "Only OPEN jobs can offer invitations."},
+        )
+
+    # Append the provider to the durable offer set, re-checking OPEN at write
+    # time so a window-close racing the invite can't resurrect a closed offer.
+    try:
+        dynamo.jobs_table().update_item(
+            Key={"id": job_id},
+            UpdateExpression="ADD offeredTo :pid SET updatedAt = :now",
+            ConditionExpression="#st = :open",
+            ExpressionAttributeNames={"#st": "status"},
+            ExpressionAttributeValues={":pid": {provider_id}, ":open": "OPEN", ":now": _now_iso()},
+        )
+    except dynamo.jobs_table().meta.client.exceptions.ConditionalCheckFailedException:
+        return _notify_outcome(
+            agent_conn,
+            "invite",
+            {"status": "rejected", "reason": "not_open", "message": "Only OPEN jobs can offer invitations."},
+        )
+
+    # Best-effort offer notify to the invited provider — same payload shape as
+    # the post-time matcher, flagged invited=True.
+    offer_event: dict[str, Any] = {
+        "event": "job_offered",
+        "job_id": job_id,
+        "title": job.get("title", ""),
+        "category": job.get("category", "general"),
+        "max_price": int(job.get("maxPrice", 0)),
+        "description": (job.get("description") or "")[:300],
+        "consumer_name": agent_conn.agent_name,
+        "invited": True,
+    }
+    success_criteria = job.get("successCriteria")
+    if success_criteria:
+        offer_event["criteria"] = success_criteria
+    try:
+        get_daemon_mailbox().notify(provider_id, offer_event)
+    except Exception:
+        logger.warning("invite_provider: job_offered notify failed for provider %s job %s", provider_id[:8], job_id)
+
+    return _notify_outcome(
+        agent_conn,
+        "invite",
+        {"status": "ok", "job_id": job_id, "provider_id": provider_id},
     )
 
 
@@ -2037,6 +2129,32 @@ def resync_agent_jobs(agent_id: str) -> int:
         mailbox = get_daemon_mailbox()
         now = time.time()
         sent = 0
+
+        # Wave 2 (spec §3.5, codex P1): reconstruct a lost OPEN-job offer. The
+        # `offeredTo` set is the durable authz record; the post-time `job_offered`
+        # notify is best-effort, so a provider that was stale at offer time would
+        # have a bidding right with no local TOWN_OFFERS entry. Re-send the offer
+        # for any OPEN job where this agent is in `offeredTo` (and isn't the
+        # consumer — the matcher excludes the consumer, but guard anyway).
+        for job in _jobs_with_status("OPEN"):
+            offered_to = job.get("offeredTo") or set()
+            if agent_id not in offered_to or job.get("consumerId") == agent_id:
+                continue
+            offer_event: dict[str, Any] = {
+                "event": "job_offered",
+                "job_id": job["id"],
+                "title": job.get("title", ""),
+                "category": job.get("category", "general"),
+                "max_price": int(job.get("maxPrice", 0)),
+                "description": (job.get("description") or "")[:300],
+                "consumer_name": job.get("consumerName", ""),
+                "resync": True,
+            }
+            success_criteria = job.get("successCriteria")
+            if success_criteria:
+                offer_event["criteria"] = success_criteria
+            if mailbox.notify(agent_id, offer_event):
+                sent += 1
 
         for job in _jobs_with_status("AWARDED"):
             if job.get("providerId") == agent_id:

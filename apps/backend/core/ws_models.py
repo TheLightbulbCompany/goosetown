@@ -43,6 +43,8 @@ AgentAction = Literal[
     "deliver_job",
     "review_job",
     "job_msg",
+    # Wave 2: consumer invites a provider to bid remotely (directory→invite path)
+    "invite",
 ]
 
 
@@ -95,6 +97,8 @@ class TownAgentAct(BaseModel):
     # W4: job-scoped messaging (dedicated field — not `text` which is owner-DM territory,
     # not `message` which is chat-scoped and capped at 500 chars)
     msg_text: str | None = Field(default=None, max_length=2000)
+    # Wave 2: invite verb — the provider the consumer invites to bid remotely.
+    provider_id: str | None = Field(default=None, max_length=128)
 
     @model_validator(mode="after")
     def _check_action_fields(self) -> "TownAgentAct":
@@ -131,8 +135,10 @@ class TownAgentAct(BaseModel):
                 raise ValueError("'post_job' requires 'description'")
             if self.max_price is None:
                 raise ValueError("'post_job' requires 'max_price'")
-        if self.action in ("bid", "cancel_job", "deliver_job", "review_job") and not self.job_id:
+        if self.action in ("bid", "cancel_job", "deliver_job", "review_job", "invite") and not self.job_id:
             raise ValueError(f"'{self.action}' requires 'job_id'")
+        if self.action == "invite" and not self.provider_id:
+            raise ValueError("'invite' requires 'provider_id'")
         if self.action == "bid" and self.price is None:
             raise ValueError("'bid' requires 'price'")
         # W5: a delivery must carry the work product — inline text, an S3

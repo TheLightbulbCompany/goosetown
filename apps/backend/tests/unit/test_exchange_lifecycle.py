@@ -247,11 +247,14 @@ class TestPlaceBid:
         assert result["status"] == "rejected"
         assert result["reason"] == "own_job"
 
-    async def test_not_at_bank_rejected(self, dynamodb_tables, mailbox, ws):
+    async def test_remote_non_offered_bidder_rejected_not_invited(self, dynamodb_tables, mailbox, ws):
+        # Wave 2 (spec §3.5): the at-bank requirement is now presence OR offer.
+        # A bidder away from the bank (cafe) with no offer on the job is rejected
+        # `not_invited` — the new authz reason replacing the Wave-1 `not_at_exchange`.
         cc, job_id = await _post(dynamodb_tables, ws)
         _seed_agent(dynamodb_tables, "b1", "bea", location="cafe")
         result = await ex.place_bid(_conn("b1", "bea"), job_id, 10, 0.5, "")
-        assert result["reason"] == "not_at_exchange"
+        assert result["reason"] == "not_invited"
 
     async def test_over_max_price_rejected(self, dynamodb_tables, mailbox, ws):
         cc, job_id = await _post(dynamodb_tables, ws, max_price=30)
