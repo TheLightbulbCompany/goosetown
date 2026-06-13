@@ -135,6 +135,13 @@ class TownDaemon:
     # IPC frame cap: deliverables are ≤16 KB; generous headroom for envelope.
     _MAX_IPC_FRAME_BYTES = 131072
 
+    # Safety-net recv timeout for the WS listen loop. NOT a liveness check —
+    # connection liveness is the websockets library's ping/pong (ping_interval /
+    # ping_timeout). This only bounds how long recv() blocks before re-checking
+    # self.running, so an idle agent (no broadcasts) doesn't get spuriously
+    # reconnected. Kept well above the 120s app keepalive interval.
+    _RECV_SAFETY_TIMEOUT_SEC = 300.0
+
     def __init__(
         self,
         ws_url: str,
@@ -2180,14 +2187,26 @@ class TownDaemon:
         log = logging.getLogger("town_daemon")
         try:
             while self.running:
-                recv_timeout = 30.0
                 try:
-                    raw = await asyncio.wait_for(self.ws.recv(), timeout=recv_timeout)
-                except asyncio.TimeoutError:
-                    log.warning(
-                        "No messages received in %.0fs — reconnecting", recv_timeout
+                    # Connection liveness is the websockets library's job
+                    # (``ping_interval`` / ``ping_timeout`` in connect_kwargs): a
+                    # genuinely dead peer surfaces as ``ConnectionClosed`` from
+                    # ``recv()`` within ~ping_interval+ping_timeout, which the
+                    # outer handler turns into a reconnect. Do NOT treat "no
+                    # application message" as a dead connection. An idle agent in
+                    # the apartment legitimately receives no broadcasts for long
+                    # stretches (town agents get ``world_state`` every ~2s; idle
+                    # agents get nothing), so the old 30s recv timeout fired
+                    # constantly and forced a needless reconnect every ~30s,
+                    # flickering the agent's ``isActive`` off/on. API Gateway's
+                    # idle timer is kept warm separately by the 120s app-level
+                    # keepalive ping. This long timeout is only a safety net to
+                    # re-check ``self.running``; it never reconnects on its own.
+                    raw = await asyncio.wait_for(
+                        self.ws.recv(), timeout=self._RECV_SAFETY_TIMEOUT_SEC
                     )
-                    raise ConnectionError("Inactivity timeout")
+                except asyncio.TimeoutError:
+                    continue
                 try:
                     data = json.loads(raw)
                     if "event" in data:
