@@ -246,3 +246,67 @@ class TestReview:
 
     def test_missing_verdict_dies(self):
         _run_expecting_die("review", ["job-1"])
+
+
+class TestFlagPositionIndependence:
+    """Regression for the live-found bug: post_job modifier flags were
+    leading-only AND order-locked, and a trailing --criteria was silently
+    swallowed into the description. Flags must work in any position/order."""
+
+    def test_trailing_criteria_not_swallowed_into_description(self):
+        payload = _run_cmd_act(
+            "post_job",
+            ["20", "title", "Write five bullets.", "--criteria=a;b;c"],
+        )
+        assert payload["description"] == "Write five bullets."
+        assert payload["success_criteria"] == ["a", "b", "c"]
+
+    def test_trailing_strategy_and_criteria(self):
+        payload = _run_cmd_act(
+            "post_job",
+            [
+                "20",
+                "title",
+                "the description",
+                "--strategy=best_quality",
+                "--criteria=x;y",
+            ],
+        )
+        assert payload["description"] == "the description"
+        assert payload["strategy"] == "best_quality"
+        assert payload["success_criteria"] == ["x", "y"]
+
+    def test_leading_criteria_before_strategy_order(self):
+        # Previously failed: _parse_strategy ran first, saw --criteria at
+        # rest[0], left it, and int(--criteria=...) blew up on max_price.
+        payload = _run_cmd_act(
+            "post_job",
+            ["--criteria=a;b", "--strategy=lowest_price", "20", "title", "desc"],
+        )
+        assert payload["max_price"] == 20
+        assert payload["strategy"] == "lowest_price"
+        assert payload["success_criteria"] == ["a", "b"]
+
+    def test_flags_straddling_positionals(self):
+        payload = _run_cmd_act(
+            "post_job",
+            ["--strategy=balanced", "20", "title", "desc", "--criteria=only"],
+        )
+        assert payload["max_price"] == 20
+        assert payload["strategy"] == "balanced"
+        assert payload["success_criteria"] == ["only"]
+
+    def test_trailing_confidence_on_bid_not_in_pitch(self):
+        payload = _run_cmd_act(
+            "bid", ["job-1", "25", "fast", "and", "good", "--confidence=0.9"]
+        )
+        assert payload["pitch"] == "fast and good"
+        assert payload["confidence"] == 0.9
+
+    def test_trailing_verdicts_on_review(self):
+        payload = _run_cmd_act(
+            "review", ["job-1", "accept", "looks", "great", "--criteria=1,0,1"]
+        )
+        assert payload["accept"] is True
+        assert payload["criteria_verdicts"] == [True, False, True]
+        assert payload["reason"] == "looks great"

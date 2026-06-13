@@ -54,20 +54,32 @@ def _die(message: str, *hints: str) -> None:
     sys.exit(1)
 
 
-def _parse_owner_ref(rest: list[str]) -> tuple[str | None, list[str]]:
-    """Pull a leading ``--ref=<id>`` off reply_owner args.
+def _pop_flag(rest: list[str], prefix: str) -> tuple[str | None, list[str]]:
+    """Pull the first ``<prefix>=value`` token from anywhere in ``rest``.
 
-    The act subparser captures the rest of the command via argparse REMAINDER,
-    so `--ref=<id>` arrives as the first positional token rather than a parsed
-    option. Returns ``(ref_or_None, remaining_args)``.
+    The act subparser captures everything after the verb via argparse
+    REMAINDER, so option-looking flags arrive as plain positional tokens.
+    Agents (and people) put modifier flags wherever feels natural — before
+    OR after the positionals, and in any order relative to each other. So we
+    scan the whole list rather than only ``rest[0]``: a trailing
+    ``--criteria=...`` after a multi-word description used to be silently
+    swallowed into the description, and a wrong leading flag order made the
+    next flag's value land on ``max_price``. Returns ``(value_or_None,
+    remaining_args_with_that_token_removed)``; matches the first occurrence.
     """
-    if rest and rest[0].startswith("--ref="):
-        return rest[0][len("--ref=") :], rest[1:]
+    for i, tok in enumerate(rest):
+        if tok.startswith(prefix):
+            return tok[len(prefix) :], rest[:i] + rest[i + 1 :]
     return None, rest
 
 
+def _parse_owner_ref(rest: list[str]) -> tuple[str | None, list[str]]:
+    """Pull a ``--ref=<id>`` off reply_owner args (position-independent)."""
+    return _pop_flag(rest, "--ref=")
+
+
 def _parse_confidence(rest: list[str]) -> tuple[float | None, list[str]]:
-    """Pull a leading ``--confidence=0.X`` off ``act bid`` args.
+    """Pull ``--confidence=0.X`` from ``act bid`` args (any position).
 
     Modeled on ``_parse_owner_ref``: the act subparser captures the rest of
     the command via argparse REMAINDER, so ``--confidence=`` arrives as the
@@ -75,8 +87,8 @@ def _parse_confidence(rest: list[str]) -> tuple[float | None, list[str]]:
     ``(confidence_or_None, remaining_args)``. Dies on a non-float or
     out-of-range value.
     """
-    if rest and rest[0].startswith("--confidence="):
-        raw = rest[0][len("--confidence=") :]
+    raw, rest = _pop_flag(rest, "--confidence=")
+    if raw is not None:
         try:
             value = float(raw)
         except ValueError:
@@ -88,7 +100,7 @@ def _parse_confidence(rest: list[str]) -> tuple[float | None, list[str]]:
             _die(
                 f"--confidence must be between 0 and 1 (got {value}).",
             )
-        return value, rest[1:]
+        return value, rest
     return None, rest
 
 
@@ -97,15 +109,15 @@ _CRITERIA_ITEM_MAX = 200
 
 
 def _parse_criteria(rest: list[str]) -> tuple[list[str] | None, list[str]]:
-    """Pull a leading ``--criteria=<a;b;c>`` off ``act post_job`` args.
+    """Pull ``--criteria=<a;b;c>`` from ``act post_job`` args (any position).
 
     Modeled on ``_parse_confidence``. Semicolon-separated items; each is
     stripped and truncated to 200 chars. Empty items are silently dropped.
     Returns ``(criteria_or_None, remaining_args)``. Dies when more than 8
     non-empty items are provided after splitting.
     """
-    if rest and rest[0].startswith("--criteria="):
-        raw = rest[0][len("--criteria=") :]
+    raw, rest = _pop_flag(rest, "--criteria=")
+    if raw is not None:
         items = [
             item.strip()[:_CRITERIA_ITEM_MAX] for item in raw.split(";") if item.strip()
         ]
@@ -114,20 +126,20 @@ def _parse_criteria(rest: list[str]) -> tuple[list[str] | None, list[str]]:
                 f"--criteria: too many items ({len(items)}); maximum is {_CRITERIA_MAX_ITEMS}.",
                 "Separate criteria with semicolons: --criteria='a;b;c'",
             )
-        return (items if items else None), rest[1:]
+        return (items if items else None), rest
     return None, rest
 
 
 def _parse_criteria_verdicts(rest: list[str]) -> tuple[list[bool] | None, list[str]]:
-    """Pull a leading ``--criteria=1,0,1`` off ``act review`` args.
+    """Pull ``--criteria=1,0,1`` from ``act review`` args (any position).
 
     Comma-separated 0/1 digits. Returns ``(verdicts_or_None, remaining_args)``.
     Dies on any character other than 0, 1, or comma.
     """
-    if rest and rest[0].startswith("--criteria="):
-        raw = rest[0][len("--criteria=") :]
+    raw, rest = _pop_flag(rest, "--criteria=")
+    if raw is not None:
         if not raw:
-            return None, rest[1:]
+            return None, rest
         # Validate: only digits 0 and 1 separated by commas.
         import re
 
@@ -136,7 +148,7 @@ def _parse_criteria_verdicts(rest: list[str]) -> tuple[list[bool] | None, list[s
                 f"Invalid --criteria value for review: '{raw}'",
                 "Use comma-separated 0/1 values, e.g. --criteria=1,0,1",
             )
-        return [c == "1" for c in raw.split(",")], rest[1:]
+        return [c == "1" for c in raw.split(",")], rest
     return None, rest
 
 
@@ -144,19 +156,19 @@ _VALID_STRATEGIES = ("balanced", "lowest_price", "best_quality")
 
 
 def _parse_strategy(rest: list[str]) -> tuple[str | None, list[str]]:
-    """Pull a leading ``--strategy=<name>`` off ``act post_job`` args.
+    """Pull ``--strategy=<name>`` from ``act post_job`` args (any position).
 
     Modeled on ``_parse_confidence``. Returns ``(strategy_or_None,
     remaining_args)``. Dies on an unknown strategy name.
     """
-    if rest and rest[0].startswith("--strategy="):
-        raw = rest[0][len("--strategy=") :]
+    raw, rest = _pop_flag(rest, "--strategy=")
+    if raw is not None:
         if raw not in _VALID_STRATEGIES:
             _die(
                 f"Invalid --strategy value: '{raw}'",
                 f"Strategy must be one of: {', '.join(_VALID_STRATEGIES)}",
             )
-        return raw, rest[1:]
+        return raw, rest
     return None, rest
 
 
