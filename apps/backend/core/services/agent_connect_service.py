@@ -209,12 +209,22 @@ async def _handle_agent_connect(request, ws_manager):
     # grace expired, no task is pending and we fall through to the default.
     within_grace = _cancel_sleep_grace(agent_id)
 
-    if within_grace:
+    # Also preserve location for a reconnect of an agent that is STILL active in
+    # the world (isActive + phase "alive"). This is the backend-drop recovery
+    # path: a new backend task lost its in-memory ws_manager entry (e.g. after a
+    # deploy) and told the daemon to reconnect — there's no sleep-grace task, but
+    # the agent never slept, so it must NOT be teleported home from wherever it
+    # was (e.g. the bank). Fresh connects (phase != "alive") and genuine wakes
+    # (isActive == "false") still fall through to the wake-in-bed reset.
+    active_in_world = str(agent.get("isActive", "")).lower() == "true" and agent.get("onboardingPhase") == "alive"
+
+    if within_grace or active_in_world:
         current_location = agent.get("currentLocation") or "bed"
         location_context = agent.get("locationContext") or "apartment"
         logger.info(
-            "[agent:%s] Reconnect within sleep grace — resuming at %s/%s",
+            "[agent:%s] Reconnect (%s) — resuming at %s/%s",
             agent_id[:8],
+            "sleep grace" if within_grace else "still active",
             location_context,
             current_location,
         )

@@ -139,8 +139,21 @@ class TownDaemon:
     # connection liveness is the websockets library's ping/pong (ping_interval /
     # ping_timeout). This only bounds how long recv() blocks before re-checking
     # self.running, so an idle agent (no broadcasts) doesn't get spuriously
-    # reconnected. Kept well above the 120s app keepalive interval.
+    # reconnected. Kept well above the ping interval.
     _RECV_SAFETY_TIMEOUT_SEC = 300.0
+
+    # End-to-end keepalive. The websockets ping/pong only proves the
+    # daemon↔API-Gateway hop is alive; it does NOT prove the daemon is still
+    # registered with the backend (a backend task can be replaced on deploy and
+    # lose its in-memory registry while API Gateway keeps the socket open — acts
+    # then go into the void). So the daemon sends an APP-level ``{"type":"ping"}``
+    # every _PING_INTERVAL_SEC and the backend answers ``{"event":"pong"}`` while
+    # the connection is registered (or ``{"event":"reconnect"}`` if it isn't). If
+    # no pong arrives for _PONG_TIMEOUT_SEC the connection is treated as
+    # half-open and the daemon reconnects (re-registers). The interval also keeps
+    # API Gateway's 10-minute idle timer warm.
+    _PING_INTERVAL_SEC = 40.0
+    _PONG_TIMEOUT_SEC = 100.0
 
     def __init__(
         self,
@@ -164,6 +177,15 @@ class TownDaemon:
         self.state: dict = {}
         self.running = True
         self.ws = None
+
+        # End-to-end keepalive state (see _PING_INTERVAL_SEC). _last_pong_at is
+        # the monotonic-ish wall time of the last backend pong; it's reset on
+        # each connect so a fresh connection isn't seen as stale. _ever_ponged
+        # gates the pong-timeout reconnect so a daemon talking to an OLDER
+        # backend that never pongs doesn't reconnect on this basis (it just
+        # behaves like the pre-keepalive build — no regression).
+        self._last_pong_at = 0.0
+        self._ever_ponged = False
 
         # Optional zero-arg callback fired when a fresh (non-own) conversation
         # message lands in ``pending_messages``. The in-process worldgm resident
@@ -2177,6 +2199,14 @@ class TownDaemon:
                 }
             )
         )
+        # Fresh connection: start the pong deadline now so the keepalive loop
+        # doesn't immediately judge a just-opened socket as half-open, and clear
+        # _ever_ponged so the timeout-reconnect re-arms only after a pong on THIS
+        # connection. Without the reset, reconnecting to a pongless backend (a
+        # rollback or mixed-version deploy) would inherit the armed guard and
+        # churn the socket every _PONG_TIMEOUT_SEC.
+        self._last_pong_at = time.time()
+        self._ever_ponged = False
         log.info("Connected as %s", self._agent_name)
 
     async def listen_ws(self) -> None:
@@ -2215,6 +2245,16 @@ class TownDaemon:
                             self._handle_world_update(data)
                         elif event_name == "agent_state":
                             self._handle_agent_state(data)
+                        elif event_name == "pong":
+                            # Backend confirmed we're registered end-to-end.
+                            self._last_pong_at = time.time()
+                            self._ever_ponged = True
+                        elif event_name == "reconnect":
+                            # Backend has no registration for us (e.g. a new task
+                            # after a deploy) — reconnect to re-send
+                            # town_agent_connect and re-register.
+                            log.info("Backend requested reconnect — re-registering")
+                            raise ConnectionError("backend requested reconnect")
                         else:
                             self._handle_event(data)
                     elif data.get("type") == "world_update":
@@ -2501,16 +2541,42 @@ class TownDaemon:
             os.unlink(sock_str)
 
     async def _keepalive_loop(self) -> None:
-        """Send periodic ping messages to keep the API Gateway connection alive."""
+        """End-to-end keepalive: ping the backend and watch for its pong.
+
+        Sends ``{"type":"ping"}`` every ``_PING_INTERVAL_SEC`` (which also keeps
+        API Gateway's idle timer warm). The backend answers ``{"event":"pong"}``
+        while we're registered. If we've ever seen a pong (so the backend
+        supports it) but none has arrived within ``_PONG_TIMEOUT_SEC``, the
+        connection is half-open — API Gateway alive, backend unregistered — so we
+        close it to force a reconnect + re-register. The ``_ever_ponged`` guard
+        keeps this a no-op against older backends that don't pong.
+        """
         import asyncio
+        import logging
+
+        log = logging.getLogger("town_daemon")
 
         while self.running:
-            await asyncio.sleep(120)
-            if self.ws and self.running:
+            await asyncio.sleep(self._PING_INTERVAL_SEC)
+            if not (self.ws and self.running):
+                continue
+            if (
+                self._ever_ponged
+                and (time.time() - self._last_pong_at) > self._PONG_TIMEOUT_SEC
+            ):
+                log.warning(
+                    "No backend pong in %.0fs — connection half-open; reconnecting",
+                    self._PONG_TIMEOUT_SEC,
+                )
                 try:
-                    await self.ws.send(json.dumps({"type": "ping"}))
+                    await self.ws.close()  # → recv() raises → reconnect re-registers
                 except Exception:
-                    break
+                    pass
+                continue
+            try:
+                await self.ws.send(json.dumps({"type": "ping"}))
+            except Exception:
+                break
 
     async def run(self, serve_socket: bool = True) -> None:
         """Connect, run socket server, and listen until exit.

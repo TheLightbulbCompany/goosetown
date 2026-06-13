@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -88,3 +89,126 @@ async def test_recv_timeout_is_not_a_reconnect_signal(daemon: TownDaemon):
     # "Inactivity timeout" ConnectionError escapes mid-idle.
     await daemon.listen_ws()
     assert calls["n"] == 4
+
+
+# ---------------------------------------------------------------------------
+# End-to-end keepalive: pong/reconnect handling + pong-timeout reconnect
+# (CLI 0.5.2 — closes the #402 gap where idle agents didn't recover from a
+# backend-side drop, e.g. after a deploy).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pong_event_marks_liveness(daemon: TownDaemon):
+    """A backend ``{"event":"pong"}`` resets the pong deadline and records that
+    the backend supports pong (enables the timeout-reconnect guard)."""
+    daemon._ever_ponged = False
+    daemon._last_pong_at = 0.0
+    calls = {"n": 0}
+
+    async def fake_recv():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return json.dumps({"event": "pong"})
+        daemon.running = False
+        raise ConnectionError("stop")
+
+    daemon.ws = MagicMock()
+    daemon.ws.recv = fake_recv
+    daemon.running = True
+    await daemon.listen_ws()
+
+    assert daemon._ever_ponged is True
+    assert daemon._last_pong_at > 0
+
+
+@pytest.mark.asyncio
+async def test_reconnect_event_exits_listen_loop(daemon: TownDaemon):
+    """A backend ``{"event":"reconnect"}`` breaks listen_ws so the outer loop
+    reconnects and re-sends town_agent_connect (re-register)."""
+    calls = {"n": 0}
+
+    async def fake_recv():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return json.dumps({"event": "reconnect"})
+        return json.dumps({"event": "world_state"})  # must NOT be reached
+
+    daemon.ws = MagicMock()
+    daemon.ws.recv = fake_recv
+    daemon.running = True
+    with patch.object(daemon, "_handle_world_update") as handled:
+        await daemon.listen_ws()
+
+    assert calls["n"] == 1  # loop exited on the reconnect event
+    assert not handled.called
+
+
+@pytest.mark.asyncio
+async def test_keepalive_reconnects_on_pong_timeout(daemon: TownDaemon):
+    """Once the backend has ponged at least once, a stale pong deadline means the
+    connection is half-open → close it to force a reconnect (don't keep pinging)."""
+    daemon._PING_INTERVAL_SEC = 0.01
+    daemon._PONG_TIMEOUT_SEC = 0.05
+    daemon._ever_ponged = True
+    daemon._last_pong_at = time.time() - 100  # very stale
+    closed = {"v": False}
+
+    async def fake_close():
+        closed["v"] = True
+        daemon.running = False  # stop the loop after the close
+
+    daemon.ws = MagicMock()
+    daemon.ws.close = fake_close
+    daemon.ws.send = AsyncMock()
+    daemon.running = True
+    await daemon._keepalive_loop()
+
+    assert closed["v"] is True
+    daemon.ws.send.assert_not_called()  # reconnected instead of pinging
+
+
+@pytest.mark.asyncio
+async def test_keepalive_does_not_reconnect_against_pongless_backend(
+    daemon: TownDaemon,
+):
+    """If the backend has never ponged (older backend), the timeout-reconnect is
+    disabled — the daemon just keeps pinging (no regression vs the pre-keepalive
+    build)."""
+    daemon._PING_INTERVAL_SEC = 0.01
+    daemon._PONG_TIMEOUT_SEC = 0.05
+    daemon._ever_ponged = False  # never seen a pong
+    daemon._last_pong_at = time.time() - 100  # stale, but the guard is off
+    sent = {"n": 0}
+
+    async def fake_send(_payload):
+        sent["n"] += 1
+        daemon.running = False  # stop after the first ping
+
+    daemon.ws = MagicMock()
+    daemon.ws.close = AsyncMock()
+    daemon.ws.send = fake_send
+    daemon.running = True
+    await daemon._keepalive_loop()
+
+    daemon.ws.close.assert_not_called()
+    assert sent["n"] == 1  # pinged, did not reconnect
+
+
+@pytest.mark.asyncio
+async def test_connect_resets_ever_ponged_per_connection(daemon: TownDaemon):
+    """Each new connection re-arms pong detection from scratch (codex P2): a
+    daemon that saw a pong on a prior connection but reconnects to a pongless
+    backend (rollback / mixed-version) must NOT inherit the armed guard, or it
+    would churn an otherwise-healthy socket every _PONG_TIMEOUT_SEC."""
+    daemon._ever_ponged = True  # stale from a previous connection
+    daemon._last_pong_at = 0.0
+
+    mock_ws = MagicMock()
+    mock_ws.send = AsyncMock()
+    with patch("websockets.connect", new=AsyncMock(return_value=mock_ws)):
+        await daemon.connect_ws()
+
+    assert daemon.ws is mock_ws
+    assert daemon._ever_ponged is False  # re-armed only after a pong on THIS conn
+    assert daemon._last_pong_at > 0  # deadline started at connect

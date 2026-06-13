@@ -93,6 +93,76 @@ async def test_connect_routes_connected_event_through_mailbox():
 
 
 @pytest.mark.asyncio
+async def test_reconnect_of_active_agent_preserves_location():
+    """Backend-drop recovery (codex P2): when an agent that is still active in
+    the world (isActive + phase 'alive') re-registers — e.g. a new backend task
+    asked it to reconnect after a deploy — its location must be PRESERVED, not
+    reset to apartment/bed. Otherwise the recovery path teleports an at-bank
+    agent home."""
+    from core.services.agent_connect_service import _handle_agent_connect
+
+    record = _agent_record()
+    record["isActive"] = "true"
+    record["currentLocation"] = "bank"
+    record["locationContext"] = "town"
+
+    svc_mock = MagicMock()
+    svc_mock.get_agent_by_name.return_value = record
+    svc_mock.update_agent_state = MagicMock()
+    svc_mock.update_agent_context = MagicMock()
+
+    gs_mock = MagicMock()
+    gs_mock.connect_agent = AsyncMock()
+
+    fake_mailbox = MagicMock()
+    fake_mailbox.notify_connection.return_value = True
+
+    with (
+        patch(TOKEN_VERIFY_PATH, return_value={"uid": "u-1", "iid": "i-1"}),
+        patch(TOWN_SERVICE_PATH, return_value=svc_mock),
+        patch(GS_CLIENT_PATH, return_value=gs_mock),
+        patch(MAILBOX_FACTORY_PATH, return_value=fake_mailbox),
+    ):
+        await _handle_agent_connect(_make_request(), _make_ws_manager_mock())
+
+    # Location preserved → the wake-in-bed reset (update_agent_context) is skipped.
+    svc_mock.update_agent_context.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_of_inactive_agent_resets_to_bed():
+    """An agent that is NOT active (e.g. waking from sleep / fresh connect) still
+    falls through to the wake-in-bed reset — the preservation is gated on
+    active+alive, so this path is unchanged."""
+    from core.services.agent_connect_service import _handle_agent_connect
+
+    record = _agent_record()
+    record["isActive"] = "false"
+    record["currentLocation"] = "bank"
+
+    svc_mock = MagicMock()
+    svc_mock.get_agent_by_name.return_value = record
+    svc_mock.update_agent_state = MagicMock()
+    svc_mock.update_agent_context = MagicMock()
+
+    gs_mock = MagicMock()
+    gs_mock.connect_agent = AsyncMock()
+
+    fake_mailbox = MagicMock()
+    fake_mailbox.notify_connection.return_value = True
+
+    with (
+        patch(TOKEN_VERIFY_PATH, return_value={"uid": "u-1", "iid": "i-1"}),
+        patch(TOWN_SERVICE_PATH, return_value=svc_mock),
+        patch(GS_CLIENT_PATH, return_value=gs_mock),
+        patch(MAILBOX_FACTORY_PATH, return_value=fake_mailbox),
+    ):
+        await _handle_agent_connect(_make_request(), _make_ws_manager_mock())
+
+    svc_mock.update_agent_context.assert_called_once_with("agent-uuid", "apartment", "bed")
+
+
+@pytest.mark.asyncio
 async def test_connect_kicks_old_connection_through_mailbox_disconnect():
     """When a stale daemon connection exists for the same agent, the
     handler must call ``mailbox.disconnect`` on the old connection id —
