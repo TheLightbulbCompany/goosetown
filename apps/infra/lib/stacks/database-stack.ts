@@ -19,6 +19,7 @@ export interface DatabaseTables {
   worldEvents: dynamodb.Table;
   jobs: dynamodb.Table;
   ledger: dynamodb.Table;
+  providerSubscriptions: dynamodb.Table;
 }
 
 export class DatabaseStack extends cdk.Stack {
@@ -240,7 +241,27 @@ export class DatabaseStack extends cdk.Stack {
       sortKey: { name: "createdAt", type: dynamodb.AttributeType.STRING },
     });
 
-    this.tables = { agents, instances, relationships, conversations, connections, ownerChats, users, completedGoals, worldgmArcs, worldEvents, jobs, ledger };
+    // provider-subscriptions — membership projection for the ProviderDirectory seam (ADR-0008)
+    // PK: category (S) — AEX category slug (or wildcard prefix)
+    // SK: providerSort (S) — f"{trustScore:08.4f}#{providerId}" enables trust-desc query via ScanIndexForward=False
+    // GSI providerId-index: PK providerId (S) — allows register/unregister to find-and-delete all rows for a provider
+    const providerSubscriptions = new dynamodb.Table(this, "ProviderSubscriptionsTable", {
+      tableName: `goosetown-${env}-provider-subscriptions`,
+      partitionKey: { name: "category", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "providerSort", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      pointInTimeRecoverySpecification: {
+        pointInTimeRecoveryEnabled: env === "prod",
+      },
+      removalPolicy,
+    });
+    providerSubscriptions.addGlobalSecondaryIndex({
+      indexName: "providerId-index",
+      partitionKey: { name: "providerId", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    this.tables = { agents, instances, relationships, conversations, connections, ownerChats, users, completedGoals, worldgmArcs, worldEvents, jobs, ledger, providerSubscriptions };
 
     // Outputs
     new cdk.CfnOutput(this, "AgentsTableName", {

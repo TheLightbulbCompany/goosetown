@@ -3,7 +3,7 @@
 Covers:
 - ws_models validator: success_criteria field constraints, criteria_verdicts constraints.
 - post_job stores sanitized successCriteria; criteria appear in job_awarded (winner) and
-  job_posted broadcast.
+  the targeted job_offered event to matched providers (Wave 2 replaced the broadcast).
 - review_job with criteria_verdicts: SUCCESS full accept, SUCCESS_PARTIAL with any false
   verdict (COMPLETED, correct trust math), mismatch-length rejected (bad_verdicts).
 """
@@ -275,9 +275,13 @@ class TestPostJobCriteria:
         job = _get_job(dynamodb_tables, result["job_id"])
         assert len(job["successCriteria"]) == 8
 
-    async def test_criteria_in_broadcast_to_bidders(self, dynamodb_tables, mailbox, ws):
-        _seed_agent(dynamodb_tables, "other", "olly")
-        ws.conns["other"] = _conn("other", "olly", "c-other")
+    async def test_criteria_in_offer_to_matched_providers(self, dynamodb_tables, mailbox, ws):
+        # Wave 2: criteria ride in the targeted `job_offered` event (carried as
+        # `criteria`), replacing the old all-connections `job_posted` broadcast.
+        from core.services.provider_directory import ProviderDirectory
+
+        _seed_agent(dynamodb_tables, "sub", "sue")
+        ProviderDirectory().register("sub", skills=["sue"], categories=["general"], bio="b")
         _seed_agent(dynamodb_tables, "consumer", "carol")
         cc = _conn("consumer", "carol", "c-consumer")
         ws.conns["consumer"] = cc
@@ -288,12 +292,11 @@ class TestPostJobCriteria:
             30,
             "balanced",
             success_criteria=["must use alliteration"],
+            category="general",
         )
-        # Find the job_posted broadcast to other agents
-        broadcast_calls = mailbox.notify_connection.call_args_list
-        broadcast_payloads = [c.args[1] for c in broadcast_calls if c.args[1].get("event") == "job_posted"]
-        assert broadcast_payloads, "job_posted broadcast not sent"
-        assert broadcast_payloads[0]["success_criteria"] == ["must use alliteration"]
+        offer_payloads = [c.args[1] for c in mailbox.notify.call_args_list if c.args[1].get("event") == "job_offered"]
+        assert offer_payloads, "job_offered not sent"
+        assert offer_payloads[0]["criteria"] == ["must use alliteration"]
 
     async def test_no_criteria_no_field_stored(self, dynamodb_tables, mailbox, ws):
         _seed_agent(dynamodb_tables, "consumer", "carol")

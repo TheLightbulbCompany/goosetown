@@ -22,8 +22,9 @@ from typing import Any, Awaitable, Callable
 from boto3.dynamodb.conditions import Key
 
 from core import dynamo
-from core.services import exchange_scoring, town_mood_engine
+from core.services import exchange_categories, exchange_scoring, town_mood_engine
 from core.services.daemon_mailbox import get_daemon_mailbox
+from core.services.provider_directory import ProviderDirectory
 from core.services.town_agent_ws import get_town_agent_ws_manager
 from core.services.town_service import TownService
 
@@ -45,6 +46,13 @@ TITLE_MAX = 120
 DESCRIPTION_MAX = 4096
 DELIVERABLE_MAX = 16384
 PITCH_MAX = 500
+
+# Wave 2: job category/tags. Category normalized via exchange_categories
+# (defaults to DEFAULT_CATEGORY when absent/invalid); tags are free-form,
+# sanitized to lowercase-trimmed slugs, capped per-item and in count.
+DEFAULT_CATEGORY = "general"
+TAG_MAX_LEN = 40
+TAGS_MAX_COUNT = 8
 
 # Synthetic ledger account that accumulates Exchange fees (the crumb sink).
 TOWN_ACCOUNT = "TOWN"
@@ -579,8 +587,11 @@ def _cancel_timer(job_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _get_job(job_id: str) -> dict | None:
-    resp = dynamo.jobs_table().get_item(Key={"id": job_id})
+def _get_job(job_id: str, *, consistent: bool = False) -> dict | None:
+    """Fetch a job row. ``consistent=True`` forces a strongly-consistent read —
+    use it for authorization checks that race a just-committed write (e.g. the
+    ``offeredTo`` bid gate right after the matcher's ``ADD offeredTo``)."""
+    resp = dynamo.jobs_table().get_item(Key={"id": job_id}, ConsistentRead=consistent)
     return resp.get("Item")
 
 
@@ -783,10 +794,68 @@ def _update_trust(
             continue  # trustScore moved under us (or agent missing) — re-read and retry
     else:
         logger.warning("Trust update dropped after retries: agent=%s outcome=%s", agent_id[:8], outcome)
+        if completed_delta:
+            _bump_counter(agent_id, "jobsCompleted", completed_delta)
+        if failed_delta:
+            _bump_counter(agent_id, "jobsFailed", failed_delta)
+        return
+
+    # Trust write succeeded — re-rank the agent's subscription rows so the
+    # directory trust-descending queries use the fresh score (ADR-0008).
+    # Wrapped in try/except: a denorm failure must not break settlement.
+    # keep directory trust ranking fresh; ADR-0008 — moves to an OpenSearch
+    # reindex when discovery scales.
+    try:
+        ProviderDirectory().reindex_trust(agent_id, new_trust)
+    except Exception:
+        logger.warning(
+            "reindex_trust failed for agent=%s new_trust=%.4f — directory sort may be stale",
+            agent_id[:8],
+            new_trust,
+        )
+
+    # Emit a feed event so the world knows the reputation changed.
+    agent_for_event = TownService().get_town_agent_by_id(agent_id) or {}
+    agent_name = agent_for_event.get("displayName") or agent_for_event.get("agentName") or agent_id[:8]
+    completed_for_tier = int(agent_for_event.get("jobsCompleted", 0) or 0) + completed_delta
+    tier = exchange_scoring.trust_tier(new_trust, completed_for_tier)
+    _emit_economy_event(
+        "reputation.updated",
+        summary=f"{agent_name} trust is now {tier}",
+        location=EXCHANGE_LOCATION,
+        agent_id=agent_id,
+        new_trust=new_trust,
+        tier=tier,
+    )
+
     if completed_delta:
         _bump_counter(agent_id, "jobsCompleted", completed_delta)
     if failed_delta:
         _bump_counter(agent_id, "jobsFailed", failed_delta)
+
+
+def _sanitize_tags(tags: list[str] | None) -> list[str]:
+    """Normalize free-form job tags: lowercase, strip, drop empties, cap.
+
+    Wave 2: tags are advisory free-text labels (not validated category slugs).
+    Each is lowercased + trimmed + truncated to ``TAG_MAX_LEN``; empties are
+    dropped; duplicates removed (first-seen order); the list capped at
+    ``TAGS_MAX_COUNT``.
+    """
+    if not tags:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in tags:
+        if not isinstance(raw, str):
+            continue
+        tag = raw.strip().lower()[:TAG_MAX_LEN]
+        if tag and tag not in seen:
+            seen.add(tag)
+            out.append(tag)
+        if len(out) >= TAGS_MAX_COUNT:
+            break
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -801,8 +870,22 @@ async def post_job(
     max_price: int,
     strategy: str,
     success_criteria: list[str] | None = None,
+    category: str | None = None,
+    tags: list[str] | None = None,
 ) -> dict:
-    """Post a job at the Exchange: escrow ``max_price``, open the bid window."""
+    """Post a job at the Exchange: escrow ``max_price``, open the bid window.
+
+    Wave 2 (spec §3.3): the job is categorized (``category`` normalized via
+    ``exchange_categories``; defaults to ``"general"``) and, **after the job
+    row is committed**, the subscription matcher runs **synchronously in this
+    request** — it queries ``provider-subscriptions`` for the category (and its
+    wildcard parents), excludes the consumer, and persists the matched provider
+    ids onto the job as the durable ``offeredTo`` String Set (codex P1: the
+    offer set is authorization-bearing job state, not a fleeting event). Only
+    then are the matched providers notified (best-effort ``job_offered``). The
+    old all-connections broadcast is gone — offers are targeted; the job still
+    lands on the public board regardless, so the pull path is unaffected.
+    """
     mailbox = get_daemon_mailbox()
     # Strongly-consistent read so a post_job issued immediately after a `move bank`
     # arrival sees the just-committed currentLocation (read-after-write gate).
@@ -863,6 +946,10 @@ async def post_job(
         if not sanitized_criteria:
             sanitized_criteria = None
 
+    # Wave 2: normalize category (default "general" when None/invalid) + tags.
+    job_category = exchange_categories.normalize_category(category) or DEFAULT_CATEGORY
+    sanitized_tags = _sanitize_tags(tags)
+
     now = time.time()
     job: dict[str, Any] = {
         "id": job_id,
@@ -874,10 +961,13 @@ async def post_job(
         "strategy": strategy,
         "status": "OPEN",
         "bids": {},
+        "category": job_category,
         "createdAt": _now_iso(),
         "updatedAt": _now_iso(),
         "bidWindowEndsAt": Decimal(str(now + BID_WINDOW_SEC)),
     }
+    if sanitized_tags:
+        job["tags"] = sanitized_tags
     # W1: store denormalized consumer userId so place_bid can enforce the
     # same-owner hard-block cheaply (no extra agent read per bid).
     if consumer_user_id:
@@ -911,22 +1001,62 @@ async def post_job(
         max_price=max_price,
     )
 
-    broadcast: dict[str, Any] = {
-        "event": "job_posted",
+    # Wave 2 (spec §3.3, codex P1): the subscription matcher runs SYNCHRONOUSLY
+    # here — it replaces the old all-connections broadcast. Query subscribers for
+    # the category (+ wildcard parents), excluding the consumer, and persist the
+    # matched ids onto the job as the durable `offeredTo` String Set BEFORE any
+    # notification, so a dropped notify is recoverable by reconnect resync /
+    # sweeper (the offer set is authorization-bearing state, not a fleeting
+    # event). A job with no subscribers leaves `offeredTo` unset and is still on
+    # the public board (pull path).
+    try:
+        matched = ProviderDirectory().subscribers_for_job(job_category, consumer_id=agent_conn.agent_id)
+    except Exception:
+        # Discovery is best-effort; a directory read failure must not strand the
+        # job (it's committed) — fall back to no pushed offers (pull path only).
+        logger.exception("post_job: matcher lookup failed for job %s — no offers pushed", job_id)
+        matched = []
+
+    if matched:
+        # Persist the durable offer set in the SAME item via a String Set ADD —
+        # committed here, before notifications, so the offeredTo authz record
+        # survives a notify failure (codex P1).
+        try:
+            dynamo.jobs_table().update_item(
+                Key={"id": job_id},
+                UpdateExpression="ADD offeredTo :ids SET updatedAt = :now",
+                ConditionExpression="#st = :open",
+                ExpressionAttributeNames={"#st": "status"},
+                ExpressionAttributeValues={":ids": set(matched), ":open": "OPEN", ":now": _now_iso()},
+            )
+        except Exception:
+            logger.exception("post_job: offeredTo write failed for job %s", job_id)
+            matched = []
+
+    offer_event_base: dict[str, Any] = {
+        "event": "job_offered",
         "job_id": job_id,
         "title": job["title"],
-        "description": job["description"][:300],
+        "category": job_category,
         "max_price": max_price,
-        "strategy": strategy,
+        # Full stored spec (≤DESCRIPTION_MAX) — the daemon renders this as the
+        # TOWN_OFFERS.md "Job spec" the provider prices against, so a 300-char
+        # preview could hide requirements past the cut and lead to a blind bid
+        # (codex P2). The public board keeps a short teaser; offers carry it all.
+        "description": job["description"][:DESCRIPTION_MAX],
         "consumer_name": agent_conn.agent_name,
-        "bid_window_sec": int(BID_WINDOW_SEC),
+        # Bid-window deadline so the provider's daemon can prune the offer when it
+        # lapses — non-bidders get no terminal event otherwise (codex P2).
+        "bid_deadline": float(job.get("bidWindowEndsAt") or 0) or None,
     }
-    # W3: include criteria in broadcast so bidders can see what success means.
     if sanitized_criteria:
-        broadcast["success_criteria"] = sanitized_criteria
-    for conn in get_town_agent_ws_manager().connected_agents():
-        if conn.agent_id != agent_conn.agent_id:
-            mailbox.notify_connection(conn.connection_id, broadcast)
+        offer_event_base["criteria"] = sanitized_criteria
+    # Notify each matched provider — best-effort; offeredTo is the durable record.
+    for pid in matched:
+        try:
+            mailbox.notify(pid, dict(offer_event_base))
+        except Exception:
+            logger.warning("post_job: job_offered notify failed for provider %s job %s", pid[:8], job_id)
 
     return _notify_outcome(
         agent_conn,
@@ -934,6 +1064,8 @@ async def post_job(
         {
             "status": "ok",
             "job_id": job_id,
+            "category": job_category,
+            "offered_count": len(matched),
             "bid_window_sec": int(BID_WINDOW_SEC),
             "escrowed": max_price,
             "balance": get_wallet(agent_conn.agent_id)["balance"],
@@ -942,18 +1074,17 @@ async def post_job(
 
 
 async def place_bid(agent_conn: Any, job_id: str, price: int, confidence: float, pitch: str) -> dict:
-    """Sealed bid on an OPEN job. Per-bidder last-write-wins; atomic vs window close."""
+    """Sealed bid on an OPEN job. Per-bidder last-write-wins; atomic vs window close.
+
+    Wave 2 (spec §3.5, Task 5): the Wave-1 at-bank requirement is relaxed to
+    **presence OR offer**. A subscribed/invited provider bids *remotely* — it
+    appears in the job's durable ``offeredTo`` String Set (the matcher's record,
+    or an explicit ``invite_provider``). A walk-in at the bank still bids in the
+    casual in-world path even without an offer (presence wins). The check sits
+    AFTER the cheap rejections (own_job / own_household) so a same-owner or
+    self bid is rejected for the right reason regardless of presence.
+    """
     mailbox = get_daemon_mailbox()
-    if not _at_exchange(agent_conn):
-        return _notify_outcome(
-            agent_conn,
-            "bid",
-            {
-                "status": "rejected",
-                "reason": "not_at_exchange",
-                "message": "You must be at the bank (the Exchange) to bid. `act move bank` first.",
-            },
-        )
     job = _get_job(job_id)
     if not job:
         return _notify_outcome(
@@ -988,6 +1119,33 @@ async def place_bid(agent_conn: Any, job_id: str, price: int, confidence: float,
                     "message": "Your household posted this job — agents with the same owner can't bid.",
                 },
             )
+    # Wave 2 (spec §3.5): presence OR offer. Allow the bid if the bidder is
+    # physically at the bank OR appears in the job's durable `offeredTo` set
+    # (matched by category at post time, or explicitly invited). A missing
+    # `offeredTo` attribute is treated as the empty set — no crash.
+    offered_to = job.get("offeredTo") or set()
+    if not _at_exchange(agent_conn) and agent_conn.agent_id not in offered_to:
+        # The `job` snapshot is eventually-consistent (`_get_job` default). An
+        # off-bank provider that bids in the instant after the matcher/invite
+        # committed `ADD offeredTo` — but before the read replica caught up —
+        # would be wrongly rejected. Re-read the job strongly-consistently and
+        # re-check before rejecting (codex P2).
+        fresh = _get_job(job_id, consistent=True) or job
+        offered_to = fresh.get("offeredTo") or set()
+        if agent_conn.agent_id not in offered_to:
+            return _notify_outcome(
+                agent_conn,
+                "bid",
+                {
+                    "status": "rejected",
+                    "reason": "not_invited",
+                    "message": (
+                        "You weren't offered this job and aren't at the Exchange — "
+                        "move to the bank, or wait to be offered a job in your categories."
+                    ),
+                },
+            )
+        job = fresh  # offer confirmed on the consistent read — use the fresh row
     max_price = int(job.get("maxPrice", 0))
     if price < 0 or price > max_price:
         return _notify_outcome(
@@ -1076,6 +1234,150 @@ async def place_bid(agent_conn: Any, job_id: str, price: int, confidence: float,
         agent_conn,
         "bid",
         {"status": "ok", "job_id": job_id, "price": price, "confidence": confidence, "bid_count": bid_count},
+    )
+
+
+async def invite_provider(agent_conn: Any, job_id: str, provider_id: str) -> dict:
+    """Consumer invites a specific provider to bid on its OPEN job.
+
+    Wave 2 (spec §3.5, Task 5): the directory→invite path. The consumer appends
+    *provider_id* to the job's durable ``offeredTo`` String Set (guarded on
+    ``status = OPEN``) so that provider can then bid **remotely** — including an
+    off-category specialist that the category matcher never auto-offered. The
+    ``job_offered`` notify (``invited=True``) is best-effort fan-out on top of
+    the durable ``offeredTo`` record (codex P1: the set is the authz state, the
+    event is recoverable via resync).
+    """
+    job = _get_job(job_id)
+    if not job:
+        return _notify_outcome(
+            agent_conn,
+            "invite",
+            {"status": "rejected", "reason": "not_found", "message": f"No job {job_id} on the board."},
+        )
+    if job["consumerId"] != agent_conn.agent_id:
+        return _notify_outcome(
+            agent_conn,
+            "invite",
+            {"status": "rejected", "reason": "not_consumer", "message": "Only the poster can invite providers."},
+        )
+    if job.get("status") != "OPEN":
+        return _notify_outcome(
+            agent_conn,
+            "invite",
+            {"status": "rejected", "reason": "not_open", "message": "Only OPEN jobs can offer invitations."},
+        )
+
+    # Append the provider to the durable offer set, re-checking OPEN at write
+    # time so a window-close racing the invite can't resurrect a closed offer.
+    try:
+        dynamo.jobs_table().update_item(
+            Key={"id": job_id},
+            UpdateExpression="ADD offeredTo :pid SET updatedAt = :now",
+            ConditionExpression="#st = :open",
+            ExpressionAttributeNames={"#st": "status"},
+            ExpressionAttributeValues={":pid": {provider_id}, ":open": "OPEN", ":now": _now_iso()},
+        )
+    except dynamo.jobs_table().meta.client.exceptions.ConditionalCheckFailedException:
+        return _notify_outcome(
+            agent_conn,
+            "invite",
+            {"status": "rejected", "reason": "not_open", "message": "Only OPEN jobs can offer invitations."},
+        )
+
+    # Best-effort offer notify to the invited provider — same payload shape as
+    # the post-time matcher, flagged invited=True.
+    offer_event: dict[str, Any] = {
+        "event": "job_offered",
+        "job_id": job_id,
+        "title": job.get("title", ""),
+        "category": job.get("category", "general"),
+        "max_price": int(job.get("maxPrice", 0)),
+        # Full spec for the bid decision (see post_job matcher rationale, codex P2).
+        "description": (job.get("description") or "")[:DESCRIPTION_MAX],
+        "consumer_name": agent_conn.agent_name,
+        "invited": True,
+        "bid_deadline": float(job.get("bidWindowEndsAt") or 0) or None,
+    }
+    success_criteria = job.get("successCriteria")
+    if success_criteria:
+        offer_event["criteria"] = success_criteria
+    try:
+        get_daemon_mailbox().notify(provider_id, offer_event)
+    except Exception:
+        logger.warning("invite_provider: job_offered notify failed for provider %s job %s", provider_id[:8], job_id)
+
+    return _notify_outcome(
+        agent_conn,
+        "invite",
+        {"status": "ok", "job_id": job_id, "provider_id": provider_id},
+    )
+
+
+async def register_provider(
+    agent_conn: Any,
+    skills: list[str],
+    categories: list[str],
+    bio: str,
+    min_price: int = 0,
+) -> dict:
+    """Provider opts into the marketplace (Wave 2, spec §3.4).
+
+    Thin wrapper over ``ProviderDirectory().register`` — the heavy lifting
+    (profile write + subscription-projection rebuild + wildcard semantics) lives
+    in the directory seam (ADR-0008). ``provider update`` is the same verb: a
+    re-register replaces the profile and subscription rows wholesale, so there's
+    no separate update path. Echoes ``exchange_ok`` to the caller's daemon like
+    every other verb (``_notify_outcome``).
+
+    A registration whose categories all normalize away (or were empty) is
+    rejected — the directory raises ``ValueError`` before any write, and we
+    surface it as a clean ``rejected`` outcome rather than a silent broken
+    provider (codex P2). The CLI already requires ``--categories``; this guards
+    the direct-act / ``join --provider`` paths too.
+    """
+    try:
+        profile = ProviderDirectory().register(
+            agent_conn.agent_id,
+            skills=skills or [],
+            categories=categories or [],
+            bio=bio or "",
+            min_price=min_price or 0,
+        )
+    except ValueError:
+        return _notify_outcome(
+            agent_conn,
+            "provider_register",
+            {
+                "status": "rejected",
+                "reason": "no_valid_categories",
+                "message": (
+                    "Register with at least one valid category "
+                    "(e.g. --categories=writing,research). Categories are "
+                    "lowercase slugs — spaces and capitals aren't allowed."
+                ),
+            },
+        )
+    return _notify_outcome(
+        agent_conn,
+        "provider_register",
+        {"status": "ok", "is_provider": True, **profile},
+    )
+
+
+async def unregister_provider(agent_conn: Any) -> dict:
+    """Provider leaves the marketplace (Wave 2, spec §3.4).
+
+    Thin wrapper over ``ProviderDirectory().unregister`` — flips ``isProvider``
+    false and deletes the subscription-projection rows so the provider stops
+    being matched/discovered. Profile attrs (skills/bio) are left intact for a
+    later re-register. Echoes ``exchange_ok``.
+    """
+    ProviderDirectory().unregister(agent_conn.agent_id)
+    return _notify_outcome(
+        agent_conn,
+        "provider_off",
+        {"status": "ok", "is_provider": False},
     )
 
 
@@ -1950,6 +2252,34 @@ def resync_agent_jobs(agent_id: str) -> int:
         now = time.time()
         sent = 0
 
+        # Wave 2 (spec §3.5, codex P1): reconstruct a lost OPEN-job offer. The
+        # `offeredTo` set is the durable authz record; the post-time `job_offered`
+        # notify is best-effort, so a provider that was stale at offer time would
+        # have a bidding right with no local TOWN_OFFERS entry. Re-send the offer
+        # for any OPEN job where this agent is in `offeredTo` (and isn't the
+        # consumer — the matcher excludes the consumer, but guard anyway).
+        for job in _jobs_with_status("OPEN"):
+            offered_to = job.get("offeredTo") or set()
+            if agent_id not in offered_to or job.get("consumerId") == agent_id:
+                continue
+            offer_event: dict[str, Any] = {
+                "event": "job_offered",
+                "job_id": job["id"],
+                "title": job.get("title", ""),
+                "category": job.get("category", "general"),
+                "max_price": int(job.get("maxPrice", 0)),
+                # Full spec on resync too, so the rebuilt offer matches the live one.
+                "description": (job.get("description") or "")[:DESCRIPTION_MAX],
+                "consumer_name": job.get("consumerName", ""),
+                "bid_deadline": float(job.get("bidWindowEndsAt") or 0) or None,
+                "resync": True,
+            }
+            success_criteria = job.get("successCriteria")
+            if success_criteria:
+                offer_event["criteria"] = success_criteria
+            if mailbox.notify(agent_id, offer_event):
+                sent += 1
+
         for job in _jobs_with_status("AWARDED"):
             if job.get("providerId") == agent_id:
                 # Winner re-notification — existing path.
@@ -2177,10 +2507,35 @@ def resync_agent_jobs(agent_id: str) -> int:
 # ---------------------------------------------------------------------------
 
 
-def list_board_jobs() -> list[dict]:
+#: Board sizing. The unfiltered board shows the newest ``_BOARD_OPEN_LIMIT``
+#: OPEN jobs. When a category filter is active we PAGE the OPEN set (newest
+#: first) accumulating matches up to the same limit, so an older matching job
+#: isn't masked by a wall of newer other-category jobs (codex P2). Page count is
+#: bounded for safety; at town scale (OPEN jobs in the tens) one page suffices.
+_BOARD_OPEN_LIMIT = 50
+_BOARD_OPEN_PAGE = 100
+_BOARD_MAX_OPEN_PAGES = 10
+
+
+def list_board_jobs(category: str | None = None) -> list[dict]:
     """Exchange board: OPEN jobs newest-first + recent settled history.
 
     Public payload — no deliverables, no bid amounts (sealed-bid).
+
+    ``category`` (Wave 2 Task 6) is the **raw** filter string (the endpoint
+    passes it through); it's normalized here into three cases:
+
+    - ``None`` → no filter: the newest ``_BOARD_OPEN_LIMIT`` OPEN jobs.
+    - **valid slug** → OPEN jobs whose ``category`` equals it OR starts with
+      ``slug + "."`` (broad prefix-on-dot match: ``technology`` shows both
+      ``technology`` and ``technology.code-review``). The OPEN set is **paged**
+      until enough matches are gathered, so a category filter never returns
+      empty just because the newest 50 OPEN jobs were other categories (codex P2).
+    - **invalid slug** → empty OPEN set (history still shown). A typoed filter
+      must not silently surface unrelated work — distinct from ``None`` (codex P3).
+
+    History entries (COMPLETED / FAILED / EXPIRED / CANCELLED) are returned
+    unfiltered so the board always shows recent settlement activity.
     """
     table = dynamo.jobs_table()
 
@@ -2192,6 +2547,7 @@ def list_board_jobs() -> list[dict]:
             "max_price": int(item.get("maxPrice", 0)),
             "agreed_price": int(item.get("agreedPrice") or 0),
             "status": item.get("status", ""),
+            "category": item.get("category", DEFAULT_CATEGORY),
             "consumer_name": item.get("consumerName", ""),
             "provider_name": item.get("providerName") or "",
             "created_at": item.get("createdAt", ""),
@@ -2200,14 +2556,57 @@ def list_board_jobs() -> list[dict]:
             "bid_window_ends_at": float(item.get("bidWindowEndsAt") or 0) or None,
         }
 
+    def _category_matches(job_category: str, cat_filter: str) -> bool:
+        """Return True when job_category equals cat_filter or is a direct/deeper child.
+
+        ``technology`` filter matches: ``technology``, ``technology.code-review``,
+        ``technology.code-review.python`` — i.e. the filter is a prefix with a
+        dot boundary.  Sibling categories (``technology-other``) do NOT match.
+        """
+        return job_category == cat_filter or job_category.startswith(cat_filter + ".")
+
+    # Normalize the filter into the three cases (see docstring).
+    filter_active = category is not None
+    norm_category = exchange_categories.normalize_category(category) if filter_active else None
+    invalid_filter = filter_active and norm_category is None
+
     out: list[dict] = []
-    resp = table.query(
-        IndexName="status-createdAt-index",
-        KeyConditionExpression=Key("status").eq("OPEN"),
-        ScanIndexForward=False,
-        Limit=50,
-    )
-    out.extend(_entry(i) for i in resp.get("Items", []))
+    if invalid_filter:
+        # Filter requested but unmatchable — empty OPEN set, NOT all jobs (P3).
+        open_entries: list[dict] = []
+    elif norm_category is not None:
+        # Paged category match (P2): walk newest-first OPEN pages, collecting
+        # matches until we have _BOARD_OPEN_LIMIT or the OPEN set is exhausted.
+        open_entries = []
+        last_key: dict | None = None
+        for _ in range(_BOARD_MAX_OPEN_PAGES):
+            query_kwargs: dict[str, Any] = {
+                "IndexName": "status-createdAt-index",
+                "KeyConditionExpression": Key("status").eq("OPEN"),
+                "ScanIndexForward": False,
+                "Limit": _BOARD_OPEN_PAGE,
+            }
+            if last_key:
+                query_kwargs["ExclusiveStartKey"] = last_key
+            resp = table.query(**query_kwargs)
+            for item in resp.get("Items", []):
+                entry = _entry(item)
+                if _category_matches(entry["category"], norm_category):
+                    open_entries.append(entry)
+                    if len(open_entries) >= _BOARD_OPEN_LIMIT:
+                        break
+            last_key = resp.get("LastEvaluatedKey")
+            if len(open_entries) >= _BOARD_OPEN_LIMIT or not last_key:
+                break
+    else:
+        resp = table.query(
+            IndexName="status-createdAt-index",
+            KeyConditionExpression=Key("status").eq("OPEN"),
+            ScanIndexForward=False,
+            Limit=_BOARD_OPEN_LIMIT,
+        )
+        open_entries = [_entry(i) for i in resp.get("Items", [])]
+    out.extend(open_entries)
     for status in ("COMPLETED", "FAILED", "EXPIRED", "CANCELLED"):
         resp = table.query(
             IndexName="status-createdAt-index",

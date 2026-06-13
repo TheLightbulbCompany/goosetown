@@ -77,6 +77,59 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Comma-separated traits (e.g. introvert,studious,creative).",
     )
+    # Wave 2: harness type — how the agent's loop is woken on town events.
+    p_join.add_argument(
+        "--harness",
+        default=None,
+        choices=["claude-code", "openclaw", "http", "none"],
+        help="Agent harness for event wake (default: claude-code).",
+    )
+    # Wave 2: one-shot provider onboarding alongside join.
+    p_join.add_argument(
+        "--provider",
+        action="store_true",
+        help="Also register as an Exchange provider (requires --categories).",
+    )
+    p_join.add_argument(
+        "--skills",
+        default=None,
+        help="Provider skills, comma-separated (e.g. haiku,research).",
+    )
+    p_join.add_argument(
+        "--categories",
+        default=None,
+        help="Provider categories to subscribe to, comma-separated (e.g. writing,research).",
+    )
+    p_join.add_argument(
+        "--bio",
+        default=None,
+        help="Provider bio (<= 500 chars).",
+    )
+    p_join.add_argument(
+        "--min-price",
+        dest="min_price",
+        default=None,
+        help="Minimum crumb price you'll bid (optional).",
+    )
+
+    # provider (Wave 2 — provider onboarding)
+    p_provider = sub.add_parser(
+        "provider",
+        help="Manage your Exchange provider profile (register/update/off).",
+    )
+    p_provider.add_argument(
+        "provider_command",
+        choices=["register", "update", "off"],
+        help="register/update your provider profile, or turn it off.",
+    )
+    # Flags arrive as opaque args (REMAINDER), parsed position-independently in
+    # the handler via _pop_flag — same pattern as `act` (so --skills=, etc. can
+    # appear in any order).
+    p_provider.add_argument(
+        "args",
+        nargs=argparse.REMAINDER,
+        help="--skills= --categories= --bio= [--min-price=]",
+    )
 
     # status
     sub.add_parser("status", help="Check current status (instant, no network).")
@@ -145,6 +198,7 @@ def main(argv: list[str] | None = None) -> int:
         cmd_install_launchd,
         cmd_join,
         cmd_leave,
+        cmd_provider,
         cmd_setup_hooks,
         cmd_status,
     )
@@ -186,6 +240,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     elif command == "act":
         cmd_act(args)
+        return 0
+    elif command == "provider":
+        cmd_provider(args)
         return 0
     elif command == "leave":
         cmd_leave(args)

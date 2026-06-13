@@ -122,18 +122,19 @@ class TestPostJob:
         assert int(agent["walletBalance"]) == 70
         assert int(agent["jobsPosted"]) == 1
 
-    async def test_happy_path_broadcasts_to_others_not_poster(self, dynamodb_tables, mailbox, ws):
+    async def test_happy_path_no_all_connections_broadcast(self, dynamodb_tables, mailbox, ws):
+        # Wave 2 (spec §3.3): the old all-connections `job_posted` broadcast is
+        # replaced by the targeted category-matched offer loop. A connected
+        # bystander that isn't a subscriber gets nothing pushed.
         _seed_agent(dynamodb_tables, "other", "olly")
         ws.conns["other"] = _conn("other", "olly", "c-other")
         cc, job_id = await _post(dynamodb_tables, ws)
 
-        broadcast_targets = [c.args[0] for c in mailbox.notify_connection.call_args_list]
-        assert "c-other" in broadcast_targets
-        assert "c-consumer" not in broadcast_targets
-        event = mailbox.notify_connection.call_args_list[0].args[1]
-        assert event["event"] == "job_posted"
-        assert event["job_id"] == job_id
-        assert event["max_price"] == 30
+        # No notify_connection broadcast at all (the fan-out moved to mailbox.notify
+        # targeted at offeredTo — covered in test_exchange_matcher.py).
+        assert mailbox.notify_connection.call_count == 0
+        offer_targets = [c.args[0] for c in mailbox.notify.call_args_list if c.args[1].get("event") == "job_offered"]
+        assert "other" not in offer_targets
 
     async def test_happy_path_notifies_poster_exchange_ok(self, dynamodb_tables, mailbox, ws):
         cc, job_id = await _post(dynamodb_tables, ws)
@@ -246,11 +247,14 @@ class TestPlaceBid:
         assert result["status"] == "rejected"
         assert result["reason"] == "own_job"
 
-    async def test_not_at_bank_rejected(self, dynamodb_tables, mailbox, ws):
+    async def test_remote_non_offered_bidder_rejected_not_invited(self, dynamodb_tables, mailbox, ws):
+        # Wave 2 (spec §3.5): the at-bank requirement is now presence OR offer.
+        # A bidder away from the bank (cafe) with no offer on the job is rejected
+        # `not_invited` — the new authz reason replacing the Wave-1 `not_at_exchange`.
         cc, job_id = await _post(dynamodb_tables, ws)
         _seed_agent(dynamodb_tables, "b1", "bea", location="cafe")
         result = await ex.place_bid(_conn("b1", "bea"), job_id, 10, 0.5, "")
-        assert result["reason"] == "not_at_exchange"
+        assert result["reason"] == "not_invited"
 
     async def test_over_max_price_rejected(self, dynamodb_tables, mailbox, ws):
         cc, job_id = await _post(dynamodb_tables, ws, max_price=30)

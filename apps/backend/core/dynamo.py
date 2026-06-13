@@ -69,3 +69,15 @@ def jobs_table():
 def ledger_table():
     """DynamoDB table handle for the Exchange crumb ledger (append-only)."""
     return get_client().Table(table_name("ledger"))
+
+
+def provider_subscriptions_table():
+    """DynamoDB table handle for the ProviderDirectory membership projection (ADR-0008).
+
+    PK: category (S) — AEX category slug (or wildcard prefix)
+    SK: providerSort (S) — f"{trustScore:08.4f}#{providerId}" enables trust-desc query
+        via ScanIndexForward=False without a scan.
+    GSI providerId-index (PK: providerId) — find-and-delete all rows for a provider on
+        register/unregister without a full table scan.
+    """
+    return get_client().Table(table_name("provider-subscriptions"))

@@ -1276,9 +1276,56 @@ async def get_conversations(limit: int = 20):
 
 
 @router.get("/exchange/jobs")
-async def get_exchange_jobs():
-    """Public Exchange board: open jobs + recent history (frontend polling)."""
-    return {"jobs": exchange_service.list_board_jobs()}
+async def get_exchange_jobs(category: str | None = Query(default=None)):
+    """Public Exchange board: open jobs + recent history (frontend polling).
+
+    ``category`` (optional): when given, OPEN jobs are filtered to those whose
+    ``category`` equals the filter or starts with ``filter + "."``.  History
+    entries are returned unfiltered.  Normalization happens inside
+    ``list_board_jobs``, which distinguishes no-filter from an invalid slug —
+    an invalid slug returns an empty OPEN set (no 4xx — history still shows).
+    """
+    return {"jobs": exchange_service.list_board_jobs(category=category)}
+
+
+@router.get("/exchange/providers")
+async def get_exchange_providers(
+    category: str | None = Query(default=None),
+    skill: str | None = Query(default=None),
+    min_trust: float = Query(default=0.0),
+):
+    """Public provider directory: agents registered as providers.
+
+    Query params (all optional):
+    - ``category``: slug filter — returns providers subscribed to this
+      category (or any parent, via wildcard-parent expansion).  Value is
+      normalised; invalid slug → empty list (no 4xx).
+    - ``skill``: membership filter against ``providerSkills``.
+    - ``min_trust``: float [0, 1] (clamped); providers below this trust
+      score are excluded.  Values >1 are clamped to 1.0; values <0 to 0.0.
+
+    Returns ``{"providers": [...]}``; each entry is the directory's public
+    profile shape — no wallet balance, no PII (see ProviderDirectory._public_profile).
+    """
+    from core.services.exchange_categories import normalize_category as _norm_cat
+    from core.services.provider_directory import ProviderDirectory
+
+    # A caller-supplied category that doesn't normalize is an invalid filter —
+    # return no matches rather than silently falling back to the scan-all
+    # (no-category) branch, which would dump the whole directory.
+    if category is not None:
+        norm_cat = _norm_cat(category)
+        if norm_cat is None:
+            return {"providers": []}
+    else:
+        norm_cat = None
+    clamped_trust = max(0.0, min(1.0, float(min_trust)))
+    providers = ProviderDirectory().search(
+        category=norm_cat,
+        skill=skill if skill else None,
+        min_trust=clamped_trust,
+    )
+    return {"providers": providers}
 
 
 class ExchangeUploadUrlRequest(BaseModel):
@@ -1869,6 +1916,8 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
                 max_price=_coerce_int(body.get("max_price")),
                 strategy=body.get("strategy") or "balanced",
                 success_criteria=body.get("success_criteria") or None,
+                category=body.get("category"),
+                tags=body.get("tags"),
             )
             return {"statusCode": 200, "body": result}
         # CLI verb "bid" → service place_bid (the one non-1:1 name).
@@ -1908,6 +1957,25 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
                 job_id=body.get("job_id", ""),
                 text=body.get("msg_text", "") or "",
             )
+            return {"statusCode": 200, "body": result}
+        elif action == "invite":
+            result = await exchange_service.invite_provider(
+                agent_conn,
+                job_id=body.get("job_id", ""),
+                provider_id=body.get("provider_id", ""),
+            )
+            return {"statusCode": 200, "body": result}
+        elif action == "provider_register":
+            result = await exchange_service.register_provider(
+                agent_conn,
+                skills=body.get("skills") or [],
+                categories=body.get("categories") or [],
+                bio=body.get("bio", "") or "",
+                min_price=_coerce_int(body.get("min_price")),
+            )
+            return {"statusCode": 200, "body": result}
+        elif action == "provider_off":
+            result = await exchange_service.unregister_provider(agent_conn)
             return {"statusCode": 200, "body": result}
         # ``idle`` and ``context_transition`` fall through with no extra work:
         # ``idle`` exists only to bypass the energy-exhaustion gate, and

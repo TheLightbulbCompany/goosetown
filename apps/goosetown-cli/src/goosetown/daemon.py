@@ -212,6 +212,12 @@ class TownDaemon:
             dict
         ] = []  # consumed by _handle_world_update
 
+        # Wave 2 (Task 9): harness wake coordinator — event-triggered nudge for
+        # the agent's loop, with per-agent coalescing/single-flight. Built in
+        # run() from TOWN_HARNESS + config (None for in-process/resident runs
+        # and unset until run(); event handlers tolerate None via _request_wake).
+        self._wake_coordinator = None  # WakeCoordinator | None
+
     # ------------------------------------------------------------------
     # File I/O helpers
     # ------------------------------------------------------------------
@@ -250,6 +256,58 @@ class TownDaemon:
     # ------------------------------------------------------------------
     # Event handlers
     # ------------------------------------------------------------------
+
+    def _init_wake_coordinator(self) -> None:
+        """Build the harness WakeCoordinator from TOWN_HARNESS + env (Task 9).
+
+        Idempotent and best-effort: any failure here leaves the coordinator
+        None so the daemon falls back to the heartbeat (the compatibility
+        floor). harnessType comes from ``TOWN_HARNESS`` (injected by ``join``
+        from GOOSETOWN.md's ``harness:`` line); the openclaw gateway URL / http
+        endpoint come from their own env vars.
+        """
+        if self._wake_coordinator is not None:
+            return
+        try:
+            from goosetown.wake import WakeCoordinator, get_wake_adapter
+
+            harness = os.environ.get("TOWN_HARNESS", "claude-code")
+            config = {
+                "workspace_path": str(self._workspace_path)
+                if self._workspace_path
+                else None,
+                "openclaw_gateway_url": os.environ.get("OPENCLAW_GATEWAY_URL", ""),
+                "wake_endpoint": os.environ.get("TOWN_WAKE_ENDPOINT", ""),
+            }
+            adapter = get_wake_adapter(harness, config)
+            self._wake_coordinator = WakeCoordinator(self._agent_name, adapter)
+        except Exception:
+            import logging
+
+            logging.getLogger("town_daemon").debug(
+                "wake coordinator init failed; falling back to heartbeat",
+                exc_info=True,
+            )
+            self._wake_coordinator = None
+
+    def _request_wake(self, thin_context: dict) -> None:
+        """Best-effort harness wake (Task 9): nudge the agent's loop to run now.
+
+        Called *in addition to* writing files on "you should look now" events
+        (job_offered/awarded/delivered, conversation invite/message, owner
+        message) — never instead of. Tolerates a missing coordinator (in-process
+        resident runs, pre-run()) and never raises into the event handler. The
+        WakeCoordinator does the per-agent coalescing/single-flight.
+        """
+        coordinator = self._wake_coordinator
+        if coordinator is None:
+            return
+        try:
+            coordinator.request_wake(thin_context)
+        except Exception:
+            import logging
+
+            logging.getLogger("town_daemon").debug("wake request failed", exc_info=True)
 
     def _handle_event(self, data: dict) -> None:
         """Dispatch a town_event payload to the appropriate handler."""
@@ -309,6 +367,8 @@ class TownDaemon:
             self._on_job_cancelled(data)
         elif event == "job_message":
             self._on_job_message(data)
+        elif event == "job_offered":
+            self._on_job_offered(data)
         elif event == "sprite_progress":
             status_msg = data.get("status", "Generating sprite...")
             self._write_status(
@@ -463,6 +523,10 @@ class TownDaemon:
                     logging.getLogger("town_daemon").debug(
                         "on_pending_message callback raised", exc_info=True
                     )
+            # Task 9: wake the harness so the agent replies at conversation
+            # speed instead of waiting for its heartbeat. Only on non-own turns
+            # (our own echoed `say` isn't something to respond to).
+            self._request_wake({"event": event, "conv_id": data.get("conv_id", "")})
         conv_id = data.get("conv_id", "")
 
         if event == "conversation_invite":
@@ -522,6 +586,10 @@ class TownDaemon:
         )
 
         self._owner_messages_buffer.append({"text": text, "timestamp": timestamp})
+
+        # Task 9: an owner DM is a "look now" event — wake the harness so the
+        # agent sees OWNER_MESSAGES.md / TOWN_STATUS.md without waiting a beat.
+        self._request_wake({"event": "owner_message", "message_id": message_id})
 
         if self._owner_flush_handle is not None:
             return
@@ -840,6 +908,24 @@ class TownDaemon:
             self._update_job(job_id, role="consumer", status="CANCELLED")
         elif verb == "deliver_job" and job_id:
             self._update_job(job_id, role="provider", status="DELIVERED")
+        elif verb == "provider_register":
+            # Wave 2: cache the provider's own profile so TOWN_OFFERS.md can
+            # header it. The backend echo carries the canonical (normalized,
+            # capped) profile — prefer it over the request payload.
+            ex["provider_profile"] = {
+                "skills": list(data.get("skills") or pending.get("skills") or []),
+                "categories": list(
+                    data.get("categories") or pending.get("categories") or []
+                ),
+                "bio": data.get("bio", pending.get("bio", "")) or "",
+                "min_price": data.get("min_price", pending.get("min_price", 0)) or 0,
+            }
+            self._write_offers()
+        elif verb == "provider_off":
+            # No longer a provider — drop the cached profile and rewrite the
+            # inbox header (offers may still be cached but the agent has opted out).
+            ex.pop("provider_profile", None)
+            self._write_offers()
         # review_job: the settlement events (job_completed / job_failed)
         # follow immediately and carry the authoritative status.
         self._write_jobs()
@@ -952,6 +1038,10 @@ class TownDaemon:
                     f"for {agreed} crumbs (job {job_id}). Delivery due within {deadline}s."
                 )
         self._write_jobs()
+        # Task 9: award is a "look now" event for both roles — the provider must
+        # start the work, the consumer wants to track it. Suppressed on resync.
+        if not resync:
+            self._request_wake({"event": "job_awarded", "job_id": job_id, "role": role})
 
     def _on_bid_lost(self, data: dict) -> None:
         """Our sealed bid did not win.
@@ -1073,6 +1163,9 @@ class TownDaemon:
             f'\U0001f4bc Work delivered for your job "{title}" (job {job_id}).{file_note} '
             f"Read it in TOWN_JOBS.md, then: goosetown act review {job_id} accept|reject"
         )
+        # Task 9: the consumer must review the delivery — wake to look now.
+        # (Resync already returned above, so this only fires on fresh deliveries.)
+        self._request_wake({"event": "job_delivered", "job_id": job_id})
 
     def _on_job_completed(self, data: dict) -> None:
         """Both sides: job settled successfully.
@@ -1230,6 +1323,149 @@ class TownDaemon:
             f'\U0001f4ac {from_name} (job {job_id}): "{preview}" — '
             f"reply: goosetown act job_msg {job_id} <text>"
         )
+
+    def _on_job_offered(self, data: dict) -> None:
+        """Wave 2: a job was offered to us — cache it + write TOWN_OFFERS.md.
+
+        Closes the Task 4 gap: the backend's category matcher (and the consumer
+        ``invite`` path) push ``job_offered`` to subscribed/invited providers,
+        but the daemon had no handler. This handler is the provider's inbox
+        feed:
+
+        - Cache the offer under ``exchange.offers[job_id]`` (the provider's
+          pending OPEN offers — distinct from ``exchange.jobs`` which tracks
+          jobs the agent is *already on*).
+        - Append a 💼 TOWN_EVENTS line so the agent's heartbeat notices it
+          (suppressed on ``resync`` — those are connect-time re-sends that
+          would otherwise duplicate the line on every reconnect, mirroring the
+          job_awarded / bid_lost resync convention).
+        - Rewrite TOWN_OFFERS.md (the standing inbox) via ``_write_offers``.
+        """
+        job_id = data.get("job_id", "?")
+        title = data.get("title", "?")
+        category = data.get("category", "general")
+        max_price = data.get("max_price", "?")
+        consumer_name = data.get("consumer_name", "someone")
+        invited = bool(data.get("invited"))
+
+        ex = self._exchange_state()
+        offers = ex.setdefault("offers", {})
+        offers[job_id] = {
+            "job_id": job_id,
+            "title": title,
+            "category": category,
+            "max_price": max_price,
+            "description": data.get("description", ""),
+            "criteria": data.get("criteria") or [],
+            "consumer_name": consumer_name,
+            "invited": invited,
+            # Bid-window close (epoch); used to prune the offer once it lapses —
+            # a non-bidding provider gets no terminal event for the job.
+            "bid_deadline": data.get("bid_deadline"),
+            "updated": time.time(),
+        }
+        self._write_offers()
+
+        if not data.get("resync"):
+            invited_note = " (you were invited directly)" if invited else ""
+            self._append_event(
+                f'\U0001f4bc New offer from {consumer_name}: "{title}" — up to '
+                f"{max_price} crumbs (job {job_id}, {category}){invited_note}. "
+                f"See TOWN_OFFERS.md, then: goosetown act bid {job_id} <price>"
+            )
+            # Task 9: wake the harness so the provider reads TOWN_OFFERS.md and
+            # bids inside the competitive window (heartbeat would be too slow).
+            # Suppressed on resync — that's a connect-time re-send, not news.
+            self._request_wake(
+                {"event": "job_offered", "job_id": job_id, "category": category}
+            )
+
+    def _write_offers(self) -> None:
+        """Write TOWN_OFFERS.md — the provider's inbox of OPEN job offers.
+
+        Distinct from TOWN_JOBS.md (jobs you're already ON): this lists jobs
+        you've been *offered* and can still bid on. Each entry is action-first —
+        title, category, budget, the job spec, success criteria, and the exact
+        ``goosetown act bid <job_id> <price>`` line. Atomic via rename
+        (``_write_workspace_file``).
+
+        Prunes stale offers first: a non-bidding provider never receives a
+        terminal event for an offered job (close/cancel only notify bidders), so
+        offers are dropped once their bid window lapses or once the job shows up
+        in ``exchange.jobs`` (we bid → we're on it now). Without this the inbox
+        accumulates dead ``bid`` commands forever (codex P2).
+        """
+        ex = self.state.get("exchange") or {}
+        offers_map = ex.get("offers") or {}
+        on_jobs = ex.get("jobs") or {}
+        now = time.time()
+        live: dict[str, dict] = {}
+        for job_id, offer in offers_map.items():
+            deadline = offer.get("bid_deadline")
+            if deadline and now > float(deadline):
+                continue  # bid window closed — offer is dead
+            if job_id in on_jobs:
+                continue  # already bid / on the job — offer is redundant
+            live[job_id] = offer
+        if len(live) != len(offers_map):
+            ex["offers"] = live  # persist the prune so it doesn't regrow on resync
+        offers = list(live.values())
+
+        lines: list[str] = ["# GooseTown Exchange — offers for you", ""]
+        profile = ex.get("provider_profile")
+        if profile:
+            skills = ", ".join(profile.get("skills") or []) or "(none listed)"
+            categories = ", ".join(profile.get("categories") or []) or "(none)"
+            lines.append(
+                f"Your provider profile — skills: {skills}; categories: {categories}"
+            )
+            min_price = profile.get("min_price")
+            if min_price:
+                lines.append(f"Minimum price you'll accept: {min_price} crumbs")
+            lines.append("")
+
+        lines.append("These jobs were pushed to you because they match your categories")
+        lines.append("(or you were invited). Bid on the ones you want:")
+        lines.append("")
+
+        if not offers:
+            lines.append(
+                "- (no open offers right now — check TOWN_EVENTS.md for the latest)"
+            )
+            lines.append("")
+            self._write_workspace_file("TOWN_OFFERS.md", "\n".join(lines) + "\n")
+            return
+
+        # Newest offer first.
+        offers.sort(key=lambda o: o.get("updated", 0), reverse=True)
+        for offer in offers:
+            job_id = offer.get("job_id", "?")
+            title = offer.get("title") or "(untitled)"
+            category = offer.get("category", "general")
+            max_price = offer.get("max_price", "?")
+            invited = " — INVITED directly" if offer.get("invited") else ""
+            consumer = offer.get("consumer_name", "someone")
+            deadline = offer.get("bid_deadline")
+            deadline_note = (
+                f" · Bid by: {self._fmt_clock(float(deadline))}" if deadline else ""
+            )
+            lines.append(f'## "{title}" (job {job_id})')
+            lines.append(
+                f"- Category: {category} · Budget: up to {max_price} crumbs · "
+                f"From: {consumer}{invited}{deadline_note}"
+            )
+            description = offer.get("description")
+            if description:
+                lines += self._fenced_block("Job spec:", description)
+            criteria = offer.get("criteria")
+            if criteria:
+                lines.append("  Success criteria:")
+                for criterion in criteria:
+                    lines.append(f"  - {criterion}")
+            lines.append(f"  → goosetown act bid {job_id} <price> [pitch...]")
+            lines.append("")
+
+        self._write_workspace_file("TOWN_OFFERS.md", "\n".join(lines) + "\n")
 
     # ------------------------------------------------------------------
     # TOWN_JOBS.md rendering (v2 — action-first)
@@ -2040,6 +2276,9 @@ class TownDaemon:
                 "deliver_job",
                 "review_job",
                 "job_msg",
+                "invite",
+                "provider_register",
+                "provider_off",
             ):
                 exchange_outcome_future = asyncio.get_running_loop().create_future()
                 self._exchange_outcome = exchange_outcome_future
@@ -2274,6 +2513,11 @@ class TownDaemon:
 
         self._initial_state_event = asyncio.Event()
         self._arrived_event = asyncio.Event()
+
+        # Wave 2 (Task 9): build the harness wake coordinator now that there's a
+        # running loop. harnessType comes from TOWN_HARNESS (injected by `join`
+        # from GOOSETOWN.md); unknown/unset → NoneAdapter (heartbeat floor).
+        self._init_wake_coordinator()
 
         await self._check_alarm()
         print(f"[daemon] Starting up as {self._agent_name}")

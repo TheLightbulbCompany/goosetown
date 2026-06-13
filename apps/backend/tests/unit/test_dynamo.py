@@ -1,4 +1,4 @@
-from core.dynamo import jobs_table, ledger_table, table_name
+from core.dynamo import jobs_table, ledger_table, provider_subscriptions_table, table_name
 
 
 def test_table_name_prefix():
@@ -27,3 +27,13 @@ def test_ledger_table_returns_table_handle():
     """ledger_table() returns a boto3 Table object with the correct name."""
     table = ledger_table()
     assert table.name == "goosetown-ledger"
+
+
+def test_table_name_provider_subscriptions():
+    assert table_name("provider-subscriptions") == "goosetown-provider-subscriptions"
+
+
+def test_provider_subscriptions_table_returns_table_handle():
+    """provider_subscriptions_table() returns a boto3 Table object with the correct name."""
+    table = provider_subscriptions_table()
+    assert table.name == "goosetown-provider-subscriptions"

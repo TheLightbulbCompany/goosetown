@@ -410,6 +410,23 @@ class TestExchangeActions:
         msg = _adapter.validate_python({"type": "town_agent_act", "action": "cancel_job", "job_id": "job-xyz"})
         assert msg.job_id == "job-xyz"
 
+    # ------------------------------------------------------------------ invite (Wave 2)
+    def test_invite_valid(self) -> None:
+        msg = _adapter.validate_python(
+            {"type": "town_agent_act", "action": "invite", "job_id": "job-xyz", "provider_id": "prov-1"}
+        )
+        assert msg.action == "invite"
+        assert msg.job_id == "job-xyz"
+        assert msg.provider_id == "prov-1"
+
+    def test_invite_missing_job_id(self) -> None:
+        with pytest.raises(ValidationError):
+            _adapter.validate_python({"type": "town_agent_act", "action": "invite", "provider_id": "prov-1"})
+
+    def test_invite_missing_provider_id(self) -> None:
+        with pytest.raises(ValidationError):
+            _adapter.validate_python({"type": "town_agent_act", "action": "invite", "job_id": "job-xyz"})
+
     # ------------------------------------------------------------------ deliver_job
     def test_deliver_job_missing_job_id(self) -> None:
         with pytest.raises(ValidationError):

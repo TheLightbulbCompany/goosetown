@@ -475,3 +475,281 @@ class TestOwnerLedgerEndpoint:
         assert body["balance"] == 100
         # After the grant the ledger has exactly the GRANT row.
         assert isinstance(body["entries"], list)
+
+
+# ---------------------------------------------------------------------------
+# Task 6: GET /exchange/providers — provider directory endpoint
+# ---------------------------------------------------------------------------
+
+
+def _seed_provider(dynamodb_tables, agent_id: str, skills: list, categories: list, trust: float = 0.5) -> None:
+    """Register a provider via ProviderDirectory.register after seeding the agent row."""
+    from decimal import Decimal
+
+    agents_table = dynamodb_tables.Table("goosetown-agents")
+    agents_table.put_item(
+        Item={
+            "id": agent_id,
+            "agentName": agent_id,
+            "displayName": agent_id.replace("-", " ").title(),
+            "isActive": "true",
+            "currentLocation": "bank",
+            "energy": 100,
+            "mood": 0,
+            "traits": "",
+            "trustScore": Decimal(str(trust)),
+        }
+    )
+    from core.services.provider_directory import ProviderDirectory
+
+    ProviderDirectory().register(
+        agent_id=agent_id,
+        skills=skills,
+        categories=categories,
+        bio=f"Bio for {agent_id}",
+        min_price=10,
+    )
+
+
+class TestProviderDirectoryEndpoint:
+    """GET /exchange/providers — public directory (Task 6)."""
+
+    def test_invalid_category_returns_empty_not_all(self, client, dynamodb_tables):
+        """An invalid category slug is an invalid filter → empty, NOT the
+        scan-all fallback (integration-review LOW finding)."""
+        _seed_provider(dynamodb_tables, "prov-x", ["writing"], ["writing"])
+        resp = client.get("/api/v1/town/exchange/providers?category=Has%20Space")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["providers"] == []
+
+    def test_no_filter_returns_all_providers(self, client, dynamodb_tables):
+        """No query params → all registered providers returned."""
+        _seed_provider(dynamodb_tables, "prov-all-1", ["writing"], ["writing"])
+        _seed_provider(dynamodb_tables, "prov-all-2", ["coding"], ["technology"])
+
+        resp = client.get("/api/v1/town/exchange/providers")
+        assert resp.status_code == 200, resp.text
+        providers = resp.json()["providers"]
+        ids = {p["agent_id"] for p in providers}
+        assert "prov-all-1" in ids
+        assert "prov-all-2" in ids
+
+    def test_category_filter_returns_matching_providers(self, client, dynamodb_tables):
+        """?category=writing returns providers subscribed to writing, not unrelated ones."""
+        _seed_provider(dynamodb_tables, "prov-writing", ["prose"], ["writing"])
+        _seed_provider(dynamodb_tables, "prov-tech", ["code"], ["technology"])
+
+        resp = client.get("/api/v1/town/exchange/providers?category=writing")
+        assert resp.status_code == 200, resp.text
+        providers = resp.json()["providers"]
+        ids = {p["agent_id"] for p in providers}
+        assert "prov-writing" in ids
+        assert "prov-tech" not in ids
+
+    def test_skill_filter_returns_matching_providers(self, client, dynamodb_tables):
+        """?skill=poetry filters providers to those with that skill."""
+        _seed_provider(dynamodb_tables, "prov-poet", ["poetry", "writing"], ["creative"])
+        _seed_provider(dynamodb_tables, "prov-other", ["coding"], ["technology"])
+
+        resp = client.get("/api/v1/town/exchange/providers?skill=poetry")
+        assert resp.status_code == 200, resp.text
+        providers = resp.json()["providers"]
+        ids = {p["agent_id"] for p in providers}
+        assert "prov-poet" in ids
+        assert "prov-other" not in ids
+
+    def test_min_trust_filter_excludes_low_trust_providers(self, client, dynamodb_tables):
+        """?min_trust=0.8 excludes providers with trust < 0.8."""
+        _seed_provider(dynamodb_tables, "prov-high-trust", ["skill-a"], ["research"], trust=0.9)
+        _seed_provider(dynamodb_tables, "prov-low-trust", ["skill-b"], ["research"], trust=0.3)
+
+        resp = client.get("/api/v1/town/exchange/providers?min_trust=0.8")
+        assert resp.status_code == 200, resp.text
+        providers = resp.json()["providers"]
+        ids = {p["agent_id"] for p in providers}
+        assert "prov-high-trust" in ids
+        assert "prov-low-trust" not in ids
+
+    def test_no_providers_returns_empty_list(self, client, dynamodb_tables):
+        """No providers registered → empty providers list (not an error)."""
+        resp = client.get("/api/v1/town/exchange/providers?category=writing")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["providers"] == []
+
+    def test_min_trust_gt1_clamped_to_1(self, client, dynamodb_tables):
+        """min_trust=2.0 is clamped to 1.0; no provider meets trust >= 1.0."""
+        _seed_provider(dynamodb_tables, "prov-clamp", ["skill"], ["writing"], trust=0.9)
+
+        resp = client.get("/api/v1/town/exchange/providers?min_trust=2.0")
+        assert resp.status_code == 200, resp.text
+        providers = resp.json()["providers"]
+        # trust_score is at most 1.0 by EMA; no agent has trust exactly 1.0, so empty
+        assert all(p["trust_score"] >= 1.0 for p in providers) or providers == []
+
+    def test_min_trust_negative_clamped_to_0(self, client, dynamodb_tables):
+        """min_trust=-1 is clamped to 0.0; providers with any trust are returned."""
+        _seed_provider(dynamodb_tables, "prov-neg-clamp", ["skill"], ["writing"], trust=0.1)
+
+        resp = client.get("/api/v1/town/exchange/providers?min_trust=-1")
+        assert resp.status_code == 200, resp.text
+        providers = resp.json()["providers"]
+        ids = {p["agent_id"] for p in providers}
+        assert "prov-neg-clamp" in ids
+
+    def test_response_has_no_wallet_or_pii_fields(self, client, dynamodb_tables):
+        """Provider profile must not expose walletBalance, userId, or other PII."""
+        _seed_provider(dynamodb_tables, "prov-pii-check", ["skill"], ["writing"])
+
+        resp = client.get("/api/v1/town/exchange/providers")
+        assert resp.status_code == 200, resp.text
+        providers = resp.json()["providers"]
+        pii_fields = {"walletBalance", "wallet_balance", "userId", "user_id", "townToken"}
+        for p in providers:
+            assert not pii_fields.intersection(p.keys()), f"PII found in provider profile: {p}"
+
+    def test_response_has_expected_public_fields(self, client, dynamodb_tables):
+        """Provider profile must include: agent_id, name, bio, skills, trust_tier, trust_score."""
+        _seed_provider(dynamodb_tables, "prov-fields-check", ["coding"], ["technology"])
+
+        resp = client.get("/api/v1/town/exchange/providers")
+        assert resp.status_code == 200, resp.text
+        providers = resp.json()["providers"]
+        provider = next(p for p in providers if p["agent_id"] == "prov-fields-check")
+        for field in ("agent_id", "name", "bio", "skills", "trust_tier", "trust_score", "jobs_completed"):
+            assert field in provider, f"Missing public field: {field}"
+
+
+# ---------------------------------------------------------------------------
+# Task 6: board category filter — GET /exchange/jobs?category=
+# ---------------------------------------------------------------------------
+
+
+def _seed_job_with_category(
+    dynamodb_tables,
+    job_id: str,
+    category: str,
+    status: str = "OPEN",
+    title: str = "Test Job",
+    created_at: str = "2026-06-01T10:00:00+00:00",
+):
+    """Insert a job with a specific category into the mock jobs table."""
+    table = dynamodb_tables.Table("goosetown-jobs")
+    table.put_item(
+        Item={
+            "id": job_id,
+            "status": status,
+            "title": title,
+            "description": "Short description",
+            "maxPrice": 50,
+            "category": category,
+            "consumerName": "board-tester",
+            "consumerId": "board-consumer-id",
+            "createdAt": created_at,
+            "updatedAt": created_at,
+            "bids": {},
+        }
+    )
+
+
+class TestBoardCategoryFilter:
+    """GET /exchange/jobs?category= board filter (Task 6)."""
+
+    def test_category_filter_prefix_match(self, client, dynamodb_tables):
+        """?category=technology returns technology.code-review (prefix-on-dot match)."""
+        _seed_job_with_category(dynamodb_tables, "job-tech-cr", "technology.code-review")
+        _seed_job_with_category(dynamodb_tables, "job-writing", "writing")
+
+        resp = client.get("/api/v1/town/exchange/jobs?category=technology")
+        assert resp.status_code == 200, resp.text
+        jobs = resp.json()["jobs"]
+        open_ids = {j["job_id"] for j in jobs if j["status"] == "OPEN"}
+        assert "job-tech-cr" in open_ids, "technology.code-review should match technology filter"
+        assert "job-writing" not in open_ids, "writing job should be excluded by technology filter"
+
+    def test_category_filter_exact_match(self, client, dynamodb_tables):
+        """?category=technology returns an exact technology job."""
+        _seed_job_with_category(dynamodb_tables, "job-tech-exact", "technology")
+
+        resp = client.get("/api/v1/town/exchange/jobs?category=technology")
+        assert resp.status_code == 200, resp.text
+        jobs = resp.json()["jobs"]
+        open_ids = {j["job_id"] for j in jobs if j["status"] == "OPEN"}
+        assert "job-tech-exact" in open_ids
+
+    def test_no_category_filter_returns_all_open_jobs(self, client, dynamodb_tables):
+        """No ?category= returns all OPEN jobs regardless of their category."""
+        _seed_job_with_category(dynamodb_tables, "job-cat-a", "technology")
+        _seed_job_with_category(dynamodb_tables, "job-cat-b", "writing")
+
+        resp = client.get("/api/v1/town/exchange/jobs")
+        assert resp.status_code == 200, resp.text
+        jobs = resp.json()["jobs"]
+        open_ids = {j["job_id"] for j in jobs if j["status"] == "OPEN"}
+        assert "job-cat-a" in open_ids
+        assert "job-cat-b" in open_ids
+
+    def test_category_filter_excludes_sibling_categories(self, client, dynamodb_tables):
+        """?category=technology excludes technology-other (not a dot-child)."""
+        # "technology-other" does NOT start with "technology." so must be excluded.
+        _seed_job_with_category(dynamodb_tables, "job-tech-other", "technology-other")
+        _seed_job_with_category(dynamodb_tables, "job-tech-child", "technology.data")
+
+        resp = client.get("/api/v1/town/exchange/jobs?category=technology")
+        assert resp.status_code == 200, resp.text
+        jobs = resp.json()["jobs"]
+        open_ids = {j["job_id"] for j in jobs if j["status"] == "OPEN"}
+        assert "job-tech-other" not in open_ids, "technology-other is a sibling, not a child"
+        assert "job-tech-child" in open_ids, "technology.data is a dot-child and should match"
+
+    def test_board_has_category_field(self, client, dynamodb_tables):
+        """Each job entry in the board response must include a category field."""
+        _seed_job_with_category(dynamodb_tables, "job-has-cat", "writing")
+
+        resp = client.get("/api/v1/town/exchange/jobs")
+        assert resp.status_code == 200, resp.text
+        jobs = resp.json()["jobs"]
+        job = next((j for j in jobs if j["job_id"] == "job-has-cat"), None)
+        assert job is not None
+        assert "category" in job
+        assert job["category"] == "writing"
+
+    def test_invalid_category_slug_returns_empty_open_set(self, client, dynamodb_tables):
+        """An invalid category slug → empty OPEN set, NOT all jobs (codex P3).
+
+        Distinct from an omitted filter: a typoed slug must not silently surface
+        unrelated work. History entries are still allowed through.
+        """
+        _seed_job_with_category(dynamodb_tables, "job-valid-cat", "writing")
+
+        resp = client.get("/api/v1/town/exchange/jobs?category=INVALID SLUG!")
+        assert resp.status_code == 200, resp.text
+        jobs = resp.json()["jobs"]
+        open_ids = {j["job_id"] for j in jobs if j["status"] == "OPEN"}
+        # The OPEN board is empty — the valid writing job is NOT surfaced.
+        assert open_ids == set()
+
+    def test_category_filter_pages_past_newest_cap(self, client, dynamodb_tables):
+        """An older matching job isn't masked by a wall of newer other-category
+        jobs (codex P2 — filter must page, not filter-after-cap).
+
+        With _BOARD_OPEN_PAGE=100 the older match would be missed only beyond one
+        page; seed enough newer non-matching jobs to prove paging collects the
+        older match rather than a single capped slice dropping it.
+        """
+        # One OLD matching job (earliest createdAt).
+        _seed_job_with_category(dynamodb_tables, "old-writing", "writing", created_at="2026-06-01T00:00:00+00:00")
+        # A wall of NEWER non-matching jobs (later createdAt sorts ahead).
+        for i in range(120):
+            _seed_job_with_category(
+                dynamodb_tables,
+                f"new-tech-{i}",
+                "technology",
+                created_at=f"2026-06-02T{i // 60:02d}:{i % 60:02d}:00+00:00",
+            )
+
+        resp = client.get("/api/v1/town/exchange/jobs?category=writing")
+        assert resp.status_code == 200, resp.text
+        open_ids = {j["job_id"] for j in resp.json()["jobs"] if j["status"] == "OPEN"}
+        assert "old-writing" in open_ids
+        # And no unrelated technology job leaked into the writing-filtered board.
+        assert not any(jid.startswith("new-tech-") for jid in open_ids)

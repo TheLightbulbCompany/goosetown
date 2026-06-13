@@ -1,0 +1,433 @@
+"""ProviderDirectory — the Exchange Wave 2 discovery seam (ADR-0008).
+
+This module is the **single place** where provider discovery touches a store.
+Per ADR-0008 the transactional core stays on DynamoDB, but discovery is a read
+projection behind this interface so that swapping the backing store (DynamoDB
+``provider-subscriptions`` → OpenSearch Serverless) when the trigger fires
+(>2 filter dimensions / relevance ranking / full-text) is a local, non-breaking
+change. Callers (the synchronous matcher, the directory endpoint, the frontend)
+go through ``register`` / ``unregister`` / ``subscribers_for`` / ``search`` and
+never see the table.
+
+Storage model
+-------------
+- **Agent profile attrs** (``isProvider``, ``providerSkills``, ``providerBio``,
+  ``minPrice``, ``providerCategories``) live on the agents item — the canonical
+  list for display/audit. Written via ``TownService.update_agent_state``.
+- **Category membership** is projected into ``provider-subscriptions``
+  (PK ``category``, SK ``providerSort`` = ``f"{trust:08.4f}#{agentId}"``), one
+  row per (provider, category). A category query with ``ScanIndexForward=False``
+  returns subscribers trust-descending without a scan. The ``providerId-index``
+  GSI lets register/unregister find-and-delete an agent's rows.
+
+Wildcard match semantics (spec §3.3 — "prefix-on-dot matching")
+---------------------------------------------------------------
+Required behaviour: **a parent subscription catches child jobs; a child
+subscription does NOT catch its parent or siblings.**
+
+    subscribe ``technology``             → matches job ``technology`` or ``technology.*``
+    subscribe ``technology.code-review`` → matches job ``technology.code-review`` only
+
+The asymmetry is achieved by expanding exactly ONE side:
+
+- **Provider write side: EXACT key only** — subscribing to ``technology.code-review``
+  writes a single row under ``technology.code-review`` (no parent rows).
+- **Job lookup side: expand to wildcard parents** — a job categorised
+  ``technology.code-review`` is looked up under
+  ``match_categories("technology.code-review")`` = ``["technology.code-review",
+  "technology"]``, so it reaches both an exact subscriber and a ``technology``
+  parent subscriber.
+
+If instead the *provider* wrote parent rows (the naive reading), a
+``technology.code-review`` subscriber would own a ``technology`` row and would
+wrongly be caught by a plain ``technology`` job — violating "child does not catch
+parent". Expanding only the job side is the model that makes the required test
+matrix pass (see ``test_provider_directory.py::TestSubscribersFor``).
+"""
+
+from __future__ import annotations
+
+import logging
+
+from boto3.dynamodb.conditions import Attr, Key
+
+from core import dynamo
+from core.services import exchange_scoring
+from core.services.exchange_categories import match_categories, normalize_category
+from core.services.town_service import TownService
+
+logger = logging.getLogger(__name__)
+
+# Profile caps (mirror the lightweight validation the CLI/endpoint would apply;
+# enforced here so the directory is the single guard regardless of caller).
+MAX_SKILLS = 12
+MAX_CATEGORIES = 12
+BIO_MAX = 500
+
+# Town-scale fallback scan cap for the no-category directory listing. Above this
+# the OpenSearch trigger (ADR-0008 Decision 3) should already have fired.
+_FALLBACK_SCAN_LIMIT = 500
+
+
+class ProviderDirectory:
+    """The ADR-0008 discovery seam over the ``provider-subscriptions`` projection."""
+
+    @staticmethod
+    def SUBS_SORT(trust: float, agent_id: str) -> str:
+        """Subscription sort key: ``f"{trust:08.4f}#{agent_id}"``.
+
+        Zero-padded to 8 chars (``000.5000``) so lexical order == numeric order;
+        a category query with ``ScanIndexForward=False`` returns subscribers
+        trust-descending without a scan.
+        """
+        return f"{trust:08.4f}#{agent_id}"
+
+    # -- profile read ------------------------------------------------------
+
+    def _trust_for(self, agent: dict) -> float:
+        raw = agent.get("trustScore")
+        return float(raw) if raw is not None else exchange_scoring.INITIAL_TRUST
+
+    def _is_live_provider_for(self, agent: dict | None, job_category: str) -> bool:
+        """True iff *agent* is a currently-eligible provider for *job_category*.
+
+        The subscription projection is a **hint**, not the source of truth — a row
+        can outlive the state it represents:
+
+        - a soft-deactivated agent (``/agent/{id}/deactivate``) keeps its rows
+          (codex P2 A): require ``isActive == "true"``.
+        - ``provider_off`` / a category change can leave stale rows when the
+          ``providerId-index`` GSI used to delete them was lagging (codex P2 B):
+          require ``isProvider`` truthy AND that the job still matches one of the
+          provider's *current* ``providerCategories`` (re-run the wildcard match
+          against live data, not the projection).
+
+        Validating against the live agent row here makes the matcher correct
+        regardless of projection drift, and keeps the deactivate→reactivate
+        round-trip working (rows are never deleted, so reactivation just passes
+        this check again).
+        """
+        if not agent:
+            return False
+        if agent.get("isActive") != "true":
+            return False
+        if not agent.get("isProvider"):
+            return False
+        wanted = set(match_categories(job_category))
+        current = agent.get("providerCategories") or []
+        return any(cat in wanted for cat in current)
+
+    def _table(self):
+        return dynamo.provider_subscriptions_table()
+
+    def _delete_rows_for(self, agent_id: str) -> None:
+        """Delete every subscription row for *agent_id* via the providerId GSI.
+
+        membership index; ADR-0008 ProviderDirectory seam — swap to OpenSearch
+        here when >2-filter/relevance/full-text needed.
+        """
+        table = self._table()
+        resp = table.query(
+            IndexName="providerId-index",
+            KeyConditionExpression=Key("providerId").eq(agent_id),
+        )
+        rows = resp.get("Items", [])
+        if not rows:
+            return
+        with table.batch_writer() as batch:
+            for row in rows:
+                batch.delete_item(Key={"category": row["category"], "providerSort": row["providerSort"]})
+
+    # -- register / unregister --------------------------------------------
+
+    def register(
+        self,
+        agent_id: str,
+        skills: list[str],
+        categories: list[str],
+        bio: str,
+        min_price: int = 0,
+    ) -> dict:
+        """Write the provider profile + rebuild the subscription projection.
+
+        Validates/normalizes categories (invalid dropped), caps skills/categories
+        (≤12) and bio (≤500), writes the agent profile attrs, then **rebuilds**
+        the agent's subscription rows: delete the existing rows (providerId GSI),
+        then write one EXACT row per normalized category. Wildcard reach is the
+        job-lookup side's job, not the write side (see module docstring).
+
+        **At least one valid category is required.** If every supplied category
+        normalizes away (a typo like ``--categories='has space'``) or none was
+        supplied, raise ``ValueError("no_valid_categories")`` *before any write* —
+        a category-less provider can never be matched by an offer, so silently
+        marking it ``isProvider`` would create a provider that looks registered
+        but is undiscoverable (codex P2). The guard runs ahead of the profile
+        write so a rejected registration leaves no partial state.
+
+        Returns the resulting profile ``{skills, categories, bio, min_price}``.
+        """
+        skills = [s for s in (skills or [])][:MAX_SKILLS]
+        bio = (bio or "")[:BIO_MAX]
+        min_price = max(0, int(min_price or 0))
+
+        # Normalize categories, drop invalids, dedupe preserving first-seen order.
+        canonical: list[str] = []
+        seen: set[str] = set()
+        for raw in categories or []:
+            norm = normalize_category(raw)
+            if norm and norm not in seen:
+                seen.add(norm)
+                canonical.append(norm)
+        canonical = canonical[:MAX_CATEGORIES]
+
+        # Invariant: a provider must subscribe to ≥1 valid category, else it's
+        # unmatchable. Reject before touching the store (no partial write).
+        if not canonical:
+            raise ValueError("no_valid_categories")
+
+        svc = TownService()
+        svc.update_agent_state(
+            agent_id,
+            is_provider=True,
+            provider_skills=skills,
+            provider_categories=canonical,
+            provider_bio=bio,
+            min_price=min_price,
+        )
+
+        # Read the *current* trust for the sort key (post-profile-write read is
+        # fine — trust isn't touched here).
+        agent = svc.get_town_agent_by_id(agent_id) or {}
+        trust = self._trust_for(agent)
+        sort_key = self.SUBS_SORT(trust, agent_id)
+
+        # membership index; ADR-0008 ProviderDirectory seam — swap to OpenSearch
+        # here when >2-filter/relevance/full-text needed.
+        self._delete_rows_for(agent_id)  # rebuild: no stale rows after a category change
+        table = self._table()
+        with table.batch_writer() as batch:
+            for category in canonical:
+                batch.put_item(
+                    Item={
+                        "category": category,  # EXACT key only — wildcard reach is job-side
+                        "providerSort": sort_key,
+                        "providerId": agent_id,
+                    }
+                )
+
+        return {
+            "skills": skills,
+            "categories": canonical,
+            "bio": bio,
+            "min_price": min_price,
+        }
+
+    def reindex_trust(self, agent_id: str, new_trust: float) -> None:
+        """Re-rank a provider's subscription rows when their trust score changes.
+
+        Queries the providerId-index GSI for the agent's current rows.  For
+        each row whose ``providerSort`` prefix no longer matches the new trust
+        value, deletes the old row and writes a replacement with the updated
+        sort key (same ``category`` PK, same ``providerId``).  Rows that
+        already encode the correct trust are left untouched (idempotent).
+
+        A non-provider agent (no subscription rows) is a cheap no-op — the
+        GSI query returns nothing and the method returns immediately.
+
+        Comment: keep directory trust ranking fresh; ADR-0008 — moves to an
+        OpenSearch reindex when discovery scales.
+        """
+        table = self._table()
+        resp = table.query(
+            IndexName="providerId-index",
+            KeyConditionExpression=Key("providerId").eq(agent_id),
+        )
+        rows = resp.get("Items", [])
+        if not rows:
+            return  # not a provider — no rows, nothing to do
+        new_sort = self.SUBS_SORT(new_trust, agent_id)
+        with table.batch_writer() as batch:
+            for row in rows:
+                if row["providerSort"] == new_sort:
+                    continue  # already correct — no-op for this row
+                # Delete old key, write new key with same category + providerId.
+                batch.delete_item(Key={"category": row["category"], "providerSort": row["providerSort"]})
+                batch.put_item(
+                    Item={
+                        "category": row["category"],
+                        "providerSort": new_sort,
+                        "providerId": agent_id,
+                    }
+                )
+
+    def unregister(self, agent_id: str) -> None:
+        """Flip ``isProvider`` false and delete all of the agent's subscription rows."""
+        TownService().update_agent_state(agent_id, is_provider=False)
+        self._delete_rows_for(agent_id)
+
+    # -- query -------------------------------------------------------------
+
+    def subscribers_for(self, job_category: str) -> list[str]:
+        """Provider ids subscribed to *job_category* (or any wildcard parent).
+
+        Expands the JOB category to its wildcard parents (``match_categories``)
+        and queries each as a subscription PK, trust-descending. A provider
+        subscribed to ``technology`` is found for a ``technology.code-review``
+        job because that job's parents include ``technology``; a provider
+        subscribed to ``technology.code-review`` is NOT found for a plain
+        ``technology`` job because the job's only parent key is ``technology``,
+        under which the child wrote no row. Returns distinct provider ids,
+        **globally trust-descending across all matched (exact + parent) keys**.
+
+        Each key's query is trust-desc on its own, but a low-trust *exact*
+        subscriber must not outrank a high-trust *parent* subscriber just because
+        the exact key is queried first (codex P2). So we collect every matched
+        row, keep the highest sort key per provider (defensive against a stale
+        row), then sort by ``providerSort`` (== trust) globally before returning.
+        """
+        table = self._table()
+        best_sort: dict[str, str] = {}
+        for key in match_categories(job_category):
+            resp = table.query(
+                KeyConditionExpression=Key("category").eq(key),
+                ScanIndexForward=False,  # trust-descending within this key
+                # Base-table query → strongly consistent, so a provider that
+                # registered immediately before a matching job is posted is
+                # visible to the matcher (codex P2 — the offer set is only built
+                # at post time, so a missed row = no durable bid authz).
+                ConsistentRead=True,
+            )
+            for row in resp.get("Items", []):
+                pid = row["providerId"]
+                sort = row["providerSort"]
+                # A provider's rows all encode the same trust, but if a stale row
+                # lingers across keys keep the higher (fresher-trust) sort key.
+                if pid not in best_sort or sort > best_sort[pid]:
+                    best_sort[pid] = sort
+        # Global trust-desc; the zero-padded providerSort makes lexical == numeric.
+        return sorted(best_sort, key=lambda pid: best_sort[pid], reverse=True)
+
+    def subscribers_for_job(
+        self,
+        job_category: str,
+        consumer_id: str,
+        min_trust: float = 0.0,
+    ) -> list[str]:
+        """Provider ids to offer a job in *job_category* — the matcher's query.
+
+        Built on ``subscribers_for`` (wildcard-parent expansion, trust-desc) but
+        with the offer-time gates the synchronous ``post_job`` matcher needs:
+
+        - **Excludes the consumer** — an agent never gets offered its own job,
+          even when it's a provider subscribed to the job's category.
+        - **``min_trust`` gate** (default 0.0 = no filter): drops providers whose
+          ``trustScore`` is below the consumer's floor. Applied in-memory at town
+          scale (ADR-0008 — single-filter + trust-rank is the projection's remit
+          until the OpenSearch trigger fires).
+
+        Every candidate is validated against its **live agent row** before being
+        offered — a stale projection row (deactivated / turned-off / re-categorised
+        provider) must not grant remote-bid authz (codex P2). The ``min_trust``
+        gate is applied on the same loaded row.
+
+        Returns distinct provider ids, highest-trust-first. This is the durable
+        ``offeredTo`` set the matcher persists onto the job (codex P1).
+        """
+        svc = TownService()
+        gated: list[str] = []
+        for pid in self.subscribers_for(job_category):
+            if pid == consumer_id:
+                continue
+            agent = svc.get_town_agent_by_id(pid)
+            if not self._is_live_provider_for(agent, job_category):
+                continue  # stale projection row — not a live provider for this job
+            if min_trust > 0.0 and self._trust_for(agent) < min_trust:
+                continue
+            gated.append(pid)
+        return gated
+
+    def _public_profile(self, agent: dict) -> dict:
+        """Project an agent row to the directory's public shape (no wallet/PII)."""
+        trust = self._trust_for(agent)
+        completed = int(agent.get("jobsCompleted", 0) or 0)
+        return {
+            "agent_id": agent.get("id", ""),
+            "name": agent.get("displayName") or agent.get("agentName", ""),
+            "bio": agent.get("providerBio", "") or "",
+            "skills": list(agent.get("providerSkills", []) or []),
+            "trust_tier": exchange_scoring.trust_tier(trust, completed),
+            "trust_score": trust,
+            "jobs_completed": completed,
+        }
+
+    def search(
+        self,
+        category: str | None = None,
+        skill: str | None = None,
+        min_trust: float = 0.0,
+        limit: int = 25,
+    ) -> list[dict]:
+        """Directory search → public provider profiles (no wallet/PII).
+
+        - ``category`` given → subscription query (trust-desc) then load each
+          provider's profile (wildcard parents matched, same as a job lookup).
+        - no ``category`` → small scan of ``isProvider`` agents (documented
+          town-scale fallback; the OpenSearch trigger replaces this when the
+          ADR-0008 >2-filter/relevance bar is crossed).
+
+        ``skill`` (membership in ``providerSkills``) and ``min_trust`` are applied
+        in-memory at town scale (ADR-0008 — single-filter + trust-rank is the
+        DynamoDB projection's remit until OpenSearch).
+        """
+        svc = TownService()
+        if category is not None:
+            norm = normalize_category(category)
+            if norm is None:
+                return []
+            provider_ids = self.subscribers_for(norm)
+            profiles: list[dict] = []
+            for pid in provider_ids:
+                agent = svc.get_town_agent_by_id(pid)
+                if agent:
+                    profiles.append(agent)
+        else:
+            # Town-scale fallback: scan isProvider agents. Stays here (not a
+            # caller) so the swap to OpenSearch is a single-file change.
+            resp = dynamo.agents_table().scan(
+                FilterExpression=Attr("isProvider").eq(True),
+                Limit=_FALLBACK_SCAN_LIMIT,
+            )
+            profiles = resp.get("Items", [])
+            # Stable trust-desc order for the fallback listing.
+            profiles.sort(key=lambda a: self._trust_for(a), reverse=True)
+
+        results: list[dict] = []
+        for agent in profiles:
+            # A soft-deactivated provider keeps its subscription rows + profile
+            # attrs but must not surface in the directory (codex P2 A). The
+            # no-category scan filters isProvider but not isActive; enforce both
+            # here so the category and scan paths agree.
+            if agent.get("isActive") != "true" or not agent.get("isProvider"):
+                continue
+            trust = self._trust_for(agent)
+            if trust < min_trust:
+                continue
+            if skill is not None:
+                provider_skills = agent.get("providerSkills", []) or []
+                if skill not in provider_skills:
+                    continue
+            results.append(self._public_profile(agent))
+            if len(results) >= limit:
+                break
+        return results
+
+
+_directory: ProviderDirectory | None = None
+
+
+def get_provider_directory() -> ProviderDirectory:
+    """Module singleton accessor (mirrors other service singletons)."""
+    global _directory
+    if _directory is None:
+        _directory = ProviderDirectory()
+    return _directory

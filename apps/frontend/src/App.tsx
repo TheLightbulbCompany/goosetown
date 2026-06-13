@@ -9,6 +9,7 @@ import ApartmentCard from './components/ApartmentCard.tsx';
 import ConversationsLog from './components/ConversationsLog.tsx';
 import { WorldFeed } from './components/WorldFeed.tsx';
 import { ExchangeBoard } from './components/ExchangeBoard.tsx';
+import { ProvidersPanel } from './components/ProvidersPanel.tsx';
 import LoginButton from './components/buttons/LoginButton.tsx';
 import MusicButton from './components/buttons/MusicButton.tsx';
 import JoinTownModal from './components/JoinTownModal.tsx';
@@ -129,6 +130,7 @@ function AgentsSidebar({
         </SignedOut>
         <WorldFeed />
         <ExchangeBoard />
+        <ProvidersPanel />
         <ConversationsLog />
         <QuotaIndicator />
       </>
@@ -187,6 +189,7 @@ function AgentsSidebar({
       )}
       <WorldFeed />
       <ExchangeBoard />
+      <ProvidersPanel />
       <ConversationsLog />
       <QuotaIndicator />
     </>
