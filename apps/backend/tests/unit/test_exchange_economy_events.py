@@ -304,6 +304,120 @@ class TestSettleEmitsEvents:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Task 7: reputation.updated event + reindex_trust resilience
+# ---------------------------------------------------------------------------
+
+
+class TestReputationUpdatedEvent:
+    def test_update_trust_emits_reputation_updated(self):
+        """_update_trust must emit 'reputation.updated' after a successful trust write."""
+        from core.services import exchange_service
+
+        emit_calls = []
+
+        def fake_emit(tag, summary, **kw):
+            emit_calls.append({"tag": tag, "summary": summary, **kw})
+
+        with (
+            patch("core.services.exchange_service.TownService") as mock_ts,
+            patch("core.services.exchange_service.dynamo") as mock_dynamo,
+            patch("core.services.exchange_service._count_recent_same_counterparty_payouts", return_value=0),
+            patch("core.services.exchange_service._bump_counter"),
+            patch("core.services.exchange_service.ProviderDirectory"),
+            patch("core.services.exchange_service._emit_economy_event", side_effect=fake_emit),
+        ):
+            # Simulate an agent row with initial trust; no CAS conflict.
+            mock_ts.return_value.get_town_agent_by_id.return_value = {
+                "id": "agent-1",
+                "agentName": "Alice",
+                "displayName": "Alice",
+                "trustScore": "0.5",
+                "jobsCompleted": 2,
+            }
+            agents_table = mock_dynamo.agents_table.return_value
+            agents_table.update_item = MagicMock()  # no exception → success on first try
+
+            exchange_service._update_trust("agent-1", "SUCCESS", completed_delta=1, failed_delta=0)
+
+        rep_events = [e for e in emit_calls if e["tag"] == "reputation.updated"]
+        assert rep_events, f"Expected 'reputation.updated' event; got tags: {[e['tag'] for e in emit_calls]}"
+        ev = rep_events[0]
+        assert "Alice" in ev["summary"]
+        assert "agent_id" in ev
+        assert "new_trust" in ev
+        assert "tier" in ev
+
+    def test_update_trust_reputation_event_not_emitted_on_retry_exhaustion(self):
+        """If all CAS retries fail, reputation.updated must NOT be emitted."""
+        from core.services import exchange_service
+
+        emit_calls = []
+
+        def fake_emit(tag, summary, **kw):
+            emit_calls.append(tag)
+
+        # Build a real-ish exception class that the except clause will catch.
+        class FakeConditionalCheckFailed(Exception):
+            pass
+
+        with (
+            patch("core.services.exchange_service.TownService") as mock_ts,
+            patch("core.services.exchange_service.dynamo") as mock_dynamo,
+            patch("core.services.exchange_service._count_recent_same_counterparty_payouts", return_value=0),
+            patch("core.services.exchange_service._bump_counter"),
+            patch("core.services.exchange_service.ProviderDirectory"),
+            patch("core.services.exchange_service._emit_economy_event", side_effect=fake_emit),
+        ):
+            mock_ts.return_value.get_town_agent_by_id.return_value = {
+                "id": "agent-2",
+                "agentName": "Bob",
+                "trustScore": "0.5",
+                "jobsCompleted": 0,
+            }
+            agents_table = mock_dynamo.agents_table.return_value
+            # Wire the exception class so the except clause recognises it.
+            agents_table.meta.client.exceptions.ConditionalCheckFailedException = FakeConditionalCheckFailed
+            # Always raise → exhaust all retries, trigger the else branch + return.
+            agents_table.update_item.side_effect = FakeConditionalCheckFailed("cas failed")
+
+            exchange_service._update_trust("agent-2", "SUCCESS", completed_delta=1, failed_delta=0)
+
+        assert "reputation.updated" not in emit_calls
+
+    def test_reindex_failure_does_not_break_update_trust(self):
+        """A raising reindex_trust must not propagate — _update_trust still completes."""
+        from core.services import exchange_service
+
+        with (
+            patch("core.services.exchange_service.TownService") as mock_ts,
+            patch("core.services.exchange_service.dynamo") as mock_dynamo,
+            patch("core.services.exchange_service._count_recent_same_counterparty_payouts", return_value=0),
+            patch("core.services.exchange_service._bump_counter"),
+            patch("core.services.exchange_service.ProviderDirectory") as mock_pd_cls,
+            patch("core.services.exchange_service._emit_economy_event"),
+        ):
+            mock_ts.return_value.get_town_agent_by_id.return_value = {
+                "id": "agent-3",
+                "agentName": "Carol",
+                "trustScore": "0.5",
+                "jobsCompleted": 1,
+            }
+            agents_table = mock_dynamo.agents_table.return_value
+            agents_table.update_item = MagicMock()  # success
+
+            # Make reindex_trust blow up.
+            mock_pd_cls.return_value.reindex_trust.side_effect = RuntimeError("DDB unavailable")
+
+            # Must not raise — settlement must survive a denorm failure.
+            exchange_service._update_trust("agent-3", "SUCCESS", completed_delta=1, failed_delta=0)
+
+
+# ---------------------------------------------------------------------------
+# get_ledger_tail returns rows newest-first
+# ---------------------------------------------------------------------------
+
+
 class TestGetLedgerTail:
     def test_returns_rows_newest_first(self, dynamodb_tables):
         """get_ledger_tail must return at most limit rows, newest createdAt first."""

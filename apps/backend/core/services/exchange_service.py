@@ -791,6 +791,40 @@ def _update_trust(
             continue  # trustScore moved under us (or agent missing) — re-read and retry
     else:
         logger.warning("Trust update dropped after retries: agent=%s outcome=%s", agent_id[:8], outcome)
+        if completed_delta:
+            _bump_counter(agent_id, "jobsCompleted", completed_delta)
+        if failed_delta:
+            _bump_counter(agent_id, "jobsFailed", failed_delta)
+        return
+
+    # Trust write succeeded — re-rank the agent's subscription rows so the
+    # directory trust-descending queries use the fresh score (ADR-0008).
+    # Wrapped in try/except: a denorm failure must not break settlement.
+    # keep directory trust ranking fresh; ADR-0008 — moves to an OpenSearch
+    # reindex when discovery scales.
+    try:
+        ProviderDirectory().reindex_trust(agent_id, new_trust)
+    except Exception:
+        logger.warning(
+            "reindex_trust failed for agent=%s new_trust=%.4f — directory sort may be stale",
+            agent_id[:8],
+            new_trust,
+        )
+
+    # Emit a feed event so the world knows the reputation changed.
+    agent_for_event = TownService().get_town_agent_by_id(agent_id) or {}
+    agent_name = agent_for_event.get("displayName") or agent_for_event.get("agentName") or agent_id[:8]
+    completed_for_tier = int(agent_for_event.get("jobsCompleted", 0) or 0) + completed_delta
+    tier = exchange_scoring.trust_tier(new_trust, completed_for_tier)
+    _emit_economy_event(
+        "reputation.updated",
+        summary=f"{agent_name} trust is now {tier}",
+        location=EXCHANGE_LOCATION,
+        agent_id=agent_id,
+        new_trust=new_trust,
+        tier=tier,
+    )
+
     if completed_delta:
         _bump_counter(agent_id, "jobsCompleted", completed_delta)
     if failed_delta:

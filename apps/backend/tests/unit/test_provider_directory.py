@@ -354,3 +354,90 @@ class TestSearch:
 def test_get_provider_directory_singleton():
     assert get_provider_directory() is get_provider_directory()
     assert isinstance(get_provider_directory(), ProviderDirectory)
+
+
+# ---------------------------------------------------------------------------
+# reindex_trust — Task 7: directory trust-denorm on settlement
+# ---------------------------------------------------------------------------
+
+
+class TestReindexTrust:
+    def test_reindex_updates_sort_key_for_provider(self, dynamodb_tables):
+        """After reindex_trust, subscription rows' SK encodes the NEW trust score."""
+        _seed_agent(dynamodb_tables, "p1", "pat", trustScore=Decimal("0.5"))
+        pd = ProviderDirectory()
+        pd.register("p1", skills=[], categories=["writing", "research"], bio="")
+
+        # Verify initial sort key encodes trust 0.5.
+        rows_before = _sub_rows(dynamodb_tables, "p1")
+        for r in rows_before:
+            assert r["providerSort"] == ProviderDirectory.SUBS_SORT(0.5, "p1")
+
+        # Reindex to trust 0.8 (simulating a settlement trust bump).
+        pd.reindex_trust("p1", 0.8)
+
+        rows_after = _sub_rows(dynamodb_tables, "p1")
+        # Same number of rows.
+        assert len(rows_after) == len(rows_before)
+        # All rows now encode trust 0.8.
+        expected_sort = ProviderDirectory.SUBS_SORT(0.8, "p1")
+        for r in rows_after:
+            assert r["providerSort"] == expected_sort, f"row {r['category']} has stale sort key"
+
+    def test_reindex_reflected_in_subscribers_for(self, dynamodb_tables):
+        """After reindex_trust, subscribers_for returns providers ranked by new trust."""
+        _seed_agent(dynamodb_tables, "low", "lola", trustScore=Decimal("0.3"))
+        _seed_agent(dynamodb_tables, "high", "hank", trustScore=Decimal("0.9"))
+        pd = ProviderDirectory()
+        pd.register("low", skills=[], categories=["writing"], bio="")
+        pd.register("high", skills=[], categories=["writing"], bio="")
+
+        # Initially: high first, low second.
+        assert ProviderDirectory().subscribers_for("writing") == ["high", "low"]
+
+        # Boost "low" above "high" via reindex.
+        pd.reindex_trust("low", 0.95)
+
+        # Now "low" (with trust 0.95) should rank above "high" (still 0.9).
+        ordered = ProviderDirectory().subscribers_for("writing")
+        assert ordered[0] == "low", f"Expected 'low' first after trust boost, got: {ordered}"
+        assert ordered[1] == "high"
+
+    def test_reindex_reflected_in_search(self, dynamodb_tables):
+        """After reindex_trust, directory search returns providers in new trust order."""
+        _seed_agent(dynamodb_tables, "low", "lola", trustScore=Decimal("0.3"))
+        _seed_agent(dynamodb_tables, "high", "hank", trustScore=Decimal("0.9"))
+        pd = ProviderDirectory()
+        pd.register("low", skills=[], categories=["writing"], bio="")
+        pd.register("high", skills=[], categories=["writing"], bio="")
+
+        # Boost "low" via reindex.
+        pd.reindex_trust("low", 0.95)
+
+        results = ProviderDirectory().search(category="writing")
+        ids = [r["agent_id"] for r in results]
+        assert ids[0] == "low"
+        assert ids[1] == "high"
+
+    def test_reindex_non_provider_is_noop(self, dynamodb_tables):
+        """reindex_trust on an agent with no subscription rows is a safe no-op."""
+        _seed_agent(dynamodb_tables, "nonprov", "ned")
+        pd = ProviderDirectory()
+        # No register call — no subscription rows.
+        # Must not raise, must not create any rows.
+        pd.reindex_trust("nonprov", 0.7)
+        assert _sub_rows(dynamodb_tables, "nonprov") == []
+
+    def test_reindex_idempotent_when_trust_unchanged(self, dynamodb_tables):
+        """reindex_trust with the same trust value leaves rows untouched."""
+        _seed_agent(dynamodb_tables, "p1", "pat", trustScore=Decimal("0.5"))
+        pd = ProviderDirectory()
+        pd.register("p1", skills=[], categories=["writing"], bio="")
+
+        rows_before = _sub_rows(dynamodb_tables, "p1")
+        pd.reindex_trust("p1", 0.5)  # same trust — no change expected
+        rows_after = _sub_rows(dynamodb_tables, "p1")
+
+        assert len(rows_after) == len(rows_before)
+        for r in rows_after:
+            assert r["providerSort"] == ProviderDirectory.SUBS_SORT(0.5, "p1")

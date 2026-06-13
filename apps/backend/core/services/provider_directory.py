@@ -180,6 +180,44 @@ class ProviderDirectory:
             "min_price": min_price,
         }
 
+    def reindex_trust(self, agent_id: str, new_trust: float) -> None:
+        """Re-rank a provider's subscription rows when their trust score changes.
+
+        Queries the providerId-index GSI for the agent's current rows.  For
+        each row whose ``providerSort`` prefix no longer matches the new trust
+        value, deletes the old row and writes a replacement with the updated
+        sort key (same ``category`` PK, same ``providerId``).  Rows that
+        already encode the correct trust are left untouched (idempotent).
+
+        A non-provider agent (no subscription rows) is a cheap no-op — the
+        GSI query returns nothing and the method returns immediately.
+
+        Comment: keep directory trust ranking fresh; ADR-0008 — moves to an
+        OpenSearch reindex when discovery scales.
+        """
+        table = self._table()
+        resp = table.query(
+            IndexName="providerId-index",
+            KeyConditionExpression=Key("providerId").eq(agent_id),
+        )
+        rows = resp.get("Items", [])
+        if not rows:
+            return  # not a provider — no rows, nothing to do
+        new_sort = self.SUBS_SORT(new_trust, agent_id)
+        with table.batch_writer() as batch:
+            for row in rows:
+                if row["providerSort"] == new_sort:
+                    continue  # already correct — no-op for this row
+                # Delete old key, write new key with same category + providerId.
+                batch.delete_item(Key={"category": row["category"], "providerSort": row["providerSort"]})
+                batch.put_item(
+                    Item={
+                        "category": row["category"],
+                        "providerSort": new_sort,
+                        "providerId": agent_id,
+                    }
+                )
+
     def unregister(self, agent_id: str) -> None:
         """Flip ``isProvider`` false and delete all of the agent's subscription rows."""
         TownService().update_agent_state(agent_id, is_provider=False)
