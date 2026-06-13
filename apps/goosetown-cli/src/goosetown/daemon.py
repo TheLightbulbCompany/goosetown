@@ -2200,8 +2200,13 @@ class TownDaemon:
             )
         )
         # Fresh connection: start the pong deadline now so the keepalive loop
-        # doesn't immediately judge a just-opened socket as half-open.
+        # doesn't immediately judge a just-opened socket as half-open, and clear
+        # _ever_ponged so the timeout-reconnect re-arms only after a pong on THIS
+        # connection. Without the reset, reconnecting to a pongless backend (a
+        # rollback or mixed-version deploy) would inherit the armed guard and
+        # churn the socket every _PONG_TIMEOUT_SEC.
         self._last_pong_at = time.time()
+        self._ever_ponged = False
         log.info("Connected as %s", self._agent_name)
 
     async def listen_ws(self) -> None:

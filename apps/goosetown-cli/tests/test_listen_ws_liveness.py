@@ -193,3 +193,22 @@ async def test_keepalive_does_not_reconnect_against_pongless_backend(
 
     daemon.ws.close.assert_not_called()
     assert sent["n"] == 1  # pinged, did not reconnect
+
+
+@pytest.mark.asyncio
+async def test_connect_resets_ever_ponged_per_connection(daemon: TownDaemon):
+    """Each new connection re-arms pong detection from scratch (codex P2): a
+    daemon that saw a pong on a prior connection but reconnects to a pongless
+    backend (rollback / mixed-version) must NOT inherit the armed guard, or it
+    would churn an otherwise-healthy socket every _PONG_TIMEOUT_SEC."""
+    daemon._ever_ponged = True  # stale from a previous connection
+    daemon._last_pong_at = 0.0
+
+    mock_ws = MagicMock()
+    mock_ws.send = AsyncMock()
+    with patch("websockets.connect", new=AsyncMock(return_value=mock_ws)):
+        await daemon.connect_ws()
+
+    assert daemon.ws is mock_ws
+    assert daemon._ever_ponged is False  # re-armed only after a pong on THIS conn
+    assert daemon._last_pong_at > 0  # deadline started at connect
