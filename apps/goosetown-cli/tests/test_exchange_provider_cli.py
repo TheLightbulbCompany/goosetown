@@ -369,3 +369,22 @@ class TestJoinProviderOneShot:
         ns = _join_namespace(tmp_path, provider=True, skills="haiku", categories=None)
         with pytest.raises(SystemExit):
             _run_join(tmp_path, ns, [])
+
+
+class TestInviteVerb:
+    """`act invite` had no cmd_act branch — it fell through to the
+    unknown-action path. Verify it now builds the right payload."""
+
+    def test_invite_payload(self):
+        payload = _run_cmd_act("invite", ["job-1", "prov-7"])
+        assert payload == {
+            "action": "invite",
+            "job_id": "job-1",
+            "provider_id": "prov-7",
+        }
+
+    def test_invite_missing_provider_dies(self):
+        import pytest
+
+        with pytest.raises(SystemExit):
+            _run_cmd_act("invite", ["job-1"])

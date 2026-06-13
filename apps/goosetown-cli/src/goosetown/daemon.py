@@ -280,9 +280,7 @@ class TownDaemon:
                 "wake_endpoint": os.environ.get("TOWN_WAKE_ENDPOINT", ""),
             }
             adapter = get_wake_adapter(harness, config)
-            self._wake_coordinator = WakeCoordinator(
-                self._agent_name, adapter
-            )
+            self._wake_coordinator = WakeCoordinator(self._agent_name, adapter)
         except Exception:
             import logging
 
@@ -309,9 +307,7 @@ class TownDaemon:
         except Exception:
             import logging
 
-            logging.getLogger("town_daemon").debug(
-                "wake request failed", exc_info=True
-            )
+            logging.getLogger("town_daemon").debug("wake request failed", exc_info=True)
 
     def _handle_event(self, data: dict) -> None:
         """Dispatch a town_event payload to the appropriate handler."""
@@ -530,9 +526,7 @@ class TownDaemon:
             # Task 9: wake the harness so the agent replies at conversation
             # speed instead of waiting for its heartbeat. Only on non-own turns
             # (our own echoed `say` isn't something to respond to).
-            self._request_wake(
-                {"event": event, "conv_id": data.get("conv_id", "")}
-            )
+            self._request_wake({"event": event, "conv_id": data.get("conv_id", "")})
         conv_id = data.get("conv_id", "")
 
         if event == "conversation_invite":
@@ -1047,9 +1041,7 @@ class TownDaemon:
         # Task 9: award is a "look now" event for both roles — the provider must
         # start the work, the consumer wants to track it. Suppressed on resync.
         if not resync:
-            self._request_wake(
-                {"event": "job_awarded", "job_id": job_id, "role": role}
-            )
+            self._request_wake({"event": "job_awarded", "job_id": job_id, "role": role})
 
     def _on_bid_lost(self, data: dict) -> None:
         """Our sealed bid did not win.
@@ -2258,6 +2250,7 @@ class TownDaemon:
                 "deliver_job",
                 "review_job",
                 "job_msg",
+                "invite",
                 "provider_register",
                 "provider_off",
             ):

@@ -1054,6 +1054,14 @@ def cmd_act(args: argparse.Namespace) -> None:
         if len(msg_text) > 2000:
             _die("Message text must be <= 2000 chars.")
         payload = {"action": "job_msg", "job_id": job_id, "msg_text": msg_text}
+    elif action == "invite":
+        usage = "Usage: goosetown act invite <job_id> <provider_id>"
+        if len(rest) < 2:
+            _die(
+                usage,
+                "Invite a specific provider (from the directory) to bid on your job; they can then bid remotely.",
+            )
+        payload = {"action": "invite", "job_id": rest[0], "provider_id": rest[1]}
     elif action in _VALID_ACTIVITIES:
         payload = {"action": "activity", "activity_id": action}
     else:
