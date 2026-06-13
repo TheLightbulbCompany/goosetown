@@ -328,6 +328,19 @@ class TestSearch:
     def test_empty_category_result(self, dynamodb_tables):
         assert ProviderDirectory().search(category="writing") == []
 
+    def test_deactivated_provider_excluded_from_search(self, dynamodb_tables):
+        # A soft-deactivated provider keeps its rows + profile attrs but must not
+        # surface in the directory — category OR scan path (codex P2 A).
+        _seed_agent(dynamodb_tables, "p1", "pat")
+        ProviderDirectory().register("p1", skills=[], categories=["writing"], bio="")
+        dynamodb_tables.Table("goosetown-agents").update_item(
+            Key={"id": "p1"},
+            UpdateExpression="SET isActive = :f",
+            ExpressionAttributeValues={":f": "false"},
+        )
+        assert ProviderDirectory().search(category="writing") == []
+        assert ProviderDirectory().search() == []  # scan fallback path too
+
     def test_no_category_fallback_returns_providers(self, dynamodb_tables):
         _seed_agent(dynamodb_tables, "p1", "pat")
         _seed_agent(dynamodb_tables, "p2", "peg")

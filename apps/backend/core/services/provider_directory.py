@@ -88,6 +88,35 @@ class ProviderDirectory:
         raw = agent.get("trustScore")
         return float(raw) if raw is not None else exchange_scoring.INITIAL_TRUST
 
+    def _is_live_provider_for(self, agent: dict | None, job_category: str) -> bool:
+        """True iff *agent* is a currently-eligible provider for *job_category*.
+
+        The subscription projection is a **hint**, not the source of truth — a row
+        can outlive the state it represents:
+
+        - a soft-deactivated agent (``/agent/{id}/deactivate``) keeps its rows
+          (codex P2 A): require ``isActive == "true"``.
+        - ``provider_off`` / a category change can leave stale rows when the
+          ``providerId-index`` GSI used to delete them was lagging (codex P2 B):
+          require ``isProvider`` truthy AND that the job still matches one of the
+          provider's *current* ``providerCategories`` (re-run the wildcard match
+          against live data, not the projection).
+
+        Validating against the live agent row here makes the matcher correct
+        regardless of projection drift, and keeps the deactivate→reactivate
+        round-trip working (rows are never deleted, so reactivation just passes
+        this check again).
+        """
+        if not agent:
+            return False
+        if agent.get("isActive") != "true":
+            return False
+        if not agent.get("isProvider"):
+            return False
+        wanted = set(match_categories(job_category))
+        current = agent.get("providerCategories") or []
+        return any(cat in wanted for cat in current)
+
     def _table(self):
         return dynamo.provider_subscriptions_table()
 
@@ -262,6 +291,11 @@ class ProviderDirectory:
             resp = table.query(
                 KeyConditionExpression=Key("category").eq(key),
                 ScanIndexForward=False,  # trust-descending within this key
+                # Base-table query → strongly consistent, so a provider that
+                # registered immediately before a matching job is posted is
+                # visible to the matcher (codex P2 — the offer set is only built
+                # at post time, so a missed row = no durable bid authz).
+                ConsistentRead=True,
             )
             for row in resp.get("Items", []):
                 pid = row["providerId"]
@@ -291,18 +325,25 @@ class ProviderDirectory:
           scale (ADR-0008 — single-filter + trust-rank is the projection's remit
           until the OpenSearch trigger fires).
 
+        Every candidate is validated against its **live agent row** before being
+        offered — a stale projection row (deactivated / turned-off / re-categorised
+        provider) must not grant remote-bid authz (codex P2). The ``min_trust``
+        gate is applied on the same loaded row.
+
         Returns distinct provider ids, highest-trust-first. This is the durable
         ``offeredTo`` set the matcher persists onto the job (codex P1).
         """
-        candidates = [pid for pid in self.subscribers_for(job_category) if pid != consumer_id]
-        if min_trust <= 0.0:
-            return candidates
         svc = TownService()
         gated: list[str] = []
-        for pid in candidates:
+        for pid in self.subscribers_for(job_category):
+            if pid == consumer_id:
+                continue
             agent = svc.get_town_agent_by_id(pid)
-            if agent and self._trust_for(agent) >= min_trust:
-                gated.append(pid)
+            if not self._is_live_provider_for(agent, job_category):
+                continue  # stale projection row — not a live provider for this job
+            if min_trust > 0.0 and self._trust_for(agent) < min_trust:
+                continue
+            gated.append(pid)
         return gated
 
     def _public_profile(self, agent: dict) -> dict:
@@ -362,6 +403,12 @@ class ProviderDirectory:
 
         results: list[dict] = []
         for agent in profiles:
+            # A soft-deactivated provider keeps its subscription rows + profile
+            # attrs but must not surface in the directory (codex P2 A). The
+            # no-category scan filters isProvider but not isActive; enforce both
+            # here so the category and scan paths agree.
+            if agent.get("isActive") != "true" or not agent.get("isProvider"):
+                continue
             trust = self._trust_for(agent)
             if trust < min_trust:
                 continue

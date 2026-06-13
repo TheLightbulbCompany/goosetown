@@ -168,6 +168,41 @@ class TestSubscribersForJob:
         ids = ProviderDirectory().subscribers_for_job("writing", consumer_id="x", min_trust=0.0)
         assert set(ids) == {"low", "high"}
 
+    def test_deactivated_provider_not_offered(self, dynamodb_tables):
+        # Soft-deactivation flips isActive but leaves subscription rows; the
+        # matcher must validate the live agent row and drop it (codex P2 A).
+        _register_provider(dynamodb_tables, "p1", "pat", ["writing"])
+        dynamodb_tables.Table("goosetown-agents").update_item(
+            Key={"id": "p1"},
+            UpdateExpression="SET isActive = :f",
+            ExpressionAttributeValues={":f": "false"},
+        )
+        assert ProviderDirectory().subscribers_for_job("writing", consumer_id="x") == []
+
+    def test_turned_off_provider_with_stale_row_not_offered(self, dynamodb_tables):
+        # isProvider flipped false (provider_off) but a row lingers (GSI lag) →
+        # not offered (codex P2 B).
+        _register_provider(dynamodb_tables, "p1", "pat", ["writing"])
+        dynamodb_tables.Table("goosetown-agents").update_item(
+            Key={"id": "p1"},
+            UpdateExpression="SET isProvider = :f",
+            ExpressionAttributeValues={":f": False},
+        )
+        assert ProviderDirectory().subscribers_for_job("writing", consumer_id="x") == []
+
+    def test_stale_category_row_not_offered_after_recategorize(self, dynamodb_tables):
+        # A lingering row for a category the provider no longer holds must not
+        # grant an offer — re-checked against live providerCategories (codex P2 B).
+        _register_provider(dynamodb_tables, "p1", "pat", ["writing"])
+        # Simulate a stale row: provider's live categories changed to research,
+        # but the writing subscription row was left behind (GSI-lagged delete).
+        dynamodb_tables.Table("goosetown-agents").update_item(
+            Key={"id": "p1"},
+            UpdateExpression="SET providerCategories = :c",
+            ExpressionAttributeValues={":c": ["research"]},
+        )
+        assert ProviderDirectory().subscribers_for_job("writing", consumer_id="x") == []
+
 
 # ---------------------------------------------------------------------------
 # post_job — synchronous offers writing offeredTo
