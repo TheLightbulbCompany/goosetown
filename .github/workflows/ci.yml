@@ -173,6 +173,10 @@ jobs:
         run: pnpm --filter @goosetown/frontend run test:e2e
         env:
           E2E_BASE_URL: https://dev.goosetown.isol8.co
+          # dev.goosetown.isol8.co points at a preview deployment, which
+          # Vercel Authentication gates with a 401. The bypass header in
+          # playwright.config.ts needs this secret to get through.
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
       - name: Upload Playwright report on failure
         if: failure()
         uses: actions/upload-artifact@v4

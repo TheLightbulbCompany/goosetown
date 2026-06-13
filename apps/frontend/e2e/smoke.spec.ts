@@ -80,6 +80,10 @@ test.describe('GooseTown smoke', () => {
     // ``/`` (now the landing page) to ``/town``. The smoke spec was missed
     // in that route move and silently failed on every PR for the next four
     // days. Surfaced 2026-05-04 readiness review.
+    //
+    // The waits below (engine boot + world-state window + sprite poll) sum
+    // well past the suite-default 30s, so this test needs its own budget.
+    test.setTimeout(90_000);
     await page.goto('/town');
     await expect(page.locator('canvas').first()).toBeVisible({ timeout: 20_000 });
 
@@ -92,6 +96,25 @@ test.describe('GooseTown smoke', () => {
       !handlerExists,
       'Live dev deploy predates the JsBridge migration; post-deploy run will enforce.',
     );
+
+    // The canvas mounts well before the Godot engine finishes booting (the
+    // container renders immediately and cached WASM makes the gap tiny but
+    // real), and ``godotUpdateWorldState`` only exists once the engine is
+    // up. Wrapping before that silently installs nothing, so the
+    // world-state wait below could never fire and the test died on its
+    // timeout instead of skipping. Wait for the hook itself, and skip (not
+    // fail) if the engine never comes up — canvas/boot breakage is already
+    // covered by the first smoke test.
+    const engineUp = await page
+      .waitForFunction(
+        () =>
+          typeof (window as unknown as { godotUpdateWorldState?: unknown })
+            .godotUpdateWorldState === 'function',
+        { timeout: 30_000 },
+      )
+      .then(() => true)
+      .catch(() => false);
+    test.skip(!engineUp, 'Godot engine did not boot within 30s.');
 
     // Watch the latest world_state to learn whether any agent is currently
     // connected. The handler can only fire when an agent is in the broadcast.
