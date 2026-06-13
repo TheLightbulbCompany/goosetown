@@ -1,18 +1,22 @@
 """AEX category slug validation + wildcard-subscription helpers (ADR-0007 Wave 2).
 
-All functions here are **pure** (no I/O, no DynamoDB, no state).  They are
-used in two places:
+All functions here are **pure** (no I/O, no DynamoDB, no state).
 
-1. ``ProviderDirectory.register`` — writing subscription rows for a provider.
-   A provider that subscribes to ``technology.code-review`` also gets a row
-   under ``technology`` (the parent), so that a ``technology``-categorised job
-   reaches it.  ``wildcard_parents`` produces the full row-key list.
+**The match model is asymmetric — expand the JOB side only, NEVER the
+provider side.** A provider subscribes to EXACT category keys (``ProviderDirectory``
+writes one row per category, no parents). A job's category is expanded via
+``match_categories``/``wildcard_parents`` to look up subscribers at that level
+*or any parent*. This yields the required semantics: subscribing to a parent
+(``technology``) catches child jobs (``technology.code-review``), but subscribing
+to a child (``technology.code-review``) does NOT catch parent (``technology``)
+or sibling (``technology.data``) jobs. **If you expand BOTH sides that asymmetry
+breaks** — so the only caller of ``wildcard_parents`` is:
 
-2. ``post_job`` synchronous matcher — expanding a job's category to the set of
+   ``post_job`` synchronous matcher — expanding a job's category to the set of
    subscription-table keys to look up.  A job in ``technology.code-review``
-   must match providers subscribed to ``technology.code-review`` *and*
-   providers subscribed to ``technology`` (the wildcard parent).
-   ``match_categories`` is the thin wrapper that makes this intent explicit.
+   matches providers subscribed to ``technology.code-review`` *or* ``technology``
+   (the wildcard parent).  ``match_categories`` is the thin wrapper that makes
+   this intent explicit.
 
 Category format
 ---------------
@@ -111,12 +115,12 @@ def wildcard_parents(category: str) -> list[str]:
     doing exact-match checks can short-circuit, and so the subscription-table
     write order is deterministic and human-readable (skill → domain).
 
-    Used for two distinct purposes:
-    - **Provider subscription writes**: subscribe to ``technology.code-review``
-      → write rows under both ``technology.code-review`` *and* ``technology``
-      so a ``technology``-categorised job still reaches this provider.
-    - **Job category expansion** (via :func:`match_categories`): a job in
-      ``technology.code-review`` must match providers subscribed at any level.
+    Used ONLY for **job category expansion** (via :func:`match_categories`):
+    a job in ``technology.code-review`` is looked up under
+    ``technology.code-review`` and ``technology`` so it reaches providers
+    subscribed at that level or any parent. Provider subscription rows are
+    written with EXACT keys only — see this module's docstring for why
+    expanding the provider side too would break the parent/child asymmetry.
     """
     parts = category.split(".")
     result: list[str] = []
