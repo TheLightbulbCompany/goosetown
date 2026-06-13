@@ -311,8 +311,24 @@ def build_prompt(ctx: DecisionContext) -> str:
     if ctx.active_conversation:
         participants = ", ".join(ctx.active_conversation.get("participants", []) or ["someone"])
         lines.append(f"You are talking with {participants}. Conversation so far:")
-        for turn in ctx.active_conversation.get("turns", []):
-            lines.append(f"    {turn.get('speaker', '?')}: {turn.get('text', '')}")
+        turns = ctx.active_conversation.get("turns", [])
+        human_present = False
+        for turn in turns:
+            speaker = turn.get("speaker", "?")
+            text = turn.get("text", "")
+            if turn.get("speakerType") == "human":
+                # Mark visitor lines so the model reads them as a real person
+                # speaking, not another resident.
+                human_present = True
+                lines.append(f"    {speaker} (a real person visiting GooseTown): {text}")
+            else:
+                lines.append(f"    {speaker}: {text}")
+        if human_present:
+            lines.append(
+                "A real person watching the town has spoken to you directly. "
+                "Acknowledge them and answer naturally, like a resident talking "
+                "to a curious visitor — stay in character."
+            )
 
     if ctx.available_activities:
         lines.append("Things you can do here: " + ", ".join(ctx.available_activities) + ".")

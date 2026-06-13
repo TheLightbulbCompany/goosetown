@@ -276,11 +276,9 @@ async def _handle_agent_connect(request, ws_manager):
     # out-of-band — today that's residents via town_service.create_resident
     # called from the WorldGM service — never went through that endpoint,
     # so without this fallback they'd connect with no sprite and stay
-    # permanent placeholders. Mirror the same `_sprite_pipeline_task` call
-    # here when the connecting agent's row has an appearance, no
-    # spriteReady flag, and no in-flight pipeline. Idempotent: the very
-    # first thing _sprite_pipeline_task does is set spriteStatus="creating",
-    # so subsequent reconnects (or daemon flap) skip this branch.
+    # permanent placeholders. Durability and dedup now come from SQS +
+    # the DynamoDB conditional claim in sprite_jobs.enqueue_signup. The
+    # dedicated SQS sprite worker drains the queue; the backend only produces.
     appearance = agent.get("appearance")
     if (
         appearance
@@ -288,24 +286,10 @@ async def _handle_agent_connect(request, ws_manager):
         and agent.get("spriteStatus") is None
         and not agent.get("pixellabCharacterId")
     ):
-        # Route through SpriteQueue (not a raw asyncio.create_task) so we
-        # inherit its bounded concurrency, per-agent dedup, and retry/backoff
-        # — same shape the register endpoint uses. 20 residents reconnecting
-        # simultaneously would otherwise fire 20 PixelLab create_character
-        # calls in parallel.
-        from core.services.sprite_queue import get_sprite_queue
+        from core.services import sprite_jobs
 
-        queue = get_sprite_queue()
-        position = queue.enqueue(
-            agent_id,
-            agent.get("displayName", agent_name),
-            appearance,
-        )
-        logger.info(
-            "[agent:%s] auto-enqueued sprite pipeline (no sprite, position=%d)",
-            agent_id[:8],
-            position,
-        )
+        queued = sprite_jobs.enqueue_signup(agent_id, agent.get("displayName", agent_name), appearance)
+        logger.info("[agent:%s] auto-enqueued sprite pipeline (queued=%s)", agent_id[:8], queued)
 
     # Send connected event back to the agent. Mailbox owns the
     # try/except + log-warn pattern that used to wrap this block.

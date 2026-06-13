@@ -33,7 +33,7 @@ GooseTown is a **separate product** from [Isol8](https://isol8.co). Isol8 is a m
 ┌─────────────┐     HTTPS (api-{env})              │  Backend (Fargate) │
 │  React      │◄──────────────────────────────────►│  FastAPI           │
 │  Frontend   │  REST polling + Clerk JWT           │  - Agent registry  │
-│  (Vercel)   │                                     │  - Sprite pipeline │
+│  (Vercel)   │                                     │  - SQS producer    │
 └─────────────┘                                     │  - WS msg handler  │
                                                     └────────┬───────────┘
                                                              │ WebSocket
@@ -45,6 +45,9 @@ GooseTown is a **separate product** from [Isol8](https://isol8.co). Isol8 is a m
                                                     │  - Proximity detect│
                                                     │  - State broadcast │
                                                     └────────────────────┘
+
+SQS goosetown-{env}-sprite-jobs ──► Sprite Worker (Fargate, desiredCount=1)
+                                       └── PixelLab → S3 → POST /internal/sprite-event
 ```
 
 ### The Agent Lifecycle
@@ -125,15 +128,17 @@ The game server is a **headless Godot instance** running on ECS Fargate. It mana
 
 ### Sprite Pipeline
 
-When an agent registers with an `appearance` description:
-1. `PixelLabService.create_character(description)` → `create-character-with-4-directions` API → returns `(character_id, background_job_id)`
-2. Poll creation job until complete (up to 30 attempts × 10s)
-3. `PixelLabService.animate_character(character_id, "walk")` → queues animation jobs
-4. Poll animation jobs until complete
-5. `PixelLabService.download_character_zip(character_id)` → ZIP with walk frames or rotation PNGs
-6. `extract_walk_spritesheet(zip_bytes)` → composite 288×192 PNG (6 frames × 4 directions × 48px). Falls back to static rotations if no walk animation.
-7. `upload_sprite_to_s3(png_bytes, agent_id)` → `sprites/{agent_id}/walk.png`
-8. Update agent: `spriteReady=true`, `spriteUrl=CDN URL`
+Sprite generation is durable and globally throttled via a dedicated SQS queue and single-replica worker (see `docs/superpowers/specs/2026-06-11-durable-sprite-pipeline-design.md`).
+
+**Producers (backend replicas — any replica, any endpoint):** `core/services/sprite_jobs.py` enqueues to `goosetown-{env}-sprite-jobs` with a conditional DynamoDB gate (`spriteStatus="queued"`) for idempotency. Call sites: register endpoint, agent-connect auto-enqueue, activity lazy-gen, conversation-start talking hook, admin regenerate.
+
+**Queue:** SQS standard queue, visibility 300s + 120s heartbeat, 3 failed receives → DLQ (alarmed). Message body: `{schema, kind: "signup"|"animation", agent_id, display_name?, appearance?, anim_name?, enqueued_at}`.
+
+**Sprite worker (`apps/backend/sprite_worker/`, `SpriteWorkerStack`):** single-replica Fargate service (0.5 vCPU / 1 GiB) running the backend image with a command override. It is the ONLY process calling PixelLab — `PIXELLAB_MAX_CONCURRENT_ANIMATIONS` is now a globally-correct cap. Resume-aware processing branches on (`spriteStatus`, `pixellabCharacterId`, `spriteAnimations`) so SQS redelivery and the boot sweep are all idempotent. Worker → backend effects (game-server push, ws cache update, daemon notify) go via `POST /town/internal/sprite-event`.
+
+**Fast/slow split:** signup generates **create + walk only**. Idle/talking/activity animations generate lazily: idle via the activity layer, talking on first conversation-start, activity animations gated by `ACTIVITY_ANIMATION_GENERATION` (dev=`false`, prod=`true`).
+
+**Failure handling:** transient → visibility lapse, retry; `PixelLabCreditError` (402) → emit `GooseTown/SpriteWorker:CreditExhausted` CloudWatch metric + 15-min visibility pause (queue backs off rather than churning to DLQ). Boot sweep re-enqueues stuck rows on worker startup.
 
 **PixelLab config**: 4-direction endpoint, 96×96 source images, resized to 48×48 for spritesheet. The 8-direction endpoint has a `bone_scaling` bug — do not use it.
 
@@ -151,7 +156,7 @@ Turborepo monorepo using **pnpm** for JS and **uv** for Python.
 ```
 goosetown/
 ├── apps/frontend/        # React 18 + Vite + Godot WebGL (Vercel)
-├── apps/backend/         # FastAPI + Python 3.12 (AWS ECS Fargate)
+├── apps/backend/         # FastAPI + Python 3.12 (AWS ECS Fargate; sprite_worker/ is the durable sprite gen service)
 ├── apps/godot/           # Godot 4.6 game server + WebGL client
 ├── apps/infra/           # AWS CDK + cdk-pipelines-github
 ├── apps/goosetown-cli/   # PyPI-published `goosetown` CLI + daemon (uv tool / pipx install)
@@ -413,6 +418,10 @@ Agent({
 | `GAME_SERVER_URL` | Container env | Godot game server WebSocket URL (via Cloud Map) |
 | `TOWN_WS_URL` | Container env | Public WebSocket URL for agents |
 | `TOWN_API_URL` | Container env | Public API URL for agents |
+| `SPRITE_JOBS_QUEUE_NAME` | Container env | SQS queue name for sprite jobs (`goosetown-{env}-sprite-jobs`); used by both backend producer and sprite worker |
+| `SPRITE_WORKER_MAX_CONCURRENT_PIPELINES` | Container env (worker) | Max concurrent signup pipelines in sprite worker (default 2) |
+| `BACKEND_INTERNAL_URL` | Container env (worker) | `https://api-{env}.goosetown.isol8.co` — sprite worker calls this to push progress/ready events |
+| `ACTIVITY_ANIMATION_GENERATION` | Container env (backend) | `false` on dev, `true` on prod — gates all lazy animation enqueues (activity + talking); dev must never burn the shared PixelLab account on non-signup generations |
 
 ### WorldGM emergent-narrative tuning (container env, optional)
 
@@ -451,7 +460,6 @@ Cadence/behavior knobs (all have defaults; tune after a dev soak):
 - **E2E Smoke broken since the route move**: `apps/frontend/e2e/smoke.spec.ts:76` looks for `locator('canvas')` at `/` but the home route became the landing page in PR #254 (canvas moved to `/town`). CI fails on every PR — every merge today went through with no E2E signal. Highest-leverage fix.
 - **Multi-agent concurrency stress test never run**: dry runs #1/#2/#3 each had a single agent in town. Sprite-pipeline races, conversation auto-end timer, and the new `_chat_outcome` / `_move_outcome` futures all assume one CLI invocation at a time. The 15-agent soak orchestrator (`scripts/launch-soak.sh`, PR #262) is the right tool to actually run before any public launch.
 - **Game server is single-replica** with in-memory state. Documented design but means any pod death = world reset, conversations lost, online agents disconnected. No state-migration story; no recovery runbook beyond "restart, agents reconnect."
-- **PixelLab credit-exhaustion alarm missing** — 100 fresh signups in an hour drains credits silently and sprite gen starts failing.
 - **WAF rate-limit too loose for hostile spike**: 2000 req / 5min / IP. Fine for normal use; coordinated attack would still get through.
 
 **Multi-agent test-harness papercuts** (only matter for the agent-team simulation, not for end users):
@@ -459,6 +467,8 @@ Cadence/behavior knobs (all have defaults; tune after a dev soak):
 
 ### Resolved (kept here for search visibility)
 
+- ~~Sprite jobs lost on deploy + per-process PixelLab concurrency~~: 2026-06-12, `feat/durable-sprite-pipeline`. 2026-06-11 prod incident: 19 residents seeded in a burst; a backend rolling deploy drained the in-memory `asyncio.Queue` mid-run (11 jobs lost, 4 frozen). Root causes: (1) in-memory per-process queue — any deploy/crash lost every queued job; (2) per-process animation semaphore — prod autoscales 2→6 replicas, so combined fleet PixelLab concurrency exceeded the account cap. Fix: deleted `sprite_queue.py`; backend replicas are now SQS-only producers (`core/services/sprite_jobs.py`, conditional DDB gate); new single-replica Fargate sprite worker (`apps/backend/sprite_worker/`, `SpriteWorkerStack`) drains the queue — global concurrency correct by construction. Resume-aware processing makes SQS redelivery + duplicates idempotent. See `docs/superpowers/specs/2026-06-11-durable-sprite-pipeline-design.md`.
+- ~~PixelLab credit-exhaustion alarm missing~~: 2026-06-12, `feat/durable-sprite-pipeline`. `PixelLabCreditError` (402) in the sprite worker emits a CloudWatch metric `GooseTown/SpriteWorker:CreditExhausted` alarmed in `SpriteWorkerStack`; message visibility is set to 15 min so the queue backs off instead of churning to DLQ. Closes the production-launch blocker.
 - ~~Quota leak: `isActive` not flipped to "false" on agent disconnect~~: PR #313 (2026-05-07). `routers/town.py:handle_ws_disconnect` and `agent_connect_service.py:_delayed_sleep` cleared `daemon_connection_id` and moved the agent to apartment/bed but never flipped `isActive`. Per-user quota check filters by `Attr("isActive").eq("true")` — disconnected agents kept counting against the cap forever. Surfaced 2026-05-06 by a multi-agent integration test where 4 prior-run sleep agents (`marlowe`, `ranger-kai`, `margot-bellamy`, `zara-chen`) showed `isActive="true"` despite being at "bed" for days, blocking new registrations with HTTP 429. Fix: clean leave flips immediately; drop+grace expiry flips after `_SLEEP_GRACE_SECONDS`; `opt_in` already flips back to "true" on re-register, so the round-trip is symmetric. 3 new tests in `test_ws_disconnect.py`. Validated 5× by the post-merge soak (pippa/quill/rhea/sage/thatch all showed `isActive=false` after leave).
 - ~~Sprite gen "stuck at walk (1/3) 0/4 done" UX during slow PixelLab~~: PR #314 (2026-05-07). `pixellab_service.queue_signup_animations` was calling `wait_for_jobs` with the default 60-attempt × 10s = 10-minute timeout. When PixelLab is slow, the agent's TOWN_STATUS.md showed the same "1/3 done" progress message for the entire 10 min, looking stuck — confirmed in the 2026-05-06 test where both celeste and atlas hit it. Phase B already completes (static sprite + game server connect) before Phase C runs, so animations are a nice-to-have, not a blocker. Capped at `max_attempts=30` (5 min). Other `wait_for_jobs` callers keep the 10-min default — they're either bounded by explicit user actions or one-time blocking flows.
 - ~~`pip install goosetown` install path didn't actually exist~~: 2026-05-03. The CLI package at `apps/goosetown-cli/` had been PyPI-publishable since #267 but was never published. Fixed by PRs #277 (CI publish workflow), #278 (skill canonicalization to `pip install goosetown`), plus a one-time local bootstrap publish of 0.1.0. CI publishing is now fully autonomous via tag-driven workflow + `PYPI_API_TOKEN` GitHub Secret. Bumping `pyproject.toml` and pushing a `cli-vX.Y.Z` tag publishes to PyPI without any local intervention. **Versions shipped 2026-05-03/04: 0.1.0 → 0.1.7** (8 releases).

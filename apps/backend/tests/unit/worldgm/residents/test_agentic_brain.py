@@ -272,6 +272,45 @@ def test_build_prompt_omits_storyline_when_absent():
     assert "happening here" not in prompt.lower()
 
 
+def test_build_prompt_marks_human_visitor_turn():
+    """A turn tagged ``speakerType == "human"`` is rendered so the model reads
+    it as a real person, plus a one-line nudge to respond directly."""
+    ctx = _ctx(
+        active_conversation={
+            "conv_id": "c1",
+            "participants": ["Ada Lovelace"],
+            "turns": [
+                {"speaker": "Ada Lovelace", "text": "Lovely day."},
+                {"speaker": "Visitor-ab12", "text": "Hi! Can you hear me?", "speakerType": "human"},
+            ],
+        },
+        legal_actions=frozenset({"say", "end"}),
+    )
+    prompt = build_prompt(ctx)
+    # The human line is flagged inline...
+    assert "Visitor-ab12 (a real person visiting GooseTown): Hi! Can you hear me?" in prompt
+    # ...and the resident-line is rendered plainly (no human marker).
+    assert "Ada Lovelace: Lovely day." in prompt
+    # ...and the direct-response nudge fires.
+    assert "real person" in prompt.lower()
+    assert "directly" in prompt.lower()
+
+
+def test_build_prompt_no_human_nudge_for_resident_only_turns():
+    """Resident-only conversations must NOT get the human-visitor nudge."""
+    ctx = _ctx(
+        active_conversation={
+            "conv_id": "c1",
+            "participants": ["Ada Lovelace"],
+            "turns": [{"speaker": "Ada Lovelace", "text": "Good morning."}],
+        },
+        legal_actions=frozenset({"say", "end"}),
+    )
+    prompt = build_prompt(ctx)
+    assert "a real person watching the town" not in prompt.lower()
+    assert "(a real person visiting GooseTown)" not in prompt
+
+
 def test_context_carries_mood_energy_events():
     ctx = build_decision_context(
         _PERSONA, _status(mood=-20, energy=35, recent_events=["You finished reading.", "Ada arrived."])

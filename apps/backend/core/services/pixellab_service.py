@@ -88,7 +88,9 @@ _LOOP_SUFFIX = "Looping animation cycle: the final frame returns to the same pos
 ANIMATION_REGISTRY: dict[str, dict] = {
     # Templates (1 gen/direction, auto all directions)
     "walk": {"type": "template", "template_id": "walk", "fps": 8.0, "auto_generate": True},
-    "idle": {"type": "template", "template_id": "breathing-idle", "fps": 4.0, "auto_generate": True},
+    # lazily generated (fast/slow split, spec 2026-06-11) —
+    # idle via the activity layer, talking via the conversation-start hook
+    "idle": {"type": "template", "template_id": "breathing-idle", "fps": 4.0, "auto_generate": False},
     "drink": {
         "type": "custom",
         "auto_generate": False,
@@ -214,15 +216,28 @@ ANIMATION_REGISTRY: dict[str, dict] = {
             "settling back into peaceful stillness. " + _LOOP_SUFFIX
         ),
     },
+    # lazily generated (fast/slow split, spec 2026-06-11) —
+    # idle via the activity layer, talking via the conversation-start hook
     "talking": {
         "type": "custom",
-        "auto_generate": True,
+        "auto_generate": False,
         "frames": 8,
         "fps": 4.0,
         "prompt": (
             "Standing upright with one hand raised gesturing, then lowering "
             "as head nods, other hand opening palm-up briefly, weight shifting "
             "subtly, ending in a settled speaking posture. " + _LOOP_SUFFIX
+        ),
+    },
+    "dance": {
+        "type": "custom",
+        "auto_generate": False,
+        "frames": 8,
+        "fps": 8.0,
+        "prompt": (
+            "Dancing energetically in place, hips and shoulders swaying side "
+            "to side to a beat, arms pumping up and down alternately, small "
+            "bounce in the knees on each step. " + _LOOP_SUFFIX
         ),
     },
 }
@@ -518,29 +533,27 @@ class PixelLabService:
         character_id: str,
         on_progress: Callable[[str], Coroutine[Any, Any, None]] | None = None,
     ) -> dict[str, dict[str, list[bytes]]]:
-        """Generate every auto_generate signup animation (walk, idle, talking)
-        sequentially via generate_animation. Returns
+        """Generate every auto_generate signup animation (walk only — idle and
+        talking generate lazily) sequentially via generate_animation. Returns
         {anim_name: {direction: [png_bytes]}} for the caller to composite.
 
         Each animation is generated end-to-end (submit + poll + collect frames)
         behind the global concurrency gate inside ``generate_animation``. Running
-        them sequentially keeps us under PixelLab's concurrent-job ceiling. A
-        single animation failing logs + yields ``{}`` for that name so the rest
-        of signup still completes — the agent already operates on the static
-        sprite from Phase B, so animations are a nice-to-have, not a blocker.
+        them sequentially keeps us under PixelLab's concurrent-job ceiling.
+
+        Failures PROPAGATE — the SQS worker's retry/DLQ owns them. With
+        SIGNUP_ANIMATIONS == {"walk"} there are no "others" to continue with,
+        and swallowing the failure would let the pipeline mark the agent
+        ``spriteStatus="complete"`` on the Phase B static placeholder (silent
+        degradation, invisible to the boot sweep). The agent keeps operating
+        on the Phase B static sprite between retries.
         """
         results: dict[str, dict[str, list[bytes]]] = {}
         items = list(SIGNUP_ANIMATIONS.items())
         for idx, (name, _config) in enumerate(items):
-            try:
-                frames = await self.generate_animation(character_id, name, on_progress=on_progress, max_attempts=30)
-                results[name] = frames
-                logger.info("Signup animation %s: %d/%d directions", name, len(frames), len(CARDINAL_4))
-            except PixelLabCreditError:
-                raise
-            except Exception:
-                logger.exception("Signup animation %r failed for %s — continuing", name, character_id)
-                results[name] = {}
+            frames = await self.generate_animation(character_id, name, on_progress=on_progress, max_attempts=30)
+            results[name] = frames
+            logger.info("Signup animation %s: %d/%d directions", name, len(frames), len(CARDINAL_4))
         return results
 
     async def fetch_all_rotations(self, character_id: str) -> dict[str, bytes]:

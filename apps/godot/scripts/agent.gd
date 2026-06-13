@@ -93,6 +93,9 @@ var _viewer_interp: bool = false
 var _interp_prev: Vector2 = Vector2.ZERO
 var _interp_target: Vector2 = Vector2.ZERO
 var _interp_start_ms: int = 0
+## Timestamp of the previous _physics_process tick (ms). Used for tab-refocus detection:
+## a wall-clock gap > REFOCUS_DELTA_THRESHOLD_MS means the render loop was paused.
+var _last_physics_ms: int = 0
 ## Nominal time to traverse between two broadcasts. Matches game server broadcast cadence.
 const INTERP_DURATION_MS: int = 2000
 ## Threshold (in pixels) for a journey to count as "walking" in viewer mode.
@@ -106,6 +109,15 @@ const MIN_WALK_INTERP_DIST: float = 4.0
 ## 30 s gives normal network jitter ~15× headroom while still catching the real
 ## case (browser tab backgrounded, render loop frozen, broadcasts queue up).
 const STALE_INTERP_THRESHOLD_MS: int = 30000
+## Wall-clock gap (ms) between consecutive _physics_process ticks that indicates the
+## browser paused the render loop (tab backgrounded). Godot 4.x web exports run
+## _physics_process at a fixed timestep — delta is always ~1/60 s regardless of
+## wall-clock gaps, so delta inspection is useless here. Instead we compare
+## Time.get_ticks_msec() between ticks: a gap > 500 ms is impossible under normal
+## gameplay (60 Hz physics = 16.7 ms/tick) and reliably signals a refocus event.
+## On refocus we snap each agent to _interp_target and reset the interp timers so
+## the NEXT broadcast resumes normal lerping from the correct position.
+const REFOCUS_DELTA_THRESHOLD_MS: int = 500
 ## Cached AtlasTexture instances keyed by "animation/facing" to avoid per-frame allocations
 var _atlas_cache: Dictionary = {}
 
@@ -173,6 +185,12 @@ const SPEECH_TOP_CLEARANCE: float = 4.0
 func _ready() -> void:
 	if speech_container:
 		speech_container.visible = false
+		# Make the bubble receive mouse input and look clickable.
+		# NinePatchRect defaults to MOUSE_FILTER_STOP (0) in Godot 4 so it already
+		# captures clicks; set it explicitly here so the intent is self-documenting.
+		speech_container.mouse_filter = Control.MOUSE_FILTER_STOP
+		speech_container.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+		speech_container.gui_input.connect(_on_bubble_gui_input)
 	if nameplate:
 		nameplate.visible = false
 	# Connect avoidance callback for RVO steering
@@ -188,7 +206,25 @@ func _physics_process(delta: float) -> void:
 		# Viewer mode — snapshot interpolation between server broadcasts.
 		# Server broadcasts are authoritative; viewer just smoothly moves
 		# from the previous broadcast position to the latest one.
-		var elapsed_ms: int = Time.get_ticks_msec() - _interp_start_ms
+		#
+		# Tab-refocus snap (BUG 4): Godot 4.x web exports use a fixed physics
+		# timestep so delta is always ~1/60 s — it does NOT balloon on refocus.
+		# Instead we measure the wall-clock gap via Time.get_ticks_msec(). When
+		# the browser backgrounds the tab, _physics_process halts but the WS
+		# keeps delivering world_state, so _interp_target advances while
+		# global_position is frozen. On refocus the lerp would "wind-up slide"
+		# agents from the stale frozen position. Detect this by comparing the
+		# current tick time to _last_physics_ms: a gap > REFOCUS_DELTA_THRESHOLD_MS
+		# (500 ms) is impossible under normal 60 Hz physics and reliably signals
+		# a pause. On detection, snap to _interp_target and reset the interp
+		# window so the next broadcast starts a fresh, correct lerp.
+		var now_ms: int = Time.get_ticks_msec()
+		if _last_physics_ms > 0 and (now_ms - _last_physics_ms) > REFOCUS_DELTA_THRESHOLD_MS:
+			global_position = _interp_target
+			_interp_prev = _interp_target
+			_interp_start_ms = now_ms
+		_last_physics_ms = now_ms
+		var elapsed_ms: int = now_ms - _interp_start_ms
 		var t: float = clampf(float(elapsed_ms) / float(INTERP_DURATION_MS), 0.0, 1.0)
 		var new_pos: Vector2 = _interp_prev.lerp(_interp_target, t)
 		var delta_vec: Vector2 = new_pos - global_position
@@ -265,7 +301,17 @@ func _physics_process(delta: float) -> void:
 		var fps: float = cfg.get("fps", DEFAULT_FPS)
 		var fc: int = cfg.get("frame_count", DEFAULT_FRAME_COUNT)
 
-		if _is_moving or _current_animation != "walk":
+		# Advance frames when:
+		#   (a) the agent is physically moving,
+		#   (b) a non-walk animation is playing (dedicated activity sheet loaded), OR
+		#   (c) an activity is active but the proper sheet is missing so we're
+		#       falling back to walk — cycle walk frames so the agent looks alive
+		#       rather than freezing on frame 0 (BUG 2: frozen "talking" sprites).
+		var activity_override: bool = (
+			current_activity != ""
+			and current_activity in ACTIVITY_ANIMATION
+		)
+		if _is_moving or _current_animation != "walk" or activity_override:
 			_anim_timer += delta
 			if _anim_timer >= 1.0 / fps:
 				_anim_timer -= 1.0 / fps
@@ -321,14 +367,66 @@ func move_to(x: float, y: float, facing_json: String, speed: float) -> void:
 func update_state(data: Dictionary) -> void:
 	var text: String = str(data.get("speechText", ""))
 	if text != "" and text != speech_text:
+		# Store the full text so a future "click to expand" feature can use it.
+		# TODO: hook _on_bubble_clicked to show the full `speech_text` in a React
+		# overlay when the user clicks the bubble (full conversation expansion —
+		# not built here, will be wired on the React side).
 		speech_text = text
-		speech_text_label.text = text
+		speech_text_label.text = _truncate_for_bubble(text)
 		_show_speech_bubble()
 		if nameplate:
 			nameplate.visible = false
 	elif text == "":
 		speech_text = ""
 		_hide_speech_bubble()
+
+
+## Return a display-safe excerpt of ``text`` for the speech bubble (BUG 5).
+## Keeps at most the first ~2 sentences OR ~120 characters, whichever is
+## shorter, appending "…" when the full text was truncated.
+## The full original text is preserved in ``speech_text`` for future use.
+func _truncate_for_bubble(text: String) -> String:
+	const MAX_CHARS: int = 120
+	const MAX_SENTENCES: int = 2
+
+	# Split on sentence-ending punctuation followed by a space so we don't split
+	# mid-word on e.g. "Dr. Smith". Delimiters tried in order: ". ", "! ", "? ".
+	var delimiters: Array[String] = [". ", "! ", "? "]
+	var sentence_ends: Array[int] = []
+	for delim in delimiters:
+		var search_start: int = 0
+		while true:
+			var idx: int = text.find(delim, search_start)
+			if idx == -1:
+				break
+			# Record the position AFTER the delimiter (end of the sentence incl. punct).
+			sentence_ends.append(idx + delim.length() - 1)
+			search_start = idx + delim.length()
+
+	# Sort ascending so we can pick the Nth sentence boundary.
+	sentence_ends.sort()
+
+	# Candidate cut point = end of the MAX_SENTENCES-th sentence (0-indexed).
+	var sentence_cut: int = -1
+	if sentence_ends.size() >= MAX_SENTENCES:
+		sentence_cut = sentence_ends[MAX_SENTENCES - 1] + 1  # +1 to include trailing space-or-end
+
+	# Hard-char cut at MAX_CHARS.
+	var char_cut: int = MAX_CHARS if text.length() > MAX_CHARS else -1
+
+	# Pick the shortest valid cut.
+	var cut: int = -1
+	if sentence_cut != -1 and char_cut != -1:
+		cut = mini(sentence_cut, char_cut)
+	elif sentence_cut != -1:
+		cut = sentence_cut
+	elif char_cut != -1:
+		cut = char_cut
+
+	if cut == -1 or cut >= text.length():
+		return text  # Text already short enough — return as-is.
+
+	return text.substr(0, cut).rstrip(" ") + "…"
 
 
 func _show_speech_bubble() -> void:
@@ -711,3 +809,20 @@ func _on_velocity_computed(safe_velocity: Vector2) -> void:
 	velocity = safe_velocity
 	_update_facing_from_velocity(velocity)
 	move_and_slide()
+
+
+func _on_bubble_gui_input(event: InputEvent) -> void:
+	## Emit a React CustomEvent when the user clicks the speech bubble.
+	## Only fires when the bubble is visible and has content, and only on
+	## left-mouse-button release (to avoid double-firing on press+release).
+	## Guards against an empty agent_id — the event would be meaningless.
+	if not (event is InputEventMouseButton):
+		return
+	var mb: InputEventMouseButton = event as InputEventMouseButton
+	if mb.button_index != MOUSE_BUTTON_LEFT or mb.pressed:
+		return
+	if not speech_container.visible or speech_text == "":
+		return
+	if agent_id == "":
+		return
+	JsBridge.emit_to_react("goosetown_bubble_clicked", {"agentId": agent_id, "agentName": display_name})

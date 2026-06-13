@@ -22,11 +22,30 @@ class Settings:
     WS_MANAGEMENT_API_URL: str = os.getenv("WS_MANAGEMENT_API_URL", "")
     GAME_SERVER_URL: str = os.getenv("GAME_SERVER_URL", "ws://localhost:8080")
     WS_LAMBDA_SECRET: str = os.getenv("WS_LAMBDA_SECRET", "")
+    # Shared secret for the sprite worker -> backend /town/internal/sprite-event
+    # seam. Unlike WS_LAMBDA_SECRET (never wired end-to-end — see the note in
+    # validate() below), CDK wires this into BOTH the backend (compute-stack)
+    # and the sprite worker (sprite-worker-stack), so the gate is real.
+    SPRITE_EVENT_SECRET: str = os.getenv("SPRITE_EVENT_SECRET", "")
     # Set WS_STRICT_VALIDATION=false to roll back to legacy dict-based body handling for 48h post-deploy
     WS_STRICT_VALIDATION: bool = os.getenv("WS_STRICT_VALIDATION", "true").lower() != "false"
     PIXELLAB_MAX_CONCURRENT_ANIMATIONS: int = int(os.environ.get("PIXELLAB_MAX_CONCURRENT_ANIMATIONS", "2"))
     PIXELLAB_POOL_MAX_CONNECTIONS: int = int(os.environ.get("PIXELLAB_POOL_MAX_CONNECTIONS", "10"))
     PIXELLAB_POOL_MAX_KEEPALIVE: int = int(os.environ.get("PIXELLAB_POOL_MAX_KEEPALIVE", "5"))
+
+    # ── Durable sprite pipeline (spec 2026-06-11) ──────────────────────────
+    # Gates ALL lazy-animation enqueues (activity anims + the talking hook).
+    # Default true; the dev backend sets ACTIVITY_ANIMATION_GENERATION=false
+    # via CDK (compute-stack) so dev never burns the shared PixelLab account
+    # on lazy generation. Signup walk generation is unaffected by this flag.
+    ACTIVITY_ANIMATION_GENERATION: bool = os.environ.get("ACTIVITY_ANIMATION_GENERATION", "true").lower() != "false"
+    SPRITE_JOBS_QUEUE_NAME: str = os.environ.get(
+        "SPRITE_JOBS_QUEUE_NAME", f"goosetown-{os.getenv('ENVIRONMENT', 'dev')}-sprite-jobs"
+    )
+    SPRITE_WORKER_MAX_CONCURRENT_PIPELINES: int = int(os.environ.get("SPRITE_WORKER_MAX_CONCURRENT_PIPELINES", "2"))
+    # Base URL of the backend ALB, used by the sprite worker to POST
+    # /town/internal/sprite-event. Empty in the backend itself.
+    BACKEND_INTERNAL_URL: str = os.environ.get("BACKEND_INTERNAL_URL", "")
 
     def validate(self) -> None:
         """Validate required env vars. Raises RuntimeError in non-dev environments if critical vars are missing."""

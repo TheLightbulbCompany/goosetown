@@ -7,6 +7,12 @@ characters from The Office and four public-domain literary figures. The
 reads as the person at 48px: strong silhouette, signature hair, signature
 outfit, signature colors.
 
+Accuracy note (2026-06-12): PixelLab text-to-pixel-art renders only what is
+spelled out and defaults the rest to light skin — so EVERY persona states skin
+tone explicitly. An earlier pass omitted it, which made the Black figures
+(Obama, LeBron, Kanye, Juice WRLD, Kevin Hart) render light-skinned. Hair must
+also be exact (e.g. Kanye is bald, not short-haired).
+
 Sleep windows are staggered for town rhythm; Dracula is fully nocturnal.
 """
 
@@ -22,9 +28,9 @@ PROD_RESIDENT_PERSONAS: list[Persona] = [
             "and abundance; speaks softly, thinks in decades, quietly competitive."
         ),
         appearance=(
-            "Young man with short neat brown hair and light stubble, calm slight "
-            "smile, plain grey crew-neck sweater over a white tee, dark jeans, "
-            "white sneakers."
+            "Light-skinned white man in his late 30s with short neat side-parted "
+            "brown hair, clean-shaven boyish face, grey zip-up sweater over a "
+            "white tee, dark jeans, white sneakers."
         ),
         traits=("ambitious", "measured", "futurist"),
         hangout="cafe",
@@ -40,8 +46,9 @@ PROD_RESIDENT_PERSONAS: list[Persona] = [
             "everything."
         ),
         appearance=(
-            "Tall broad-shouldered man with short dark-brown hair, square jaw and "
-            "slight smirk, plain black t-shirt, black jeans, black boots."
+            "Light-skinned white man, tall and slightly stocky, with short "
+            "dark-brown hair receding at the temples and a faint smirk, plain "
+            "black t-shirt, black jeans, black boots."
         ),
         traits=("restless", "provocative", "builder"),
         hangout="activity_center",
@@ -58,9 +65,9 @@ PROD_RESIDENT_PERSONAS: list[Persona] = [
             "stops campaigning."
         ),
         appearance=(
-            "Heavyset older man with swept-back golden-blond combover, "
-            "orange-tan skin, navy blue suit with white shirt and extra-long "
-            "bright red tie, American flag lapel pin."
+            "Heavyset older white man with an orange-tan complexion and a "
+            "swept-back golden-blond combover, navy blue suit, white shirt, "
+            "extra-long bright red tie, American flag lapel pin."
         ),
         traits=("brash", "confident", "showman"),
         hangout="plaza",
@@ -75,9 +82,9 @@ PROD_RESIDENT_PERSONAS: list[Persona] = [
             "'here's the deal'; loves ice cream, trains, and a firm handshake."
         ),
         appearance=(
-            "Slender older man with thin neatly combed white hair and a broad "
-            "white-toothed smile, navy suit with light blue tie, dark aviator "
-            "sunglasses."
+            "Slender older light-skinned white man with thin neatly combed white "
+            "hair and a bright white-toothed smile, navy suit with light blue "
+            "tie, dark aviator sunglasses."
         ),
         traits=("folksy", "warm", "earnest"),
         hangout="cafe",
@@ -92,9 +99,9 @@ PROD_RESIDENT_PERSONAS: list[Persona] = [
             "mid-sentence to pick the precise word, hoops on weekends."
         ),
         appearance=(
-            "Tall slim man with very short greying black hair, prominent ears, "
-            "warm smile, crisp white dress shirt with sleeves rolled up, dark "
-            "grey slacks."
+            "Tall slim Black man with medium-brown skin, very short black hair "
+            "greying at the temples, prominent ears, warm smile, crisp white "
+            "dress shirt with sleeves rolled up, dark grey slacks."
         ),
         traits=("eloquent", "calm", "thoughtful"),
         hangout="library",
@@ -111,9 +118,10 @@ PROD_RESIDENT_PERSONAS: list[Persona] = [
             "breath."
         ),
         appearance=(
-            "Very tall muscular man with short black hair and full black beard, "
-            "white headband, sleeveless purple-and-gold basketball jersey with "
-            "the number 23, matching shorts, white sneakers."
+            "Very tall, broad and muscular Black man with dark-brown skin, short "
+            "black hair with a receding hairline, full black beard, white "
+            "headband, sleeveless purple-and-gold basketball jersey with the "
+            "number 23, matching shorts, white sneakers."
         ),
         traits=("competitive", "driven", "leader"),
         hangout="activity_center",
@@ -130,9 +138,9 @@ PROD_RESIDENT_PERSONAS: list[Persona] = [
             "friends."
         ),
         appearance=(
-            "Tall slender woman with shoulder-length blonde hair and straight "
-            "bangs, fair skin, blue eyes, bright red lipstick, sparkly silver "
-            "fringe dress, red heels."
+            "Tall slender fair-skinned white woman with shoulder-length blonde "
+            "hair and straight bangs, blue eyes, bright red lipstick, sparkly "
+            "silver fringe dress, red heels."
         ),
         traits=("earnest", "clever", "romantic"),
         hangout="plaza",
@@ -147,9 +155,9 @@ PROD_RESIDENT_PERSONAS: list[Persona] = [
             "spot; warm, open about his struggles, endlessly creative."
         ),
         appearance=(
-            "Young man with short dark dreadlocks, small face tattoos, layered "
-            "silver chains, oversized colorful graphic hoodie, ripped jeans, "
-            "bright sneakers."
+            "Young Black man with medium-brown skin, short dark dreadlocks, small "
+            "face tattoos, layered silver chains, oversized colorful graphic "
+            "hoodie, ripped jeans, bright sneakers."
         ),
         traits=("creative", "emotive", "melodic"),
         hangout="library",
@@ -164,9 +172,9 @@ PROD_RESIDENT_PERSONAS: list[Persona] = [
             "rock stories and laughs at himself before you can."
         ),
         appearance=(
-            "Pale older man with long straight jet-black hair parted in the "
-            "middle, round purple-tinted glasses, black trench coat over a black "
-            "shirt, silver cross necklace and chunky rings."
+            "Pale light-skinned older white man with long straight jet-black hair "
+            "parted in the middle, round purple-tinted glasses, black trench coat "
+            "over a black shirt, silver cross necklace and chunky rings."
         ),
         traits=("wild", "funny", "legendary"),
         hangout="cafe",
@@ -182,8 +190,9 @@ PROD_RESIDENT_PERSONAS: list[Persona] = [
             "sincerity."
         ),
         appearance=(
-            "Stocky man with very short black hair and a serious stare, oversized "
-            "plain taupe jacket, baggy beige cargo pants, chunky tan boots."
+            "Stocky Black man with brown skin and a clean-shaven bald head, "
+            "serious blank stare, oversized plain taupe jacket, baggy beige cargo "
+            "pants, chunky tan boots."
         ),
         traits=("bold", "grandiose", "creative"),
         hangout="activity_center",
@@ -199,9 +208,9 @@ PROD_RESIDENT_PERSONAS: list[Persona] = [
             "grinding at 5am, turns every mishap into a bit."
         ),
         appearance=(
-            "Short muscular man with close-cropped black hair and trimmed beard, "
-            "huge grin, fitted black athletic t-shirt, gold chain, dark jeans, "
-            "fresh white sneakers."
+            "Very short, muscular Black man with brown skin, close-cropped black "
+            "hair and a trimmed beard, huge grin, fitted black athletic t-shirt, "
+            "gold chain, dark jeans, fresh white sneakers."
         ),
         traits=("energetic", "funny", "hustler"),
         hangout="plaza",
@@ -216,9 +225,9 @@ PROD_RESIDENT_PERSONAS: list[Persona] = [
             "directors mid-conversation and sketches in the margins."
         ),
         appearance=(
-            "Slim pale young man with a mop of dark curly hair, sharp jawline, "
-            "intense green eyes, vintage black peacoat over a knit scarf, slim "
-            "dark trousers."
+            "Slim pale light-skinned young white man with a mop of dark brown "
+            "curly hair, sharp jawline, intense green eyes, vintage black peacoat "
+            "over a knit scarf, slim dark trousers."
         ),
         traits=("artsy", "intense", "charming"),
         hangout="cafe",
@@ -234,8 +243,9 @@ PROD_RESIDENT_PERSONAS: list[Persona] = [
             "sincerity with a smirk but is the most loyal friend in town."
         ),
         appearance=(
-            "Tall man with floppy short brown hair and an easy smirk, light blue "
-            "dress shirt with sleeves rolled, dark loosened tie, khaki trousers."
+            "Tall light-skinned white man with floppy short brown hair and an "
+            "easy smirk, light blue dress shirt with sleeves rolled, dark "
+            "loosened tie, khaki trousers."
         ),
         traits=("witty", "laid-back", "prankster"),
         hangout="cafe",
@@ -247,9 +257,9 @@ PROD_RESIDENT_PERSONAS: list[Persona] = [
         display_name="Pam Beesly",
         personality=("Kind, quietly funny artist who notices everything; braver than she gives herself credit for."),
         appearance=(
-            "Fair-skinned woman with wavy light-brown hair pinned half back, "
-            "soft smile, pale pink cardigan over a white blouse, grey skirt, "
-            "small sketchbook in hand."
+            "Fair-skinned white woman with wavy light-brown hair pinned half "
+            "back, soft smile, pale pink cardigan over a white blouse, grey "
+            "skirt, small sketchbook in hand."
         ),
         traits=("kind", "artistic", "observant"),
         hangout="library",
@@ -265,9 +275,9 @@ PROD_RESIDENT_PERSONAS: list[Persona] = [
             "ordinary."
         ),
         appearance=(
-            "Pale man with center-parted short brown hair, rimless rectangular "
-            "glasses, serious expression, mustard short-sleeve shirt with brown "
-            "tie, brown suit trousers."
+            "Light-skinned white man with a short brown bowl-cut and rimless "
+            "rectangular glasses, stern humorless expression, mustard-yellow "
+            "short-sleeve dress shirt with a brown tie, brown trousers."
         ),
         traits=("intense", "loyal", "eccentric"),
         hangout="activity_center",
@@ -283,9 +293,9 @@ PROD_RESIDENT_PERSONAS: list[Persona] = [
             "impulsive, devoted, forever looking for Juliet."
         ),
         appearance=(
-            "Handsome young man with tousled chestnut hair, billowy white "
-            "Renaissance shirt under a deep blue doublet, dark tights, leather "
-            "boots, single red rose in hand."
+            "Light-skinned handsome young man with tousled chestnut hair, billowy "
+            "white Renaissance shirt under a deep blue doublet, dark tights, "
+            "leather boots, single red rose in hand."
         ),
         traits=("romantic", "impulsive", "poetic"),
         hangout="plaza",
@@ -299,8 +309,9 @@ PROD_RESIDENT_PERSONAS: list[Persona] = [
             "Spirited and quick-witted beneath courtly grace; devoted to Romeo and braver than the whole town combined."
         ),
         appearance=(
-            "Young woman with long flowing auburn hair under a delicate gold "
-            "circlet, flowing crimson-and-gold Renaissance gown, soft slippers."
+            "Fair-skinned young woman with long flowing auburn hair under a "
+            "delicate gold circlet, flowing crimson-and-gold Renaissance gown, "
+            "soft slippers."
         ),
         traits=("spirited", "devoted", "poetic"),
         hangout="library",
@@ -315,9 +326,9 @@ PROD_RESIDENT_PERSONAS: list[Persona] = [
             "stare; sleeps through daylight and holds court after dark."
         ),
         appearance=(
-            "Gaunt pale man with slicked-back black hair and a widow's peak, red "
-            "eyes, faint fanged smile, high-collared black cape with blood-red "
-            "lining over a formal black suit, gold medallion."
+            "Gaunt, deathly-pale man with slicked-back black hair and a sharp "
+            "widow's peak, red eyes, faint fanged smile, high-collared black cape "
+            "with blood-red lining over a formal black suit, gold medallion."
         ),
         traits=("courtly", "menacing", "nocturnal"),
         hangout="residence",
@@ -334,8 +345,8 @@ PROD_RESIDENT_PERSONAS: list[Persona] = [
         ),
         appearance=(
             "Towering broad-shouldered creature with a flat-topped head, pale "
-            "green stitched skin, metal bolts on his neck, heavy-lidded eyes, "
-            "ragged dark coat with sleeves too short, heavy black boots."
+            "sickly-green stitched skin, metal bolts on his neck, heavy-lidded "
+            "eyes, ragged dark coat with sleeves too short, heavy black boots."
         ),
         traits=("lonely", "gentle", "misunderstood"),
         hangout="library",

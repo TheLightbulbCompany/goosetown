@@ -47,12 +47,17 @@ function registerJsBridgeHandlers(): void {
   const w = window as unknown as {
     __gt_load_sprite?: (args: GtLoadSpriteArgs) => void;
     __gt_dispatch_event_scene_changed?: (args: GtDispatchEventArgs) => void;
+    __gt_dispatch_event_goosetown_bubble_clicked?: (args: GtDispatchEventArgs) => void;
     __gt_sprite_load_count?: number;
     godotUpdateAgentSprite?: (json: string) => void;
   };
 
   w.__gt_dispatch_event_scene_changed = (args) => {
     window.dispatchEvent(new CustomEvent('godot_scene_changed', { detail: args }));
+  };
+
+  w.__gt_dispatch_event_goosetown_bubble_clicked = (args) => {
+    window.dispatchEvent(new CustomEvent('goosetown_bubble_clicked', { detail: args }));
   };
 
   w.__gt_load_sprite = (args) => {
@@ -278,6 +283,15 @@ export default function GodotCanvas({ className, scene = 'town' }: GodotCanvasPr
     currentSceneRef.current = scene;
   }, [scene, engineReady]);
 
+  // Derive a human-readable loading label for the two distinct phases:
+  //   Phase 1 (loading=true):  engine script + WASM + .pck downloading
+  //   Phase 2 (loading=false, engineReady=false): engine started, waiting for
+  //     the JsBridge autoload to signal readiness via 'godot_ready' event.
+  //     This covers the WS connect + first world_state broadcast window —
+  //     showing "Connecting…" makes the gap feel intentional, not broken.
+  const loadingLabel = loading ? 'Loading town…' : 'Connecting…';
+  const showOverlay = (loading || !engineReady) && !error;
+
   return (
     <div ref={containerRef} className={`relative w-full h-full ${className ?? ''}`}>
       <canvas
@@ -286,9 +300,9 @@ export default function GodotCanvas({ className, scene = 'town' }: GodotCanvasPr
         className="w-full h-full"
         tabIndex={-1}
       />
-      {loading && !error && (
+      {showOverlay && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/50 px-8">
-          <p className="text-brown-200 font-body text-lg">Loading GooseTown...</p>
+          <p className="text-brown-200 font-body text-lg">{loadingLabel}</p>
           {/* bg-clay-700: the palette has no clay-800 — an undefined shade renders no CSS */}
           <div className="w-full max-w-xs h-2 bg-clay-700 rounded-full overflow-hidden">
             <div

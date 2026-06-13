@@ -13,8 +13,8 @@ walks through before the activity timer is scheduled:
 
 The fire-and-forget timer (``_activity_timer``) is patched to a no-op so
 tests don't wait on ``activity.duration_seconds``.  Custom-animation
-generation is suppressed by patching ``_custom_anim_in_progress`` to a
-sentinel set so the pixellab code path is not exercised.
+generation is not exercised: the fixture agents carry no
+``pixellabCharacterId``, so the enqueue path short-circuits.
 """
 
 from __future__ import annotations

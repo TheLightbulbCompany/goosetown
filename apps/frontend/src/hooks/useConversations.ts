@@ -15,6 +15,8 @@ const POLL_INTERVAL = 5000;
 export interface ConversationTurn {
   speaker: string;
   text: string;
+  /** Present only on optimistic turns inserted by the UI before the poll confirms. */
+  speakerType?: 'human' | 'agent';
 }
 
 export interface Conversation {

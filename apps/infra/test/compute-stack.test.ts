@@ -96,6 +96,10 @@ function buildTestApp(env: string): {
       "ResendApiKey",
       `goosetown-${env}-resend-api-key`
     ),
+    spriteEventSecret: makeSecret(
+      "SpriteEventSecret",
+      `goosetown-${env}-sprite-event-secret`
+    ),
   };
 
   const computeStack = new ComputeStack(app, `goosetown-${env}-compute`, {
@@ -274,6 +278,10 @@ describe("ComputeStack — backend-task-missing alarm metric", () => {
       resendApiKey: makeSecret(
         "ResendApiKey",
         "goosetown-dev-resend-api-key"
+      ),
+      spriteEventSecret: makeSecret(
+        "SpriteEventSecret",
+        "goosetown-dev-sprite-event-secret"
       ),
     };
     const alarmTopic = new (require("aws-cdk-lib/aws-sns").Topic)(

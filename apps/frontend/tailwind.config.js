@@ -31,6 +31,10 @@ module.exports = {
         },
         // Deep wax-seal red: FAILED/EXPIRED ink stamps only.
         wax: '#9E2B25',
+        // Colors from the town itself: grass/settled-job green, and the
+        // window-glow gold (top stop of the game-title gradient).
+        moss: '#8FDE5D',
+        lamplight: '#FEC742',
       },
     },
   },

@@ -33,12 +33,6 @@ async def lifespan(app: FastAPI):
     # Reconnect active agents to game server on startup
     await _reconnect_active_agents()
 
-    # Start sprite generation queue
-    from core.services.sprite_queue import get_sprite_queue
-
-    sprite_queue = get_sprite_queue()
-    sprite_queue.start()
-
     # Start Exchange deadline sweeper
     import asyncio
 
@@ -52,7 +46,6 @@ async def lifespan(app: FastAPI):
     app.state.exchange_sweeper.cancel()
     with suppress(asyncio.CancelledError):
         await app.state.exchange_sweeper
-    await sprite_queue.stop()
     await relay.stop()
     gs_client = get_game_server_client()
     for agent_id in list(gs_client._agent_connections.keys()):
@@ -150,33 +143,11 @@ async def _reconnect_active_agents() -> None:
 
     logger.info("Startup: reconnected %d/%d active agents to game server", connected, len(agents))
 
-    # Resume interrupted sprite generation
-    import asyncio
-
-    sprite_resumed = 0
-    for agent in agents:
-        sprite_status = agent.get("spriteStatus")
-        if sprite_status in ("creating", "animating", "downloading"):
-            agent_id = agent["id"]
-            char_id = agent.get("pixellabCharacterId") or agent.get("pixellab_character_id")
-            appearance = agent.get("appearance", "")
-            display_name = agent.get("displayName", "")
-
-            logger.info(
-                "Resuming sprite generation for %s (status=%s, char=%s)",
-                agent_id,
-                sprite_status,
-                char_id,
-            )
-
-            from core.services.sprite_pipeline import resume_sprite_generation
-
-            asyncio.create_task(resume_sprite_generation(agent_id, char_id, appearance, display_name, sprite_status))
-            sprite_resumed += 1
-
-    logger.info("Startup: resumed %d interrupted sprite generations", sprite_resumed)
+    # NOTE: interrupted sprite generation (spriteStatus in creating/animating/downloading)
+    # is now recovered by the SQS sprite worker's boot sweep, not the backend.
 
     # Resume interrupted activity timers
+    import asyncio
     import time as _time
 
     from core.services.activity_registry import get_activity

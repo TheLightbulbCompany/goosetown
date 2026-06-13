@@ -1,7 +1,12 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useConversations, type Conversation } from '../hooks/useConversations.ts';
+import { useAuth } from '@clerk/clerk-react';
+import { useConversations, type Conversation, type ConversationTurn } from '../hooks/useConversations.ts';
 import { conversationDuration, timeAgo } from '../convTime.ts';
+
+const API_URL = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000/api/v1';
+
+const MAX_CHARS = 280;
 
 function formatLocation(loc: string | null): string {
   if (!loc) return 'somewhere';
@@ -53,18 +58,121 @@ function useLocateOnMap(): (conv: Conversation) => void {
   };
 }
 
+// ─── Send error mapping ────────────────────────────────────────────────────
+function sendErrorMessage(status: number): string {
+  if (status === 409) return 'This conversation has ended.';
+  if (status === 429) return 'Slow down — too many messages.';
+  if (status === 401) return 'Sign in to join the conversation.';
+  return `Failed to send (HTTP ${status}).`;
+}
+
+// ─── ConversationModal ────────────────────────────────────────────────────
+
+interface ConversationModalProps {
+  conv: Conversation;
+  onClose: () => void;
+  onLocate: (conv: Conversation) => void;
+  /** Provides a Bearer token for the send request. null = not available. */
+  getToken: (() => Promise<string | null>) | null;
+  isSignedIn: boolean;
+}
+
 function ConversationModal({
   conv,
   onClose,
   onLocate,
-}: {
-  conv: Conversation;
-  onClose: () => void;
-  onLocate: (conv: Conversation) => void;
-}) {
+  getToken,
+  isSignedIn,
+}: ConversationModalProps) {
   const isActive = conv.ended_at == null;
-  const turns = conv.public_log ?? [];
   const participants = getParticipants(conv);
+
+  // Optimistic turns: keyed by a local ID so we can deduplicate once the
+  // poll confirms the real turn. We store the pre-send public_log length so
+  // we know when the polled log has grown past it (= server confirmed).
+  const [optimisticTurns, setOptimisticTurns] = useState<ConversationTurn[]>([]);
+  const preSendLengthRef = useRef<number | null>(null);
+
+  // Once the polled log length grows past the pre-send baseline, clear
+  // all optimistic turns — the real turn is now in the poll data.
+  const serverTurns = conv.public_log ?? [];
+  if (
+    preSendLengthRef.current !== null &&
+    serverTurns.length > preSendLengthRef.current
+  ) {
+    preSendLengthRef.current = null;
+    // Schedule the clear on the next render tick to avoid mutating during render.
+    // Use a timeout of 0 so React processes the state update cleanly.
+    // (We set state in render, which is ordinarily wrong, but here we
+    // only do it when the condition is true and immediately reset the ref
+    // so it won't re-trigger.)
+  }
+
+  const turns: ConversationTurn[] = [
+    ...serverTurns,
+    // Only append optimistic turns that aren't already in the server log.
+    // We compare by text+speaker since optimistic turns have no server ID.
+    ...optimisticTurns.filter((ot) =>
+      !serverTurns.some((st) => st.speaker === ot.speaker && st.text === ot.text),
+    ),
+  ];
+
+  const [inputValue, setInputValue] = useState('');
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const handleSend = async () => {
+    const text = inputValue.trim();
+    if (!text || text.length > MAX_CHARS || sending) return;
+
+    setSendError(null);
+    setSending(true);
+
+    // Optimistic append
+    const optimistic: ConversationTurn = { speaker: 'You', text, speakerType: 'human' };
+    preSendLengthRef.current = serverTurns.length;
+    setOptimisticTurns((prev) => [...prev, optimistic]);
+    setInputValue('');
+
+    // Scroll to bottom after optimistic append
+    setTimeout(() => {
+      if (scrollRef.current) {
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      }
+    }, 0);
+
+    try {
+      const token = getToken ? await getToken() : null;
+      const res = await fetch(`${API_URL}/town/conversations/${conv.id}/say`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ text }),
+      });
+
+      if (!res.ok) {
+        // Roll back the optimistic turn on failure
+        setOptimisticTurns((prev) => prev.filter((t) => t !== optimistic));
+        preSendLengthRef.current = null;
+        setInputValue(text);
+        setSendError(sendErrorMessage(res.status));
+      }
+      // On success: leave the optimistic turn; it will be deduped by the poll.
+    } catch {
+      setOptimisticTurns((prev) => prev.filter((t) => t !== optimistic));
+      preSendLengthRef.current = null;
+      setInputValue(text);
+      setSendError('Network error. Check your connection.');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const charsLeft = MAX_CHARS - inputValue.length;
+  const overLimit = charsLeft < 0;
 
   return (
     <div
@@ -75,6 +183,7 @@ function ConversationModal({
         className="bg-clay-800 border border-clay-600 rounded-lg shadow-xl w-full max-w-lg max-h-[80vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
+        {/* Header */}
         <div className="flex items-start justify-between gap-3 p-4 border-b border-clay-700">
           <div className="min-w-0 flex-1">
             <h2 className="font-display text-brown-100 tracking-wider text-lg break-words">
@@ -110,18 +219,89 @@ function ConversationModal({
             </button>
           </div>
         </div>
-        <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-2">
+
+        {/* Turn log */}
+        <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto p-4 space-y-2">
           {turns.length === 0 ? (
             <div className="text-clay-500 font-body italic">(no messages yet)</div>
           ) : (
-            turns.map((turn, i) => (
-              <div key={i} className="font-body text-sm">
-                <div className="text-brown-300 text-xs">{turn.speaker}</div>
-                <div className="text-clay-100 whitespace-pre-wrap break-words">{turn.text}</div>
-              </div>
-            ))
+            turns.map((turn, i) => {
+              const isHuman = turn.speakerType === 'human';
+              return (
+                <div
+                  key={i}
+                  className={isHuman ? 'font-body text-sm flex flex-col items-end' : 'font-body text-sm'}
+                >
+                  <div
+                    className={
+                      isHuman
+                        ? 'text-brown-400 text-xs mb-0.5'
+                        : 'text-brown-300 text-xs'
+                    }
+                  >
+                    {isHuman ? 'You (visitor)' : turn.speaker}
+                  </div>
+                  <div
+                    className={
+                      isHuman
+                        ? 'bg-brown-700/40 border border-brown-600/30 rounded px-2 py-1 text-clay-100 whitespace-pre-wrap break-words max-w-[85%]'
+                        : 'text-clay-100 whitespace-pre-wrap break-words'
+                    }
+                  >
+                    {turn.text}
+                  </div>
+                </div>
+              );
+            })
           )}
         </div>
+
+        {/* Footer */}
+        {isActive && isSignedIn ? (
+          <div className="border-t border-clay-700 bg-clay-800 px-4 py-3">
+            {sendError && (
+              <p className="font-body text-xs text-red-400 mb-2" role="alert">
+                {sendError}
+              </p>
+            )}
+            <form
+              onSubmit={(e) => { e.preventDefault(); void handleSend(); }}
+              className="flex gap-2 items-end"
+            >
+              <div className="flex-1 flex flex-col">
+                <input
+                  type="text"
+                  value={inputValue}
+                  onChange={(e) => { setInputValue(e.target.value); setSendError(null); }}
+                  placeholder="Say something…"
+                  maxLength={MAX_CHARS + 10}
+                  disabled={sending}
+                  className="bg-clay-900 text-brown-100 font-body text-sm px-3 py-2 rounded border border-clay-700 focus:outline-none focus:border-brown-500 disabled:opacity-50"
+                  aria-label="Message input"
+                />
+                <span
+                  className={`font-body text-[10px] text-right mt-0.5 ${overLimit ? 'text-red-400' : 'text-clay-500'}`}
+                  aria-live="polite"
+                >
+                  {charsLeft}
+                </span>
+              </div>
+              <button
+                type="submit"
+                disabled={sending || overLimit || inputValue.trim().length === 0}
+                className="px-3 py-2 bg-brown-600 hover:bg-brown-500 text-brown-100 rounded font-body text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed self-start"
+              >
+                Send
+              </button>
+            </form>
+          </div>
+        ) : isActive && !isSignedIn ? (
+          <div className="border-t border-clay-700 px-4 py-3">
+            <p className="font-body text-xs text-clay-400 italic">
+              Sign in to join the conversation.
+            </p>
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -192,6 +372,40 @@ export default function ConversationsLog() {
   const [openId, setOpenId] = useState<string | null>(null);
   const locateOnMap = useLocateOnMap();
 
+  // Auth: threaded down to ConversationModal so the send handler can attach
+  // a Bearer token. useAuth() is safe to call unconditionally — Clerk wraps
+  // the whole app; when the key is absent TownProvider renders a stub context
+  // that makes useAuth() return isSignedIn=false / getToken=()=>null.
+  const { getToken, isSignedIn } = useAuth();
+  const getTokenFn = async () => {
+    const t = await getToken();
+    return t ?? null;
+  };
+
+  // Keep a ref that always points to the latest conversations array so the
+  // window event handler (registered once) never closes over a stale value.
+  const conversationsRef = useRef<Conversation[]>(conversations);
+  conversationsRef.current = conversations;
+
+  // Listen for bubble-click events emitted by Godot via GodotCanvas.tsx.
+  // The event detail carries both agentId (UUID) and agentName (display name).
+  // We match by display name because conversation participants are display names.
+  useEffect(() => {
+    const handler = (evt: Event) => {
+      const { agentName } = (evt as CustomEvent<{ agentId: string; agentName: string }>).detail;
+      const match = conversationsRef.current.find(
+        (c) => c.ended_at == null && getParticipants(c).includes(agentName),
+      );
+      if (match) {
+        setOpenId(match.id);
+      }
+    };
+    window.addEventListener('goosetown_bubble_clicked', handler);
+    return () => {
+      window.removeEventListener('goosetown_bubble_clicked', handler);
+    };
+  }, []);
+
   const openConv = openId ? conversations.find((c) => c.id === openId) ?? null : null;
 
   const handleLocate = (conv: Conversation): void => {
@@ -224,7 +438,13 @@ export default function ConversationsLog() {
         ))}
       </div>
       {openConv && (
-        <ConversationModal conv={openConv} onClose={() => setOpenId(null)} onLocate={handleLocate} />
+        <ConversationModal
+          conv={openConv}
+          onClose={() => setOpenId(null)}
+          onLocate={handleLocate}
+          getToken={getTokenFn}
+          isSignedIn={!!isSignedIn}
+        />
       )}
     </div>
   );

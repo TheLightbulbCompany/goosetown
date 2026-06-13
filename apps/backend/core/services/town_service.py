@@ -500,6 +500,75 @@ class TownService:
             return None
         return _decimal_to_native(resp.get("Attributes"))
 
+    def claim_sprite_job(self, agent_id: str) -> bool:
+        """Atomically claim the right to enqueue a sprite job for this agent.
+
+        Sets ``spriteStatus="queued"`` ONLY if the agent exists and no job is
+        already queued/in-flight. Returns False when another producer (or a
+        previous enqueue) already claimed it — the caller skips the SQS send.
+        Write-then-send ordering: if the SQS send fails after this write, the
+        worker boot sweep re-enqueues every ``queued`` row, so the failure is
+        self-healing rather than job-losing.
+
+        NOTE: the status list below must stay in sync with
+        ``core.services.sprite_jobs.IN_PROGRESS_STATUSES`` (DynamoDB condition
+        expressions can't import constants).
+        """
+        from botocore.exceptions import ClientError
+
+        table = dynamo.agents_table()
+        try:
+            table.update_item(
+                Key={"id": agent_id},
+                UpdateExpression="SET spriteStatus = :queued",
+                ConditionExpression=(
+                    "attribute_exists(id) AND ("
+                    "attribute_not_exists(spriteStatus) OR "
+                    "attribute_type(spriteStatus, :null_type) OR "
+                    "NOT (spriteStatus IN (:s0, :s1, :s2, :s3, :s4, :s5)))"
+                ),
+                ExpressionAttributeValues={
+                    ":queued": "queued",
+                    ":null_type": "NULL",
+                    ":s0": "queued",
+                    ":s1": "creating",
+                    ":s2": "building_static",
+                    ":s3": "static_ready",
+                    ":s4": "animating",
+                    ":s5": "downloading",
+                },
+            )
+            return True
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+
+    def release_sprite_claim(self, agent_id: str) -> bool:
+        """Undo a ``claim_sprite_job`` whose SQS send failed.
+
+        Conditional on the row still being exactly ``spriteStatus="queued"``
+        so we can never clobber a worker that has already started the job
+        (the worker's first write flips it to "creating"). Returns True if
+        the claim was released, False if the condition did not match (i.e. the
+        worker already picked it up).
+        """
+        from botocore.exceptions import ClientError
+
+        table = dynamo.agents_table()
+        try:
+            table.update_item(
+                Key={"id": agent_id},
+                UpdateExpression="REMOVE spriteStatus",
+                ConditionExpression="spriteStatus = :queued",
+                ExpressionAttributeValues={":queued": "queued"},
+            )
+            return True
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                return False
+            raise
+
     def update_agent_activity(
         self,
         agent_id: str,
@@ -1113,6 +1182,68 @@ class TownService:
                     ":entry": [new_entry],
                     ":one": 1,
                     ":sid": speaker_id,
+                    ":now": now,
+                    ":active": "active",
+                },
+                ReturnValues="ALL_NEW",
+            )
+        except table.meta.client.exceptions.ConditionalCheckFailedException:
+            return None
+        return _decimal_to_native(resp.get("Attributes", {}))
+
+    def append_human_message_to_conversation(
+        self,
+        conv_id: str,
+        speaker_display_name: str,
+        text: str,
+    ) -> Optional[dict]:
+        """Append a *human visitor* turn to an active conversation's public log.
+
+        A logged-in user can drop a line into an ongoing resident↔resident
+        conversation. Unlike :meth:`append_message_to_conversation`, this:
+
+        * tags the ``publicLog`` entry with ``speakerType: "human"`` so
+          readers (the resident brain, the frontend log) can distinguish a
+          real person from a resident,
+        * increments a *separate* ``humanTurnCount`` counter and **does not**
+          touch ``turnCount`` — the agent turn-cap (``_MAX_CONVERSATION_TURNS``)
+          must not be advanced by a visitor, or a chatty user could prematurely
+          auto-end the conversation,
+        * leaves ``lastSpeakerId`` untouched — that field drives the
+          agents-only "don't speak twice in a row" rule in ``_handle_say``; a
+          human turn should never block the next resident from replying.
+
+        ``humanTurnCount`` is initialised to 0 if absent via ``if_not_exists``
+        so older conversation rows (created before this field existed) upgrade
+        in place.
+
+        Args:
+            conv_id: Conversation UUID.
+            speaker_display_name: Display name label for this turn (derived
+                from the authenticated user, never the request body).
+            text: The message text.
+
+        Returns:
+            Updated conversation record as a plain dict, or ``None`` if the
+            conversation does not exist or is not active.
+        """
+        table = dynamo.conversations_table()
+        now = _now_iso()
+        new_entry = {"speaker": speaker_display_name, "text": text, "speakerType": "human"}
+        try:
+            resp = table.update_item(
+                Key={"id": conv_id},
+                UpdateExpression=(
+                    "SET publicLog = list_append(publicLog, :entry), "
+                    "humanTurnCount = if_not_exists(humanTurnCount, :zero) + :one, "
+                    "updatedAt = :now"
+                ),
+                ConditionExpression="attribute_exists(id) AND #s = :active",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={
+                    ":entry": [new_entry],
+                    ":zero": 0,
+                    ":one": 1,
                     ":now": now,
                     ":active": "active",
                 },

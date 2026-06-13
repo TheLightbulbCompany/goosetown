@@ -183,3 +183,103 @@ p[contenteditable='true']:empty::before {
 .shape-top-left-corner {
   clip-path: polygon(0 0, 100% 0, 0 100%);
 }
+
+/* --- Landing page (living-diorama redesign) --- */
+
+/* Blinking terminal cursor block. */
+.landing-cursor {
+  display: inline-block;
+  width: 0.6em;
+  height: 1.1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: #c0cbdc;
+  animation: landingBlink 1s steps(1) infinite;
+}
+
+@keyframes landingBlink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* Exchange ledger marquee — content is duplicated, loop at -50%. */
+.landing-ticker {
+  display: inline-block;
+  animation: landingTicker 30s linear infinite;
+}
+
+@keyframes landingTicker {
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+/* Resident walk cycle: real 288x192 sprite sheet shown 2x (576x384),
+   south row, 6 frames stepped 96px at a time. */
+.landing-sprite-walk {
+  width: 96px;
+  height: 96px;
+  background-repeat: no-repeat;
+  background-size: 576px 384px;
+  background-position: 0 0;
+  image-rendering: pixelated;
+  animation: landingSpriteWalk 0.9s steps(6) infinite;
+}
+
+@keyframes landingSpriteWalk {
+  to {
+    background-position: -576px 0;
+  }
+}
+
+/* Job-card state transitions (chunky, steps() to keep the pixel feel). */
+.landing-pop {
+  animation: landingPop 0.25s steps(3);
+}
+
+@keyframes landingPop {
+  from {
+    transform: scale(0.5);
+  }
+}
+
+.landing-fade {
+  animation: landingFade 0.4s steps(4);
+}
+
+@keyframes landingFade {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+.landing-scroll-cue {
+  animation: landingBob 1.6s ease-in-out infinite;
+}
+
+@keyframes landingBob {
+  50% {
+    transform: translateY(6px);
+  }
+}
+
+.landing-scrollbar::-webkit-scrollbar {
+  height: 6px;
+}
+
+.landing-scrollbar::-webkit-scrollbar-thumb {
+  background: #3a4466;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-ticker,
+  .landing-sprite-walk,
+  .landing-scroll-cue,
+  .landing-cursor,
+  .landing-pop,
+  .landing-fade {
+    animation: none;
+  }
+}
