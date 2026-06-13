@@ -1281,14 +1281,11 @@ async def get_exchange_jobs(category: str | None = Query(default=None)):
 
     ``category`` (optional): when given, OPEN jobs are filtered to those whose
     ``category`` equals the filter or starts with ``filter + "."``.  History
-    entries are returned unfiltered.  The value is normalised via
-    ``exchange_categories.normalize_category``; an invalid slug returns an
-    empty OPEN set (no 4xx — the board still shows history).
+    entries are returned unfiltered.  Normalization happens inside
+    ``list_board_jobs``, which distinguishes no-filter from an invalid slug —
+    an invalid slug returns an empty OPEN set (no 4xx — history still shows).
     """
-    from core.services.exchange_categories import normalize_category as _norm_cat
-
-    norm = _norm_cat(category) if category is not None else None
-    return {"jobs": exchange_service.list_board_jobs(category=norm)}
+    return {"jobs": exchange_service.list_board_jobs(category=category)}
 
 
 @router.get("/exchange/providers")

@@ -714,13 +714,44 @@ class TestBoardCategoryFilter:
         assert job["category"] == "writing"
 
     def test_invalid_category_slug_returns_empty_open_set(self, client, dynamodb_tables):
-        """An invalid category slug normalises to None → all OPEN filtered out (no 4xx)."""
+        """An invalid category slug → empty OPEN set, NOT all jobs (codex P3).
+
+        Distinct from an omitted filter: a typoed slug must not silently surface
+        unrelated work. History entries are still allowed through.
+        """
         _seed_job_with_category(dynamodb_tables, "job-valid-cat", "writing")
 
         resp = client.get("/api/v1/town/exchange/jobs?category=INVALID SLUG!")
         assert resp.status_code == 200, resp.text
         jobs = resp.json()["jobs"]
-        # Invalid slug normalises to None (no category filter applied) OR to the invalid
-        # slug itself (which won't match any job category). Either way, the endpoint
-        # must return 200 not 422 — the meaningful assertion is the status code.
-        assert isinstance(jobs, list)
+        open_ids = {j["job_id"] for j in jobs if j["status"] == "OPEN"}
+        # The OPEN board is empty — the valid writing job is NOT surfaced.
+        assert open_ids == set()
+
+    def test_category_filter_pages_past_newest_cap(self, client, dynamodb_tables):
+        """An older matching job isn't masked by a wall of newer other-category
+        jobs (codex P2 — filter must page, not filter-after-cap).
+
+        With _BOARD_OPEN_PAGE=100 the older match would be missed only beyond one
+        page; seed enough newer non-matching jobs to prove paging collects the
+        older match rather than a single capped slice dropping it.
+        """
+        # One OLD matching job (earliest createdAt).
+        _seed_job_with_category(
+            dynamodb_tables, "old-writing", "writing", created_at="2026-06-01T00:00:00+00:00"
+        )
+        # A wall of NEWER non-matching jobs (later createdAt sorts ahead).
+        for i in range(120):
+            _seed_job_with_category(
+                dynamodb_tables,
+                f"new-tech-{i}",
+                "technology",
+                created_at=f"2026-06-02T{i // 60:02d}:{i % 60:02d}:00+00:00",
+            )
+
+        resp = client.get("/api/v1/town/exchange/jobs?category=writing")
+        assert resp.status_code == 200, resp.text
+        open_ids = {j["job_id"] for j in resp.json()["jobs"] if j["status"] == "OPEN"}
+        assert "old-writing" in open_ids
+        # And no unrelated technology job leaked into the writing-filtered board.
+        assert not any(jid.startswith("new-tech-") for jid in open_ids)

@@ -2489,17 +2489,35 @@ def resync_agent_jobs(agent_id: str) -> int:
 # ---------------------------------------------------------------------------
 
 
+#: Board sizing. The unfiltered board shows the newest ``_BOARD_OPEN_LIMIT``
+#: OPEN jobs. When a category filter is active we PAGE the OPEN set (newest
+#: first) accumulating matches up to the same limit, so an older matching job
+#: isn't masked by a wall of newer other-category jobs (codex P2). Page count is
+#: bounded for safety; at town scale (OPEN jobs in the tens) one page suffices.
+_BOARD_OPEN_LIMIT = 50
+_BOARD_OPEN_PAGE = 100
+_BOARD_MAX_OPEN_PAGES = 10
+
+
 def list_board_jobs(category: str | None = None) -> list[dict]:
     """Exchange board: OPEN jobs newest-first + recent settled history.
 
     Public payload — no deliverables, no bid amounts (sealed-bid).
 
-    ``category`` (Wave 2 Task 6): when given, post-filter OPEN jobs to those
-    whose ``category`` equals the filter OR starts with ``filter + "."``.
-    This implements broad prefix-on-dot matching: filtering by ``technology``
-    shows both ``technology`` and ``technology.code-review`` jobs.  History
-    entries (COMPLETED / FAILED / EXPIRED / CANCELLED) are returned unfiltered
-    so the board always shows recent settlement activity regardless of category.
+    ``category`` (Wave 2 Task 6) is the **raw** filter string (the endpoint
+    passes it through); it's normalized here into three cases:
+
+    - ``None`` → no filter: the newest ``_BOARD_OPEN_LIMIT`` OPEN jobs.
+    - **valid slug** → OPEN jobs whose ``category`` equals it OR starts with
+      ``slug + "."`` (broad prefix-on-dot match: ``technology`` shows both
+      ``technology`` and ``technology.code-review``). The OPEN set is **paged**
+      until enough matches are gathered, so a category filter never returns
+      empty just because the newest 50 OPEN jobs were other categories (codex P2).
+    - **invalid slug** → empty OPEN set (history still shown). A typoed filter
+      must not silently surface unrelated work — distinct from ``None`` (codex P3).
+
+    History entries (COMPLETED / FAILED / EXPIRED / CANCELLED) are returned
+    unfiltered so the board always shows recent settlement activity.
     """
     table = dynamo.jobs_table()
 
@@ -2529,16 +2547,47 @@ def list_board_jobs(category: str | None = None) -> list[dict]:
         """
         return job_category == cat_filter or job_category.startswith(cat_filter + ".")
 
+    # Normalize the filter into the three cases (see docstring).
+    filter_active = category is not None
+    norm_category = exchange_categories.normalize_category(category) if filter_active else None
+    invalid_filter = filter_active and norm_category is None
+
     out: list[dict] = []
-    resp = table.query(
-        IndexName="status-createdAt-index",
-        KeyConditionExpression=Key("status").eq("OPEN"),
-        ScanIndexForward=False,
-        Limit=50,
-    )
-    open_entries = [_entry(i) for i in resp.get("Items", [])]
-    if category is not None:
-        open_entries = [e for e in open_entries if _category_matches(e["category"], category)]
+    if invalid_filter:
+        # Filter requested but unmatchable — empty OPEN set, NOT all jobs (P3).
+        open_entries: list[dict] = []
+    elif norm_category is not None:
+        # Paged category match (P2): walk newest-first OPEN pages, collecting
+        # matches until we have _BOARD_OPEN_LIMIT or the OPEN set is exhausted.
+        open_entries = []
+        last_key: dict | None = None
+        for _ in range(_BOARD_MAX_OPEN_PAGES):
+            query_kwargs: dict[str, Any] = {
+                "IndexName": "status-createdAt-index",
+                "KeyConditionExpression": Key("status").eq("OPEN"),
+                "ScanIndexForward": False,
+                "Limit": _BOARD_OPEN_PAGE,
+            }
+            if last_key:
+                query_kwargs["ExclusiveStartKey"] = last_key
+            resp = table.query(**query_kwargs)
+            for item in resp.get("Items", []):
+                entry = _entry(item)
+                if _category_matches(entry["category"], norm_category):
+                    open_entries.append(entry)
+                    if len(open_entries) >= _BOARD_OPEN_LIMIT:
+                        break
+            last_key = resp.get("LastEvaluatedKey")
+            if len(open_entries) >= _BOARD_OPEN_LIMIT or not last_key:
+                break
+    else:
+        resp = table.query(
+            IndexName="status-createdAt-index",
+            KeyConditionExpression=Key("status").eq("OPEN"),
+            ScanIndexForward=False,
+            Limit=_BOARD_OPEN_LIMIT,
+        )
+        open_entries = [_entry(i) for i in resp.get("Items", [])]
     out.extend(open_entries)
     for status in ("COMPLETED", "FAILED", "EXPIRED", "CANCELLED"):
         resp = table.query(
