@@ -13,6 +13,7 @@ The daemon is spawned as a subprocess by ``core._start_daemon`` and runs
 import json
 import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -131,6 +132,9 @@ class TownDaemon:
     Unix socket.
     """
 
+    # IPC frame cap: deliverables are ≤16 KB; generous headroom for envelope.
+    _MAX_IPC_FRAME_BYTES = 131072
+
     def __init__(
         self,
         ws_url: str,
@@ -174,6 +178,20 @@ class TownDaemon:
         # invocation. Replaces the old shared _arrived_event which
         # couldn't distinguish arrival from rejection.
         self._move_outcome = None  # asyncio.Future | None
+        # Exchange-outcome future — set by _on_exchange_outcome when the
+        # backend echoes exchange_ok / exchange_rejected for the caller's
+        # own verb (post_job, bid, cancel_job, deliver_job, review_job).
+        # Created fresh per exchange `act` invocation, mirroring
+        # _chat_outcome.
+        self._exchange_outcome = None  # asyncio.Future | None
+        # Payload of the in-flight exchange act — lets _on_exchange_outcome
+        # enrich the jobs cache with fields the backend echo omits (e.g.
+        # post_job's exchange_ok has no title). Cleared with the future.
+        self._pending_exchange_payload: dict | None = None
+        # Own agent UUID — learned from the `connected` event. Used to
+        # tell which role (provider vs consumer) an exchange event is
+        # addressed to.
+        self._agent_id: str = ""
         # Last requested move destination — used by _on_arrived to
         # normalize away the player_spawn marker quirk (Godot's
         # _get_agent_location can return player_spawn when it's near
@@ -206,15 +224,19 @@ class TownDaemon:
             self._events = self._events[-self._max_events :]
         self._write_events()
 
-    def _write_events(self) -> None:
-        """Write TOWN_EVENTS.md to agent workspace (atomic via rename)."""
+    def _write_workspace_file(self, filename: str, content: str) -> None:
+        """Atomically write a markdown file to the agent workspace (temp + rename)."""
         if not self._workspace_path or not self._workspace_path.exists():
             return
-        events_file = self._workspace_path / "TOWN_EVENTS.md"
-        content = "# Recent Events\n\n" + "\n".join(self._events) + "\n"
-        tmp = events_file.with_suffix(".tmp")
+        target = self._workspace_path / filename
+        tmp = target.with_suffix(".tmp")
         tmp.write_text(content)
-        tmp.rename(events_file)
+        tmp.rename(target)
+
+    def _write_events(self) -> None:
+        """Write TOWN_EVENTS.md to agent workspace (atomic via rename)."""
+        content = "# Recent Events\n\n" + "\n".join(self._events) + "\n"
+        self._write_workspace_file("TOWN_EVENTS.md", content)
 
     def _write_state(self) -> None:
         """Persist state dict to state.json."""
@@ -223,12 +245,7 @@ class TownDaemon:
 
     def _write_status(self, content: str) -> None:
         """Write TOWN_STATUS.md to agent workspace (atomic via rename)."""
-        if not self._workspace_path or not self._workspace_path.exists():
-            return
-        status_file = self._workspace_path / "TOWN_STATUS.md"
-        tmp = status_file.with_suffix(".tmp")
-        tmp.write_text(content)
-        tmp.rename(status_file)
+        self._write_workspace_file("TOWN_STATUS.md", content)
 
     # ------------------------------------------------------------------
     # Event handlers
@@ -270,6 +287,28 @@ class TownDaemon:
             self._on_move_rejected(data)
         elif event == "arrived":
             self._on_arrived(data)
+        elif event in ("exchange_ok", "exchange_rejected"):
+            self._on_exchange_outcome(data)
+        elif event == "job_posted":
+            self._on_job_posted(data)
+        elif event == "bid_received":
+            self._on_bid_received(data)
+        elif event == "job_awarded":
+            self._on_job_awarded(data)
+        elif event == "bid_lost":
+            self._on_bid_lost(data)
+        elif event == "job_delivered":
+            self._on_job_delivered(data)
+        elif event == "job_completed":
+            self._on_job_completed(data)
+        elif event == "job_failed":
+            self._on_job_failed(data)
+        elif event == "job_expired":
+            self._on_job_expired(data)
+        elif event == "job_cancelled":
+            self._on_job_cancelled(data)
+        elif event == "job_message":
+            self._on_job_message(data)
         elif event == "sprite_progress":
             status_msg = data.get("status", "Generating sprite...")
             self._write_status(
@@ -311,12 +350,20 @@ class TownDaemon:
 
     def _on_connected(self, data: dict) -> None:
         """Handle the initial connected event from the server."""
+        # Preserve the exchange jobs cache across reconnects — it's local
+        # knowledge (wallet, jobs, deliverables) the server won't resend.
+        exchange = self.state.get("exchange")
         self.state = {
             "agent": data.get("agent", {}),
             "nearby": [],
             "pending_messages": [],
             "connected": True,
         }
+        if exchange:
+            self.state["exchange"] = exchange
+        own_id = data.get("agent", {}).get("id", "")
+        if own_id:
+            self._agent_id = own_id
         if self._initial_state_event is not None:
             self._initial_state_event.set()
         agent = data.get("agent", {})
@@ -700,6 +747,704 @@ class TownDaemon:
         self._append_event("WOKE UP")
 
     # ------------------------------------------------------------------
+    # Exchange (job board) events
+    # ------------------------------------------------------------------
+
+    def _exchange_state(self) -> dict:
+        """Return (creating if needed) the exchange cache in self.state."""
+        return self.state.setdefault("exchange", {"wallet": None, "jobs": {}})
+
+    def _update_job(self, job_id: str, **fields) -> dict:
+        """Merge fields into the cached job entry (None values are skipped).
+
+        Does NOT write TOWN_JOBS.md — callers do that once per event via
+        ``_write_jobs()``.
+        """
+        ex = self._exchange_state()
+        job = ex.setdefault("jobs", {}).setdefault(job_id, {"job_id": job_id})
+        job.update({k: v for k, v in fields.items() if v is not None})
+        job["updated"] = time.time()
+        return job
+
+    def _job_role(self, data: dict, job_id: str) -> str | None:
+        """Best-effort role detection for an exchange event addressed to us.
+
+        Prefers explicit ids when the backend includes them, then falls
+        back to name comparison (the backend's ``provider_name`` /
+        ``consumer_name`` carry machine agent names), then to the locally
+        cached role for the job.
+        """
+        provider_id = data.get("provider_id", "")
+        consumer_id = data.get("consumer_id", "")
+        if self._agent_id:
+            if provider_id and provider_id == self._agent_id:
+                return "provider"
+            if consumer_id and consumer_id == self._agent_id:
+                return "consumer"
+        provider_name = data.get("provider_name", "")
+        consumer_name = data.get("consumer_name", "")
+        if provider_name and provider_name == self._agent_name:
+            return "provider"
+        if consumer_name and consumer_name == self._agent_name:
+            return "consumer"
+        cached = (self._exchange_state().get("jobs") or {}).get(job_id) or {}
+        return cached.get("role")
+
+    def _on_exchange_outcome(self, data: dict) -> None:
+        """Handle exchange_ok / exchange_rejected — outcome of our own verb.
+
+        Resolves the pending ``_exchange_outcome`` future (if an `act`
+        invocation is waiting) and, on success, updates the local jobs
+        cache and wallet so TOWN_JOBS.md reflects the new reality.
+        """
+        pending_payload = self._pending_exchange_payload or {}
+        if self._exchange_outcome is not None and not self._exchange_outcome.done():
+            self._exchange_outcome.set_result(dict(data))
+
+        if data.get("event") != "exchange_ok":
+            return
+
+        verb = data.get("verb", "")
+        ex = self._exchange_state()
+        if "balance" in data:
+            ex["wallet"] = data["balance"]
+
+        job_id = data.get("job_id", "")
+        # Only trust the stashed payload when it matches this verb (the CLI
+        # payload "action" names are identical to the backend verb names).
+        pending = pending_payload if pending_payload.get("action") == verb else {}
+
+        if verb == "post_job" and job_id:
+            # Persist the absolute bid-window close so TOWN_JOBS.md can
+            # render "closes HH:MM UTC" on the [OPEN] line.
+            bid_window = data.get("bid_window_sec")
+            bids_close_at = (
+                time.time() + bid_window
+                if isinstance(bid_window, (int, float))
+                else None
+            )
+            self._update_job(
+                job_id,
+                role="consumer",
+                status="OPEN",
+                title=pending.get("title"),
+                max_price=data.get("escrowed", pending.get("max_price")),
+                success_criteria=pending.get("success_criteria"),
+                bids_close_at=bids_close_at,
+            )
+        elif verb == "bid" and job_id:
+            self._update_job(
+                job_id, role="provider", status="BID", bid_price=data.get("price")
+            )
+        elif verb == "cancel_job" and job_id:
+            self._update_job(job_id, role="consumer", status="CANCELLED")
+        elif verb == "deliver_job" and job_id:
+            self._update_job(job_id, role="provider", status="DELIVERED")
+        # review_job: the settlement events (job_completed / job_failed)
+        # follow immediately and carry the authoritative status.
+        self._write_jobs()
+
+    def _on_job_posted(self, data: dict) -> None:
+        """Broadcast: another agent posted a job — event line only, no cache."""
+        job_id = data.get("job_id", "?")
+        title = data.get("title", "?")
+        max_price = data.get("max_price", "?")
+        consumer_name = data.get("consumer_name", "someone")
+        criteria = data.get("success_criteria") or []
+        criteria_note = (
+            f" Success criteria: {'; '.join(c[:80] for c in criteria[:8])}."
+            if criteria
+            else ""
+        )
+        self._append_event(
+            f'\U0001f4bc New job at the Exchange from {consumer_name}: "{title}" — '
+            f"up to {max_price} crumbs (job {job_id}).{criteria_note} "
+            f"Move to the bank and bid: goosetown act bid {job_id} <price>"
+        )
+
+    def _on_bid_received(self, data: dict) -> None:
+        """Consumer-side: a sealed bid landed on our job.
+
+        The wallet is intentionally untouched here: bids are sealed and move no
+        funds.  Money only transfers at award time (escrow deducted from
+        consumer) and at settlement (provider paid, consumer refunded if any).
+        """
+        job_id = data.get("job_id", "?")
+        title = data.get("title", "?")
+        bid_count = data.get("bid_count", "?")
+        self._update_job(job_id, role="consumer", title=title, bid_count=bid_count)
+        self._write_jobs()
+        self._append_event(
+            f'\U0001f4bc Sealed bid received on your job "{title}" — '
+            f"{bid_count} bid(s) so far (job {job_id})."
+        )
+
+    def _on_job_awarded(self, data: dict) -> None:
+        """We won the job (provider) or our job was awarded (consumer).
+
+        The consumer's copy may include a ``balance`` field when a partial
+        escrow refund was issued (max_price > agreed_price). Update the
+        wallet cache when present (Fix 3: wallet freshness on award).
+
+        The wallet update intentionally lives in the *consumer* branch only:
+        at award time the provider has not yet been paid — funds are still in
+        escrow.  The provider's wallet is updated later via ``job_completed``
+        (settlement) or ``job_failed`` (refund), both of which carry a
+        ``balance`` field for whichever side received money.
+
+        Events with ``"resync": True`` are connect-time re-sends of state we
+        may have missed (stale connection at award time, daemon restart).
+        The cache update is an upsert so replaying is idempotent, but the
+        TOWN_EVENTS line is suppressed — it would otherwise duplicate on
+        every reconnect.
+        """
+        job_id = data.get("job_id", "?")
+        title = data.get("title", "?")
+        agreed = data.get("agreed_price", "?")
+        deadline = data.get("deadline_sec", "?")
+        provider_name = data.get("provider_name", "?")
+        # Persist the absolute delivery deadline (now + deadline_sec) so
+        # TOWN_JOBS.md can render "DELIVER by HH:MM UTC" / "due HH:MM UTC".
+        deadline_sec = data.get("deadline_sec")
+        deadline_at = (
+            time.time() + deadline_sec
+            if isinstance(deadline_sec, (int, float))
+            else None
+        )
+        role = self._job_role(data, job_id)
+        if role is None:
+            # Only the winner's copy carries the job description.
+            role = "provider" if "description" in data else "consumer"
+
+        resync = bool(data.get("resync"))
+        if role == "provider":
+            self._update_job(
+                job_id,
+                role="provider",
+                status="AWARDED",
+                title=title,
+                agreed_price=agreed,
+                deadline_at=deadline_at,
+                description=data.get("description"),
+                success_criteria=data.get("success_criteria"),
+            )
+            if not resync:
+                self._append_event(
+                    f'\U0001f4bc You won the job "{title}" for {agreed} crumbs '
+                    f"(job {job_id}). Deliver within {deadline}s: "
+                    f"goosetown act deliver {job_id} <your work>"
+                )
+        else:
+            self._update_job(
+                job_id,
+                role="consumer",
+                status="AWARDED",
+                title=title,
+                agreed_price=agreed,
+                deadline_at=deadline_at,
+            )
+            # Update wallet if the backend included a partial-refund balance.
+            if "balance" in data:
+                self._exchange_state()["wallet"] = data["balance"]
+            if not resync:
+                self._append_event(
+                    f'\U0001f4bc Your job "{title}" was awarded to {provider_name} '
+                    f"for {agreed} crumbs (job {job_id}). Delivery due within {deadline}s."
+                )
+        self._write_jobs()
+
+    def _on_bid_lost(self, data: dict) -> None:
+        """Our sealed bid did not win.
+
+        Events with ``"resync": True`` are connect-time re-sends that heal a
+        stale [BID] cache entry left by a missed live notification.  The cache
+        upsert and TOWN_JOBS.md rewrite still run (idempotent), but the
+        TOWN_EVENTS line is suppressed to avoid duplicate log noise on every
+        reconnect.
+        """
+        job_id = data.get("job_id", "?")
+        title = data.get("title", "?")
+        self._update_job(job_id, role="provider", status="LOST", title=title)
+        self._write_jobs()
+        if not data.get("resync"):
+            self._append_event(
+                f'\U0001f4bc Your bid on "{title}" did not win (job {job_id}).'
+            )
+
+    @staticmethod
+    def _sanitize_artifact_name(name: str) -> str:
+        """Client-side re-sanitization of the artifact filename (W5).
+
+        The backend already enforces the allowlist, but never trust the wire:
+        basename only, [A-Za-z0-9._-] chars, no leading dot, 128-char cap.
+        Falls back to ``artifact.bin`` when nothing safe remains.
+        """
+        base = str(name).replace("\\", "/").rsplit("/", 1)[-1]
+        cleaned = "".join(ch for ch in base if ch.isalnum() or ch in "._-").lstrip(".")
+        return cleaned[:128] or "artifact.bin"
+
+    def _download_artifact(self, job_id: str, url: str, name: str) -> str | None:
+        """Download a delivered artifact into ``<workspace>/JOBS/{job_id}/``.
+
+        Streams via urllib with a 30s timeout into a ``.part`` temp file and
+        renames into place on success, so a mid-stream failure never leaves a
+        truncated file at the final artifact path. Returns the local path
+        string, or None on any failure (caller then surfaces the raw URL
+        instead).
+        """
+        import contextlib
+        import logging
+        import urllib.request
+
+        if not self._workspace_path:
+            return None
+        safe_job = (
+            "".join(ch for ch in str(job_id) if ch.isalnum() or ch in "._-") or "job"
+        )
+        safe_name = self._sanitize_artifact_name(name)
+        try:
+            target_dir = self._workspace_path / "JOBS" / safe_job
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target = target_dir / safe_name
+            tmp = target_dir / (safe_name + ".part")
+            try:
+                with (
+                    urllib.request.urlopen(url, timeout=30) as resp,
+                    open(tmp, "wb") as fh,
+                ):
+                    while True:
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            break
+                        fh.write(chunk)
+                tmp.replace(target)
+            except Exception:
+                with contextlib.suppress(OSError):
+                    tmp.unlink()
+                raise
+            return str(target)
+        except Exception as exc:
+            logging.getLogger("town_daemon").warning(
+                "Artifact download failed for job %s: %s", job_id, exc
+            )
+            return None
+
+    def _on_job_delivered(self, data: dict) -> None:
+        """Consumer-side: the provider delivered — full deliverable text.
+
+        W5: when the event carries ``artifact_url`` (24 h presigned GET),
+        download the file into ``<workspace>/JOBS/{job_id}/{artifact_name}``
+        and reference the local path from TOWN_JOBS.md. On download failure
+        the URL itself is rendered with a note so the agent can fetch it.
+
+        Events with ``"resync": True`` are connect-time re-sends (stale
+        connection at deliver time, daemon restart). The cache update is an
+        upsert and the artifact re-download rebuilds ``JOBS/`` after a
+        restart, but the TOWN_EVENTS line is suppressed — it would
+        otherwise duplicate on every reconnect.
+        """
+        job_id = data.get("job_id", "?")
+        title = data.get("title", "?")
+        artifact_url = data.get("artifact_url")
+        artifact_path: str | None = None
+        if artifact_url:
+            artifact_path = self._download_artifact(
+                job_id, artifact_url, data.get("artifact_name", "")
+            )
+        self._update_job(
+            job_id,
+            role="consumer",
+            status="DELIVERED",
+            title=title,
+            deliverable=data.get("deliverable", ""),
+            artifact_path=artifact_path,
+            artifact_url=None if artifact_path else artifact_url,
+        )
+        self._write_jobs()
+        if data.get("resync"):
+            return
+        if artifact_path:
+            file_note = f" File saved to {artifact_path}."
+        elif artifact_url:
+            file_note = " A file was attached but the download failed — see TOWN_JOBS.md for the URL."
+        else:
+            file_note = ""
+        self._append_event(
+            f'\U0001f4bc Work delivered for your job "{title}" (job {job_id}).{file_note} '
+            f"Read it in TOWN_JOBS.md, then: goosetown act review {job_id} accept|reject"
+        )
+
+    def _on_job_completed(self, data: dict) -> None:
+        """Both sides: job settled successfully.
+
+        Derives role via ``_job_role`` (which checks event ids before the
+        local cache) so a fresh daemon that missed earlier events still
+        renders the correct provider-vs-consumer flavour line.  Updates the
+        wallet from the ``balance`` field when the backend includes it
+        (Fix 3: wallet freshness on settlement).
+        """
+        job_id = data.get("job_id", "?")
+        title = data.get("title", "?")
+        payout = data.get("payout", "?")
+        fee = data.get("fee", "?")
+        # Derive role fresh from event ids; fall back to local cache.
+        role = self._job_role(data, job_id)
+        job = self._update_job(
+            job_id,
+            status="COMPLETED",
+            title=title,
+            payout=payout,
+            fee=fee,
+            criteria_verdicts=data.get("criteria_verdicts"),
+        )
+        # Stamp role onto the cache entry if it was unknown before.
+        if role is not None and job.get("role") is None:
+            job["role"] = role
+        # Update wallet from settlement event (provider's copy carries balance).
+        if "balance" in data:
+            self._exchange_state()["wallet"] = data["balance"]
+        self._write_jobs()
+        # Resync events heal the local cache and wallet but must not duplicate
+        # TOWN_EVENTS.md lines — the agent would see the same line on every reconnect.
+        if data.get("resync"):
+            return
+        effective_role = job.get("role") or role
+        # W3: append a short verdict summary if present.
+        verdicts = data.get("criteria_verdicts")
+        verdict_suffix = ""
+        if verdicts:
+            met = sum(1 for v in verdicts if v)
+            verdict_suffix = f" criteria: {met}/{len(verdicts)} met"
+        if effective_role == "provider":
+            line = (
+                f'\U0001f4bc Job "{title}" completed — you were paid {payout} crumbs '
+                f"({fee} crumb platform fee) (job {job_id}).{verdict_suffix}"
+            )
+        else:
+            line = (
+                f'\U0001f4bc Your job "{title}" completed — provider received '
+                f"{payout} crumbs (fee {fee}) (job {job_id}).{verdict_suffix}"
+            )
+        self._append_event(line)
+
+    def _on_job_failed(self, data: dict) -> None:
+        """Both sides: job failed (delivery timeout or consumer rejection).
+
+        Derives role via ``_job_role`` for freshness parity with
+        ``_on_job_completed``.  Updates the wallet from the ``balance``
+        field when the backend includes it (consumer's copy on reject/timeout
+        carries the refunded balance).
+        """
+        job_id = data.get("job_id", "?")
+        title = data.get("title", "?")
+        reason = data.get("reason", "unknown")
+        # Derive role fresh from event ids; fall back to local cache.
+        role = self._job_role(data, job_id)
+        job = self._update_job(
+            job_id,
+            status="FAILED",
+            title=title,
+            fail_reason=reason,
+            criteria_verdicts=data.get("criteria_verdicts"),
+        )
+        # Stamp role onto the cache entry if it was unknown before.
+        if role is not None and job.get("role") is None:
+            job["role"] = role
+        # Update wallet from refund event (consumer's copy carries balance).
+        if "balance" in data:
+            self._exchange_state()["wallet"] = data["balance"]
+        self._write_jobs()
+        # Resync events heal the local cache and wallet but must not duplicate
+        # TOWN_EVENTS.md lines — the agent would see the same line on every reconnect.
+        if data.get("resync"):
+            return
+        # W3: append verdict summary if present.
+        verdicts = data.get("criteria_verdicts")
+        verdict_suffix = ""
+        if verdicts:
+            met = sum(1 for v in verdicts if v)
+            verdict_suffix = f" criteria: {met}/{len(verdicts)} met"
+        self._append_event(
+            f'\U0001f4bc Job "{title}" failed: {reason} (job {job_id}).{verdict_suffix}'
+        )
+
+    def _on_job_expired(self, data: dict) -> None:
+        """Consumer-side: bid window closed with no eligible bids.
+
+        Updates the wallet from the ``balance`` field when the backend
+        includes it (Fix 3: wallet freshness on expiry refund).
+        """
+        job_id = data.get("job_id", "?")
+        title = data.get("title", "?")
+        refunded = data.get("refunded")
+        self._update_job(job_id, role="consumer", status="EXPIRED", title=title)
+        if "balance" in data:
+            self._exchange_state()["wallet"] = data["balance"]
+        self._write_jobs()
+        # Resync events heal the local cache and wallet but must not duplicate
+        # TOWN_EVENTS.md lines — the agent would see the same line on every reconnect.
+        if data.get("resync"):
+            return
+        line = f'\U0001f4bc Your job "{title}" expired with no winner (job {job_id}).'
+        if refunded is not None:
+            line += f" {refunded} crumbs were refunded to your wallet."
+        self._append_event(line)
+
+    def _on_job_cancelled(self, data: dict) -> None:
+        """Bidder-side: the consumer cancelled the OPEN job — our bid is void.
+
+        Events with ``"resync": True`` are connect-time re-sends that heal a
+        stale [BID] cache entry left by a missed live notification.  The cache
+        upsert and TOWN_JOBS.md rewrite still run (idempotent), but the
+        TOWN_EVENTS line is suppressed to avoid duplicate log noise on every
+        reconnect.
+        """
+        job_id = data.get("job_id", "?")
+        title = data.get("title", "?")
+        self._update_job(job_id, role="provider", status="CANCELLED", title=title)
+        self._write_jobs()
+        if not data.get("resync"):
+            self._append_event(
+                f'\U0001f4bc Job "{title}" (job {job_id}) was cancelled by its poster — your bid is void.'
+            )
+
+    def _on_job_message(self, data: dict) -> None:
+        """Counterparty sent a message on an active job.
+
+        Appends a 💬 event line and caches the last 5 messages on the job
+        entry so ``_write_jobs`` can render them inline under the job.
+        """
+        job_id = data.get("job_id", "?")
+        from_name = data.get("from_name", "someone")
+        text = data.get("text", "")
+        # Cache the message on the job entry (trim to 5 most recent).
+        ex = self._exchange_state()
+        job = ex.setdefault("jobs", {}).setdefault(job_id, {"job_id": job_id})
+        msgs: list[dict] = list(job.get("messages") or [])
+        msgs.append({"from_name": from_name, "text": text})
+        job["messages"] = msgs[-5:]  # keep last 5 only
+        job["updated"] = time.time()
+        self._write_jobs()
+        preview = text[:200]
+        self._append_event(
+            f'\U0001f4ac {from_name} (job {job_id}): "{preview}" — '
+            f"reply: goosetown act job_msg {job_id} <text>"
+        )
+
+    # ------------------------------------------------------------------
+    # TOWN_JOBS.md rendering (v2 — action-first)
+    # ------------------------------------------------------------------
+
+    _TERMINAL_JOB_STATUSES = frozenset(
+        {"COMPLETED", "FAILED", "EXPIRED", "CANCELLED", "LOST"}
+    )
+
+    @staticmethod
+    def _fmt_clock(epoch: float) -> str:
+        """Render an absolute epoch deadline as ``HH:MM UTC``."""
+        return time.strftime("%H:%M", time.gmtime(epoch)) + " UTC"
+
+    def _job_bucket(self, job: dict) -> str:
+        """Map a cached job to its TOWN_JOBS.md v2 bucket.
+
+        - provider + AWARDED → "action" (DELIVER now)
+        - consumer + DELIVERED → "action" (REVIEW now)
+        - terminal statuses → "settled"
+        - everything else non-terminal → "waiting"
+        """
+        status = job.get("status")
+        role = job.get("role")
+        if status in self._TERMINAL_JOB_STATUSES:
+            return "settled"
+        if role == "provider" and status == "AWARDED":
+            return "action"
+        if role == "consumer" and status == "DELIVERED":
+            return "action"
+        return "waiting"
+
+    @staticmethod
+    def _fenced_block(label: str, text: str) -> list[str]:
+        """Indented fenced block; embedded fences neutralized (``` → ''')."""
+        safe = str(text).replace("```", "'''")
+        out = [f"  {label}", "  ```"]
+        out += [f"  {ln}" for ln in safe.splitlines()]
+        out.append("  ```")
+        return out
+
+    @staticmethod
+    def _job_message_lines(job: dict) -> list[str]:
+        """W4: render the cached last-5 counterparty messages for a job."""
+        out: list[str] = []
+        for m in job.get("messages") or []:
+            from_name = m.get("from_name", "?")
+            text = str(m.get("text", ""))[:200]
+            out.append(f"  > {from_name}: {text}")
+        return out
+
+    def _render_action_entry(self, job: dict) -> list[str]:
+        """One NEEDS-YOUR-ACTION entry — exact command inline, money first."""
+        job_id = job["job_id"]
+        title = job.get("title") or "(untitled)"
+        lines: list[str] = []
+        if job.get("role") == "provider":
+            # We won the job (AWARDED) → DELIVER.
+            head = "- DELIVER"
+            if job.get("deadline_at") is not None:
+                head += f" by {self._fmt_clock(job['deadline_at'])}"
+            head += f': "{title}" (job {job_id})'
+            if job.get("agreed_price") is not None:
+                head += f" — agreed {job['agreed_price']} crumbs"
+            lines.append(head)
+            lines.append(
+                f"  → goosetown act deliver {job_id} <your work>"
+                "   (or --file=path for big/binary work)"
+            )
+            if job.get("description"):
+                lines += self._fenced_block("Job spec:", job["description"])
+            # W3: success criteria as a checklist (verdicts when known).
+            criteria = job.get("success_criteria")
+            if criteria:
+                verdicts = job.get("criteria_verdicts")
+                lines.append("  Success criteria:")
+                for i, criterion in enumerate(criteria):
+                    met = bool(verdicts and i < len(verdicts) and verdicts[i])
+                    lines.append(f"  - [{'x' if met else ' '}] {criterion}")
+        else:
+            # Work was delivered to us (DELIVERED) → REVIEW.
+            lines.append(
+                f'- REVIEW: "{title}" (job {job_id}) — delivered, awaiting your verdict'
+            )
+            lines.append(
+                f"  → goosetown act review {job_id} "
+                "accept|reject [reason] [--criteria=1,0,1]"
+            )
+            if job.get("deliverable"):
+                lines += self._fenced_block("Deliverable:", job["deliverable"])
+            # W5: delivered artifact file — local path when the download
+            # succeeded, otherwise the presigned URL with a note.
+            if job.get("artifact_path"):
+                lines.append(f"  Artifact file: {job['artifact_path']}")
+            elif job.get("artifact_url"):
+                lines.append(
+                    "  Artifact (download failed — fetch it yourself within 24h):"
+                )
+                lines.append(f"  {job['artifact_url']}")
+        lines += self._job_message_lines(job)
+        return lines
+
+    def _render_waiting_line(self, job: dict) -> str:
+        """One WAITING line — a state where the agent can't act yet."""
+        job_id = job["job_id"]
+        title = job.get("title") or "(untitled)"
+        status = job.get("status") or "?"
+        role = job.get("role")
+        line = f'- [{status}] "{title}" (job {job_id})'
+        if role == "consumer" and status == "OPEN":
+            if job.get("max_price") is not None:
+                line += f" — up to {job['max_price']} crumbs"
+            bid_count = job.get("bid_count")
+            line += (
+                f" — {bid_count} sealed bid(s)"
+                if bid_count is not None
+                else " — no bids yet"
+            )
+            if job.get("bids_close_at") is not None:
+                line += f" — closes {self._fmt_clock(job['bids_close_at'])}"
+        elif role == "provider" and status == "BID":
+            if job.get("bid_price") is not None:
+                line += f" — your bid: {job['bid_price']} crumbs"
+            line += " — sealed; you'll hear at the close"
+        elif role == "provider" and status == "DELIVERED":
+            line += " — delivered; payment on accept (auto-accepts if they go quiet)"
+        elif role == "consumer" and status == "AWARDED":
+            if job.get("agreed_price") is not None:
+                line += f" — agreed {job['agreed_price']} crumbs"
+            line += " — awaiting delivery"
+            if job.get("deadline_at") is not None:
+                line += f" (due {self._fmt_clock(job['deadline_at'])})"
+        return line
+
+    def _render_settled_line(self, job: dict) -> str:
+        """One terminal one-liner: [PAID +N] / [FAILED] / [EXPIRED] / ..."""
+        job_id = job["job_id"]
+        title = job.get("title") or "(untitled)"
+        status = job.get("status")
+        if status == "COMPLETED":
+            payout = job.get("payout")
+            if job.get("role") == "provider" and payout is not None:
+                return f'- [PAID +{payout}] "{title}" (job {job_id})'
+            line = f'- [PAID] "{title}" (job {job_id})'
+            if payout is not None:
+                line += f" — provider received {payout} crumbs"
+            return line
+        line = f'- [{status}] "{title}" (job {job_id})'
+        if status == "FAILED" and job.get("fail_reason"):
+            line += f" — {job['fail_reason']}"
+        return line
+
+    def _write_jobs(self) -> None:
+        """Write TOWN_JOBS.md (v2, action-first) to the agent workspace.
+
+        The reader is an LLM agent with one heartbeat of attention: the file
+        tells it what to do instead of making it derive. Information order is
+        action priority — actionable jobs (with their exact command inline,
+        most urgent deadline first), then waiting states, then the last 8
+        settled one-liners. Atomic via rename (``_write_workspace_file``).
+        """
+        ex = self.state.get("exchange") or {}
+        jobs = list((ex.get("jobs") or {}).values())
+
+        lines: list[str] = ["# GooseTown Exchange — your jobs", ""]
+        wallet = ex.get("wallet")
+        if wallet is not None:
+            wallet_line = f"Wallet: {wallet} crumbs"
+            # Trust tier renders only when something cached it; today no
+            # daemon event carries the tier, so this stays wallet-only.
+            if ex.get("trust_tier"):
+                wallet_line += f" · Trust: {ex['trust_tier']}"
+            lines += [wallet_line, ""]
+
+        action = [j for j in jobs if self._job_bucket(j) == "action"]
+        waiting = [j for j in jobs if self._job_bucket(j) == "waiting"]
+        settled = [j for j in jobs if self._job_bucket(j) == "settled"]
+
+        # Most urgent deadline first; deadline-less entries after, newest first.
+        action.sort(
+            key=lambda j: (
+                j["deadline_at"] if j.get("deadline_at") is not None else float("inf"),
+                -(j.get("updated") or 0),
+            )
+        )
+        waiting.sort(key=lambda j: j.get("updated", 0), reverse=True)
+        settled.sort(key=lambda j: j.get("updated", 0), reverse=True)
+        settled = settled[:8]  # render-side trim only; the cache keeps all
+
+        lines.append("## ⚡ NEEDS YOUR ACTION")
+        lines.append("")
+        if not action:
+            lines.append("- (nothing — you're all caught up)")
+        for job in action:
+            lines += self._render_action_entry(job)
+        lines.append("")
+
+        if waiting:
+            lines.append("## 📌 WAITING")
+            lines.append("")
+            for job in waiting:
+                lines.append(self._render_waiting_line(job))
+                lines += self._job_message_lines(job)
+            lines.append("")
+
+        if settled:
+            lines.append("## 📜 SETTLED (recent)")
+            lines.append("")
+            for job in settled:
+                lines.append(self._render_settled_line(job))
+            lines.append("")
+
+        self._write_workspace_file("TOWN_JOBS.md", "\n".join(lines) + "\n")
+
+    # ------------------------------------------------------------------
     # Alarm / sleep-wake cycle
     # ------------------------------------------------------------------
 
@@ -822,6 +1567,7 @@ class TownDaemon:
             "arc.": "\U0001f4dc",  # 📜
             "social.": "\U0001f4e3",  # 📣
             "personal.": "\U0001f514",  # 🔔
+            "economy.": "\U0001f4bc",  # 💼
         }
         for prefix, icon in prefix_icons.items():
             if tag.startswith(prefix):
@@ -1283,8 +2029,36 @@ class TownDaemon:
                 self._pending_move_destination = payload.get("destination", "")
                 self._arrived_event.clear()
 
+            # Exchange verbs: set up the outcome future BEFORE sending so
+            # the backend's exchange_ok / exchange_rejected echo can't
+            # arrive between send and wait (mirrors chat_outcome_future).
+            exchange_outcome_future = None
+            if payload.get("action") in (
+                "post_job",
+                "bid",
+                "cancel_job",
+                "deliver_job",
+                "review_job",
+                "job_msg",
+            ):
+                exchange_outcome_future = asyncio.get_running_loop().create_future()
+                self._exchange_outcome = exchange_outcome_future
+                self._pending_exchange_payload = dict(payload)
+
             _log.info("Sending via WS: %s", msg[:100])
-            await self.ws.send(msg)
+            try:
+                await self.ws.send(msg)
+            except Exception:
+                # On send failure, clear any exchange outcome state we set up
+                # so stale futures / payloads don't leak into the next invocation.
+                # Chat and move outcome futures are left as-is (their callers
+                # already handle cancellation / timeout in the finally blocks
+                # below). Exchange outcome is extra state we must clean up here
+                # because we never reach the exchange_outcome_future branch.
+                if exchange_outcome_future is not None:
+                    self._exchange_outcome = None
+                    self._pending_exchange_payload = None
+                raise
             _log.info("WS send complete")
 
             if payload.get("action") == "end_conversation":
@@ -1352,6 +2126,25 @@ class TownDaemon:
                     "message": "Did not arrive within 120s",
                     "last_known_location": cached_loc,
                 }
+            if exchange_outcome_future is not None:
+                # Wait for the backend's exchange_ok / exchange_rejected
+                # echo of our own verb. 10s is generous — the exchange
+                # handlers are hot-path DynamoDB writes.
+                try:
+                    return await asyncio.wait_for(exchange_outcome_future, timeout=10.0)
+                except asyncio.TimeoutError:
+                    return {
+                        "status": "ambiguous",
+                        "action": payload.get("action"),
+                        "note": (
+                            "Backend did not acknowledge within 10s — "
+                            "check TOWN_JOBS.md / TOWN_EVENTS.md."
+                        ),
+                    }
+                finally:
+                    self._exchange_outcome = None
+                    self._pending_exchange_payload = None
+
             if payload.get("action") == "say":
                 # `say` is fire-and-forget for now: the backend echoes the
                 # message back via conversation_message, which the daemon
@@ -1390,8 +2183,24 @@ class TownDaemon:
 
     async def _handle_socket_client(self, reader, writer) -> None:
         """Handle a single tool connection on the Unix socket."""
+        import asyncio
+
         try:
-            data = await __import__("asyncio").wait_for(reader.read(8192), timeout=5.0)
+            # ipc_send() shuts down its write side after sendall, so EOF marks
+            # the end of the frame — read until then. A single read(8192) both
+            # truncated >8 KB frames (16 KB deliverables) and assumed a frame
+            # always arrives in one chunk, which SOCK_STREAM never guarantees.
+            chunks: list[bytes] = []
+            remaining = self._MAX_IPC_FRAME_BYTES
+            while remaining > 0:
+                chunk = await asyncio.wait_for(
+                    reader.read(min(8192, remaining)), timeout=5.0
+                )
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            data = b"".join(chunks)
             if not data:
                 return
             cmd = json.loads(data.decode())

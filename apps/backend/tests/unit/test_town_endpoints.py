@@ -928,6 +928,7 @@ class TestSkillEndpoints:
         assert "goosetown/references/owner-dms.md" in names
         assert "goosetown/references/troubleshooting.md" in names
         assert "goosetown/references/openclaw.md" in names
+        assert "goosetown/references/exchange.md" in names
         # The .md templates the daemon writes into the workspace.
         assert "goosetown/GOOSETOWN.md" in names
         assert "goosetown/TOWN_STATUS.md" in names

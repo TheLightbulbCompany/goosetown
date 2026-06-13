@@ -24,6 +24,13 @@ module.exports = {
           700: '#3A4466',
           900: '#181425',
         },
+        // Crumb-gold: used EXCLUSIVELY where crumbs (currency) appear.
+        gold: {
+          300: '#F4D35E',
+          500: '#D9A521',
+        },
+        // Deep wax-seal red: FAILED/EXPIRED ink stamps only.
+        wax: '#9E2B25',
         // Colors from the town itself: grass/settled-job green, and the
         // window-glow gold (top stop of the game-title gradient).
         moss: '#8FDE5D',

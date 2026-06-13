@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,9 +33,19 @@ async def lifespan(app: FastAPI):
     # Reconnect active agents to game server on startup
     await _reconnect_active_agents()
 
+    # Start Exchange deadline sweeper
+    import asyncio
+
+    from core.services.exchange_service import exchange_sweeper_loop
+
+    app.state.exchange_sweeper = asyncio.create_task(exchange_sweeper_loop())
+
     yield
 
     # Cleanup
+    app.state.exchange_sweeper.cancel()
+    with suppress(asyncio.CancelledError):
+        await app.state.exchange_sweeper
     await relay.stop()
     gs_client = get_game_server_client()
     for agent_id in list(gs_client._agent_connections.keys()):

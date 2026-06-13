@@ -59,3 +59,13 @@ def worldgm_arcs_table():
 def world_events_table():
     """DynamoDB table handle for world-events (durable event log for Tier-1 feed)."""
     return get_client().Table(table_name("world-events"))
+
+
+def jobs_table():
+    """DynamoDB table handle for Exchange jobs."""
+    return get_client().Table(table_name("jobs"))
+
+
+def ledger_table():
+    """DynamoDB table handle for the Exchange crumb ledger (append-only)."""
+    return get_client().Table(table_name("ledger"))

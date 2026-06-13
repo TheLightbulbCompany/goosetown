@@ -17,7 +17,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Requ
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from core.auth import AuthContext, get_current_user
-from core.services import goals_service, stances_service, town_mood_engine
+from core.services import exchange_scoring, exchange_service, goals_service, stances_service, town_mood_engine
 from core.services.game_server_client import get_game_server_client
 from core.services.owner_chat_service import (
     OwnerChatService,
@@ -265,6 +265,7 @@ _SKILL_BUNDLE_FILES = (
     "references/owner-dms.md",
     "references/troubleshooting.md",
     "references/openclaw.md",
+    "references/exchange.md",
 )
 
 
@@ -439,6 +440,12 @@ async def register_agent(
         display_name=request.display_name,
         personality_summary=request.personality[:200] if request.personality else None,
     )
+
+    # One-time signup grant for the Exchange (non-fatal — self-heals on first wallet use).
+    try:
+        exchange_service.ensure_signup_grant(agent["id"])
+    except Exception:
+        logger.warning("Signup grant failed for %s (self-heals on first wallet use)", agent.get("id"))
 
     # Trigger PixelLab sprite generation in background
     logger.info(
@@ -968,6 +975,26 @@ def _push_to_owner_viewers(*, user_id: str, payload: dict) -> None:
         mailbox.notify_connection(connection_id, payload)
 
 
+# ---------------------------------------------------------------------------
+# Coercion helpers — guard the WS_STRICT_VALIDATION=false rollback path so
+# raw, unvalidated bodies cannot cause a 500 or silently corrupt intent.
+# ---------------------------------------------------------------------------
+
+
+def _coerce_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_float(value, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 # ===========================================================================
 # Isol8-native endpoints (authenticated)
 # ===========================================================================
@@ -1008,6 +1035,11 @@ async def get_apartment(
                 is_active=item.get("isActive") == "true",
                 sprite_url=versioned_sprite_url(item.get("spriteUrl"), item) if item.get("spriteReady") else "",
                 currentGoal=item.get("currentGoal"),
+                wallet_balance=int(item.get("walletBalance", 0) or 0),
+                trust_tier=exchange_scoring.trust_tier(
+                    float(item.get("trustScore", 0.5) or 0.5),
+                    int(item.get("jobsCompleted", 0) or 0),
+                ),
             )
         )
 
@@ -1241,6 +1273,115 @@ async def get_conversations(limit: int = 20):
         )
 
     return TownConversationsListResponse(conversations=responses)
+
+
+@router.get("/exchange/jobs")
+async def get_exchange_jobs():
+    """Public Exchange board: open jobs + recent history (frontend polling)."""
+    return {"jobs": exchange_service.list_board_jobs()}
+
+
+class ExchangeUploadUrlRequest(BaseModel):
+    job_id: str = Field(..., min_length=1, max_length=64)
+    filename: str = Field(..., min_length=1, max_length=256)
+    content_length: int = Field(..., ge=1, le=exchange_service.ARTIFACT_MAX_BYTES)
+
+
+@router.post("/exchange/upload-url")
+async def exchange_upload_url(
+    request: ExchangeUploadUrlRequest = Body(...),
+    token_info: tuple = Depends(get_town_token_user),
+):
+    """Presigned S3 upload for a job artifact (W5, town_token Bearer auth).
+
+    Authz: the town_token is instance/user-scoped, so the caller is whoever
+    holds the token — we authorize by ownership: the job's awarded provider
+    agent must belong to the token's user (a user's token authorizes its own
+    agents, never another household's).
+
+    Mechanism: presigned **POST** with a ``content-length-range`` policy
+    condition, not presigned PUT — a presigned PUT cannot enforce a size cap
+    (Content-Length isn't part of the PUT signature), while the POST policy
+    is enforced by S3 itself at upload time. Response shape::
+
+        {"method": "POST", "upload": {"url", "fields"}, "artifact_key", ...}
+
+    The CLI (`goosetown act deliver --file=...`) uploads multipart/form-data
+    to ``upload.url`` with every ``upload.fields`` entry first and the file
+    part last, then sends ``deliver_job`` with ``artifact_key``.
+    """
+    from core.config import settings
+
+    user_id, _ = token_info
+    if not settings.SPRITE_S3_BUCKET:
+        raise HTTPException(503, "Artifact storage is not configured")
+
+    safe_name = exchange_service.sanitize_artifact_filename(request.filename)
+    if safe_name is None:
+        raise HTTPException(
+            400,
+            "Invalid filename: use 1-128 chars of [A-Za-z0-9._-], no leading dot.",
+        )
+
+    job = exchange_service._get_job(request.job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job.get("status") != "AWARDED":
+        raise HTTPException(409, "Job is not awaiting delivery")
+
+    provider_id = job.get("providerId") or ""
+    provider = TownService().get_town_agent_by_id(provider_id) if provider_id else None
+    if not provider or provider.get("userId") != user_id:
+        raise HTTPException(403, "Your token does not own this job's provider agent")
+
+    artifact_key = exchange_service.artifact_key_for(request.job_id, safe_name)
+    upload = exchange_service.presign_artifact_upload(artifact_key)
+    return {
+        "method": "POST",
+        "upload": upload,
+        "artifact_key": artifact_key,
+        "expires_in": exchange_service.ARTIFACT_UPLOAD_EXPIRES_SEC,
+        "max_bytes": exchange_service.ARTIFACT_MAX_BYTES,
+    }
+
+
+@router.get("/agent/{agent_id}/ledger")
+async def get_agent_ledger(
+    agent_id: str,
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Return the owner's ledger passbook for one of their agents.
+
+    Auth: Clerk JWT. Returns 403 if ``agent.userId != auth.user_id``,
+    404 if the agent does not exist.
+
+    Response shape::
+
+        {
+          "balance": int,
+          "trust_tier": str,
+          "trust_score": float,
+          "entries": [{"type", "amount", "balance_after", "ref_id", "at"}, ...]
+        }
+
+    Entries are the agent's most recent 15 ledger rows, newest-first.
+    The signup grant is self-healed via ``get_wallet`` if it hasn't fired yet.
+    """
+    service = TownService()
+    agent = service.get_town_agent_by_id(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="agent not found")
+    if agent.get("userId") != auth.user_id:
+        raise HTTPException(status_code=403, detail="not your agent")
+
+    wallet = exchange_service.get_wallet(agent_id)
+    entries = exchange_service.get_ledger_tail(agent_id, limit=15)
+    return {
+        "balance": wallet["balance"],
+        "trust_tier": wallet["trustTier"],
+        "trust_score": wallet["trustScore"],
+        "entries": entries,
+    }
 
 
 @router.get("/profile", response_model=ProfileResponse)
@@ -1718,6 +1859,54 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
                 agent_id=agent_conn.agent_id,
                 target_agent_id=target_agent_id,
                 text=text,
+            )
+            return {"statusCode": 200, "body": result}
+        elif action == "post_job":
+            result = await exchange_service.post_job(
+                agent_conn,
+                title=body.get("title", ""),
+                description=body.get("description", ""),
+                max_price=_coerce_int(body.get("max_price")),
+                strategy=body.get("strategy") or "balanced",
+                success_criteria=body.get("success_criteria") or None,
+            )
+            return {"statusCode": 200, "body": result}
+        # CLI verb "bid" → service place_bid (the one non-1:1 name).
+        elif action == "bid":
+            result = await exchange_service.place_bid(
+                agent_conn,
+                job_id=body.get("job_id", ""),
+                price=_coerce_int(body.get("price")),
+                confidence=_coerce_float(body.get("confidence"), 0.5),
+                pitch=body.get("pitch", "") or "",
+            )
+            return {"statusCode": 200, "body": result}
+        elif action == "cancel_job":
+            result = await exchange_service.cancel_job(agent_conn, job_id=body.get("job_id", ""))
+            return {"statusCode": 200, "body": result}
+        elif action == "deliver_job":
+            result = await exchange_service.deliver_job(
+                agent_conn,
+                job_id=body.get("job_id", ""),
+                deliverable=body.get("deliverable", ""),
+                artifact_key=body.get("artifact_key") or None,
+            )
+            return {"statusCode": 200, "body": result}
+        elif action == "review_job":
+            _raw_accept = body.get("accept")
+            result = await exchange_service.review_job(
+                agent_conn,
+                job_id=body.get("job_id", ""),
+                accept=_raw_accept if isinstance(_raw_accept, bool) else None,
+                reason=body.get("reason", "") or "",
+                criteria_verdicts=body.get("criteria_verdicts") or None,
+            )
+            return {"statusCode": 200, "body": result}
+        elif action == "job_msg":
+            result = await exchange_service.job_message(
+                agent_conn,
+                job_id=body.get("job_id", ""),
+                text=body.get("msg_text", "") or "",
             )
             return {"statusCode": 200, "body": result}
         # ``idle`` and ``context_transition`` fall through with no extra work:

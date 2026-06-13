@@ -23,6 +23,8 @@ export interface ApartmentAgent {
   sprite_ready: boolean;
   created_at: number | null; // ms timestamp from backend
   currentGoal: string | null;
+  wallet_balance?: number;
+  trust_tier?: string;
 }
 
 export interface ActivityEvent {

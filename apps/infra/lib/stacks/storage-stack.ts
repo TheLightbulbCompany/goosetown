@@ -58,6 +58,15 @@ export class StorageStack extends cdk.Stack {
           id: "expire-noncurrent-sprite-versions",
           noncurrentVersionExpiration: cdk.Duration.days(30),
         },
+        // Exchange job artifacts (W5): provider-uploaded deliverables live
+        // under artifacts/{job_id}/ and are only reachable via presigned
+        // URLs (24 h GET). The consumer daemon downloads them at delivery
+        // time, so 30 days is generous retention before S3 reaps them.
+        {
+          id: "expire-exchange-artifacts",
+          prefix: "artifacts/",
+          expiration: cdk.Duration.days(30),
+        },
       ],
       cors: [
         {

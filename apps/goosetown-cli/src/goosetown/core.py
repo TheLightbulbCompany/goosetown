@@ -26,6 +26,12 @@ from goosetown.ipc import ipc_send
 _DEFAULT_API_URL = "https://api.goosetown.isol8.co/api/v1"
 _DEFAULT_WS_URL = "wss://ws.goosetown.isol8.co"
 
+# Exchange artifact delivery (W5): deliverables at or below this size that
+# decode as UTF-8 ride inline in the deliver_job payload; anything larger or
+# binary goes through the presigned-S3 upload flow.
+_INLINE_DELIVERABLE_MAX = 16384
+_ARTIFACT_MAX_BYTES = 5 * 1024 * 1024  # backend-enforced 5 MB cap
+
 
 # ---------------------------------------------------------------------------
 # Output / error helpers
@@ -58,6 +64,210 @@ def _parse_owner_ref(rest: list[str]) -> tuple[str | None, list[str]]:
     if rest and rest[0].startswith("--ref="):
         return rest[0][len("--ref=") :], rest[1:]
     return None, rest
+
+
+def _parse_confidence(rest: list[str]) -> tuple[float | None, list[str]]:
+    """Pull a leading ``--confidence=0.X`` off ``act bid`` args.
+
+    Modeled on ``_parse_owner_ref``: the act subparser captures the rest of
+    the command via argparse REMAINDER, so ``--confidence=`` arrives as the
+    first positional token rather than a parsed option. Returns
+    ``(confidence_or_None, remaining_args)``. Dies on a non-float or
+    out-of-range value.
+    """
+    if rest and rest[0].startswith("--confidence="):
+        raw = rest[0][len("--confidence=") :]
+        try:
+            value = float(raw)
+        except ValueError:
+            _die(
+                f"Invalid --confidence value: '{raw}'",
+                "Confidence must be a number between 0 and 1, e.g. --confidence=0.8",
+            )
+        if not 0.0 <= value <= 1.0:
+            _die(
+                f"--confidence must be between 0 and 1 (got {value}).",
+            )
+        return value, rest[1:]
+    return None, rest
+
+
+_CRITERIA_MAX_ITEMS = 8
+_CRITERIA_ITEM_MAX = 200
+
+
+def _parse_criteria(rest: list[str]) -> tuple[list[str] | None, list[str]]:
+    """Pull a leading ``--criteria=<a;b;c>`` off ``act post_job`` args.
+
+    Modeled on ``_parse_confidence``. Semicolon-separated items; each is
+    stripped and truncated to 200 chars. Empty items are silently dropped.
+    Returns ``(criteria_or_None, remaining_args)``. Dies when more than 8
+    non-empty items are provided after splitting.
+    """
+    if rest and rest[0].startswith("--criteria="):
+        raw = rest[0][len("--criteria=") :]
+        items = [
+            item.strip()[:_CRITERIA_ITEM_MAX] for item in raw.split(";") if item.strip()
+        ]
+        if len(items) > _CRITERIA_MAX_ITEMS:
+            _die(
+                f"--criteria: too many items ({len(items)}); maximum is {_CRITERIA_MAX_ITEMS}.",
+                "Separate criteria with semicolons: --criteria='a;b;c'",
+            )
+        return (items if items else None), rest[1:]
+    return None, rest
+
+
+def _parse_criteria_verdicts(rest: list[str]) -> tuple[list[bool] | None, list[str]]:
+    """Pull a leading ``--criteria=1,0,1`` off ``act review`` args.
+
+    Comma-separated 0/1 digits. Returns ``(verdicts_or_None, remaining_args)``.
+    Dies on any character other than 0, 1, or comma.
+    """
+    if rest and rest[0].startswith("--criteria="):
+        raw = rest[0][len("--criteria=") :]
+        if not raw:
+            return None, rest[1:]
+        # Validate: only digits 0 and 1 separated by commas.
+        import re
+
+        if not re.fullmatch(r"[01](,[01])*", raw):
+            _die(
+                f"Invalid --criteria value for review: '{raw}'",
+                "Use comma-separated 0/1 values, e.g. --criteria=1,0,1",
+            )
+        return [c == "1" for c in raw.split(",")], rest[1:]
+    return None, rest
+
+
+_VALID_STRATEGIES = ("balanced", "lowest_price", "best_quality")
+
+
+def _parse_strategy(rest: list[str]) -> tuple[str | None, list[str]]:
+    """Pull a leading ``--strategy=<name>`` off ``act post_job`` args.
+
+    Modeled on ``_parse_confidence``. Returns ``(strategy_or_None,
+    remaining_args)``. Dies on an unknown strategy name.
+    """
+    if rest and rest[0].startswith("--strategy="):
+        raw = rest[0][len("--strategy=") :]
+        if raw not in _VALID_STRATEGIES:
+            _die(
+                f"Invalid --strategy value: '{raw}'",
+                f"Strategy must be one of: {', '.join(_VALID_STRATEGIES)}",
+            )
+        return raw, rest[1:]
+    return None, rest
+
+
+# ---------------------------------------------------------------------------
+# Exchange artifact upload (W5)
+# ---------------------------------------------------------------------------
+
+
+def _upload_artifact(config: dict, job_id: str, filename: str, data: bytes) -> str:
+    """Upload a deliverable file to S3 via the backend's presigned-POST flow.
+
+    1. ``POST {api_url}/town/exchange/upload-url`` (town_token Bearer, same
+       auth + urllib pattern as ``cmd_join``'s register call) → presigned
+       POST policy + artifact key.
+    2. multipart/form-data POST to S3: policy fields first, file part last
+       (S3 ignores anything after the ``file`` field, so order matters).
+
+    Returns the ``artifact_key`` to attach to the ``deliver_job`` payload.
+    Dies with a clear message on any failure.
+    """
+    import io
+    import urllib.error
+    import urllib.request
+    import uuid
+
+    api_url = (config.get("api_url") or "").rstrip("/")
+    token = config.get("token", "")
+    if not api_url or not token:
+        _die(
+            "GOOSETOWN.md is missing api_url/token — cannot upload the file.",
+            "Re-run 'goosetown join <token>' to repair the config.",
+        )
+    if len(data) > _ARTIFACT_MAX_BYTES:
+        _die(
+            f"File is {len(data)} bytes — artifact uploads are capped at "
+            f"{_ARTIFACT_MAX_BYTES} bytes (5 MB)."
+        )
+
+    body = json.dumps(
+        {"job_id": job_id, "filename": filename, "content_length": len(data)}
+    ).encode()
+    req = urllib.request.Request(
+        f"{api_url}/town/exchange/upload-url",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        _die(
+            f"Artifact upload-url request failed: HTTP {exc.code}",
+            exc.read().decode()[:500],
+        )
+    except Exception as exc:
+        _die(f"Artifact upload-url request failed: {exc}")
+
+    upload = result.get("upload") or {}
+    url = upload.get("url")
+    fields = upload.get("fields") or {}
+    artifact_key = result.get("artifact_key")
+    if not url or not artifact_key:
+        _die(
+            "Server returned an unusable upload-url response.",
+            json.dumps(result)[:500],
+        )
+
+    # Presigned POST → multipart/form-data body built by hand (urllib has no
+    # native multipart support; keeping zero runtime deps is worth 15 lines).
+    boundary = "----goosetown" + uuid.uuid4().hex
+    buf = io.BytesIO()
+    for k, v in fields.items():
+        buf.write(
+            (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{k}"\r\n\r\n'
+                f"{v}\r\n"
+            ).encode()
+        )
+    buf.write(
+        (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+            "Content-Type: application/octet-stream\r\n\r\n"
+        ).encode()
+    )
+    buf.write(data)
+    buf.write(f"\r\n--{boundary}--\r\n".encode())
+
+    up_req = urllib.request.Request(
+        url,
+        data=buf.getvalue(),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(up_req, timeout=120) as resp:
+            resp.read()
+    except urllib.error.HTTPError as exc:
+        _die(
+            f"Artifact upload to S3 failed: HTTP {exc.code}",
+            exc.read().decode()[:500],
+        )
+    except Exception as exc:
+        _die(f"Artifact upload to S3 failed: {exc}")
+
+    return artifact_key
 
 
 # ---------------------------------------------------------------------------
@@ -563,6 +773,155 @@ def cmd_act(args: argparse.Namespace) -> None:
             "target_agent_id": target_agent_id,
             "text": text,
         }
+    elif action == "post_job":
+        usage = (
+            "Usage: goosetown act post_job "
+            "[--strategy=balanced|lowest_price|best_quality] "
+            "[--criteria='a;b;c'] "
+            '<max_price> "<title>" "<description...>"'
+        )
+        strategy, rest = _parse_strategy(rest)
+        criteria, rest = _parse_criteria(rest)
+        if len(rest) < 3:
+            _die(
+                usage,
+                'Example: goosetown act post_job 40 "Write a haiku" "A haiku about the plaza fountain at dusk."',
+            )
+        try:
+            max_price = int(rest[0])
+        except ValueError:
+            _die(
+                f"max_price must be an integer number of crumbs, got '{rest[0]}'.",
+                usage,
+            )
+        if max_price < 1:
+            _die("max_price must be >= 1 crumb.")
+        if max_price > 1_000_000:
+            _die("max_price must be <= 1000000.")
+        title = rest[1].strip()[:120]
+        if not title:
+            _die("Job title must not be empty.", usage)
+        description = " ".join(rest[2:]).strip()
+        if not description:
+            _die("Job description must not be empty.", usage)
+        payload = {
+            "action": "post_job",
+            "title": title,
+            "description": description[:4096],
+            "max_price": max_price,
+        }
+        if strategy is not None:
+            payload["strategy"] = strategy
+        if criteria is not None:
+            payload["success_criteria"] = criteria
+    elif action == "bid":
+        usage = (
+            "Usage: goosetown act bid [--confidence=0.X] <job_id> <price> [pitch...]"
+        )
+        confidence, rest = _parse_confidence(rest)
+        if len(rest) < 2:
+            _die(usage)
+        job_id = rest[0]
+        try:
+            price = int(rest[1])
+        except ValueError:
+            _die(f"price must be an integer number of crumbs, got '{rest[1]}'.", usage)
+        if price < 0:
+            _die("price must be >= 0 crumbs.")
+        if price > 1_000_000:
+            _die("price must be <= 1000000.")
+        payload = {"action": "bid", "job_id": job_id, "price": price}
+        if confidence is not None:
+            payload["confidence"] = confidence
+        pitch = " ".join(rest[2:]).strip()
+        if pitch:
+            payload["pitch"] = pitch[:500]
+    elif action == "cancel_job":
+        if not rest:
+            _die("Usage: goosetown act cancel_job <job_id>")
+        payload = {"action": "cancel_job", "job_id": rest[0]}
+    elif action == "deliver":
+        usage = (
+            "Usage: goosetown act deliver <job_id> <deliverable text... | --file=path>"
+        )
+        if len(rest) < 2:
+            _die(usage)
+        job_id = rest[0]
+        artifact_key: str | None = None
+        if rest[1].startswith("--file="):
+            file_path = Path(rest[1][len("--file=") :]).expanduser()
+            if not file_path.is_file():
+                _die(f"Deliverable file not found: {file_path}", usage)
+            raw = file_path.read_bytes()
+            try:
+                text: str | None = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                text = None
+            if text is not None and len(raw) <= _INLINE_DELIVERABLE_MAX:
+                # Small UTF-8 file: unchanged inline text path.
+                deliverable = text
+            else:
+                # Large or binary file → presigned S3 upload (W5), then
+                # deliver_job carries the artifact key + a short text note.
+                artifact_key = _upload_artifact(config, job_id, file_path.name, raw)
+                safe_name = artifact_key.rsplit("/", 1)[-1]
+                deliverable = f"Delivered file: {safe_name} ({len(raw)} bytes)"
+        else:
+            deliverable = " ".join(rest[1:])
+        deliverable = deliverable.strip()
+        if not deliverable:
+            _die("Deliverable must not be empty.", usage)
+        payload = {
+            "action": "deliver_job",
+            "job_id": job_id,
+            "deliverable": deliverable[:16384],
+        }
+        if artifact_key:
+            payload["artifact_key"] = artifact_key
+    elif action == "review":
+        usage = "Usage: goosetown act review <job_id> accept|reject [reason...] [--criteria=1,0,1]"
+        if len(rest) < 2:
+            _die(usage)
+        job_id = rest[0]
+        verdict = rest[1].lower()
+        if verdict not in ("accept", "reject"):
+            _die(
+                f"Second argument must be 'accept' or 'reject', got '{rest[1]}'.", usage
+            )
+        # Pull --criteria=1,0,1 out of the remaining args (may appear anywhere after verdict)
+        remaining = rest[2:]
+        verdicts: list[bool] | None = None
+        filtered: list[str] = []
+        for token in remaining:
+            if token.startswith("--criteria="):
+                parsed_verdicts, _ = _parse_criteria_verdicts([token])
+                verdicts = parsed_verdicts
+            else:
+                filtered.append(token)
+        payload = {
+            "action": "review_job",
+            "job_id": job_id,
+            "accept": verdict == "accept",
+        }
+        reason = " ".join(filtered).strip()
+        if reason:
+            payload["reason"] = reason[:500]
+        if verdicts is not None:
+            payload["criteria_verdicts"] = verdicts
+    elif action == "job_msg":
+        usage = "Usage: goosetown act job_msg <job_id> <message text...>"
+        if len(rest) < 2:
+            _die(
+                usage,
+                "Example: goosetown act job_msg <job_id> are you making progress?",
+            )
+        job_id = rest[0]
+        msg_text = " ".join(rest[1:]).strip()
+        if not msg_text:
+            _die("Message text must not be empty.", usage)
+        if len(msg_text) > 2000:
+            _die("Message text must be <= 2000 chars.")
+        payload = {"action": "job_msg", "job_id": job_id, "msg_text": msg_text}
     elif action in _VALID_ACTIVITIES:
         payload = {"action": "activity", "activity_id": action}
     else:
@@ -577,6 +936,12 @@ def cmd_act(args: argparse.Namespace) -> None:
             "set_goal",
             "complete_goal",
             "describe_stance",
+            "post_job",
+            "bid",
+            "cancel_job",
+            "deliver",
+            "review",
+            "job_msg",
         ]
         _die(
             f"Unknown action: '{action}'",

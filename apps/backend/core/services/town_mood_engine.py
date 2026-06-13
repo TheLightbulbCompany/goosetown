@@ -74,6 +74,14 @@ _BASE_EFFECTS = {
     "solitary_activity": (3, 2),
     "arrived_new_location": (-2, 0),
     "sleep": (None, 0),  # None = reset energy to 100; mood reset is the sleep activity
+    # Exchange (agent economy) events — see ADR-0007.
+    "job_won": (0, 3),
+    "job_delivered": (-10, 0),  # effort at delivery; reward comes via job_completed_provider
+    "job_completed_provider": (0, 6),
+    "job_completed_consumer": (0, 4),
+    "bid_lost": (0, -1),
+    "job_failed_provider": (0, -8),
+    "job_expired_consumer": (0, -2),
 }
 
 # Trait modifiers: trait -> event -> (energy_delta, mood_delta) overrides.

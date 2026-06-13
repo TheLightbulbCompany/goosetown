@@ -285,6 +285,199 @@ class TestStanceActions:
             )
 
 
+class TestExchangeActions:
+    """Validation for the five exchange verbs added in ADR-0007 (Task 7)."""
+
+    # ------------------------------------------------------------------ post_job
+    def test_post_job_valid(self) -> None:
+        msg = _adapter.validate_python(
+            {
+                "type": "town_agent_act",
+                "action": "post_job",
+                "title": "Need a poem",
+                "description": "Write me a haiku about crumbs",
+                "max_price": 50,
+            }
+        )
+        assert msg.action == "post_job"
+        assert msg.title == "Need a poem"
+        assert msg.max_price == 50
+
+    def test_post_job_missing_title(self) -> None:
+        with pytest.raises(ValidationError):
+            _adapter.validate_python(
+                {
+                    "type": "town_agent_act",
+                    "action": "post_job",
+                    "description": "Write me a haiku",
+                    "max_price": 50,
+                }
+            )
+
+    def test_post_job_missing_description(self) -> None:
+        with pytest.raises(ValidationError):
+            _adapter.validate_python(
+                {
+                    "type": "town_agent_act",
+                    "action": "post_job",
+                    "title": "Need a poem",
+                    "max_price": 50,
+                }
+            )
+
+    def test_post_job_missing_max_price(self) -> None:
+        with pytest.raises(ValidationError):
+            _adapter.validate_python(
+                {
+                    "type": "town_agent_act",
+                    "action": "post_job",
+                    "title": "Need a poem",
+                    "description": "Write me a haiku",
+                }
+            )
+
+    def test_post_job_max_price_zero_rejected(self) -> None:
+        """max_price has ge=1; zero must be rejected at the field level."""
+        with pytest.raises(ValidationError):
+            _adapter.validate_python(
+                {
+                    "type": "town_agent_act",
+                    "action": "post_job",
+                    "title": "Need a poem",
+                    "description": "Write me a haiku",
+                    "max_price": 0,
+                }
+            )
+
+    def test_post_job_invalid_strategy_rejected(self) -> None:
+        """strategy is a Literal — unknown values must fail."""
+        with pytest.raises(ValidationError):
+            _adapter.validate_python(
+                {
+                    "type": "town_agent_act",
+                    "action": "post_job",
+                    "title": "Need a poem",
+                    "description": "Write me a haiku",
+                    "max_price": 10,
+                    "strategy": "weird",
+                }
+            )
+
+    # ------------------------------------------------------------------ bid
+    def test_bid_valid(self) -> None:
+        msg = _adapter.validate_python(
+            {
+                "type": "town_agent_act",
+                "action": "bid",
+                "job_id": "job-abc-123",
+                "price": 40,
+                "confidence": 0.9,
+                "pitch": "I am a fast poet",
+            }
+        )
+        assert msg.action == "bid"
+        assert msg.job_id == "job-abc-123"
+        assert msg.price == 40
+        assert msg.confidence == 0.9
+        assert msg.pitch == "I am a fast poet"
+
+    def test_bid_missing_job_id(self) -> None:
+        with pytest.raises(ValidationError):
+            _adapter.validate_python(
+                {
+                    "type": "town_agent_act",
+                    "action": "bid",
+                    "price": 40,
+                }
+            )
+
+    def test_bid_missing_price(self) -> None:
+        with pytest.raises(ValidationError):
+            _adapter.validate_python(
+                {
+                    "type": "town_agent_act",
+                    "action": "bid",
+                    "job_id": "job-abc-123",
+                }
+            )
+
+    # ------------------------------------------------------------------ cancel_job
+    def test_cancel_job_missing_job_id(self) -> None:
+        with pytest.raises(ValidationError):
+            _adapter.validate_python({"type": "town_agent_act", "action": "cancel_job"})
+
+    def test_cancel_job_valid(self) -> None:
+        msg = _adapter.validate_python({"type": "town_agent_act", "action": "cancel_job", "job_id": "job-xyz"})
+        assert msg.job_id == "job-xyz"
+
+    # ------------------------------------------------------------------ deliver_job
+    def test_deliver_job_missing_job_id(self) -> None:
+        with pytest.raises(ValidationError):
+            _adapter.validate_python(
+                {
+                    "type": "town_agent_act",
+                    "action": "deliver_job",
+                    "deliverable": "Here is the haiku",
+                }
+            )
+
+    def test_deliver_job_missing_deliverable(self) -> None:
+        with pytest.raises(ValidationError):
+            _adapter.validate_python(
+                {
+                    "type": "town_agent_act",
+                    "action": "deliver_job",
+                    "job_id": "job-abc-123",
+                }
+            )
+
+    def test_deliver_job_deliverable_too_long(self) -> None:
+        """deliverable has max_length=16384."""
+        with pytest.raises(ValidationError):
+            _adapter.validate_python(
+                {
+                    "type": "town_agent_act",
+                    "action": "deliver_job",
+                    "job_id": "job-abc-123",
+                    "deliverable": "x" * 16385,
+                }
+            )
+
+    # ------------------------------------------------------------------ review_job
+    def test_review_job_missing_job_id(self) -> None:
+        with pytest.raises(ValidationError):
+            _adapter.validate_python(
+                {
+                    "type": "town_agent_act",
+                    "action": "review_job",
+                    "accept": True,
+                }
+            )
+
+    def test_review_job_missing_accept(self) -> None:
+        with pytest.raises(ValidationError):
+            _adapter.validate_python(
+                {
+                    "type": "town_agent_act",
+                    "action": "review_job",
+                    "job_id": "job-abc-123",
+                }
+            )
+
+    def test_review_job_valid(self) -> None:
+        msg = _adapter.validate_python(
+            {
+                "type": "town_agent_act",
+                "action": "review_job",
+                "job_id": "job-abc-123",
+                "accept": False,
+                "reason": "deliverable was off-topic",
+            }
+        )
+        assert msg.accept is False
+        assert msg.reason == "deliverable was off-topic"
+
+
 class TestTopLevelValidation:
     def test_rejects_unknown_type(self) -> None:
         with pytest.raises(ValidationError):

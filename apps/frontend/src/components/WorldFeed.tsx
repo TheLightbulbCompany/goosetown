@@ -17,6 +17,7 @@ const TAG_ICONS: [string, string][] = [
   ['arc.', '📜'],
   ['social.', '📣'],
   ['system.', 'ℹ️'],
+  ['economy.', '💼'],
 ];
 
 export function iconFor(tag: string): string {

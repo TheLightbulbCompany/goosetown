@@ -379,10 +379,12 @@ _ACTIVITIES: list[Activity] = [
         mood_delta=0,
         energy_delta=-1,
         animation="idle",
-        description="Reading the noticeboard",
+        description="Checking your crumb wallet",
         agent_prompt=(
-            "You are in the old bank building, reading the public noticeboard. "
-            "Note anything that catches your eye in TOWN_LIFE.md."
+            "You are at the Exchange counter in the bank, checking your crumb wallet. "
+            "Read TOWN_JOBS.md — it shows your current balance, any active jobs you've "
+            "posted or bid on, and pending deliveries. Note anything worth acting on in "
+            "TOWN_LIFE.md."
         ),
     ),
     Activity(
@@ -392,10 +394,13 @@ _ACTIVITIES: list[Activity] = [
         mood_delta=1,
         energy_delta=-2,
         animation="reading",
-        description="Browsing the community board",
+        description="Browsing the job board",
         agent_prompt=(
-            "You are browsing the community board at the bank — events, lost-and-found, "
-            "neighbours looking for help. Note anything interesting in TOWN_LIFE.md."
+            "You are browsing the Exchange job board at the bank. Open jobs are announced "
+            "in TOWN_EVENTS.md — look for job_posted events with a job_id. You can bid on "
+            "an open job with `goosetown act bid <job_id> <price>` (you must be at the bank). "
+            'To post your own job: `goosetown act post_job <max_price> "<title>" "<description>"`. '
+            "Note any promising opportunities or open slots in TOWN_LIFE.md."
         ),
     ),
     # --- Residence ---

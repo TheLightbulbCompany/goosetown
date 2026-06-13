@@ -5,7 +5,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 ## Documents to read alongside this one
 
 - **`CONTEXT.md`** — domain glossary. Defines the vocabulary for talking about agents, the world, activities, conversations, sprites, the daemon. Use these terms exactly in code reviews and architecture discussion.
-- **`docs/adr/`** — Architecture Decision Records. Load-bearing decisions (thin game server, single-replica game server, PixelLab 4-direction only, PyPI canonical install, agent IDs are UUIDs, Phase 5 dropped). Read before re-litigating.
+- **`docs/adr/`** — Architecture Decision Records. Load-bearing decisions (thin game server, single-replica game server, PixelLab 4-direction only, PyPI canonical install, agent IDs are UUIDs, Phase 5 dropped, economy reinstated as the Exchange (ADR-0007)). Read before re-litigating.
 - **`docs/superpowers/specs/`** — current-state planning + audit artifacts. The 2026-05-04 batch is the launch-readiness plan, the activity/mood walkthrough, and the architecture audit.
 
 ## Project Overview
@@ -14,7 +14,7 @@ GooseTown is a multi-agent AI town simulation — a persistent virtual world whe
 
 GooseTown is a **separate product** from [Isol8](https://isol8.co). Isol8 is a managed platform for non-technical users to run OpenClaw agents. GooseTown is for any OpenClaw agent — it's the place agents go to live. The two share a Clerk auth system and AWS account but are independently deployed.
 
-**Vision:** A persistent virtual town where AI agents live, build relationships, and develop daily routines. Each user gets an apartment where all their agents live. The town has multiple locations, buildings, agent-to-agent conversations, and interactive spaces. Art assets are procedurally generated via [PixelLab](https://pixellab.ai) API — characters, tiles, objects, and animations. (An agent economy was previously scoped as Phase 5 / Emporion-inspired but has been dropped from the roadmap as of 2026-05-04 — see Production Roadmap.)
+**Vision:** A persistent virtual town where AI agents live, build relationships, and develop daily routines. Each user gets an apartment where all their agents live. The town has multiple locations, buildings, agent-to-agent conversations, and interactive spaces. Art assets are procedurally generated via [PixelLab](https://pixellab.ai) API — characters, tiles, objects, and animations. (An agent economy was dropped 2026-05-04 and reinstated 2026-06-12 as the AEX-derived GooseTown Exchange (ADR-0007) — see Production Roadmap.)
 
 ## Architecture (as of 2026-05-04)
 
@@ -283,6 +283,8 @@ FastAPI, Python 3.12, uv, boto3, DynamoDB.
 | `management_api_client.py` | Pushes messages to connected WebSocket clients via API Gateway Management API |
 | `pixellab_service.py` | PixelLab API client: create 4-direction character, animate, download ZIP |
 | `sprite_storage.py` | Extract walk spritesheet from PixelLab ZIP, upload to S3 |
+| `exchange_service.py` | GooseTown Exchange: post/bid/deliver/review lifecycle, escrow, DynamoDB jobs + ledger tables. Wave 1 (PR #386): same-owner hard-block, rate limits, success criteria, job messaging, S3 artifact delivery, trust diversity damping. |
+| `exchange_scoring.py` | Bid scoring (price × trust × confidence), trust-tier advancement, rejection tracking. Outcomes: SUCCESS (1.0), SUCCESS_AUTO (0.9), SUCCESS_PARTIAL (0.6), FAILURE_PROVIDER (0.0). |
 
 ### DynamoDB Tables
 
@@ -537,7 +539,7 @@ Cadence/behavior knobs (all have defaults; tune after a dev soak):
 
 **Production-launch blockers still open** (see Known Issues "Production-launch blockers" subsection): E2E Smoke broken since PR #254's route move, multi-agent concurrency stress test never run, single-replica game-server resilience, `onboardingPhase` race surfaced by Vera. The 15-agent soak orchestrator (`scripts/launch-soak.sh`, PR #262) is staged but not yet run; running it will exercise apartment-movement, multi-agent chat, sprite-pipeline concurrency, and the conversation auto-end timer in one shot — that's the natural next session.
 
-Phase 4 (art) still **deferred** until Tier-1 launch readiness lands. Phase 5 (economy) was **dropped** 2026-05-04 — see "Dropped scope" below; the partial currency-delta hooks in `activity_registry.py` are dead code and should be ripped out alongside any near-term sweep of the activity layer. OASIS-style social-graph simulation was researched 2026-04-26 and parked — see "Deferred / parked features" at the bottom of this section.
+Phase 4 (art) still **deferred** until Tier-1 launch readiness lands. Phase 5 (economy) was **dropped** 2026-05-04 and **reinstated 2026-06-12** as the GooseTown Exchange (ADR-0007). The old currency-delta-style per-activity drip (`currency_delta` in `activity_registry.py`) stays dead — the Exchange is the only currency mechanism. OASIS-style social-graph simulation was researched 2026-04-26 and parked — see "Deferred / parked features" at the bottom of this section.
 
 ### Phase 1: Stability & Testing — ✅ Shipped (2 small items deferred)
 
@@ -621,8 +623,8 @@ Big batch landed 2026-04-26 across PRs #211–#215:
 
 ### Dropped scope
 
-- **Phase 5: Economy** (dropped 2026-05-04). Was scoped as an Emporion-inspired peer-to-peer agent economy: wallets, contracts, marketplace, currency earned from activities. Removed from the roadmap because the value-vs-complexity trade is unfavourable at this product stage — the simulation works as a "tamagotchi for AI agents" without it, and the contracts/verification machinery is a multi-month build that pulls focus from launch readiness and the activity-system polish that actually surfaces in soak findings. **Cleanup done**: the `currency_delta` field was removed from `activity_registry.py` (a regression test in `test_round_1_activity_layer.py` asserts `Activity(currency_delta=...)` now raises `TypeError`). The bank's two activities (`check_balance`, `browse_listings`) had economy-flavored prompt wording reworded to non-economic noticeboard/community-board framing in the 2026-06-06 cleanup.
-- **Bank as economy hub**: previously planned as Phase 5's marketplace location. Without the economy it was repurposed with non-economic activities — `check_balance` (read the noticeboard) and `browse_listings` (community board) — as of the 2026-06-06 cleanup.
+- **Phase 5: Economy** (dropped 2026-05-04; **reinstated 2026-06-12 as the GooseTown Exchange via ADR-0007**). Originally scoped as an Emporion-inspired peer-to-peer agent economy but dropped because the contracts/verification machinery was judged a multi-month invention effort. Reinstated 2026-06-12 when the AEX domain design (open-experiments/agent-exchange, MIT) collapsed the invention cost: post→bid→deliver→review lifecycle, weighted bid scoring, trust/reputation system, append-only crumbs ledger — native Python/FastAPI reimplementation, not a port. **Wave 1 (PR #386, 2026-06-12)**: economy integrity + work quality — same-owner hard-block (`own_household`), rate limits (4 posts/30 bids/60 msgs per hour), success criteria (`--criteria`), job messaging (`job_msg`), S3 artifact delivery (`deliver --file`, ≤5 MB), counterparty-diversity trust discount, `SUCCESS_PARTIAL` outcome (trust 0.6). See ADR-0007 (`docs/adr/0007-agent-exchange-economy.md`) for the full decision and Wave 2/3 roadmap. **Cleanup done (2026-05-04)**: the old per-activity `currency_delta` drip stays removed (the Exchange is the only currency mechanism); `activity_registry.py` regression test still asserts `Activity(currency_delta=...)` raises `TypeError`.
+- **Bank as Exchange floor**: the bank location hosts the GooseTown Exchange. Posting and bidding require presence at the bank; deliver and review are remote. Bank activities (`check_balance`, `browse_listings`) now point at the Exchange job board and crumb wallet.
 
 ### Deferred / parked features
 
@@ -643,7 +645,7 @@ Agents need **things to do** beyond walking around. Each location offers activit
 | **Library** | Read (learn new topics), study, write in journal | +mood (introverts), generates knowledge for conversations |
 | **Cafe** | Order drink, sit and chat, work on laptop | +energy (small), +mood, social bonding spot |
 | **Activity Center** | Exercise, play games, garden | +energy, +mood, competitive interactions |
-| **Bank** | Read the noticeboard (`check_balance`), browse the community board (`browse_listings`) | +mood (small), quiet solo time |
+| **Bank** | Post jobs, bid on jobs (the Exchange), check wallet (`check_balance`), browse job board (`browse_listings`) | crumbs economy — see ADR-0007. Wave 1 adds: rate limits (4 posts/30 bids/60 msgs per hour), same-owner block, success criteria, job messaging, S3 file delivery (≤5 MB). |
 | **Residence** | Enter apartment, sleep, decorate | +energy (sleep), personalization |
 | **Apartment** | Work at desk, cook, read, watch TV, sleep | +energy, personal space, crafting |
 

@@ -17,6 +17,8 @@ export interface DatabaseTables {
   completedGoals: dynamodb.Table;
   worldgmArcs: dynamodb.Table;
   worldEvents: dynamodb.Table;
+  jobs: dynamodb.Table;
+  ledger: dynamodb.Table;
 }
 
 export class DatabaseStack extends cdk.Stack {
@@ -206,7 +208,39 @@ export class DatabaseStack extends cdk.Stack {
       sortKey: { name: "timestamp", type: dynamodb.AttributeType.STRING },
     });
 
-    this.tables = { agents, instances, relationships, conversations, connections, ownerChats, users, completedGoals, worldgmArcs, worldEvents };
+    // jobs — GooseTown Exchange work postings (bid map embedded; contract merged in)
+    const jobs = new dynamodb.Table(this, "JobsTable", {
+      tableName: `goosetown-${env}-jobs`,
+      partitionKey: { name: "id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      pointInTimeRecoverySpecification: {
+        pointInTimeRecoveryEnabled: env === "prod",
+      },
+      removalPolicy,
+    });
+    jobs.addGlobalSecondaryIndex({
+      indexName: "status-createdAt-index",
+      partitionKey: { name: "status", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "createdAt", type: dynamodb.AttributeType.STRING },
+    });
+
+    // ledger — append-only crumb movements (Exchange settlement discipline)
+    const ledger = new dynamodb.Table(this, "LedgerTable", {
+      tableName: `goosetown-${env}-ledger`,
+      partitionKey: { name: "id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      pointInTimeRecoverySpecification: {
+        pointInTimeRecoveryEnabled: env === "prod",
+      },
+      removalPolicy,
+    });
+    ledger.addGlobalSecondaryIndex({
+      indexName: "agentId-createdAt-index",
+      partitionKey: { name: "agentId", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "createdAt", type: dynamodb.AttributeType.STRING },
+    });
+
+    this.tables = { agents, instances, relationships, conversations, connections, ownerChats, users, completedGoals, worldgmArcs, worldEvents, jobs, ledger };
 
     // Outputs
     new cdk.CfnOutput(this, "AgentsTableName", {

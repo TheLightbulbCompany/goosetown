@@ -139,6 +139,48 @@ def _create_tables(dynamodb):
         BillingMode="PAY_PER_REQUEST",
     )
 
+    dynamodb.create_table(
+        TableName="goosetown-jobs",
+        KeySchema=[{"AttributeName": "id", "KeyType": "HASH"}],
+        AttributeDefinitions=[
+            {"AttributeName": "id", "AttributeType": "S"},
+            {"AttributeName": "status", "AttributeType": "S"},
+            {"AttributeName": "createdAt", "AttributeType": "S"},
+        ],
+        GlobalSecondaryIndexes=[
+            {
+                "IndexName": "status-createdAt-index",
+                "KeySchema": [
+                    {"AttributeName": "status", "KeyType": "HASH"},
+                    {"AttributeName": "createdAt", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
+    dynamodb.create_table(
+        TableName="goosetown-ledger",
+        KeySchema=[{"AttributeName": "id", "KeyType": "HASH"}],
+        AttributeDefinitions=[
+            {"AttributeName": "id", "AttributeType": "S"},
+            {"AttributeName": "agentId", "AttributeType": "S"},
+            {"AttributeName": "createdAt", "AttributeType": "S"},
+        ],
+        GlobalSecondaryIndexes=[
+            {
+                "IndexName": "agentId-createdAt-index",
+                "KeySchema": [
+                    {"AttributeName": "agentId", "KeyType": "HASH"},
+                    {"AttributeName": "createdAt", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+
 
 @pytest.fixture
 def dynamodb_tables():

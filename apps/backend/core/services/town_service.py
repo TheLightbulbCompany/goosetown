@@ -489,6 +489,11 @@ class TownService:
             "is_active": "isActive",
             "current_goal": "currentGoal",
             "goal_set_at": "goalSetAt",
+            "trust_score": "trustScore",
+            "jobs_completed": "jobsCompleted",
+            "jobs_failed": "jobsFailed",
+            "jobs_posted": "jobsPosted",
+            "rejections_issued": "rejectionsIssued",
         }
 
         update_parts = []

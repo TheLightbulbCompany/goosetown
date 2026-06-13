@@ -36,6 +36,13 @@ AgentAction = Literal[
     "set_goal",
     "complete_goal",
     "describe_stance",
+    # Exchange verbs (ADR-0007)
+    "post_job",
+    "bid",
+    "cancel_job",
+    "deliver_job",
+    "review_job",
+    "job_msg",
 ]
 
 
@@ -61,6 +68,28 @@ class TownAgentAct(BaseModel):
     ref_message_id: str | None = None  # reply_owner (optional back-reference)
     reflection: str | None = Field(default=None, max_length=2000)  # complete_goal
     target_agent_id: str | None = Field(default=None, max_length=128)  # describe_stance
+
+    # Exchange verbs (ADR-0007)
+    job_id: str | None = Field(default=None, max_length=64)
+    title: str | None = Field(default=None, max_length=120)
+    description: str | None = Field(default=None, max_length=4096)
+    max_price: int | None = Field(default=None, ge=1, le=1_000_000)
+    strategy: Literal["balanced", "lowest_price", "best_quality"] | None = None
+    price: int | None = Field(default=None, ge=0, le=1_000_000)
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    pitch: str | None = Field(default=None, max_length=500)
+    deliverable: str | None = Field(default=None, max_length=16384)
+    # W5: S3 artifact key (artifacts/{job_id}/{filename}) — alternative or
+    # complement to the inline text deliverable for binary/large work products.
+    artifact_key: str | None = Field(default=None, max_length=512)
+    accept: bool | None = None
+    reason: str | None = Field(default=None, max_length=500)
+    # W3: success criteria and per-item verdicts
+    success_criteria: list[str] | None = None
+    criteria_verdicts: list[bool] | None = None
+    # W4: job-scoped messaging (dedicated field — not `text` which is owner-DM territory,
+    # not `message` which is chat-scoped and capped at 500 chars)
+    msg_text: str | None = Field(default=None, max_length=2000)
 
     @model_validator(mode="after")
     def _check_action_fields(self) -> "TownAgentAct":
@@ -90,6 +119,46 @@ class TownAgentAct(BaseModel):
                 raise ValueError("'describe_stance' requires 'text'")
             if len(self.text) > 500:
                 raise ValueError("'describe_stance' text must be <= 500 chars")
+        if self.action == "post_job":
+            if not self.title:
+                raise ValueError("'post_job' requires 'title'")
+            if not self.description:
+                raise ValueError("'post_job' requires 'description'")
+            if self.max_price is None:
+                raise ValueError("'post_job' requires 'max_price'")
+        if self.action in ("bid", "cancel_job", "deliver_job", "review_job") and not self.job_id:
+            raise ValueError(f"'{self.action}' requires 'job_id'")
+        if self.action == "bid" and self.price is None:
+            raise ValueError("'bid' requires 'price'")
+        # W5: a delivery must carry the work product — inline text, an S3
+        # artifact, or both.
+        if self.action == "deliver_job" and not self.deliverable and not self.artifact_key:
+            raise ValueError("'deliver_job' requires 'deliverable' or 'artifact_key'")
+        if self.artifact_key is not None and self.action != "deliver_job":
+            raise ValueError("'artifact_key' is only valid with 'deliver_job'")
+        if self.action == "review_job" and self.accept is None:
+            raise ValueError("'review_job' requires 'accept'")
+        # W4: job_msg requires job_id + msg_text
+        if self.action == "job_msg":
+            if not self.job_id:
+                raise ValueError("'job_msg' requires 'job_id'")
+            if not self.msg_text or not self.msg_text.strip():
+                raise ValueError("'job_msg' requires non-empty 'msg_text'")
+        # W3: success_criteria only valid with post_job
+        if self.success_criteria is not None:
+            if self.action != "post_job":
+                raise ValueError("'success_criteria' is only valid with 'post_job'")
+            if len(self.success_criteria) > 8:
+                raise ValueError("'success_criteria' must have at most 8 items")
+            for item in self.success_criteria:
+                stripped = item.strip()
+                if not stripped:
+                    raise ValueError("Each success criterion must be non-empty")
+                if len(stripped) > 200:
+                    raise ValueError("Each success criterion must be <= 200 characters")
+        # W3: criteria_verdicts only valid with review_job
+        if self.criteria_verdicts is not None and self.action != "review_job":
+            raise ValueError("'criteria_verdicts' is only valid with 'review_job'")
         return self
 
 
