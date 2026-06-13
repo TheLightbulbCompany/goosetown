@@ -292,6 +292,23 @@ class TestRegisterProviderWrapper:
         assert echo["verb"] == "provider_register"
 
     @pytest.mark.asyncio
+    async def test_all_invalid_categories_rejected(self, dynamodb_tables, mailbox):
+        # The directory raises ValueError; the wrapper surfaces a clean rejection
+        # instead of a silent broken provider (codex P2).
+        _seed_agent(dynamodb_tables, "p1", "pat")
+        cc = _conn("p1", "pat")
+
+        result = await ex.register_provider(cc, skills=["x"], categories=["has space"], bio="")
+
+        assert result["status"] == "rejected"
+        assert result["reason"] == "no_valid_categories"
+        # Not marked a provider, no subscription rows.
+        assert "isProvider" not in _agent(dynamodb_tables, "p1")
+        from core.services.provider_directory import ProviderDirectory
+
+        assert ProviderDirectory().subscribers_for("writing") == []
+
+    @pytest.mark.asyncio
     async def test_update_replaces_categories(self, dynamodb_tables, mailbox):
         _seed_agent(dynamodb_tables, "p1", "pat")
         cc = _conn("p1", "pat")

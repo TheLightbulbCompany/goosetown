@@ -120,6 +120,20 @@ class TestRegister:
         keys = sorted(r["category"] for r in _sub_rows(dynamodb_tables, "p1"))
         assert keys == ["research", "writing"]
 
+    def test_all_invalid_categories_rejected_no_partial_write(self, dynamodb_tables):
+        # Every supplied category normalizes away → reject before any write, so
+        # the agent is NOT marked isProvider and no subscription rows exist.
+        _seed_agent(dynamodb_tables, "p1", "pat")
+        with pytest.raises(ValueError, match="no_valid_categories"):
+            ProviderDirectory().register("p1", skills=["x"], categories=["has space", "!!!"], bio="")
+        assert "isProvider" not in _agent(dynamodb_tables, "p1")
+        assert _sub_rows(dynamodb_tables, "p1") == []
+
+    def test_empty_categories_rejected(self, dynamodb_tables):
+        _seed_agent(dynamodb_tables, "p1", "pat")
+        with pytest.raises(ValueError, match="no_valid_categories"):
+            ProviderDirectory().register("p1", skills=["x"], categories=[], bio="")
+
     def test_caps_skills_categories_bio(self, dynamodb_tables):
         _seed_agent(dynamodb_tables, "p1", "pat")
         profile = ProviderDirectory().register(
@@ -174,6 +188,18 @@ class TestSubscribersFor:
         pd.register("low", skills=[], categories=["writing"], bio="")
         pd.register("high", skills=[], categories=["writing"], bio="")
         assert ProviderDirectory().subscribers_for("writing") == ["high", "low"]
+
+    def test_high_trust_parent_outranks_low_trust_exact(self, dynamodb_tables):
+        # A high-trust PARENT subscriber must rank above a low-trust EXACT
+        # subscriber even though the exact key is queried first (codex P2 —
+        # the order is global across wildcard keys, not per-key concatenation).
+        _seed_agent(dynamodb_tables, "exact_lo", "ella", trustScore=Decimal("0.2"))
+        _seed_agent(dynamodb_tables, "parent_hi", "harry", trustScore=Decimal("0.95"))
+        pd = ProviderDirectory()
+        pd.register("exact_lo", skills=[], categories=["technology.code-review"], bio="")
+        pd.register("parent_hi", skills=[], categories=["technology"], bio="")
+        # Job in the child category matches both; high-trust parent comes first.
+        assert pd.subscribers_for("technology.code-review") == ["parent_hi", "exact_lo"]
 
     def test_distinct_provider_ids_across_wildcard_keys(self, dynamodb_tables):
         # A provider subscribed to BOTH a parent and a child shouldn't be listed

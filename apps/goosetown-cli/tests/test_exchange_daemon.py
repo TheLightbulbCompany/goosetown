@@ -1343,6 +1343,33 @@ class TestJobOffered:
         assert "goosetown act bid jo1" in md
         assert "goosetown act bid jo2" in md
 
+    def test_future_deadline_renders_bid_by(self, daemon: TownDaemon):
+        self._offer(daemon, bid_deadline=9_999_999_999)  # year 2286 — well future
+        md = _offers_md(daemon)
+        assert "Bid by:" in md
+        assert "Write a haiku" in md
+
+    def test_lapsed_offer_pruned_from_md_and_cache(self, daemon: TownDaemon):
+        # A non-bidding provider gets no terminal event; once the bid window
+        # lapses the offer must disappear from the inbox AND the cache (codex P2).
+        self._offer(daemon, job_id="dead", title="Stale job", bid_deadline=1)  # 1970
+        md = _offers_md(daemon)
+        assert "Stale job" not in md
+        assert "goosetown act bid dead" not in md
+        assert "dead" not in daemon.state.get("exchange", {}).get("offers", {})
+
+    def test_offer_pruned_once_agent_is_on_the_job(self, daemon: TownDaemon):
+        # Provider bid → the job is now in exchange.jobs; the redundant offer is
+        # dropped so TOWN_OFFERS.md doesn't show a dead bid command for it.
+        self._offer(daemon, job_id="jo1", title="Bid this", bid_deadline=9_999_999_999)
+        assert "Bid this" in _offers_md(daemon)
+        ex = daemon._exchange_state()
+        ex.setdefault("jobs", {})["jo1"] = {"job_id": "jo1", "role": "provider", "status": "BID"}
+        daemon._write_offers()
+        md = _offers_md(daemon)
+        assert "Bid this" not in md
+        assert "jo1" not in ex.get("offers", {})
+
     def test_provider_profile_header_when_cached(self, daemon: TownDaemon):
         # When the provider's own profile is cached, TOWN_OFFERS.md headers it.
         ex = daemon._exchange_state()

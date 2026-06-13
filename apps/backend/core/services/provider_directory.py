@@ -127,6 +127,14 @@ class ProviderDirectory:
         then write one EXACT row per normalized category. Wildcard reach is the
         job-lookup side's job, not the write side (see module docstring).
 
+        **At least one valid category is required.** If every supplied category
+        normalizes away (a typo like ``--categories='has space'``) or none was
+        supplied, raise ``ValueError("no_valid_categories")`` *before any write* —
+        a category-less provider can never be matched by an offer, so silently
+        marking it ``isProvider`` would create a provider that looks registered
+        but is undiscoverable (codex P2). The guard runs ahead of the profile
+        write so a rejected registration leaves no partial state.
+
         Returns the resulting profile ``{skills, categories, bio, min_price}``.
         """
         skills = [s for s in (skills or [])][:MAX_SKILLS]
@@ -142,6 +150,11 @@ class ProviderDirectory:
                 seen.add(norm)
                 canonical.append(norm)
         canonical = canonical[:MAX_CATEGORIES]
+
+        # Invariant: a provider must subscribe to ≥1 valid category, else it's
+        # unmatchable. Reject before touching the store (no partial write).
+        if not canonical:
+            raise ValueError("no_valid_categories")
 
         svc = TownService()
         svc.update_agent_state(
@@ -235,22 +248,30 @@ class ProviderDirectory:
         subscribed to ``technology.code-review`` is NOT found for a plain
         ``technology`` job because the job's only parent key is ``technology``,
         under which the child wrote no row. Returns distinct provider ids,
-        highest-trust-first (first-seen order across the parent keys).
+        **globally trust-descending across all matched (exact + parent) keys**.
+
+        Each key's query is trust-desc on its own, but a low-trust *exact*
+        subscriber must not outrank a high-trust *parent* subscriber just because
+        the exact key is queried first (codex P2). So we collect every matched
+        row, keep the highest sort key per provider (defensive against a stale
+        row), then sort by ``providerSort`` (== trust) globally before returning.
         """
         table = self._table()
-        seen: set[str] = set()
-        ordered: list[str] = []
+        best_sort: dict[str, str] = {}
         for key in match_categories(job_category):
             resp = table.query(
                 KeyConditionExpression=Key("category").eq(key),
-                ScanIndexForward=False,  # trust-descending
+                ScanIndexForward=False,  # trust-descending within this key
             )
             for row in resp.get("Items", []):
                 pid = row["providerId"]
-                if pid not in seen:
-                    seen.add(pid)
-                    ordered.append(pid)
-        return ordered
+                sort = row["providerSort"]
+                # A provider's rows all encode the same trust, but if a stale row
+                # lingers across keys keep the higher (fresher-trust) sort key.
+                if pid not in best_sort or sort > best_sort[pid]:
+                    best_sort[pid] = sort
+        # Global trust-desc; the zero-padded providerSort makes lexical == numeric.
+        return sorted(best_sort, key=lambda pid: best_sort[pid], reverse=True)
 
     def subscribers_for_job(
         self,

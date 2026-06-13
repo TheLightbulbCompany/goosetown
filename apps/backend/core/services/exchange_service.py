@@ -1038,6 +1038,9 @@ async def post_job(
         "max_price": max_price,
         "description": job["description"][:300],
         "consumer_name": agent_conn.agent_name,
+        # Bid-window deadline so the provider's daemon can prune the offer when it
+        # lapses — non-bidders get no terminal event otherwise (codex P2).
+        "bid_deadline": float(job.get("bidWindowEndsAt") or 0) or None,
     }
     if sanitized_criteria:
         offer_event_base["criteria"] = sanitized_criteria
@@ -1277,6 +1280,7 @@ async def invite_provider(agent_conn: Any, job_id: str, provider_id: str) -> dic
         "description": (job.get("description") or "")[:300],
         "consumer_name": agent_conn.agent_name,
         "invited": True,
+        "bid_deadline": float(job.get("bidWindowEndsAt") or 0) or None,
     }
     success_criteria = job.get("successCriteria")
     if success_criteria:
@@ -1308,14 +1312,35 @@ async def register_provider(
     re-register replaces the profile and subscription rows wholesale, so there's
     no separate update path. Echoes ``exchange_ok`` to the caller's daemon like
     every other verb (``_notify_outcome``).
+
+    A registration whose categories all normalize away (or were empty) is
+    rejected — the directory raises ``ValueError`` before any write, and we
+    surface it as a clean ``rejected`` outcome rather than a silent broken
+    provider (codex P2). The CLI already requires ``--categories``; this guards
+    the direct-act / ``join --provider`` paths too.
     """
-    profile = ProviderDirectory().register(
-        agent_conn.agent_id,
-        skills=skills or [],
-        categories=categories or [],
-        bio=bio or "",
-        min_price=min_price or 0,
-    )
+    try:
+        profile = ProviderDirectory().register(
+            agent_conn.agent_id,
+            skills=skills or [],
+            categories=categories or [],
+            bio=bio or "",
+            min_price=min_price or 0,
+        )
+    except ValueError:
+        return _notify_outcome(
+            agent_conn,
+            "provider_register",
+            {
+                "status": "rejected",
+                "reason": "no_valid_categories",
+                "message": (
+                    "Register with at least one valid category "
+                    "(e.g. --categories=writing,research). Categories are "
+                    "lowercase slugs — spaces and capitals aren't allowed."
+                ),
+            },
+        )
     return _notify_outcome(
         agent_conn,
         "provider_register",
@@ -2228,6 +2253,7 @@ def resync_agent_jobs(agent_id: str) -> int:
                 "max_price": int(job.get("maxPrice", 0)),
                 "description": (job.get("description") or "")[:300],
                 "consumer_name": job.get("consumerName", ""),
+                "bid_deadline": float(job.get("bidWindowEndsAt") or 0) or None,
                 "resync": True,
             }
             success_criteria = job.get("successCriteria")

@@ -272,6 +272,10 @@ class TestPostJobOffers:
         assert "description" in offer
         assert offer["criteria"] == ["must compare 3 tools"]
         assert offer["consumer_name"] == "carol"
+        # Bid-window deadline so the provider's daemon can prune a lapsed offer
+        # (non-bidders get no terminal event otherwise — codex P2).
+        assert isinstance(offer["bid_deadline"], float)
+        assert offer["bid_deadline"] > 0
 
     async def test_notify_failure_does_not_break_post(self, dynamodb_tables, mailbox, ws):
         # mailbox.notify raising must not strand the offer: offeredTo is the

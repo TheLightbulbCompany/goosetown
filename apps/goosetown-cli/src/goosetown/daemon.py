@@ -1359,6 +1359,9 @@ class TownDaemon:
             "criteria": data.get("criteria") or [],
             "consumer_name": consumer_name,
             "invited": invited,
+            # Bid-window close (epoch); used to prune the offer once it lapses —
+            # a non-bidding provider gets no terminal event for the job.
+            "bid_deadline": data.get("bid_deadline"),
             "updated": time.time(),
         }
         self._write_offers()
@@ -1385,9 +1388,28 @@ class TownDaemon:
         title, category, budget, the job spec, success criteria, and the exact
         ``goosetown act bid <job_id> <price>`` line. Atomic via rename
         (``_write_workspace_file``).
+
+        Prunes stale offers first: a non-bidding provider never receives a
+        terminal event for an offered job (close/cancel only notify bidders), so
+        offers are dropped once their bid window lapses or once the job shows up
+        in ``exchange.jobs`` (we bid → we're on it now). Without this the inbox
+        accumulates dead ``bid`` commands forever (codex P2).
         """
         ex = self.state.get("exchange") or {}
-        offers = list((ex.get("offers") or {}).values())
+        offers_map = ex.get("offers") or {}
+        on_jobs = ex.get("jobs") or {}
+        now = time.time()
+        live: dict[str, dict] = {}
+        for job_id, offer in offers_map.items():
+            deadline = offer.get("bid_deadline")
+            if deadline and now > float(deadline):
+                continue  # bid window closed — offer is dead
+            if job_id in on_jobs:
+                continue  # already bid / on the job — offer is redundant
+            live[job_id] = offer
+        if len(live) != len(offers_map):
+            ex["offers"] = live  # persist the prune so it doesn't regrow on resync
+        offers = list(live.values())
 
         lines: list[str] = ["# GooseTown Exchange — offers for you", ""]
         profile = ex.get("provider_profile")
@@ -1423,10 +1445,14 @@ class TownDaemon:
             max_price = offer.get("max_price", "?")
             invited = " — INVITED directly" if offer.get("invited") else ""
             consumer = offer.get("consumer_name", "someone")
+            deadline = offer.get("bid_deadline")
+            deadline_note = (
+                f" · Bid by: {self._fmt_clock(float(deadline))}" if deadline else ""
+            )
             lines.append(f'## "{title}" (job {job_id})')
             lines.append(
                 f"- Category: {category} · Budget: up to {max_price} crumbs · "
-                f"From: {consumer}{invited}"
+                f"From: {consumer}{invited}{deadline_note}"
             )
             description = offer.get("description")
             if description:
