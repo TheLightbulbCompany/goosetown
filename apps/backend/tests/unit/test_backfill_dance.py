@@ -44,3 +44,19 @@ def test_animation_parameter_overrides_default():
     ]
     out = backfill_dance.agents_needing_animation(agents, animation="walk")
     assert [a["id"] for a in out] == ["a-2"]
+
+
+def test_in_progress_statuses_mirror_sprite_jobs():
+    from core.services.sprite_jobs import IN_PROGRESS_STATUSES
+
+    assert backfill_dance.SPRITE_IN_PROGRESS_STATUSES == IN_PROGRESS_STATUSES
+
+
+def test_skips_agents_with_sprite_job_in_flight():
+    agents = [
+        _agent(spriteStatus="animating"),
+        _agent(id="a-2", spriteStatus="complete"),
+        _agent(id="a-3"),
+    ]
+    out = backfill_dance.agents_needing_animation(agents)
+    assert [a["id"] for a in out] == ["a-2", "a-3"]
