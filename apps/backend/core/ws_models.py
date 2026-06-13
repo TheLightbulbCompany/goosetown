@@ -87,6 +87,11 @@ class TownAgentAct(BaseModel):
     # W3: success criteria and per-item verdicts
     success_criteria: list[str] | None = None
     criteria_verdicts: list[bool] | None = None
+    # Wave 2: post_job category (AEX slug) + free-form tags. Both optional —
+    # the service normalizes the category (defaults to "general") and sanitizes
+    # tags, so no hard requirement here; only the structural caps are enforced.
+    category: str | None = Field(default=None, max_length=64)
+    tags: list[str] | None = Field(default=None, max_length=8)
     # W4: job-scoped messaging (dedicated field — not `text` which is owner-DM territory,
     # not `message` which is chat-scoped and capped at 500 chars)
     msg_text: str | None = Field(default=None, max_length=2000)
@@ -159,6 +164,15 @@ class TownAgentAct(BaseModel):
         # W3: criteria_verdicts only valid with review_job
         if self.criteria_verdicts is not None and self.action != "review_job":
             raise ValueError("'criteria_verdicts' is only valid with 'review_job'")
+        # Wave 2: category/tags only valid with post_job; per-tag length cap.
+        if self.category is not None and self.action != "post_job":
+            raise ValueError("'category' is only valid with 'post_job'")
+        if self.tags is not None:
+            if self.action != "post_job":
+                raise ValueError("'tags' is only valid with 'post_job'")
+            for tag in self.tags:
+                if len(tag) > 40:
+                    raise ValueError("Each tag must be <= 40 characters")
         return self
 
 

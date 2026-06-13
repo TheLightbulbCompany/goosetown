@@ -1869,6 +1869,8 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
                 max_price=_coerce_int(body.get("max_price")),
                 strategy=body.get("strategy") or "balanced",
                 success_criteria=body.get("success_criteria") or None,
+                category=body.get("category"),
+                tags=body.get("tags"),
             )
             return {"statusCode": 200, "body": result}
         # CLI verb "bid" → service place_bid (the one non-1:1 name).

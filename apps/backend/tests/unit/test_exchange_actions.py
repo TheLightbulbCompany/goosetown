@@ -119,6 +119,8 @@ async def test_post_job_dispatches_to_service(handler_setup):
         max_price=50,
         strategy="lowest_price",
         success_criteria=None,
+        category=None,
+        tags=None,
     )
 
 
@@ -293,6 +295,8 @@ async def test_post_job_bad_max_price_string_coerced_to_zero(handler_setup):
         max_price=0,
         strategy="balanced",
         success_criteria=None,
+        category=None,
+        tags=None,
     )
 
 

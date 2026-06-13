@@ -214,6 +214,38 @@ class ProviderDirectory:
                     ordered.append(pid)
         return ordered
 
+    def subscribers_for_job(
+        self,
+        job_category: str,
+        consumer_id: str,
+        min_trust: float = 0.0,
+    ) -> list[str]:
+        """Provider ids to offer a job in *job_category* — the matcher's query.
+
+        Built on ``subscribers_for`` (wildcard-parent expansion, trust-desc) but
+        with the offer-time gates the synchronous ``post_job`` matcher needs:
+
+        - **Excludes the consumer** — an agent never gets offered its own job,
+          even when it's a provider subscribed to the job's category.
+        - **``min_trust`` gate** (default 0.0 = no filter): drops providers whose
+          ``trustScore`` is below the consumer's floor. Applied in-memory at town
+          scale (ADR-0008 — single-filter + trust-rank is the projection's remit
+          until the OpenSearch trigger fires).
+
+        Returns distinct provider ids, highest-trust-first. This is the durable
+        ``offeredTo`` set the matcher persists onto the job (codex P1).
+        """
+        candidates = [pid for pid in self.subscribers_for(job_category) if pid != consumer_id]
+        if min_trust <= 0.0:
+            return candidates
+        svc = TownService()
+        gated: list[str] = []
+        for pid in candidates:
+            agent = svc.get_town_agent_by_id(pid)
+            if agent and self._trust_for(agent) >= min_trust:
+                gated.append(pid)
+        return gated
+
     def _public_profile(self, agent: dict) -> dict:
         """Project an agent row to the directory's public shape (no wallet/PII)."""
         trust = self._trust_for(agent)

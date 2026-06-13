@@ -22,8 +22,9 @@ from typing import Any, Awaitable, Callable
 from boto3.dynamodb.conditions import Key
 
 from core import dynamo
-from core.services import exchange_scoring, town_mood_engine
+from core.services import exchange_categories, exchange_scoring, town_mood_engine
 from core.services.daemon_mailbox import get_daemon_mailbox
+from core.services.provider_directory import ProviderDirectory
 from core.services.town_agent_ws import get_town_agent_ws_manager
 from core.services.town_service import TownService
 
@@ -45,6 +46,13 @@ TITLE_MAX = 120
 DESCRIPTION_MAX = 4096
 DELIVERABLE_MAX = 16384
 PITCH_MAX = 500
+
+# Wave 2: job category/tags. Category normalized via exchange_categories
+# (defaults to DEFAULT_CATEGORY when absent/invalid); tags are free-form,
+# sanitized to lowercase-trimmed slugs, capped per-item and in count.
+DEFAULT_CATEGORY = "general"
+TAG_MAX_LEN = 40
+TAGS_MAX_COUNT = 8
 
 # Synthetic ledger account that accumulates Exchange fees (the crumb sink).
 TOWN_ACCOUNT = "TOWN"
@@ -789,6 +797,30 @@ def _update_trust(
         _bump_counter(agent_id, "jobsFailed", failed_delta)
 
 
+def _sanitize_tags(tags: list[str] | None) -> list[str]:
+    """Normalize free-form job tags: lowercase, strip, drop empties, cap.
+
+    Wave 2: tags are advisory free-text labels (not validated category slugs).
+    Each is lowercased + trimmed + truncated to ``TAG_MAX_LEN``; empties are
+    dropped; duplicates removed (first-seen order); the list capped at
+    ``TAGS_MAX_COUNT``.
+    """
+    if not tags:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in tags:
+        if not isinstance(raw, str):
+            continue
+        tag = raw.strip().lower()[:TAG_MAX_LEN]
+        if tag and tag not in seen:
+            seen.add(tag)
+            out.append(tag)
+        if len(out) >= TAGS_MAX_COUNT:
+            break
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Public verbs (called by the dispatch ladder in routers/town.py)
 # ---------------------------------------------------------------------------
@@ -801,8 +833,22 @@ async def post_job(
     max_price: int,
     strategy: str,
     success_criteria: list[str] | None = None,
+    category: str | None = None,
+    tags: list[str] | None = None,
 ) -> dict:
-    """Post a job at the Exchange: escrow ``max_price``, open the bid window."""
+    """Post a job at the Exchange: escrow ``max_price``, open the bid window.
+
+    Wave 2 (spec §3.3): the job is categorized (``category`` normalized via
+    ``exchange_categories``; defaults to ``"general"``) and, **after the job
+    row is committed**, the subscription matcher runs **synchronously in this
+    request** — it queries ``provider-subscriptions`` for the category (and its
+    wildcard parents), excludes the consumer, and persists the matched provider
+    ids onto the job as the durable ``offeredTo`` String Set (codex P1: the
+    offer set is authorization-bearing job state, not a fleeting event). Only
+    then are the matched providers notified (best-effort ``job_offered``). The
+    old all-connections broadcast is gone — offers are targeted; the job still
+    lands on the public board regardless, so the pull path is unaffected.
+    """
     mailbox = get_daemon_mailbox()
     # Strongly-consistent read so a post_job issued immediately after a `move bank`
     # arrival sees the just-committed currentLocation (read-after-write gate).
@@ -863,6 +909,10 @@ async def post_job(
         if not sanitized_criteria:
             sanitized_criteria = None
 
+    # Wave 2: normalize category (default "general" when None/invalid) + tags.
+    job_category = exchange_categories.normalize_category(category) or DEFAULT_CATEGORY
+    sanitized_tags = _sanitize_tags(tags)
+
     now = time.time()
     job: dict[str, Any] = {
         "id": job_id,
@@ -874,10 +924,13 @@ async def post_job(
         "strategy": strategy,
         "status": "OPEN",
         "bids": {},
+        "category": job_category,
         "createdAt": _now_iso(),
         "updatedAt": _now_iso(),
         "bidWindowEndsAt": Decimal(str(now + BID_WINDOW_SEC)),
     }
+    if sanitized_tags:
+        job["tags"] = sanitized_tags
     # W1: store denormalized consumer userId so place_bid can enforce the
     # same-owner hard-block cheaply (no extra agent read per bid).
     if consumer_user_id:
@@ -911,22 +964,55 @@ async def post_job(
         max_price=max_price,
     )
 
-    broadcast: dict[str, Any] = {
-        "event": "job_posted",
+    # Wave 2 (spec §3.3, codex P1): the subscription matcher runs SYNCHRONOUSLY
+    # here — it replaces the old all-connections broadcast. Query subscribers for
+    # the category (+ wildcard parents), excluding the consumer, and persist the
+    # matched ids onto the job as the durable `offeredTo` String Set BEFORE any
+    # notification, so a dropped notify is recoverable by reconnect resync /
+    # sweeper (the offer set is authorization-bearing state, not a fleeting
+    # event). A job with no subscribers leaves `offeredTo` unset and is still on
+    # the public board (pull path).
+    try:
+        matched = ProviderDirectory().subscribers_for_job(job_category, consumer_id=agent_conn.agent_id)
+    except Exception:
+        # Discovery is best-effort; a directory read failure must not strand the
+        # job (it's committed) — fall back to no pushed offers (pull path only).
+        logger.exception("post_job: matcher lookup failed for job %s — no offers pushed", job_id)
+        matched = []
+
+    if matched:
+        # Persist the durable offer set in the SAME item via a String Set ADD —
+        # committed here, before notifications, so the offeredTo authz record
+        # survives a notify failure (codex P1).
+        try:
+            dynamo.jobs_table().update_item(
+                Key={"id": job_id},
+                UpdateExpression="ADD offeredTo :ids SET updatedAt = :now",
+                ConditionExpression="#st = :open",
+                ExpressionAttributeNames={"#st": "status"},
+                ExpressionAttributeValues={":ids": set(matched), ":open": "OPEN", ":now": _now_iso()},
+            )
+        except Exception:
+            logger.exception("post_job: offeredTo write failed for job %s", job_id)
+            matched = []
+
+    offer_event_base: dict[str, Any] = {
+        "event": "job_offered",
         "job_id": job_id,
         "title": job["title"],
-        "description": job["description"][:300],
+        "category": job_category,
         "max_price": max_price,
-        "strategy": strategy,
+        "description": job["description"][:300],
         "consumer_name": agent_conn.agent_name,
-        "bid_window_sec": int(BID_WINDOW_SEC),
     }
-    # W3: include criteria in broadcast so bidders can see what success means.
     if sanitized_criteria:
-        broadcast["success_criteria"] = sanitized_criteria
-    for conn in get_town_agent_ws_manager().connected_agents():
-        if conn.agent_id != agent_conn.agent_id:
-            mailbox.notify_connection(conn.connection_id, broadcast)
+        offer_event_base["criteria"] = sanitized_criteria
+    # Notify each matched provider — best-effort; offeredTo is the durable record.
+    for pid in matched:
+        try:
+            mailbox.notify(pid, dict(offer_event_base))
+        except Exception:
+            logger.warning("post_job: job_offered notify failed for provider %s job %s", pid[:8], job_id)
 
     return _notify_outcome(
         agent_conn,
@@ -934,6 +1020,8 @@ async def post_job(
         {
             "status": "ok",
             "job_id": job_id,
+            "category": job_category,
+            "offered_count": len(matched),
             "bid_window_sec": int(BID_WINDOW_SEC),
             "escrowed": max_price,
             "balance": get_wallet(agent_conn.agent_id)["balance"],
