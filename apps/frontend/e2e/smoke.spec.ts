@@ -80,6 +80,10 @@ test.describe('GooseTown smoke', () => {
     // ``/`` (now the landing page) to ``/town``. The smoke spec was missed
     // in that route move and silently failed on every PR for the next four
     // days. Surfaced 2026-05-04 readiness review.
+    //
+    // The waits below (engine boot + world-state window + sprite poll) sum
+    // well past the suite-default 30s, so this test needs its own budget.
+    test.setTimeout(120_000);
     await page.goto('/town');
     await expect(page.locator('canvas').first()).toBeVisible({ timeout: 20_000 });
 
@@ -91,6 +95,22 @@ test.describe('GooseTown smoke', () => {
     test.skip(
       !handlerExists,
       'Live dev deploy predates the JsBridge migration; post-deploy run will enforce.',
+    );
+
+    // The canvas mounts well before the Godot engine finishes booting —
+    // GodotCanvas renders the ``<canvas>`` unconditionally in JSX with a
+    // loading overlay on top, so ``toBeVisible()`` proves nothing about the
+    // engine — and ``godotUpdateWorldState`` only exists once the JsBridge
+    // autoload is up. Wrapping before that silently installs nothing, so
+    // the world-state wait below could never fire and the test died on its
+    // timeout. This wait is a hard assertion, not a skip: a broken Godot
+    // export is exactly the regression class this test exists to catch,
+    // and no other test verifies engine boot.
+    await page.waitForFunction(
+      () =>
+        typeof (window as unknown as { godotUpdateWorldState?: unknown })
+          .godotUpdateWorldState === 'function',
+      { timeout: 45_000 },
     );
 
     // Watch the latest world_state to learn whether any agent is currently
