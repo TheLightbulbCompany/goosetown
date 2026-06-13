@@ -175,6 +175,26 @@ world_state broadcasts every 2s) stays connected; an idle apartment/bed agent do
 a test provider's directory/UI visibility *flicker*. Worth comparing the daemon's read-timeout
 against the backend's keepalive cadence for idle agents. Pre-existing, surfaced during this run.
 
+## Results — 2026-06-13 deferred-item re-test (after the daemon fix, CLI 0.5.1)
+
+Re-ran the deferred items once daemons were stable on the fixed 0.5.1 build (PR #402).
+
+| Item | Result | Evidence |
+|------|--------|----------|
+| **Offer inbox (finding 2 re-test)** | ✅ **PASS** | with a stable 0.5.1 daemon, quill received the offer; `TOWN_OFFERS.md` rendered the **full 432-char spec** (text past the 300-char mark) + **"Bid by: 17:29 UTC"** deadline + criteria + inline bid command. The first-run miss was the daemon flicker; the fix resolves it. |
+| **Admin wallet/passbook UI (D2)** | ✅ **PASS** | Admin browser (household 2): quill's card shows **148 crumbs (newcomer)**; Passbook ledger renders GRANT +100 → 3× PAYOUT +16 with correct running balances (100→116→132→148, incl. this session's settle). Board shows the archive job settled. |
+| **own_household (finding 1 re-test)** | ✅ **PASS** | sidestepped the bank-post problem: `own_household` is checked before `not_open`, so pip (h1) bidding on poppy's (h1) existing job returns `rejected/own_household` regardless of job status. Confirmed pip & poppy share `userId`; quill is the separate household. Live result: `{"reason":"own_household","message":"Your household posted this job…"}`. Needed a fresh pip daemon first (see regression note). |
+
+### ⚠️ REGRESSION found in PR #402 (must fix)
+
+Reaching own_household exposed a real gap in the #402 daemon fix. pip's first bids returned `ambiguous` and the backend logs showed `Agent <pip> disconnected from game server` with **no** bid processing — pip's daemon believed it was connected (API Gateway WS alive via ping/pong) but the **backend had dropped it** (during the #402 redeploy) and the daemon never recovered; a manual fresh-join was required.
+
+Root: the WS ping/pong only validates the daemon↔API-Gateway hop, not end-to-end to the backend. The old 30s inactivity-reconnect — while it caused the idle flicker — *also* recovered from backend-side drops within 30s. Removing it stopped the flicker but **strands idle agents after any backend restart/deploy** (every deploy drops all agents; idle ones no longer re-register). The backend's `ping` handler (`routers/town.py:1725`) just returns 200 to the Lambda and pushes **nothing** back to the daemon, so there's no end-to-end liveness signal.
+
+Proper fix (proposed): make the keepalive end-to-end — backend pushes `{"event":"pong"}` back **only if the connection is still registered** (else a `reconnect` signal); daemon sends ping every ~30–45s, tracks pongs, and reconnects (re-registers) on a `reconnect` signal or after N missed pongs. Idle-healthy → pongs flow, no reconnect, no flicker; backend-drop → no pong → reconnect → re-register. Daemon + backend change → CLI bump + backend redeploy.
+
+**Daemon-fix live confirmation:** fresh 0.5.1 daemons (all under the uv-tool Python) stayed connected with **0 churn**; the earlier flicker was traced to leftover old-version daemons under a homebrew Python from prior sessions (killed). Provider now stays stably `isActive=true`.
+
 ### Verdict
 
 The Wave-2 **functional core is validated live in deployed dev**: provider onboarding + directory,

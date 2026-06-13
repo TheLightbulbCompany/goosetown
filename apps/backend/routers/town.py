@@ -1720,9 +1720,26 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
         relay.register_viewer(request.connectionId)
         return {"statusCode": 200}
 
-    # Keepalive frame from the daemon — no action needed, the frame itself
-    # resets API Gateway's 10-minute idle clock. Swallow silently.
+    # Keepalive frame from the daemon. The frame itself resets API Gateway's
+    # 10-minute idle clock, but we also answer it so the daemon has an
+    # END-TO-END liveness signal (not just the daemon↔API-Gateway hop that WS
+    # ping/pong covers):
+    #   - registered connection  → push {"event":"pong"}. The daemon resets its
+    #     pong deadline and stays connected (no needless reconnect → no isActive
+    #     flicker for idle agents).
+    #   - UNregistered connection → push {"event":"reconnect"}. This happens when
+    #     a new backend task (after a deploy) lost the in-memory ws_manager
+    #     registry: the daemon's WS to API Gateway still looks alive, but its
+    #     acts go into the void. Telling it to reconnect makes it re-send
+    #     town_agent_connect and re-register. Older daemons ignore these events.
     if msg_type == "ping":
+        from core.services.daemon_mailbox import get_daemon_mailbox
+
+        registered = ws_manager.get_by_connection(request.connectionId) is not None
+        get_daemon_mailbox().notify_connection(
+            request.connectionId,
+            {"event": "pong" if registered else "reconnect"},
+        )
         return {"statusCode": 200}
 
     # Clean-leave signal from the daemon before it closes the socket.
