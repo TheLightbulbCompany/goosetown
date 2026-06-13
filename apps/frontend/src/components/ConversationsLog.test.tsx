@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render as renderRTL, screen, waitFor } from '@testing-library/react';
+import { act, render as renderRTL, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import type { ReactElement } from 'react';
@@ -507,5 +507,84 @@ describe('ConversationsLog', () => {
     expect(screen.queryByText('You (visitor)')).toBeNull();
 
     vi.unstubAllGlobals();
+  });
+
+  // ─── goosetown_bubble_clicked window event ─────────────────────────────
+
+  it('dispatching goosetown_bubble_clicked with an active participant opens the modal', async () => {
+    // "Barack Obama" is a participant and the conversation is active (ended_at=null).
+    mockedUse.mockReturnValue({
+      conversations: [
+        makeConv({
+          id: 'bubble-conv',
+          participants: ['Barack Obama', 'Dracula'],
+          participant_a: 'Barack Obama',
+          participant_b: 'Dracula',
+          ended_at: null,
+          public_log: [
+            { speaker: 'Barack Obama', text: 'Good evening.' },
+            { speaker: 'Dracula', text: 'I vant to negotiate.' },
+          ],
+          turn_count: 2,
+        }),
+      ],
+      loading: false,
+      error: null,
+    });
+    render(<ConversationsLog />);
+
+    // Modal should not be open yet.
+    expect(screen.queryByRole('button', { name: /close/i })).toBeNull();
+
+    // Dispatch the bubble-click event from Godot.
+    // Wrap in act() so React flushes the setOpenId state update synchronously.
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent('goosetown_bubble_clicked', {
+          detail: { agentId: 'some-uuid-1234', agentName: 'Barack Obama' },
+        }),
+      );
+    });
+
+    // Modal opens showing the conversation participants.
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /close/i })).toBeInTheDocument();
+    });
+    // Both turns are visible inside the modal.
+    expect(screen.getByText('Good evening.')).toBeInTheDocument();
+    expect(screen.getByText('I vant to negotiate.')).toBeInTheDocument();
+  });
+
+  it('dispatching goosetown_bubble_clicked with a name in no active conversation is a no-op', async () => {
+    // One ended conversation — should NOT trigger modal open.
+    mockedUse.mockReturnValue({
+      conversations: [
+        makeConv({
+          participants: ['Rachel', 'Ross'],
+          ended_at: '2026-04-17T00:05:00Z',
+        }),
+      ],
+      loading: false,
+      error: null,
+    });
+    render(<ConversationsLog />);
+
+    window.dispatchEvent(
+      new CustomEvent('goosetown_bubble_clicked', {
+        detail: { agentId: 'some-uuid-9999', agentName: 'Rachel' },
+      }),
+    );
+
+    // No modal should have opened — no Close button appears.
+    expect(screen.queryByRole('button', { name: /close/i })).toBeNull();
+
+    // Dispatch with a name that's simply not in any conversation at all.
+    window.dispatchEvent(
+      new CustomEvent('goosetown_bubble_clicked', {
+        detail: { agentId: 'some-uuid-0000', agentName: 'Totally Unknown Agent' },
+      }),
+    );
+
+    expect(screen.queryByRole('button', { name: /close/i })).toBeNull();
   });
 });

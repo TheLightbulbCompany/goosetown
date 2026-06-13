@@ -47,12 +47,17 @@ function registerJsBridgeHandlers(): void {
   const w = window as unknown as {
     __gt_load_sprite?: (args: GtLoadSpriteArgs) => void;
     __gt_dispatch_event_scene_changed?: (args: GtDispatchEventArgs) => void;
+    __gt_dispatch_event_goosetown_bubble_clicked?: (args: GtDispatchEventArgs) => void;
     __gt_sprite_load_count?: number;
     godotUpdateAgentSprite?: (json: string) => void;
   };
 
   w.__gt_dispatch_event_scene_changed = (args) => {
     window.dispatchEvent(new CustomEvent('godot_scene_changed', { detail: args }));
+  };
+
+  w.__gt_dispatch_event_goosetown_bubble_clicked = (args) => {
+    window.dispatchEvent(new CustomEvent('goosetown_bubble_clicked', { detail: args }));
   };
 
   w.__gt_load_sprite = (args) => {

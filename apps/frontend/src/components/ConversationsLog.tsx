@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@clerk/clerk-react';
 import { useConversations, type Conversation, type ConversationTurn } from '../hooks/useConversations.ts';
@@ -381,6 +381,30 @@ export default function ConversationsLog() {
     const t = await getToken();
     return t ?? null;
   };
+
+  // Keep a ref that always points to the latest conversations array so the
+  // window event handler (registered once) never closes over a stale value.
+  const conversationsRef = useRef<Conversation[]>(conversations);
+  conversationsRef.current = conversations;
+
+  // Listen for bubble-click events emitted by Godot via GodotCanvas.tsx.
+  // The event detail carries both agentId (UUID) and agentName (display name).
+  // We match by display name because conversation participants are display names.
+  useEffect(() => {
+    const handler = (evt: Event) => {
+      const { agentName } = (evt as CustomEvent<{ agentId: string; agentName: string }>).detail;
+      const match = conversationsRef.current.find(
+        (c) => c.ended_at == null && getParticipants(c).includes(agentName),
+      );
+      if (match) {
+        setOpenId(match.id);
+      }
+    };
+    window.addEventListener('goosetown_bubble_clicked', handler);
+    return () => {
+      window.removeEventListener('goosetown_bubble_clicked', handler);
+    };
+  }, []);
 
   const openConv = openId ? conversations.find((c) => c.id === openId) ?? null : null;
 
