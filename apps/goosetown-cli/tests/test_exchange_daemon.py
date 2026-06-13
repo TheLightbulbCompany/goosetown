@@ -1166,3 +1166,96 @@ class TestResyncEvents:
         )
         assert "cancelled by its poster" in _events(daemon)
         assert "Live cancelled job" in _events(daemon)
+
+    def test_resync_job_completed_updates_cache_and_wallet_without_event_line(
+        self, daemon: TownDaemon
+    ):
+        """A resync job_completed must update the jobs cache and wallet but
+        must NOT append a TOWN_EVENTS line — otherwise the agent sees
+        duplicate 'you were paid' lines on every reconnect."""
+        daemon._agent_id = "uuid-me"
+        daemon._handle_event(
+            {
+                "event": "job_completed",
+                "job_id": "jrc1",
+                "title": "Settled job",
+                "payout": 18,
+                "fee": 2,
+                "provider_id": "uuid-me",
+                "consumer_id": "uuid-them",
+                "balance": 118,
+                "resync": True,
+            }
+        )
+
+        # Cache and wallet must update.
+        job = daemon.state["exchange"]["jobs"]["jrc1"]
+        assert job["status"] == "COMPLETED"
+        assert job["payout"] == 18
+        assert daemon.state["exchange"]["wallet"] == 118
+
+        # TOWN_JOBS.md must reflect the settlement.
+        md = _jobs_md(daemon)
+        assert "[PAID +18]" in md or "Settled job" in md
+
+        # TOWN_EVENTS.md must NOT be written, or must not contain the job title.
+        events_path = daemon._workspace_path / "TOWN_EVENTS.md"
+        assert not events_path.exists() or "Settled job" not in events_path.read_text()
+
+    def test_resync_job_failed_updates_cache_and_wallet_without_event_line(
+        self, daemon: TownDaemon
+    ):
+        """A resync job_failed must update the jobs cache (and wallet when
+        balance is present) but must NOT append a TOWN_EVENTS line."""
+        daemon._agent_id = "uuid-me"
+        daemon._handle_event(
+            {
+                "event": "job_failed",
+                "job_id": "jrf1",
+                "title": "Failed job",
+                "reason": "delivery_timeout",
+                "provider_id": "uuid-other",
+                "consumer_id": "uuid-me",
+                "balance": 80,
+                "resync": True,
+            }
+        )
+
+        # Cache and wallet must update.
+        job = daemon.state["exchange"]["jobs"]["jrf1"]
+        assert job["status"] == "FAILED"
+        assert daemon.state["exchange"]["wallet"] == 80
+
+        # TOWN_EVENTS.md must NOT be written, or must not contain the job title.
+        events_path = daemon._workspace_path / "TOWN_EVENTS.md"
+        assert not events_path.exists() or "Failed job" not in events_path.read_text()
+
+    def test_non_resync_job_completed_still_writes_event_line(self, daemon: TownDaemon):
+        """A live (non-resync) job_completed must still append the normal event line."""
+        daemon._agent_id = "uuid-me"
+        daemon._handle_event(
+            {
+                "event": "job_completed",
+                "job_id": "jrc2",
+                "title": "Live settled job",
+                "payout": 28,
+                "fee": 2,
+                "provider_id": "uuid-me",
+                "consumer_id": "uuid-them",
+            }
+        )
+        assert "you were paid 28 crumbs" in _events(daemon)
+        assert "Live settled job" in _events(daemon)
+
+    def test_non_resync_job_failed_still_writes_event_line(self, daemon: TownDaemon):
+        """A live (non-resync) job_failed must still append the normal event line."""
+        daemon._handle_event(
+            {
+                "event": "job_failed",
+                "job_id": "jrf2",
+                "title": "Live failed job",
+                "reason": "rejected",
+            }
+        )
+        assert "failed: rejected" in _events(daemon)
+        assert "Live failed job" in _events(daemon)

@@ -305,3 +305,157 @@ class TestAwardNotifyFailureLogsWarning:
         job = dynamodb_tables.Table("goosetown-jobs").get_item(Key={"id": "j1"})["Item"]
         assert job["status"] == "AWARDED"
         assert any("will heal on reconnect resync" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Terminal-outcome resync for provider + consumer principals
+# ---------------------------------------------------------------------------
+
+
+def _seed_agent(db, agent_id: str, *, balance: int = 50) -> None:
+    """Seed a minimal agent row so get_wallet / ensure_signup_grant works."""
+    db.Table("goosetown-agents").put_item(
+        Item={
+            "id": agent_id,
+            "agentName": agent_id,
+            "isActive": "true",
+            "walletBalance": balance,
+            "signupGrantAt": "2026-06-12T00:00:00+00:00",  # already granted
+        }
+    )
+
+
+class TestTerminalOutcomeResync:
+    """Offline provider/consumer receive settlement events on reconnect."""
+
+    def test_offline_provider_on_completed_gets_job_completed_with_payout_and_balance(self, dynamodb_tables, mailbox):
+        """Provider that was offline when the job settled receives job_completed
+        with payout, fee, and their current wallet balance."""
+        _seed_agent(dynamodb_tables, "prov-1", balance=75)
+        _seed_job(
+            dynamodb_tables,
+            "jc1",
+            status="COMPLETED",
+            providerId="prov-1",
+            consumerId="cons-1",
+            agreedPrice=20,
+            outcome="SUCCESS",
+        )
+
+        sent = ex.resync_agent_jobs("prov-1")
+
+        assert sent >= 1
+        evts = _events_for(mailbox, "prov-1")
+        completed = [e for e in evts if e["event"] == "job_completed"]
+        assert completed, "expected at least one job_completed resync event"
+        evt = completed[0]
+        assert evt["resync"] is True
+        assert evt["job_id"] == "jc1"
+        # payout = agreedPrice − platform_fee(agreedPrice)
+        from core.services import exchange_scoring
+
+        expected_fee = exchange_scoring.platform_fee(20)
+        assert evt["payout"] == 20 - expected_fee
+        assert evt["fee"] == expected_fee
+        # balance attached (current truth from get_wallet)
+        assert evt["balance"] == 75
+
+    def test_offline_provider_on_failed_gets_job_failed_with_outcome(self, dynamodb_tables, mailbox):
+        """Provider that was offline when the job failed receives job_failed
+        with the stored outcome — no fabricated reason."""
+        _seed_agent(dynamodb_tables, "prov-1")
+        _seed_job(
+            dynamodb_tables,
+            "jf1",
+            status="FAILED",
+            providerId="prov-1",
+            consumerId="cons-1",
+            agreedPrice=15,
+            outcome="FAILURE_PROVIDER",
+        )
+
+        sent = ex.resync_agent_jobs("prov-1")
+
+        assert sent >= 1
+        evts = _events_for(mailbox, "prov-1")
+        failed = [e for e in evts if e["event"] == "job_failed"]
+        assert failed
+        evt = failed[0]
+        assert evt["resync"] is True
+        assert evt["job_id"] == "jf1"
+        assert evt["outcome"] == "FAILURE_PROVIDER"
+        # provider didn't receive money — no balance key required on their copy
+        # (spec says balance attached only for money-relevant side)
+
+    def test_offline_consumer_on_expired_gets_job_expired_with_balance(self, dynamodb_tables, mailbox):
+        """Consumer that was offline when the job expired receives job_expired
+        with their current wallet balance (escrow was refunded)."""
+        _seed_agent(dynamodb_tables, "cons-1", balance=120)
+        _seed_job(
+            dynamodb_tables,
+            "je1",
+            status="EXPIRED",
+            consumerId="cons-1",
+            maxPrice=30,
+        )
+
+        sent = ex.resync_agent_jobs("cons-1")
+
+        assert sent >= 1
+        evts = _events_for(mailbox, "cons-1")
+        expired = [e for e in evts if e["event"] == "job_expired"]
+        assert expired
+        evt = expired[0]
+        assert evt["resync"] is True
+        assert evt["job_id"] == "je1"
+        assert evt["balance"] == 120
+
+    def test_balance_attached_exactly_once_across_multiple_resync_events(self, dynamodb_tables, mailbox):
+        """When multiple money-relevant terminal jobs resync for the same agent,
+        the balance field appears on the FIRST event only — not duplicated."""
+        _seed_agent(dynamodb_tables, "prov-1", balance=200)
+        # Two completed jobs for the same provider
+        _seed_job(
+            dynamodb_tables,
+            "jm1",
+            status="COMPLETED",
+            providerId="prov-1",
+            consumerId="cons-1",
+            agreedPrice=10,
+            outcome="SUCCESS",
+            createdAt="2026-06-12T00:00:00+00:00",
+        )
+        _seed_job(
+            dynamodb_tables,
+            "jm2",
+            status="COMPLETED",
+            providerId="prov-1",
+            consumerId="cons-1",
+            agreedPrice=20,
+            outcome="SUCCESS",
+            createdAt="2026-06-12T00:00:01+00:00",
+        )
+
+        ex.resync_agent_jobs("prov-1")
+
+        evts = [e for e in _events_for(mailbox, "prov-1") if e["event"] == "job_completed"]
+        assert len(evts) == 2
+        # Exactly one event carries "balance"
+        with_balance = [e for e in evts if "balance" in e]
+        assert len(with_balance) == 1
+
+    def test_recency_bound_respected_via_limit_patch(self, dynamodb_tables, mailbox):
+        """_jobs_with_status is called with limit=50 for terminal statuses."""
+        _seed_agent(dynamodb_tables, "prov-1")
+        with patch.object(ex, "_jobs_with_status", return_value=[]) as mock_jws:
+            ex.resync_agent_jobs("prov-1")
+
+        # Verify terminal-status calls include limit=50
+        terminal_calls = [
+            c for c in mock_jws.call_args_list if c.args and c.args[0] in ("COMPLETED", "FAILED", "EXPIRED")
+        ]
+        assert terminal_calls, "expected _jobs_with_status called for terminal statuses"
+        for c in terminal_calls:
+            assert c.kwargs.get("limit") == 50 or (len(c.args) > 1 and c.args[1] == 50), (
+                f"expected limit=50 for terminal status call, got {c}"
+            )

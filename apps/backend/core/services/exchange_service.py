@@ -1821,18 +1821,26 @@ _SWEEP_CHECKS: tuple[tuple[str, str, Callable[[str], Awaitable[None]]], ...] = (
 )
 
 
-def _jobs_with_status(status: str) -> list[dict]:
+def _jobs_with_status(status: str, limit: int | None = None) -> list[dict]:
     """First page of the status GSI for ``status``.
 
     Shared by the sweeper and connect-time resync. No pagination by design —
     items beyond the first page are picked up on a later pass (sweeper) or
     the next reconnect (resync). Acceptable at town scale where the number
     of concurrently open/awarded/delivered jobs is small.
+
+    When ``limit`` is given, the query is bounded (newest-first via
+    ``ScanIndexForward=False``) so callers that only need a recent window
+    (e.g. the terminal-outcome resync) don't pull arbitrarily many rows.
     """
-    resp = dynamo.jobs_table().query(
-        IndexName="status-createdAt-index",
-        KeyConditionExpression=Key("status").eq(status),
-    )
+    kwargs: dict[str, Any] = {
+        "IndexName": "status-createdAt-index",
+        "KeyConditionExpression": Key("status").eq(status),
+    }
+    if limit is not None:
+        kwargs["Limit"] = limit
+        kwargs["ScanIndexForward"] = False
+    resp = dynamo.jobs_table().query(**kwargs)
     return resp.get("Items", [])
 
 
@@ -1982,23 +1990,144 @@ def resync_agent_jobs(agent_id: str) -> int:
             if mailbox.notify(agent_id, delivered_event):
                 sent += 1
 
-        # Bid-lost resync for jobs that moved through COMPLETED / FAILED / EXPIRED
-        # while the bidder was offline (bid window already closed, someone else won or
-        # the job expired with no winner / was failed post-delivery).
+        # Terminal-outcome resync for the two principals (provider + consumer).
+        # Bounded to the 50 most-recent jobs per status so a busy exchange doesn't
+        # produce unbounded resync traffic on every reconnect.
+        #
+        # Balance is attached ONCE on the first money-relevant resync event per
+        # agent (provider job_completed, consumer job_failed/job_expired).  We use
+        # get_wallet(agent_id)["balance"] — current truth — rather than trying to
+        # reconstruct per-job deltas, which could go wrong if multiple jobs settled
+        # while the agent was offline.
+        balance_sent = False  # guard: attach balance at most once per resync call
+
         for terminal_status in ("COMPLETED", "FAILED", "EXPIRED"):
-            for job in _jobs_with_status(terminal_status):
+            for job in _jobs_with_status(terminal_status, limit=50):
+                job_id = job["id"]
+                provider_id = job.get("providerId", "")
+                consumer_id = job.get("consumerId", "")
+
+                if provider_id == agent_id:
+                    # Provider (winner) side — re-send settlement outcome.
+                    if terminal_status == "COMPLETED":
+                        agreed = int(job.get("agreedPrice", 0))
+                        fee = exchange_scoring.platform_fee(agreed)
+                        payout = agreed - fee
+                        evt: dict[str, Any] = {
+                            "event": "job_completed",
+                            "job_id": job_id,
+                            "title": job.get("title", ""),
+                            "payout": payout,
+                            "fee": fee,
+                            "provider_id": provider_id,
+                            "consumer_id": consumer_id,
+                            "resync": True,
+                        }
+                        verdicts = job.get("criteriaVerdicts")
+                        if verdicts is not None:
+                            evt["criteria_verdicts"] = verdicts
+                        # First money-relevant event for this agent: attach current balance.
+                        if not balance_sent:
+                            try:
+                                evt["balance"] = get_wallet(agent_id)["balance"]
+                                balance_sent = True
+                            except Exception:
+                                pass
+                        if mailbox.notify(agent_id, evt):
+                            sent += 1
+                    elif terminal_status == "FAILED":
+                        evt = {
+                            "event": "job_failed",
+                            "job_id": job_id,
+                            "title": job.get("title", ""),
+                            "outcome": job.get("outcome", ""),
+                            "provider_id": provider_id,
+                            "consumer_id": consumer_id,
+                            "resync": True,
+                        }
+                        verdicts = job.get("criteriaVerdicts")
+                        if verdicts is not None:
+                            evt["criteria_verdicts"] = verdicts
+                        if mailbox.notify(agent_id, evt):
+                            sent += 1
+                    # EXPIRED with provider == agent_id is a job that expired before
+                    # award (no winner), so providerId shouldn't be set; skip.
+                    continue
+
+                if consumer_id == agent_id:
+                    if terminal_status == "COMPLETED":
+                        agreed = int(job.get("agreedPrice", 0))
+                        fee = exchange_scoring.platform_fee(agreed)
+                        payout = agreed - fee
+                        evt = {
+                            "event": "job_completed",
+                            "job_id": job_id,
+                            "title": job.get("title", ""),
+                            "payout": payout,
+                            "fee": fee,
+                            "provider_id": provider_id,
+                            "consumer_id": consumer_id,
+                            "resync": True,
+                        }
+                        verdicts = job.get("criteriaVerdicts")
+                        if verdicts is not None:
+                            evt["criteria_verdicts"] = verdicts
+                        if mailbox.notify(agent_id, evt):
+                            sent += 1
+                    elif terminal_status == "FAILED":
+                        evt = {
+                            "event": "job_failed",
+                            "job_id": job_id,
+                            "title": job.get("title", ""),
+                            "outcome": job.get("outcome", ""),
+                            "provider_id": provider_id,
+                            "consumer_id": consumer_id,
+                            "resync": True,
+                        }
+                        verdicts = job.get("criteriaVerdicts")
+                        if verdicts is not None:
+                            evt["criteria_verdicts"] = verdicts
+                        # Consumer receives money on failure (escrow refund) — attach balance.
+                        if not balance_sent:
+                            try:
+                                evt["balance"] = get_wallet(agent_id)["balance"]
+                                balance_sent = True
+                            except Exception:
+                                pass
+                        if mailbox.notify(agent_id, evt):
+                            sent += 1
+                    elif terminal_status == "EXPIRED":
+                        evt = {
+                            "event": "job_expired",
+                            "job_id": job_id,
+                            "title": job.get("title", ""),
+                            "provider_id": provider_id,
+                            "consumer_id": consumer_id,
+                            "resync": True,
+                        }
+                        # Consumer receives escrow refund on expiry — attach balance.
+                        if not balance_sent:
+                            try:
+                                evt["balance"] = get_wallet(agent_id)["balance"]
+                                balance_sent = True
+                            except Exception:
+                                pass
+                        if mailbox.notify(agent_id, evt):
+                            sent += 1
+                    continue
+
+                # Neither principal — check if this agent was a losing bidder.
                 bids = job.get("bids") or {}
                 if agent_id not in bids:
                     continue
-                if job.get("providerId") == agent_id:
-                    # The winner receives job_completed / job_failed via the normal
-                    # settlement path; no bid_lost for them.
+                if provider_id == agent_id:
+                    # Already handled above (winner); skip bid_lost.
                     continue
                 if mailbox.notify(
                     agent_id,
                     {
                         "event": "bid_lost",
-                        "job_id": job["id"],
+                        "job_id": job_id,
                         "title": job.get("title", ""),
                         "resync": True,
                     },

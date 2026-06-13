@@ -1099,6 +1099,10 @@ class TownDaemon:
         if "balance" in data:
             self._exchange_state()["wallet"] = data["balance"]
         self._write_jobs()
+        # Resync events heal the local cache and wallet but must not duplicate
+        # TOWN_EVENTS.md lines — the agent would see the same line on every reconnect.
+        if data.get("resync"):
+            return
         effective_role = job.get("role") or role
         # W3: append a short verdict summary if present.
         verdicts = data.get("criteria_verdicts")
@@ -1145,6 +1149,10 @@ class TownDaemon:
         if "balance" in data:
             self._exchange_state()["wallet"] = data["balance"]
         self._write_jobs()
+        # Resync events heal the local cache and wallet but must not duplicate
+        # TOWN_EVENTS.md lines — the agent would see the same line on every reconnect.
+        if data.get("resync"):
+            return
         # W3: append verdict summary if present.
         verdicts = data.get("criteria_verdicts")
         verdict_suffix = ""
@@ -1168,6 +1176,10 @@ class TownDaemon:
         if "balance" in data:
             self._exchange_state()["wallet"] = data["balance"]
         self._write_jobs()
+        # Resync events heal the local cache and wallet but must not duplicate
+        # TOWN_EVENTS.md lines — the agent would see the same line on every reconnect.
+        if data.get("resync"):
+            return
         line = f'\U0001f4bc Your job "{title}" expired with no winner (job {job_id}).'
         if refunded is not None:
             line += f" {refunded} crumbs were refunded to your wallet."
