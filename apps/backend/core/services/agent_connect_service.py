@@ -332,6 +332,25 @@ async def _handle_agent_connect(request, ws_manager):
         # successful-but-undelivered case (gone connection mid-handshake).
         logger.error("Connected event to %s was not delivered", agent_name)
 
+    # Exchange resync: re-send any AWARDED (this agent is the provider) or
+    # DELIVERED (this agent is the consumer) job events that were lost while
+    # the daemon was offline or its connection was stale. Award/deliver
+    # notifies are fire-and-forget, and AWARDED jobs aren't on the public
+    # board — without this, a winner that missed `job_awarded` silently eats
+    # the delivery-deadline failure. Best-effort: resync_agent_jobs swallows
+    # its own exceptions, and the lazy import keeps connect resilient even
+    # if the exchange module itself fails to load.
+    try:
+        from core.services import exchange_service
+
+        exchange_service.resync_agent_jobs(agent_id)
+    except Exception as _exc:
+        logger.warning(
+            "[agent:%s] Exchange resync on connect failed (non-fatal): %s",
+            agent_id[:8],
+            _exc,
+        )
+
     # Fire-and-forget SQS drain: deliver any WorldGM events that arrived while
     # the daemon was offline. Runs in a background Task so the connect handshake
     # is not delayed. If the queue doesn't exist (older agents registered before

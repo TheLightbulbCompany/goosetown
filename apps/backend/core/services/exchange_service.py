@@ -1508,7 +1508,17 @@ async def _close_bid_window_once(job_id: str, guard_revision: bool) -> bool:
     success_criteria = job.get("successCriteria")
     if success_criteria:
         winner_awarded["success_criteria"] = success_criteria
-    mailbox.notify(winner, winner_awarded)
+    delivered = mailbox.notify(winner, winner_awarded)
+    if not delivered:
+        # AWARDED jobs aren't on the public board, so a winner whose
+        # connection went stale at award time has no other way to learn
+        # they won. ``resync_agent_jobs`` (called on agent connect) re-sends
+        # this exact event when the daemon comes back.
+        logger.warning(
+            "job_awarded notify failed for winner %s on job %s — will heal on reconnect resync",
+            winner[:8],
+            job_id,
+        )
     # Consumer copy includes updated balance when a partial escrow refund was issued.
     consumer_awarded = (
         awarded if consumer_balance_after_award is None else {**awarded, "balance": consumer_balance_after_award}
@@ -1688,6 +1698,21 @@ _SWEEP_CHECKS: tuple[tuple[str, str, Callable[[str], Awaitable[None]]], ...] = (
 )
 
 
+def _jobs_with_status(status: str) -> list[dict]:
+    """First page of the status GSI for ``status``.
+
+    Shared by the sweeper and connect-time resync. No pagination by design —
+    items beyond the first page are picked up on a later pass (sweeper) or
+    the next reconnect (resync). Acceptable at town scale where the number
+    of concurrently open/awarded/delivered jobs is small.
+    """
+    resp = dynamo.jobs_table().query(
+        IndexName="status-createdAt-index",
+        KeyConditionExpression=Key("status").eq(status),
+    )
+    return resp.get("Items", [])
+
+
 async def sweep_overdue_jobs() -> None:
     """Fire any overdue deadline transition found via the status GSI.
 
@@ -1706,13 +1731,8 @@ async def sweep_overdue_jobs() -> None:
         where the number of concurrently open/awarded/delivered jobs is small.
     """
     now = time.time()
-    table = dynamo.jobs_table()
     for status, deadline_attr, transition in _SWEEP_CHECKS:
-        resp = table.query(
-            IndexName="status-createdAt-index",
-            KeyConditionExpression=Key("status").eq(status),
-        )
-        for item in resp.get("Items", []):
+        for item in _jobs_with_status(status):
             deadline = item.get(deadline_attr)
             if deadline is not None and float(deadline) <= now:
                 await transition(item["id"])
@@ -1726,6 +1746,99 @@ async def exchange_sweeper_loop() -> None:
             await sweep_overdue_jobs()
         except Exception:
             logger.exception("Exchange sweeper pass failed")
+
+
+# ---------------------------------------------------------------------------
+# Resync on connect (missed-notify safety)
+# ---------------------------------------------------------------------------
+
+
+def resync_agent_jobs(agent_id: str) -> int:
+    """Re-send action-required job events this agent may have missed.
+
+    ``mailbox.notify`` at award/deliver time is fire-and-forget: if the
+    agent's connection went stale at that exact moment, the event is lost —
+    and AWARDED jobs aren't on the public board, so a winner that missed
+    ``job_awarded`` would eat the delivery-deadline failure + trust hit
+    without ever knowing it won. A daemon restart similarly loses the local
+    TOWN_JOBS cache. Called from the agent-connect path (after the
+    ``connected`` event) to heal both gaps:
+
+    * providerId == agent_id, status AWARDED → re-notify ``job_awarded``
+      with the same payload shape as the winner copy at award time, with
+      ``deadline_sec`` recomputed against the persisted deadline.
+    * consumerId == agent_id, status DELIVERED → re-notify ``job_delivered``
+      (regenerating the 24 h presigned artifact GET when present).
+    * providerId == agent_id, status DELIVERED → nothing: the provider's
+      waiting-on-review state needs no action.
+
+    Every re-sent event carries ``"resync": True`` so the daemon can update
+    its cache without duplicating TOWN_EVENTS lines. Returns the number of
+    events delivered. Never raises — resync must never break connect.
+    """
+    try:
+        mailbox = get_daemon_mailbox()
+        now = time.time()
+        sent = 0
+
+        for job in _jobs_with_status("AWARDED"):
+            if job.get("providerId") != agent_id:
+                continue
+            awarded: dict[str, Any] = {
+                "event": "job_awarded",
+                "job_id": job["id"],
+                "title": job.get("title", ""),
+                "agreed_price": int(job.get("agreedPrice", 0)),
+                "deadline_sec": max(0, int(float(job.get("deliveryDeadlineAt") or 0) - now)),
+                "provider_name": job.get("providerName", ""),
+                "consumer_name": job.get("consumerName", ""),
+                "provider_id": agent_id,
+                "consumer_id": job.get("consumerId", ""),
+                "description": job.get("description", ""),
+                "resync": True,
+            }
+            success_criteria = job.get("successCriteria")
+            if success_criteria:
+                awarded["success_criteria"] = success_criteria
+            if mailbox.notify(agent_id, awarded):
+                sent += 1
+
+        for job in _jobs_with_status("DELIVERED"):
+            if job.get("consumerId") != agent_id:
+                continue
+            delivered_event: dict[str, Any] = {
+                "event": "job_delivered",
+                "job_id": job["id"],
+                "title": job.get("title", ""),
+                "deliverable": job.get("deliverable", ""),
+                "provider_id": job.get("providerId", ""),
+                "consumer_id": agent_id,
+                "resync": True,
+            }
+            success_criteria = job.get("successCriteria")
+            if success_criteria:
+                delivered_event["success_criteria"] = success_criteria
+            artifact_key = job.get("artifactKey")
+            if artifact_key:
+                # Same shape deliver_job sends: regenerate the 24 h presigned
+                # GET, pinned to the version captured at deliver time. Presign
+                # failure must not strand the resync — fall back to name-only.
+                try:
+                    delivered_event["artifact_url"] = presign_artifact_download(
+                        artifact_key, version_id=job.get("artifactVersionId")
+                    )
+                except Exception:
+                    logger.exception("Artifact presign failed during resync for job %s", job["id"])
+                delivered_event["artifact_name"] = artifact_key.rsplit("/", 1)[-1]
+            if mailbox.notify(agent_id, delivered_event):
+                sent += 1
+
+        if sent:
+            logger.info("[agent:%s] exchange resync re-sent %d job event(s)", agent_id[:8], sent)
+        return sent
+    except Exception:
+        logger.warning("Exchange resync failed for agent %s (non-fatal)", agent_id[:8], exc_info=True)
+        return 0
 
 
 # ---------------------------------------------------------------------------

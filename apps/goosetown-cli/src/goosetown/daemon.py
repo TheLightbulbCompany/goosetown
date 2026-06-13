@@ -886,6 +886,12 @@ class TownDaemon:
         escrow.  The provider's wallet is updated later via ``job_completed``
         (settlement) or ``job_failed`` (refund), both of which carry a
         ``balance`` field for whichever side received money.
+
+        Events with ``"resync": True`` are connect-time re-sends of state we
+        may have missed (stale connection at award time, daemon restart).
+        The cache update is an upsert so replaying is idempotent, but the
+        TOWN_EVENTS line is suppressed — it would otherwise duplicate on
+        every reconnect.
         """
         job_id = data.get("job_id", "?")
         title = data.get("title", "?")
@@ -905,6 +911,7 @@ class TownDaemon:
             # Only the winner's copy carries the job description.
             role = "provider" if "description" in data else "consumer"
 
+        resync = bool(data.get("resync"))
         if role == "provider":
             self._update_job(
                 job_id,
@@ -916,11 +923,12 @@ class TownDaemon:
                 description=data.get("description"),
                 success_criteria=data.get("success_criteria"),
             )
-            self._append_event(
-                f'\U0001f4bc You won the job "{title}" for {agreed} crumbs '
-                f"(job {job_id}). Deliver within {deadline}s: "
-                f"goosetown act deliver {job_id} <your work>"
-            )
+            if not resync:
+                self._append_event(
+                    f'\U0001f4bc You won the job "{title}" for {agreed} crumbs '
+                    f"(job {job_id}). Deliver within {deadline}s: "
+                    f"goosetown act deliver {job_id} <your work>"
+                )
         else:
             self._update_job(
                 job_id,
@@ -933,10 +941,11 @@ class TownDaemon:
             # Update wallet if the backend included a partial-refund balance.
             if "balance" in data:
                 self._exchange_state()["wallet"] = data["balance"]
-            self._append_event(
-                f'\U0001f4bc Your job "{title}" was awarded to {provider_name} '
-                f"for {agreed} crumbs (job {job_id}). Delivery due within {deadline}s."
-            )
+            if not resync:
+                self._append_event(
+                    f'\U0001f4bc Your job "{title}" was awarded to {provider_name} '
+                    f"for {agreed} crumbs (job {job_id}). Delivery due within {deadline}s."
+                )
         self._write_jobs()
 
     def _on_bid_lost(self, data: dict) -> None:
@@ -1014,6 +1023,12 @@ class TownDaemon:
         download the file into ``<workspace>/JOBS/{job_id}/{artifact_name}``
         and reference the local path from TOWN_JOBS.md. On download failure
         the URL itself is rendered with a note so the agent can fetch it.
+
+        Events with ``"resync": True`` are connect-time re-sends (stale
+        connection at deliver time, daemon restart). The cache update is an
+        upsert and the artifact re-download rebuilds ``JOBS/`` after a
+        restart, but the TOWN_EVENTS line is suppressed — it would
+        otherwise duplicate on every reconnect.
         """
         job_id = data.get("job_id", "?")
         title = data.get("title", "?")
@@ -1033,6 +1048,8 @@ class TownDaemon:
             artifact_url=None if artifact_path else artifact_url,
         )
         self._write_jobs()
+        if data.get("resync"):
+            return
         if artifact_path:
             file_note = f" File saved to {artifact_path}."
         elif artifact_url:

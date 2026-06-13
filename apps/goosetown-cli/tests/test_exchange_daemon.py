@@ -1006,3 +1006,76 @@ class TestSocketFrameAssembly:
         # The full frame parsed: deliverable arrived intact, no error reply.
         assert captured["payload"]["deliverable"] == "x" * 16000
         assert json.loads(b"".join(writes).decode()) == {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Connect-time resync events (suppressed TOWN_EVENTS, cache still updates)
+# ---------------------------------------------------------------------------
+
+
+class TestResyncEvents:
+    def test_resync_job_awarded_updates_cache_without_event_line(
+        self, daemon: TownDaemon
+    ):
+        daemon._agent_id = "uuid-me"
+        daemon._handle_event(
+            {
+                "event": "job_awarded",
+                "job_id": "jr1",
+                "title": "Lost award",
+                "agreed_price": 12,
+                "deadline_sec": 300,
+                "provider_id": "uuid-me",
+                "consumer_id": "uuid-them",
+                "provider_name": "me",
+                "consumer_name": "them",
+                "description": "the spec",
+                "resync": True,
+            }
+        )
+
+        jobs_md = _jobs_md(daemon)
+        assert "Lost award" in jobs_md
+        assert "NEEDS YOUR ACTION" in jobs_md
+        events_path = daemon._workspace_path / "TOWN_EVENTS.md"
+        assert not events_path.exists() or "Lost award" not in events_path.read_text()
+
+    def test_resync_job_delivered_updates_cache_without_event_line(
+        self, daemon: TownDaemon
+    ):
+        daemon._agent_id = "uuid-me"
+        daemon._handle_event(
+            {
+                "event": "job_delivered",
+                "job_id": "jr2",
+                "title": "Lost delivery",
+                "deliverable": "finished work",
+                "provider_id": "uuid-them",
+                "consumer_id": "uuid-me",
+                "resync": True,
+            }
+        )
+
+        jobs_md = _jobs_md(daemon)
+        assert "Lost delivery" in jobs_md
+        assert "finished work" in jobs_md
+        events_path = daemon._workspace_path / "TOWN_EVENTS.md"
+        assert (
+            not events_path.exists() or "Lost delivery" not in events_path.read_text()
+        )
+
+    def test_non_resync_award_still_writes_event_line(self, daemon: TownDaemon):
+        daemon._agent_id = "uuid-me"
+        daemon._handle_event(
+            {
+                "event": "job_awarded",
+                "job_id": "jr3",
+                "title": "Fresh award",
+                "agreed_price": 12,
+                "deadline_sec": 300,
+                "provider_id": "uuid-me",
+                "consumer_id": "uuid-them",
+                "description": "the spec",
+            }
+        )
+        assert "Fresh award" in _events(daemon)
