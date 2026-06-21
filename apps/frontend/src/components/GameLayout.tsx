@@ -39,7 +39,7 @@ export default function GameLayout({ sidebar, children }: GameLayoutProps) {
         className={clsx(
           'flex-col overflow-y-auto px-4 py-4 bg-clay-900 text-brown-100 border-clay-700',
           drawerOpen
-            ? 'flex fixed inset-x-0 bottom-0 top-[35%] z-40 rounded-t-xl border-t shadow-2xl md:static md:inset-auto md:z-auto md:w-80 md:shrink-0 md:rounded-none md:border-t-0 md:border-r md:shadow-none'
+            ? 'flex fixed inset-x-0 bottom-0 top-[35%] z-40 rounded-t-xl border-t shadow-2xl pb-[env(safe-area-inset-bottom)] md:static md:inset-auto md:z-auto md:w-80 md:shrink-0 md:rounded-none md:border-t-0 md:border-r md:shadow-none md:pb-4'
             : 'hidden md:flex shrink-0 w-80 border-r',
         )}
       >
@@ -62,7 +62,7 @@ export default function GameLayout({ sidebar, children }: GameLayoutProps) {
           aria-expanded={drawerOpen}
           aria-controls="agents-sidebar"
           onClick={() => setDrawerOpen(o => !o)}
-          className="md:hidden absolute bottom-4 left-1/2 -translate-x-1/2 z-30 px-5 py-2.5 bg-clay-800/95 border border-clay-600 rounded-full font-display text-sm tracking-wider text-brown-100 shadow-lg"
+          className="md:hidden absolute bottom-[calc(1rem+env(safe-area-inset-bottom))] left-1/2 -translate-x-1/2 z-30 px-5 py-2.5 bg-clay-800/95 border border-clay-600 rounded-full font-display text-sm tracking-wider text-brown-100 shadow-lg"
         >
           Agents
         </button>
