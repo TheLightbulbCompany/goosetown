@@ -303,6 +303,85 @@ def test_currentGoal_injected_even_when_in_conversation():
 
 
 # ---------------------------------------------------------------------------
+# Tests for relationship affinity / interactionCount / relationshipType
+# injection in nearby-agent dicts (Layer 3b — surfaced to no one before).
+# ---------------------------------------------------------------------------
+
+
+def test_nearby_agent_payload_includes_relationship_affinity():
+    """affinity / interactionCount / relationshipType from the relationships
+    table are injected into the nearby-agent dict."""
+    from core.services.daemon_bridge import _send_to_daemon
+
+    sent: list = []
+    svc_mock = MagicMock()
+    svc_mock.get_town_agent_by_id.return_value = {"id": "alice-123", "currentGoal": None}
+    svc_mock.get_relationship.return_value = {
+        "affinityScore": 42,
+        "interactionCount": 7,
+        "relationshipType": "friend",
+    }
+    svc_mock.get_nearby_conversations.return_value = []
+
+    stances_mock = MagicMock()
+    stances_mock.get_pair_stances.return_value = None
+
+    agent_conn = _make_agent_conn()
+    payload = {
+        "event": "agent_state",
+        "nearby_agents": [{"agent_id": "alice-123", "name": "Alice", "distance": 1.0}],
+    }
+
+    with (
+        patch(WS_MANAGER_PATH, return_value=_make_ws_mock(agent_conn)),
+        patch(SERVICE_PATH, return_value=svc_mock),
+        patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
+        patch(STANCES_PATH, stances_mock),
+    ):
+        ok = _send_to_daemon("self-agent", payload)
+
+    assert ok is True
+    near = sent[0][1]["nearby_agents"][0]
+    assert near["affinity"] == 42
+    assert near["interactionCount"] == 7
+    assert near["relationshipType"] == "friend"
+
+
+def test_nearby_agent_payload_no_affinity_when_never_interacted():
+    """No relationship row (pair never talked) -> no affinity fields injected."""
+    from core.services.daemon_bridge import _send_to_daemon
+
+    sent: list = []
+    svc_mock = MagicMock()
+    svc_mock.get_town_agent_by_id.return_value = {"id": "alice-123", "currentGoal": None}
+    svc_mock.get_relationship.return_value = None  # never interacted
+    svc_mock.get_nearby_conversations.return_value = []
+
+    stances_mock = MagicMock()
+    stances_mock.get_pair_stances.return_value = None
+
+    agent_conn = _make_agent_conn()
+    payload = {
+        "event": "agent_state",
+        "nearby_agents": [{"agent_id": "alice-123", "name": "Alice", "distance": 1.0}],
+    }
+
+    with (
+        patch(WS_MANAGER_PATH, return_value=_make_ws_mock(agent_conn)),
+        patch(SERVICE_PATH, return_value=svc_mock),
+        patch(MAILBOX_FACTORY_PATH, return_value=_make_mailbox_mock(sent)),
+        patch(STANCES_PATH, stances_mock),
+    ):
+        ok = _send_to_daemon("self-agent", payload)
+
+    assert ok is True
+    near = sent[0][1]["nearby_agents"][0]
+    assert "affinity" not in near
+    assert "interactionCount" not in near
+    assert "relationshipType" not in near
+
+
+# ---------------------------------------------------------------------------
 # Tests for stanceFromMe / stanceFromThem injection in nearby-agent dicts
 # ---------------------------------------------------------------------------
 

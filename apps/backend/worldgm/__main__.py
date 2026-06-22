@@ -66,6 +66,11 @@ ARCS_ENABLED = os.environ.get("WORLDGM_ARCS_ENABLED", "true").lower() == "true"
 # exchange completes in ~2.5s. Pacing the reply makes each line linger across a
 # broadcast and the whole exchange watchable. Tunable without a redeploy.
 CONVO_TURN_PACING_SECONDS = float(os.environ.get("WORLDGM_CONVO_TURN_PACING", "3.0"))
+# Dialogue model for resident chat/say lines (split-brain). The cheap Nova-Lite
+# model still drives the per-tick decision; only the spoken line is upgraded.
+# Set to "off"/"" to fall back to Nova-Lite dialogue without a redeploy. Doubles
+# as the A/B lever — set to ``anthropic.claude-haiku-4-5`` for a Claude soak.
+DIALOGUE_MODEL_ID = os.environ.get("WORLDGM_DIALOGUE_MODEL", "amazon.nova-pro-v1:0").strip()
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -147,6 +152,9 @@ class GmState:
     narrative_resolver: NarrativeEventResolution
     gm: Any
     town_service: Any
+    # Better model for resident spoken lines (Nova Pro by default). None → the
+    # decision model writes the line too (Nova-Lite dialogue fallback).
+    model_dialogue: Any = None
     last_known_locations: dict[str, str] = field(default_factory=dict)
     resident_manager: Any = None
     resident_runtimes: dict = field(default_factory=dict)
@@ -196,7 +204,7 @@ def _bootstrap_gm() -> GmState:
     the first agent connects and we have a real player list.
 
     What IS wired here:
-      - BedrockLanguageModel (lite + micro)
+      - BedrockLanguageModel (lite + micro + dialogue/Nova-Pro)
       - LocationBasedFilter (our minimal dataclass)
       - NarrativeEventResolution (our minimal dataclass wrapping model_lite)
       - TownService (DDB access)
@@ -205,6 +213,17 @@ def _bootstrap_gm() -> GmState:
 
     model_lite = BedrockLanguageModel(model_id="amazon.nova-lite-v1:0")
     model_micro = BedrockLanguageModel(model_id="amazon.nova-micro-v1:0")
+    # Dialogue model (Nova Pro by default) — better voice for resident chat lines.
+    # "off"/empty disables the upgrade (falls back to Nova-Lite dialogue).
+    model_dialogue = (
+        BedrockLanguageModel(model_id=DIALOGUE_MODEL_ID)
+        if DIALOGUE_MODEL_ID and DIALOGUE_MODEL_ID.lower() != "off"
+        else None
+    )
+    logger.info(
+        "Resident dialogue model: %s",
+        DIALOGUE_MODEL_ID if model_dialogue is not None else "disabled (Nova-Lite fallback)",
+    )
 
     location_filter = LocationBasedFilter()
     narrative_resolver = NarrativeEventResolution(model=model_lite)
@@ -216,6 +235,7 @@ def _bootstrap_gm() -> GmState:
         narrative_resolver=narrative_resolver,
         gm=None,  # Deferred to Phase C3 — see module docstring.
         town_service=TownService(),
+        model_dialogue=model_dialogue,
     )
 
 
@@ -302,6 +322,7 @@ async def _tick_one_resident(state: GmState, name: str, handle) -> None:
             runtime,
             status,
             model=getattr(state, "model_lite", None),
+            dialogue_model=getattr(state, "model_dialogue", None),
             persona=handle.persona,
         )
     except Exception:

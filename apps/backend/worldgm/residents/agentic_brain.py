@@ -34,9 +34,14 @@ _IDLE: dict = {"action": "idle"}
 # turn, so we truncate here to stay under the limit.
 _MAX_MSG_CHARS = 500
 
-# Decision sampling knobs.
+# Decision sampling knobs (the cheap decision model — picks the action).
 _MAX_TOKENS = 200
 _TEMPERATURE = 0.8
+
+# Dialogue sampling knobs (the better dialogue model — writes the spoken line).
+# Slightly hotter for voice/creativity; 160 tokens covers 1-3 sentences with room.
+_DIALOGUE_MAX_TOKENS = 160
+_DIALOGUE_TEMPERATURE = 0.9
 
 # Cap concurrent Bedrock decisions so 20 residents firing at once don't saturate
 # the small worldgm task's CPU/GIL and starve the in-process daemons' WS loops.
@@ -71,6 +76,12 @@ class DecisionContext:
     mood: str = "neutral"
     energy: int = 100
     recent_events: list[str] = field(default_factory=list)
+    # Character-bible fields (copied from the Persona) — fuel the dialogue prompt.
+    voice: str = ""
+    obsessions: tuple[str, ...] = ()
+    opinions: tuple[tuple[str, str], ...] = ()
+    current_life: str = ""
+    sample_lines: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -202,15 +213,38 @@ def to_command(action: dict) -> dict | None:
 # ---------------------------------------------------------------------------
 
 
+# Relationship/goal/stance fields the backend (daemon_bridge) injects per nearby
+# agent. Carried through verbatim so the resident reasons over the same picture a
+# real user's agent reads from TOWN_STATUS.md — not a name-only subset.
+_NEARBY_REL_FIELDS = (
+    "currentGoal",
+    "stanceFromMe",
+    "stanceFromThem",
+    "affinity",
+    "interactionCount",
+    "relationshipType",
+)
+
+
 def _normalize_nearby(raw_nearby: list[dict]) -> list[dict]:
-    """Normalize each nearby entry to {agent_id, display_name}."""
+    """Normalize each nearby entry to {agent_id, display_name, +relationship}.
+
+    Preserves the goal / stance / affinity fields the backend injects (see
+    ``daemon_bridge._send_to_daemon``) so the resident brain reaches parity with
+    what an external agent already reads from its town files — and so the
+    dialogue model can colour a line by the real relationship.
+    """
     out: list[dict] = []
     for person in raw_nearby or []:
         agent_id = person.get("agent_id", "")
         if not agent_id:
             continue
         display = person.get("display_name") or person.get("name") or agent_id[:8]
-        out.append({"agent_id": agent_id, "display_name": display})
+        entry = {"agent_id": agent_id, "display_name": display}
+        for fld in _NEARBY_REL_FIELDS:
+            if person.get(fld) is not None:
+                entry[fld] = person[fld]
+        out.append(entry)
     return out
 
 
@@ -270,6 +304,11 @@ def build_decision_context(persona: Persona, parsed_status: dict) -> DecisionCon
         mood=_render_mood(parsed_status.get("mood")),
         energy=int(_energy if (_energy := parsed_status.get("energy")) is not None else 100),
         recent_events=list(parsed_status.get("recent_events", [])),
+        voice=persona.voice,
+        obsessions=persona.obsessions,
+        opinions=persona.opinions,
+        current_life=persona.current_life,
+        sample_lines=persona.sample_lines,
     )
 
 
@@ -282,6 +321,37 @@ _ACTION_SCHEMAS: dict[str, str] = {
     "activity": '  {"action": "activity", "name": "<one activity listed above>"}',
     "idle": '  {"action": "idle"}',
 }
+
+
+def _affinity_label(score: int) -> str:
+    """Map an affinity score (-100..100) to a human word."""
+    if score >= 50:
+        return "close"
+    if score >= 20:
+        return "friendly"
+    if score <= -50:
+        return "hostile"
+    if score <= -20:
+        return "frosty"
+    return "neutral"
+
+
+def _relationship_phrase(near: dict) -> str:
+    """One-line relationship colour for a nearby agent, from the affinity /
+    stance / goal fields the backend injects. Empty string when nothing is set."""
+    parts: list[str] = []
+    aff = near.get("affinity")
+    if aff is not None:
+        n = int(near.get("interactionCount") or 0)
+        label = _affinity_label(int(aff))
+        parts.append(f"{label}, talked {n}×" if n else label)
+    mine = (near.get("stanceFromMe") or "").strip()
+    if mine:
+        parts.append(f"you feel {mine}")
+    goal = (near.get("currentGoal") or "").strip()
+    if goal:
+        parts.append(f"they're after: {goal}")
+    return "; ".join(parts)
 
 
 def build_prompt(ctx: DecisionContext) -> str:
@@ -297,7 +367,10 @@ def build_prompt(ctx: DecisionContext) -> str:
         f"Where you are: {ctx.location}.",
     ]
     if ctx.nearby:
-        lines.append("Nearby: " + ", ".join(p["display_name"] for p in ctx.nearby) + ".")
+        lines.append("Nearby:")
+        for p in ctx.nearby:
+            rel = _relationship_phrase(p)
+            lines.append(f"  - {p['display_name']}" + (f" ({rel})" if rel else ""))
     else:
         lines.append("Nearby: no one — you're on your own right now.")
 
@@ -379,3 +452,140 @@ async def decide(model, ctx: DecisionContext) -> dict:
         logger.warning("decide: model call failed for %s; idling this tick", ctx.name, exc_info=True)
         return dict(_IDLE)
     return validate_action(parse_action(raw), ctx)
+
+
+# ---------------------------------------------------------------------------
+# Dialogue (split-brain): the decision model picks the action, the dialogue
+# model writes the spoken line. Separating them lets the cheap model drive the
+# 30s decision cadence while a better model performs the (rarer) spoken lines.
+# ---------------------------------------------------------------------------
+
+
+def _find_nearby(ctx: DecisionContext, agent_id: str) -> dict | None:
+    for p in ctx.nearby:
+        if p.get("agent_id") == agent_id:
+            return p
+    return None
+
+
+def _clean_line(raw: str, speaker: str) -> str:
+    """Reduce a dialogue reply to the bare spoken words.
+
+    Strips a leading ``Name:`` prefix and wrapping quotes the model sometimes
+    adds, then caps at the backend's message limit.
+    """
+    s = (raw or "").strip()
+    prefix = f"{speaker}:"
+    if s[: len(prefix)].lower() == prefix.lower():
+        s = s[len(prefix) :].strip()
+    if len(s) >= 2 and s[0] in "\"'“”" and s[-1] in "\"'“”":
+        s = s[1:-1].strip()
+    return s[:_MAX_MSG_CHARS]
+
+
+def build_dialogue_prompt(ctx: DecisionContext, action: dict) -> str:
+    """Voice-first prompt for the dialogue model.
+
+    Unlike ``build_prompt`` (which asks for a JSON action), this asks for ONLY
+    the spoken line — the full character bible, the relationship with whoever
+    they're addressing, and the conversation so far — so the model performs the
+    character instead of stuffing a line into an action.
+    """
+    lines = [f"You are {ctx.display_name}, a resident of GooseTown. Stay completely in character."]
+    if ctx.personality:
+        lines.append(f"Who you are: {ctx.personality}")
+    if ctx.voice:
+        lines.append(f"How you talk: {ctx.voice}")
+    if ctx.obsessions:
+        lines.append("You love steering toward: " + ", ".join(ctx.obsessions) + ".")
+    if ctx.current_life:
+        lines.append(f"On your mind lately: {ctx.current_life}")
+
+    # Who am I addressing, and what's the history?
+    addressee = None
+    addressee_name = "them"
+    history: list[str] = []
+    if action.get("action") == "say" and ctx.active_conversation:
+        others = [p for p in (ctx.active_conversation.get("participants") or []) if p != ctx.display_name]
+        addressee_name = others[0] if others else "them"
+        for p in ctx.nearby:
+            if p.get("display_name") == addressee_name:
+                addressee = p
+                break
+        for turn in ctx.active_conversation.get("turns", []):
+            spk = turn.get("speaker", "?")
+            tag = " (a real person visiting GooseTown)" if turn.get("speakerType") == "human" else ""
+            history.append(f"  {spk}{tag}: {turn.get('text', '')}")
+    else:  # chat — opening a new conversation
+        addressee = _find_nearby(ctx, action.get("_agent_id", ""))
+        addressee_name = (addressee or {}).get("display_name") or action.get("target") or "them"
+
+    take = dict(ctx.opinions).get(addressee_name)
+    if take:
+        lines.append(f"Your honest read on {addressee_name}: {take}")
+    if addressee:
+        rel = _relationship_phrase(addressee)
+        if rel:
+            lines.append(f"Where you stand with {addressee_name}: {rel}.")
+
+    if ctx.active_storyline:
+        lines.append(f"Happening around you: {ctx.active_storyline}")
+
+    if ctx.sample_lines:
+        lines.append("")
+        lines.append(f"This is how {ctx.display_name} sounds — match the voice, don't reuse these lines:")
+        lines += [f'  "{s}"' for s in ctx.sample_lines]
+
+    lines.append("")
+    if history:
+        lines.append(f"You're mid-conversation with {addressee_name}. So far:")
+        lines += history
+        lines.append("")
+        lines.append(
+            f"Say your next line as {ctx.display_name}: react to what they just said — agree, riff, "
+            "push back, joke, get specific. Don't just acknowledge; add something."
+        )
+    else:
+        lines.append(
+            f"You're walking up to {addressee_name} to start talking. Open with something only "
+            f"{ctx.display_name} would say — specific to who you are and your read on them, not a generic greeting."
+        )
+    lines.append(
+        "Reply with ONLY the words you speak — 1-3 sentences, no name prefix, no quotation marks, no stage directions."
+    )
+    return "\n".join(lines)
+
+
+async def generate_dialogue(model, ctx: DecisionContext, action: dict) -> str:
+    """Generate the spoken line for a chat/say action on the dialogue model.
+
+    Returns "" on any failure so the caller falls back to the decision model's
+    own line. Shares the decide semaphore so dialogue + decision calls together
+    respect the Bedrock concurrency cap.
+    """
+    prompt = build_dialogue_prompt(ctx, action)
+    try:
+        async with _get_decide_semaphore():
+            raw = await asyncio.to_thread(
+                model.sample_text, prompt, max_tokens=_DIALOGUE_MAX_TOKENS, temperature=_DIALOGUE_TEMPERATURE
+            )
+    except Exception:
+        logger.warning("generate_dialogue: model call failed for %s; using fallback line", ctx.name, exc_info=True)
+        return ""
+    return _clean_line(raw, ctx.display_name)
+
+
+async def decide_and_speak(decision_model, dialogue_model, ctx: DecisionContext) -> dict:
+    """Split-brain decision: the cheap ``decision_model`` picks the action; for a
+    chat/say the (better) ``dialogue_model`` writes the actual spoken line.
+
+    Falls back to the decision model's own line when no dialogue model is given
+    or the dialogue call fails — so a Nova-Pro outage degrades to Nova-Lite
+    dialogue, never to silence.
+    """
+    action = await decide(decision_model, ctx)
+    if dialogue_model is not None and action.get("action") in ("chat", "say"):
+        line = await generate_dialogue(dialogue_model, ctx, action)
+        if line:
+            action["message"] = line
+    return action

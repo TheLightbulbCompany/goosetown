@@ -75,6 +75,7 @@ from goosetown.render import (  # noqa: E402
     render_mood,
     render_nearby_text,
     render_pending_messages,
+    render_relationship_lines,
     render_stance_lines,
     render_static_status,
 )
@@ -91,6 +92,7 @@ __all__ = [
     "render_mood",
     "render_nearby_text",
     "render_pending_messages",
+    "render_relationship_lines",
     "render_stance_lines",
     "render_static_status",
 ]
@@ -2063,6 +2065,9 @@ class TownDaemon:
                         # Stance sub-bullets — rendered when either direction is set
                         for stance_line in render_stance_lines(a):
                             nearby_chat_options += stance_line + "\n"
+                        # Relationship sub-bullet — affinity + interaction history
+                        for rel_line in render_relationship_lines(a):
+                            nearby_chat_options += rel_line + "\n"
                 nearby_chat_options += "\n"
 
             nearby_convs: list = self.state.get("nearby_conversations", [])
