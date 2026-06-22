@@ -23,6 +23,7 @@ from goosetown.render import (
     render_mood,
     render_nearby_text,
     render_pending_messages,
+    render_relationship_lines,
     render_stance_lines,
     render_static_status,
 )
@@ -443,3 +444,49 @@ class TestRenderStanceLines:
     def test_strips_whitespace(self):
         lines = render_stance_lines({"stanceFromMe": "  hello  "})
         assert "_hello_" in lines[0]
+
+
+# ---------------------------------------------------------------------------
+# render_relationship_lines — affinity + interaction history (Layer 3b)
+# ---------------------------------------------------------------------------
+
+
+class TestRenderRelationshipLines:
+    def test_empty_when_no_affinity_field(self):
+        # No affinity injected (pair never interacted) -> nothing rendered.
+        assert render_relationship_lines({}) == []
+        assert render_relationship_lines({"display_name": "X"}) == []
+
+    def test_renders_affinity_label_and_count(self):
+        lines = render_relationship_lines({"affinity": 35, "interactionCount": 6})
+        assert len(lines) == 1
+        assert "Your history with them" in lines[0]
+        assert "friendly" in lines[0]
+        assert "6" in lines[0]
+
+    @pytest.mark.parametrize(
+        "score,label",
+        [
+            (80, "close"),
+            (30, "friendly"),
+            (0, "neutral"),
+            (-30, "frosty"),
+            (-80, "hostile"),
+        ],
+    )
+    def test_affinity_bands(self, score, label):
+        lines = render_relationship_lines({"affinity": score})
+        assert label in lines[0]
+
+    def test_zero_interactions_omits_count(self):
+        lines = render_relationship_lines({"affinity": 0, "interactionCount": 0})
+        assert "talked" not in lines[0]
+
+    def test_handles_decimal_like_values(self):
+        # DynamoDB numbers can arrive as Decimal/str; render must not crash.
+        lines = render_relationship_lines({"affinity": "40", "interactionCount": "3"})
+        assert "friendly" in lines[0]
+        assert "3" in lines[0]
+
+    def test_garbage_affinity_returns_empty(self):
+        assert render_relationship_lines({"affinity": "not-a-number"}) == []

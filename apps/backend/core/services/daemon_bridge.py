@@ -146,6 +146,16 @@ def _send_to_daemon(agent_id: str, payload: dict) -> bool:
                 else:
                     enriched["stanceFromMe"] = None
                     enriched["stanceFromThem"] = None
+                # Inject relationship affinity + history for this pair. It's
+                # written on every conversation (conversation_service) but was
+                # otherwise surfaced to no one — neither residents nor real
+                # users' agents could see "we've talked N times and I like you".
+                # None when the pair has never interacted (no row yet).
+                rel = svc.get_relationship(agent_id, nid) if nid else None
+                if rel:
+                    enriched["affinity"] = rel.get("affinityScore")
+                    enriched["interactionCount"] = rel.get("interactionCount")
+                    enriched["relationshipType"] = rel.get("relationshipType")
                 enriched_nearby.append(enriched)
             payload = {**payload, "nearby_agents": enriched_nearby}
 

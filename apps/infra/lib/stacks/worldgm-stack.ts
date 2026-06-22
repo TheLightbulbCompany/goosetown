@@ -111,13 +111,33 @@ export class WorldgmStack extends cdk.Stack {
       },
     });
 
-    // ─── IAM: Bedrock — narrative generation (Nova Lite) + goal checks (Nova Micro) ──
+    // ─── IAM: Bedrock — Nova Lite (narrative) + Nova Micro (goal checks) +
+    //     Nova Pro (resident dialogue — the split-brain default). ──
     taskDef.taskRole.addToPrincipalPolicy(
       new iam.PolicyStatement({
         actions: ["bedrock:InvokeModel", "bedrock:Converse"],
         resources: [
           `arn:aws:bedrock:${cdk.Stack.of(this).region}::foundation-model/amazon.nova-lite-v1:0`,
           `arn:aws:bedrock:${cdk.Stack.of(this).region}::foundation-model/amazon.nova-micro-v1:0`,
+          `arn:aws:bedrock:${cdk.Stack.of(this).region}::foundation-model/amazon.nova-pro-v1:0`,
+        ],
+      }),
+    );
+
+    // ─── IAM: Bedrock — Claude Haiku for the OPTIONAL dialogue A/B
+    //     (set WORLDGM_DIALOGUE_MODEL=anthropic.claude-haiku-4-5 to compare
+    //     voice quality against Nova Pro). Claude 4.x on Bedrock routes through
+    //     a cross-region inference profile, so grant the profile plus the
+    //     underlying foundation-models in the US regions it fans out to. Inert
+    //     unless the env var is flipped to a Claude model. ──
+    taskDef.taskRole.addToPrincipalPolicy(
+      new iam.PolicyStatement({
+        actions: ["bedrock:InvokeModel", "bedrock:Converse"],
+        resources: [
+          `arn:aws:bedrock:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:inference-profile/us.anthropic.claude-haiku-4-5*`,
+          "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-4-5*",
+          "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-haiku-4-5*",
+          "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-haiku-4-5*",
         ],
       }),
     );

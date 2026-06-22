@@ -16,7 +16,7 @@ import datetime
 import logging
 import random
 
-from worldgm.residents.agentic_brain import build_decision_context, decide, to_command
+from worldgm.residents.agentic_brain import build_decision_context, decide_and_speak, to_command
 from worldgm.residents.behavior import _BED, ResidentRuntime, is_in_sleep_window, next_action
 
 logger = logging.getLogger(__name__)
@@ -83,6 +83,7 @@ async def step_resident_brain(
     parsed_status: dict,
     *,
     model=None,
+    dialogue_model=None,
     persona=None,
     rng=None,
     now_utc_hour: int | None = None,
@@ -170,7 +171,10 @@ async def step_resident_brain(
 
     # Decide via the LLM, then dispatch.
     ctx = build_decision_context(persona, parsed_status)
-    action = await decide(model, ctx)
+    # Split-brain: ``model`` (cheap) picks the action; ``dialogue_model`` (better,
+    # e.g. Nova Pro) writes the spoken line for chat/say. dialogue_model=None →
+    # the decision model's own line is used (graceful fallback).
+    action = await decide_and_speak(model, dialogue_model, ctx)
     cmd = to_command(action)
     if cmd is None:
         # Mid-conversation the only legal actions are say/end, so an idle here

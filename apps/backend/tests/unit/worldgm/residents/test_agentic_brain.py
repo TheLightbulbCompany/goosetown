@@ -4,9 +4,15 @@ from __future__ import annotations
 
 from worldgm.residents.agentic_brain import (
     DecisionContext,
+    _affinity_label,
+    _clean_line,
+    _relationship_phrase,
     build_decision_context,
+    build_dialogue_prompt,
     build_prompt,
     decide,
+    decide_and_speak,
+    generate_dialogue,
     parse_action,
     to_command,
     validate_action,
@@ -400,3 +406,190 @@ async def test_decide_illegal_output_returns_idle():
     ctx = build_decision_context(_PERSONA, _status())  # not in conversation
     out = await decide(_FakeModel('{"action": "say", "message": "hi"}'), ctx)
     assert out == {"action": "idle"}
+
+
+# ---------------------------------------------------------------------------
+# Relationship surfacing (Layer 3) + character bible + split-brain dialogue
+# ---------------------------------------------------------------------------
+
+
+_RICH_PERSONA = Persona(
+    name="lebron",
+    display_name="LeBron James",
+    personality="Relentless competitor.",
+    appearance="Tall.",
+    traits=("competitive", "driven"),
+    hangout="activity_center",
+    voice="Calls people 'young king'. Wine and Akron.",
+    obsessions=("legacy", "wine"),
+    opinions=(("Ada Lovelace", "sharp mind, I respect that"),),
+    current_life="Building the empire.",
+    sample_lines=("Nothing is given, young king.",),
+)
+
+
+def test_normalize_nearby_preserves_relationship_fields():
+    # The backend (daemon_bridge) injects these; the brain must not discard them.
+    status = _status(
+        nearby=[
+            {
+                "agent_id": "uuid-ada",
+                "display_name": "Ada Lovelace",
+                "currentGoal": "finish the engine",
+                "stanceFromMe": "intrigued",
+                "stanceFromThem": "wary",
+                "affinity": 35,
+                "interactionCount": 6,
+                "relationshipType": "friend",
+            }
+        ]
+    )
+    near = build_decision_context(_PERSONA, status).nearby[0]
+    assert near["affinity"] == 35
+    assert near["interactionCount"] == 6
+    assert near["relationshipType"] == "friend"
+    assert near["stanceFromMe"] == "intrigued"
+    assert near["currentGoal"] == "finish the engine"
+
+
+def test_affinity_label_bands():
+    assert _affinity_label(80) == "close"
+    assert _affinity_label(30) == "friendly"
+    assert _affinity_label(0) == "neutral"
+    assert _affinity_label(-30) == "frosty"
+    assert _affinity_label(-80) == "hostile"
+
+
+def test_relationship_phrase_combines_affinity_history_stance():
+    phrase = _relationship_phrase({"affinity": 35, "interactionCount": 6, "stanceFromMe": "amused"})
+    assert "friendly" in phrase
+    assert "6" in phrase
+    assert "amused" in phrase
+
+
+def test_relationship_phrase_empty_when_nothing_set():
+    assert _relationship_phrase({"agent_id": "x", "display_name": "Y"}) == ""
+
+
+def test_build_prompt_renders_nearby_relationship():
+    status = _status(
+        nearby=[{"agent_id": "uuid-ada", "display_name": "Ada Lovelace", "affinity": 60, "interactionCount": 9}]
+    )
+    prompt = build_prompt(build_decision_context(_PERSONA, status))
+    assert "Ada Lovelace" in prompt
+    assert "close" in prompt  # affinity 60 -> close
+    assert "9" in prompt
+
+
+def test_context_carries_persona_bible_fields():
+    ctx = build_decision_context(_RICH_PERSONA, _status())
+    assert ctx.voice.startswith("Calls people")
+    assert ctx.obsessions == ("legacy", "wine")
+    assert ctx.sample_lines == ("Nothing is given, young king.",)
+    assert dict(ctx.opinions)["Ada Lovelace"].startswith("sharp")
+
+
+def test_clean_line_strips_prefix_and_quotes():
+    assert _clean_line('LeBron James: "Hey now"', "LeBron James") == "Hey now"
+    assert _clean_line('"Just a quote"', "LeBron James") == "Just a quote"
+    assert _clean_line("plain line", "LeBron James") == "plain line"
+
+
+def test_clean_line_caps_at_max():
+    assert len(_clean_line("z" * 800, "X")) == 500
+
+
+def _rich_ctx(**over):
+    base = dict(
+        name="lebron",
+        display_name="LeBron James",
+        personality="Relentless competitor.",
+        traits=("competitive",),
+        location="activity_center",
+        location_context="town",
+        nearby=[{"agent_id": "uuid-ada", "display_name": "Ada Lovelace", "affinity": 40, "interactionCount": 3}],
+        active_conversation=None,
+        pending_messages=[],
+        available_activities=[],
+        legal_actions=frozenset({"chat", "move", "idle"}),
+        voice="Calls people 'young king'.",
+        obsessions=("legacy", "wine"),
+        opinions=(("Ada Lovelace", "sharp mind"),),
+        current_life="Building the empire.",
+        sample_lines=("Nothing is given, young king.",),
+    )
+    base.update(over)
+    return DecisionContext(**base)
+
+
+def test_build_dialogue_prompt_chat_opening_uses_bible():
+    ctx = _rich_ctx()
+    action = {"action": "chat", "_agent_id": "uuid-ada", "target": "Ada Lovelace", "message": "fallback"}
+    prompt = build_dialogue_prompt(ctx, action)
+    assert "LeBron James" in prompt
+    assert "young king" in prompt  # voice
+    assert "Nothing is given" in prompt  # sample line
+    assert "sharp mind" in prompt  # opinion of the addressee
+    assert "Ada Lovelace" in prompt
+    assert "walking up" in prompt.lower()  # opening framing
+    assert "ONLY the words you speak" in prompt
+
+
+def test_build_dialogue_prompt_say_includes_history():
+    ctx = _rich_ctx(
+        active_conversation={
+            "conv_id": "c1",
+            "participants": ["LeBron James", "Ada Lovelace"],
+            "turns": [{"speaker": "Ada Lovelace", "text": "What drives you?"}],
+        },
+        legal_actions=frozenset({"say", "end"}),
+    )
+    action = {"action": "say", "message": "fallback", "_conv_id": "c1"}
+    prompt = build_dialogue_prompt(ctx, action)
+    assert "What drives you?" in prompt
+    assert "react to what they just said" in prompt.lower()
+
+
+async def test_generate_dialogue_returns_cleaned_line():
+    ctx = _rich_ctx()
+    action = {"action": "chat", "_agent_id": "uuid-ada", "target": "Ada Lovelace", "message": "fallback"}
+    line = await generate_dialogue(_FakeModel('LeBron James: "Earn it, young king."'), ctx, action)
+    assert line == "Earn it, young king."
+
+
+async def test_generate_dialogue_model_error_returns_empty():
+    ctx = _rich_ctx()
+    action = {"action": "chat", "_agent_id": "uuid-ada", "target": "Ada Lovelace", "message": "fb"}
+    assert await generate_dialogue(_FakeModel(raises=True), ctx, action) == ""
+
+
+async def test_decide_and_speak_dialogue_model_overrides_line():
+    ctx = build_decision_context(_RICH_PERSONA, _status())
+    decision = _FakeModel('{"action": "chat", "target": "Ada Lovelace", "message": "weak line"}')
+    dialogue = _FakeModel("Strive for greatness, young king.")
+    out = await decide_and_speak(decision, dialogue, ctx)
+    assert out["action"] == "chat"
+    assert out["message"] == "Strive for greatness, young king."
+    assert dialogue.calls == 1
+
+
+async def test_decide_and_speak_no_dialogue_model_keeps_decision_line():
+    ctx = build_decision_context(_RICH_PERSONA, _status())
+    decision = _FakeModel('{"action": "chat", "target": "Ada Lovelace", "message": "decision line"}')
+    out = await decide_and_speak(decision, None, ctx)
+    assert out["message"] == "decision line"
+
+
+async def test_decide_and_speak_dialogue_failure_falls_back_to_decision_line():
+    ctx = build_decision_context(_RICH_PERSONA, _status())
+    decision = _FakeModel('{"action": "chat", "target": "Ada Lovelace", "message": "decision line"}')
+    out = await decide_and_speak(decision, _FakeModel(raises=True), ctx)
+    assert out["message"] == "decision line"
+
+
+async def test_decide_and_speak_move_skips_dialogue_model():
+    ctx = build_decision_context(_PERSONA, _status(nearby=[]))
+    dialogue = _FakeModel("should not be called")
+    out = await decide_and_speak(_FakeModel('{"action": "move", "destination": "cafe"}'), dialogue, ctx)
+    assert out["action"] == "move"
+    assert dialogue.calls == 0

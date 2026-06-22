@@ -19,6 +19,21 @@ class Persona:
     sleep_hour: int = 22  # UTC hour they go to sleep (0-23)
     wake_hour: int = 6  # UTC hour they wake up (0-23)
 
+    # ── Character bible (optional) ──────────────────────────────────────────
+    # Richer voice fields that turn a one-line logline into a performable
+    # character. All default empty so the existing cast still constructs; the
+    # dialogue prompt only renders the fields that are set. Tuples (not dicts)
+    # keep the frozen dataclass hashable. Ground these in the real public
+    # corpus for real figures — diction, obsessions, relationships — so the
+    # model performs the person instead of improvising from a stub.
+    voice: str = ""  # how they talk: diction, cadence, verbal tics, signature phrases
+    obsessions: tuple[str, ...] = ()  # topics they steer conversation toward
+    # Opinions of *other named residents*, as (resident_slug_or_display, take) pairs.
+    # Seeds relationship colour the affinity score can't carry on its own.
+    opinions: tuple[tuple[str, str], ...] = ()
+    current_life: str = ""  # what's on their mind right now (fresh conversation fuel)
+    sample_lines: tuple[str, ...] = ()  # few-shot voice anchors — the single biggest lever
+
 
 # ── The full resident cast (Phase 2a) ───────────────────────────────────────
 # 12 public-domain icons (real names) + 7 original archetype-homages + Tobias

@@ -247,6 +247,45 @@ def render_stance_lines(near: dict) -> list[str]:
     return lines
 
 
+def render_relationship_lines(near: dict) -> list[str]:
+    """Return a relationship sub-bullet for a nearby agent — affinity label +
+    how many times you've talked. Empty list when you've never interacted (the
+    backend injects no ``affinity`` field until a relationship row exists).
+
+    The affinity score and interaction count are tracked on every conversation
+    but were previously surfaced to no one; this brings them to the agent's eyes.
+    Mirrors the resident brain's ``_relationship_phrase`` so residents and real
+    users' agents read the same relationship colour.
+
+    Args:
+        near: One entry from ``nearby_agents`` — may have ``affinity`` (int) and
+            ``interactionCount`` (int) fields.
+    """
+    aff = near.get("affinity")
+    if aff is None:
+        return []
+    try:
+        score = int(aff)
+    except (TypeError, ValueError):
+        return []
+    if score >= 50:
+        label = "close"
+    elif score >= 20:
+        label = "friendly"
+    elif score <= -50:
+        label = "hostile"
+    elif score <= -20:
+        label = "frosty"
+    else:
+        label = "neutral"
+    try:
+        n = int(near.get("interactionCount") or 0)
+    except (TypeError, ValueError):
+        n = 0
+    detail = f"{label}, talked {n}×" if n else label
+    return [f"  - Your history with them: _{detail}_"]
+
+
 def render_static_status(
     kind: str,
     *,
