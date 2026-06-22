@@ -2,6 +2,23 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Mobile dynamic-viewport guard: size the app shell to the *visible* area so the
+   bottom isn't clipped under the browser toolbar (100vh includes the retracted
+   toolbar on mobile) or the home indicator. Belt-and-suspenders behind the
+   per-component h-[100dvh] / safe-area fixes; falls back for older engines. */
+html,
+body,
+#root {
+  min-height: 100dvh;
+}
+@supports not (height: 100dvh) {
+  html,
+  body,
+  #root {
+    min-height: -webkit-fill-available;
+  }
+}
+
 @font-face {
   font-family: 'Upheaval Pro';
   src: url(/assets/fonts/upheaval_pro.ttf);

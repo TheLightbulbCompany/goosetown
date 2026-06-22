@@ -275,7 +275,7 @@ export default function App() {
   }
 
   return (
-    <main className="relative flex flex-col h-screen w-screen overflow-hidden bg-clay-900 font-body">
+    <main className="relative flex flex-col h-[100dvh] w-screen overflow-hidden bg-clay-900 font-body">
       <TownNav />
 
       <div className="relative flex-1 overflow-hidden">
