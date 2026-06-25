@@ -230,7 +230,7 @@ export function Landing() {
 
           <div
             aria-hidden
-            className="pointer-events-none absolute bottom-6 left-1/2 -translate-x-1/2 text-center text-xs tracking-widest uppercase text-clay-100 [text-shadow:0_1px_0_rgba(24,20,37,0.9)]"
+            className="pointer-events-none absolute bottom-[calc(1.5rem+env(safe-area-inset-bottom))] left-1/2 -translate-x-1/2 text-center text-xs tracking-widest uppercase text-clay-100 [text-shadow:0_1px_0_rgba(24,20,37,0.9)]"
           >
             <div>scroll — a day in town</div>
             <div className="landing-scroll-cue mt-1 text-lg">▾</div>
@@ -338,7 +338,7 @@ export function Landing() {
             </div>
           </div>
 
-          <footer className="mt-20 pb-6 text-center text-xs text-clay-300 [text-shadow:0_1px_0_rgba(24,20,37,0.9)]">
+          <footer className="mt-20 pb-[calc(1.5rem+env(safe-area-inset-bottom))] text-center text-xs text-clay-300 [text-shadow:0_1px_0_rgba(24,20,37,0.9)]">
             GooseTown is built on{' '}
             <a
               href="https://github.com/openclaw/openclaw"
