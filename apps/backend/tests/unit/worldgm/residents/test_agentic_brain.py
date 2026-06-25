@@ -643,3 +643,18 @@ def test_dialogue_prompt_includes_disagreeableness_for_contrarian():
     )
     prompt = build_dialogue_prompt(ctx, {"action": "say", "_conv_id": "c1"})
     assert "hold your ground" in prompt.lower() or "don't fold" in prompt.lower()
+
+
+def test_dialogue_prompt_includes_disagreeableness_in_opening_branch():
+    """Opening (chat, no active_conversation) branch must wire _disagreeableness_instruction."""
+    from worldgm.residents.agentic_brain import DecisionContext, build_dialogue_prompt
+    ctx = DecisionContext(
+        name="dwight", display_name="Dwight Schrute", personality="beet farmer",
+        traits=("intense",), location="cafe", location_context="town",
+        nearby=[{"agent_id": "a1", "display_name": "LeBron James"}],
+        active_conversation=None,
+        pending_messages=[], available_activities=[], legal_actions=frozenset({"chat"}),
+        voice="clipped", disagreeableness=5,
+    )
+    prompt = build_dialogue_prompt(ctx, {"action": "chat", "_agent_id": "a1", "target": "LeBron James"})
+    assert "hold your ground" in prompt.lower() or "disagree" in prompt.lower()
