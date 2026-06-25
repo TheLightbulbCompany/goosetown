@@ -87,7 +87,7 @@ _SOCIAL_GOAL_EVERY_N = int(os.environ.get("WORLDGM_SOCIAL_GOAL_EVERY_N", "10"))
 # lore at most this often (one Nova-Lite call town-wide). Gated on
 # TOWN_LORE_ENABLED. Default 30 min keeps the cost negligible.
 TOWN_LORE_ENABLED = settings.TOWN_LORE_ENABLED
-_LORE_CYCLE_MS = int(os.environ.get("WORLDGM_LORE_CYCLE_MIN", "30")) * 60_000
+_LORE_CYCLE_MS = max(1, int(os.environ.get("WORLDGM_LORE_CYCLE_MIN", "30"))) * 60_000
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -394,7 +394,7 @@ async def _tick_one_resident(state: GmState, name: str, handle) -> None:
 
             store = memory_store_from_env()
             if store is not None:
-                runtime.social_goal = await generate_social_goal(
+                goal = await generate_social_goal(
                     getattr(state, "model_lite", None),
                     store,
                     agent_id,
@@ -402,7 +402,9 @@ async def _tick_one_resident(state: GmState, name: str, handle) -> None:
                     "",  # relationship_summary: best-effort empty; grounding via self-reflections
                     _now_iso(),
                 )
-                runtime.ticks_since_social_goal = 0
+                if goal:
+                    runtime.social_goal = goal
+                runtime.ticks_since_social_goal = 0  # reset regardless, to bound cost even on a failed/blank gen
         except Exception:
             logger.exception("Periodic social-goal regeneration failed for %s; continuing", name)
 

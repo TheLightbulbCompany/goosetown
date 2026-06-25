@@ -586,6 +586,40 @@ async def test_social_goal_counter_not_reset_when_store_is_none(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_social_goal_blank_return_preserves_prior_goal(monkeypatch):
+    """When generate_social_goal returns "" (transient Nova hiccup), the prior
+    runtime.social_goal must NOT be wiped, but ticks_since_social_goal IS reset
+    to 0 (cost bound preserved — no retry-storm on persistent blanks)."""
+    import worldgm.__main__ as main_mod
+
+    monkeypatch.setattr(main_mod, "step_resident_brain", AsyncMock())
+    _patch_settings(monkeypatch, _fake_settings(social_goals=True))
+    fake_store = object()
+    goal_calls = _install_social_goal_fakes(monkeypatch, store_value=fake_store, goal_return="")
+
+    handle = _FakeHandle(persona=_persona("ada"), daemon=_connected_daemon())
+    handle.config = SimpleNamespace(agent_id="agent-uuid-sg-blank")
+    state = _state_with_residents({"ada": handle})
+
+    from worldgm.residents.behavior import ResidentRuntime
+
+    rt = ResidentRuntime(name="ada", location="plaza", state="idle", idle_ticks=0, hangout="plaza")
+    rt.social_goal = "old goal"
+    rt.ticks_since_social_goal = 10  # == _SOCIAL_GOAL_EVERY_N default
+    state.resident_runtimes["ada"] = rt
+
+    await main_mod._tick_one_resident(state, "ada", handle)
+
+    assert len(goal_calls) == 1, "generate_social_goal should have been called"
+    assert rt.social_goal == "old goal", (
+        "prior social_goal must be preserved when generate_social_goal returns ''"
+    )
+    assert rt.ticks_since_social_goal == 0, (
+        "ticks_since_social_goal must be reset to 0 even on a blank/failed gen (cost bound)"
+    )
+
+
+@pytest.mark.asyncio
 async def test_social_goal_injected_into_status_before_brain_step(monkeypatch):
     """runtime.social_goal is always injected into status['social_goal'] BEFORE
     the brain step, regardless of flag state."""
