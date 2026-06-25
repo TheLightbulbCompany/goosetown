@@ -679,3 +679,25 @@ def test_dialogue_prompt_grounds_in_real_events_and_bans_invention():
     assert "Taylor Swift arrived at the cafe" in prompt          # real event surfaced
     assert "do not invent" in prompt.lower()                     # invention banned
     assert "cafe" in prompt.lower()                              # location grounded
+
+
+# ---------------------------------------------------------------------------
+# Task 4: end-pressure in decision prompt
+# ---------------------------------------------------------------------------
+
+
+def test_decision_prompt_adds_end_pressure_in_conversation():
+    from worldgm.residents.agentic_brain import build_decision_context
+    from worldgm.residents.personas import Persona
+    persona = Persona(name="x", display_name="X", personality="p", appearance="a",
+                      traits=("t",), hangout="plaza")
+    status = {"location": "cafe", "location_context": "town",
+              "active_conversation": {"conv_id": "c1", "participants": ["X", "Y"],
+                  "turns": [{"speaker": "X", "text": "hi"}, {"speaker": "Y", "text": "hi"},
+                            {"speaker": "X", "text": "ok"}, {"speaker": "Y", "text": "sure"},
+                            {"speaker": "X", "text": "yeah"}]},
+              "nearby": [{"agent_id": "a2", "name": "Y"}]}
+    from worldgm.residents.agentic_brain import build_prompt
+    prompt = build_prompt(build_decision_context(persona, status))
+    assert "5 turns" in prompt or "made your point" in prompt.lower()
+    assert "end" in prompt.lower()

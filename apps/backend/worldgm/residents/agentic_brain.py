@@ -402,6 +402,13 @@ def build_prompt(ctx: DecisionContext) -> str:
                 "Acknowledge them and answer naturally, like a resident talking "
                 "to a curious visitor — stay in character."
             )
+        n_turns = len(turns)
+        if n_turns >= 4:
+            lines.append(
+                f"This exchange has run {n_turns} turns. People make their point and move on — they don't "
+                "agree back and forth forever. If you've said what you came to say (or it's going in circles), "
+                "choose 'end'."
+            )
 
     if ctx.available_activities:
         lines.append("Things you can do here: " + ", ".join(ctx.available_activities) + ".")
