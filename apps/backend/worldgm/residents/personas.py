@@ -18,6 +18,10 @@ class Persona:
     hangout: str  # the town location they gravitate to
     sleep_hour: int = 22  # UTC hour they go to sleep (0-23)
     wake_hour: int = 6  # UTC hour they wake up (0-23)
+    # 1 = warm/agreeable, 5 = constitutionally contrarian. Skew the cast toward
+    # neutral/contrarian: a uniformly-agreeable population is the worst config
+    # for believable conversation (see 2026-06-24 design, §4.2).
+    disagreeableness: int = 3
 
     # ── Character bible (optional) ──────────────────────────────────────────
     # Richer voice fields that turn a one-line logline into a performable
@@ -32,7 +36,6 @@ class Persona:
     # Seeds relationship colour the affinity score can't carry on its own.
     opinions: tuple[tuple[str, str], ...] = ()
     current_life: str = ""  # what's on their mind right now (fresh conversation fuel)
-    sample_lines: tuple[str, ...] = ()  # few-shot voice anchors — the single biggest lever
 
 
 # ── The full resident cast (Phase 2a) ───────────────────────────────────────
