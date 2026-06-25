@@ -341,9 +341,7 @@ async def test_reflection_counter_not_reset_when_store_is_none(monkeypatch):
 
     fake_memory_mod = types.ModuleType("worldgm.residents.memory_store")
     fake_memory_mod.memory_store_from_env = lambda: None  # store is None
-    monkeypatch.setitem(
-        __import__("sys").modules, "worldgm.residents.memory_store", fake_memory_mod
-    )
+    monkeypatch.setitem(__import__("sys").modules, "worldgm.residents.memory_store", fake_memory_mod)
 
     reflection_called = []
 
@@ -354,16 +352,13 @@ async def test_reflection_counter_not_reset_when_store_is_none(monkeypatch):
         return 0
 
     fake_reflection_mod.synthesize_reflection = fake_synthesize
-    monkeypatch.setitem(
-        __import__("sys").modules, "worldgm.residents.reflection", fake_reflection_mod
-    )
+    monkeypatch.setitem(__import__("sys").modules, "worldgm.residents.reflection", fake_reflection_mod)
 
     import core.config  # noqa: F401 — ensure importable; patch settings attr directly
 
     monkeypatch.setattr("core.config.settings", fake_settings, raising=False)
 
     # Re-patch via the module reference _tick_one_resident actually uses.
-    import importlib
     import sys
 
     core_config_mod = sys.modules.get("core.config")
@@ -408,7 +403,8 @@ async def test_reflection_counter_reset_when_store_is_present(monkeypatch):
     # RESIDENT_SOCIAL_GOALS_ENABLED=False isolates this test to the Phase-2 path.
     fake_settings = SimpleNamespace(RESIDENT_MEMORY_ENABLED=True, RESIDENT_SOCIAL_GOALS_ENABLED=False)
 
-    import types, sys
+    import sys
+    import types
 
     fake_store = object()  # truthy non-None store
     fake_memory_mod = types.ModuleType("worldgm.residents.memory_store")
@@ -449,9 +445,7 @@ async def test_reflection_counter_reset_when_store_is_present(monkeypatch):
     await main_mod._tick_one_resident(state, "ada", handle)
 
     assert reflection_called == [True], "synthesize_reflection should have been called once"
-    assert rt.memories_since_reflection == 0, (
-        "memories_since_reflection should be 0 after successful synthesis"
-    )
+    assert rt.memories_since_reflection == 0, "memories_since_reflection should be 0 after successful synthesis"
 
 
 # ---------------------------------------------------------------------------
@@ -475,7 +469,8 @@ def _patch_settings(monkeypatch, fake_settings):
 
 
 def _install_social_goal_fakes(monkeypatch, store_value, goal_return: str = "find a debate partner"):
-    import types, sys
+    import sys
+    import types
 
     fake_memory_mod = types.ModuleType("worldgm.residents.memory_store")
     fake_memory_mod.memory_store_from_env = lambda: store_value
@@ -611,9 +606,7 @@ async def test_social_goal_blank_return_preserves_prior_goal(monkeypatch):
     await main_mod._tick_one_resident(state, "ada", handle)
 
     assert len(goal_calls) == 1, "generate_social_goal should have been called"
-    assert rt.social_goal == "old goal", (
-        "prior social_goal must be preserved when generate_social_goal returns ''"
-    )
+    assert rt.social_goal == "old goal", "prior social_goal must be preserved when generate_social_goal returns ''"
     assert rt.ticks_since_social_goal == 0, (
         "ticks_since_social_goal must be reset to 0 even on a blank/failed gen (cost bound)"
     )

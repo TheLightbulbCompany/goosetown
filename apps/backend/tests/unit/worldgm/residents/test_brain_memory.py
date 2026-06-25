@@ -59,8 +59,12 @@ class _FakeStore:
 
     def put(self, agent_id, subject, kind, text, importance, created_at, source_ids=()):
         item = {
-            "agentId": agent_id, "subject": subject, "kind": kind, "text": text,
-            "importance": importance, "createdAt": created_at,
+            "agentId": agent_id,
+            "subject": subject,
+            "kind": kind,
+            "text": text,
+            "importance": importance,
+            "createdAt": created_at,
         }
         self.puts.append(item)
         return item
@@ -116,7 +120,9 @@ def _conv(turns=None):
     return {
         "conv_id": "c1",
         "participants": ["Ada Lovelace", _OTHER_NAME],
-        "turns": turns if turns is not None else [
+        "turns": turns
+        if turns is not None
+        else [
             {"speaker": _OTHER_NAME, "text": "A pattern?", "speakerType": "agent"},
             {"speaker": "Ada Lovelace", "text": "Indeed.", "speakerType": "agent"},
         ],
@@ -130,14 +136,21 @@ def _enable_memory(monkeypatch, store, town_service):
 
 async def _step(daemon, runtime, status, model, **kw):
     return await step_resident_brain(
-        daemon, runtime, status, model=model, persona=_PERSONA,
-        now_utc_hour=12, agent_id=_MY_ID, **kw,
+        daemon,
+        runtime,
+        status,
+        model=model,
+        persona=_PERSONA,
+        now_utc_hour=12,
+        agent_id=_MY_ID,
+        **kw,
     )
 
 
 # ---------------------------------------------------------------------------
 # (d) flag OFF → no memory writes, behavior unchanged
 # ---------------------------------------------------------------------------
+
 
 async def test_flag_off_writes_no_memory(monkeypatch):
     monkeypatch.setattr(settings, "RESIDENT_MEMORY_ENABLED", False)
@@ -160,16 +173,19 @@ async def test_flag_off_writes_no_memory(monkeypatch):
 # (b1) while IN a conversation → transcript cached, no residue yet
 # ---------------------------------------------------------------------------
 
+
 async def test_in_conversation_caches_transcript_no_residue(monkeypatch):
     store = _FakeStore()
     ts = _FakeTownService()
     _enable_memory(monkeypatch, store, ts)
     conv = _conv()
     # in conversation + a pending message so the brain proceeds to the LLM path
-    d = _FakeDaemon(_state(
-        active_conversation=conv,
-        pending_messages=[{"from": _OTHER_NAME, "text": "A pattern?"}],
-    ))
+    d = _FakeDaemon(
+        _state(
+            active_conversation=conv,
+            pending_messages=[{"from": _OTHER_NAME, "text": "A pattern?"}],
+        )
+    )
     model = _FakeModel('{"action": "say", "message": "Indeed, look closer."}')
     rt = _runtime()
     await _step(d, rt, read_status(d), model, town_service=ts)
@@ -182,6 +198,7 @@ async def test_in_conversation_caches_transcript_no_residue(monkeypatch):
 # ---------------------------------------------------------------------------
 # (b2)/(c) conversation just ended → reflect once, not twice
 # ---------------------------------------------------------------------------
+
 
 async def test_conversation_end_triggers_one_reflection(monkeypatch):
     store = _FakeStore()
@@ -225,6 +242,7 @@ async def test_conversation_end_triggers_one_reflection(monkeypatch):
 # reflection resolves other_id from nearby when not given by transcript
 # ---------------------------------------------------------------------------
 
+
 async def test_reflection_resolves_other_from_nearby(monkeypatch):
     store = _FakeStore()
     ts = _FakeTownService()
@@ -253,11 +271,16 @@ async def test_reflection_resolves_other_from_nearby(monkeypatch):
 # (e) recall injected when an addressee with prior memories is present
 # ---------------------------------------------------------------------------
 
+
 async def test_recall_injected_into_parsed_status(monkeypatch):
     seeded = {
         _OTHER_NAME: [
-            {"kind": "observation", "text": "He fixates on resonance.",
-             "createdAt": "2026-06-25T11:00:00+00:00", "importance": 7},
+            {
+                "kind": "observation",
+                "text": "He fixates on resonance.",
+                "createdAt": "2026-06-25T11:00:00+00:00",
+                "importance": 7,
+            },
         ]
     }
     store = _FakeStore(seeded_about=seeded)
@@ -305,6 +328,7 @@ async def test_recall_skipped_when_no_one_nearby(monkeypatch):
 # ---------------------------------------------------------------------------
 # memory wiring is best-effort: a reflect failure does not abort the tick
 # ---------------------------------------------------------------------------
+
 
 async def test_reflection_failure_does_not_break_tick(monkeypatch):
     store = _FakeStore()

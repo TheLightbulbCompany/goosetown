@@ -599,11 +599,12 @@ async def test_decide_and_speak_move_skips_dialogue_model():
 
 def test_dialogue_temperature_is_deterministic_and_varies():
     from worldgm.residents.agentic_brain import _dialogue_temperature
+
     a = _dialogue_temperature("dwight")
     b = _dialogue_temperature("lebron")
-    assert _dialogue_temperature("dwight") == a   # stable across calls (hashlib, not salted hash)
+    assert _dialogue_temperature("dwight") == a  # stable across calls (hashlib, not salted hash)
     assert 0.8 <= a <= 1.0 and 0.8 <= b <= 1.0
-    assert a != b                                  # the cast doesn't share one temperature
+    assert a != b  # the cast doesn't share one temperature
 
 
 # ---------------------------------------------------------------------------
@@ -613,12 +614,20 @@ def test_dialogue_temperature_is_deterministic_and_varies():
 
 def test_dialogue_prompt_has_no_sample_lines_section():
     from worldgm.residents.agentic_brain import DecisionContext, build_dialogue_prompt
+
     ctx = DecisionContext(
-        name="dwight", display_name="Dwight Schrute", personality="beet farmer",
-        traits=("intense",), location="cafe", location_context="town",
+        name="dwight",
+        display_name="Dwight Schrute",
+        personality="beet farmer",
+        traits=("intense",),
+        location="cafe",
+        location_context="town",
         nearby=[{"agent_id": "a1", "display_name": "LeBron James"}],
-        active_conversation=None, pending_messages=[], available_activities=[],
-        legal_actions=frozenset({"chat"}), voice="clipped, declarative",
+        active_conversation=None,
+        pending_messages=[],
+        available_activities=[],
+        legal_actions=frozenset({"chat"}),
+        voice="clipped, declarative",
     )
     prompt = build_dialogue_prompt(ctx, {"action": "chat", "_agent_id": "a1", "target": "LeBron James"})
     assert "how" in prompt.lower()  # voice still rendered
@@ -627,6 +636,7 @@ def test_dialogue_prompt_has_no_sample_lines_section():
 
 def test_decision_context_has_no_sample_lines_field():
     from worldgm.residents.agentic_brain import DecisionContext
+
     assert "sample_lines" not in DecisionContext.__dataclass_fields__
 
 
@@ -637,6 +647,7 @@ def test_decision_context_has_no_sample_lines_field():
 
 def test_disagreeableness_instruction_varies_by_level():
     from worldgm.residents.agentic_brain import _disagreeableness_instruction
+
     hi = _disagreeableness_instruction(5)
     lo = _disagreeableness_instruction(1)
     assert hi != lo
@@ -646,14 +657,25 @@ def test_disagreeableness_instruction_varies_by_level():
 
 def test_dialogue_prompt_includes_disagreeableness_for_contrarian():
     from worldgm.residents.agentic_brain import DecisionContext, build_dialogue_prompt
+
     ctx = DecisionContext(
-        name="dwight", display_name="Dwight Schrute", personality="beet farmer",
-        traits=("intense",), location="cafe", location_context="town",
+        name="dwight",
+        display_name="Dwight Schrute",
+        personality="beet farmer",
+        traits=("intense",),
+        location="cafe",
+        location_context="town",
         nearby=[{"agent_id": "a1", "display_name": "LeBron James"}],
-        active_conversation={"conv_id": "c1", "participants": ["Dwight Schrute", "LeBron James"],
-                             "turns": [{"speaker": "LeBron James", "text": "We should all just get along."}]},
-        pending_messages=[], available_activities=[], legal_actions=frozenset({"say", "end"}),
-        voice="clipped", disagreeableness=5,
+        active_conversation={
+            "conv_id": "c1",
+            "participants": ["Dwight Schrute", "LeBron James"],
+            "turns": [{"speaker": "LeBron James", "text": "We should all just get along."}],
+        },
+        pending_messages=[],
+        available_activities=[],
+        legal_actions=frozenset({"say", "end"}),
+        voice="clipped",
+        disagreeableness=5,
     )
     prompt = build_dialogue_prompt(ctx, {"action": "say", "_conv_id": "c1"})
     assert "hold your ground" in prompt.lower() or "don't fold" in prompt.lower()
@@ -662,13 +684,21 @@ def test_dialogue_prompt_includes_disagreeableness_for_contrarian():
 def test_dialogue_prompt_includes_disagreeableness_in_opening_branch():
     """Opening (chat, no active_conversation) branch must wire _disagreeableness_instruction."""
     from worldgm.residents.agentic_brain import DecisionContext, build_dialogue_prompt
+
     ctx = DecisionContext(
-        name="dwight", display_name="Dwight Schrute", personality="beet farmer",
-        traits=("intense",), location="cafe", location_context="town",
+        name="dwight",
+        display_name="Dwight Schrute",
+        personality="beet farmer",
+        traits=("intense",),
+        location="cafe",
+        location_context="town",
         nearby=[{"agent_id": "a1", "display_name": "LeBron James"}],
         active_conversation=None,
-        pending_messages=[], available_activities=[], legal_actions=frozenset({"chat"}),
-        voice="clipped", disagreeableness=5,
+        pending_messages=[],
+        available_activities=[],
+        legal_actions=frozenset({"chat"}),
+        voice="clipped",
+        disagreeableness=5,
     )
     prompt = build_dialogue_prompt(ctx, {"action": "chat", "_agent_id": "a1", "target": "LeBron James"})
     assert "hold your ground" in prompt.lower() or "disagree" in prompt.lower()
@@ -681,18 +711,26 @@ def test_dialogue_prompt_includes_disagreeableness_in_opening_branch():
 
 def test_dialogue_prompt_grounds_in_real_events_and_bans_invention():
     from worldgm.residents.agentic_brain import DecisionContext, build_dialogue_prompt
+
     ctx = DecisionContext(
-        name="lebron", display_name="LeBron James", personality="legend",
-        traits=("driven",), location="cafe", location_context="town",
+        name="lebron",
+        display_name="LeBron James",
+        personality="legend",
+        traits=("driven",),
+        location="cafe",
+        location_context="town",
         nearby=[{"agent_id": "a1", "display_name": "Dwight Schrute"}],
-        active_conversation=None, pending_messages=[], available_activities=[],
-        legal_actions=frozenset({"chat"}), voice="confident",
+        active_conversation=None,
+        pending_messages=[],
+        available_activities=[],
+        legal_actions=frozenset({"chat"}),
+        voice="confident",
         recent_events=["Taylor Swift arrived at the cafe", "You finished a workout"],
     )
     prompt = build_dialogue_prompt(ctx, {"action": "chat", "_agent_id": "a1", "target": "Dwight Schrute"})
-    assert "Taylor Swift arrived at the cafe" in prompt          # real event surfaced
-    assert "do not invent" in prompt.lower()                     # invention banned
-    assert "cafe" in prompt.lower()                              # location grounded
+    assert "Taylor Swift arrived at the cafe" in prompt  # real event surfaced
+    assert "do not invent" in prompt.lower()  # invention banned
+    assert "cafe" in prompt.lower()  # location grounded
 
 
 # ---------------------------------------------------------------------------
@@ -703,15 +741,26 @@ def test_dialogue_prompt_grounds_in_real_events_and_bans_invention():
 def test_decision_prompt_adds_end_pressure_in_conversation():
     from worldgm.residents.agentic_brain import build_decision_context
     from worldgm.residents.personas import Persona
-    persona = Persona(name="x", display_name="X", personality="p", appearance="a",
-                      traits=("t",), hangout="plaza")
-    status = {"location": "cafe", "location_context": "town",
-              "active_conversation": {"conv_id": "c1", "participants": ["X", "Y"],
-                  "turns": [{"speaker": "X", "text": "hi"}, {"speaker": "Y", "text": "hi"},
-                            {"speaker": "X", "text": "ok"}, {"speaker": "Y", "text": "sure"},
-                            {"speaker": "X", "text": "yeah"}]},
-              "nearby": [{"agent_id": "a2", "name": "Y"}]}
+
+    persona = Persona(name="x", display_name="X", personality="p", appearance="a", traits=("t",), hangout="plaza")
+    status = {
+        "location": "cafe",
+        "location_context": "town",
+        "active_conversation": {
+            "conv_id": "c1",
+            "participants": ["X", "Y"],
+            "turns": [
+                {"speaker": "X", "text": "hi"},
+                {"speaker": "Y", "text": "hi"},
+                {"speaker": "X", "text": "ok"},
+                {"speaker": "Y", "text": "sure"},
+                {"speaker": "X", "text": "yeah"},
+            ],
+        },
+        "nearby": [{"agent_id": "a2", "name": "Y"}],
+    }
     from worldgm.residents.agentic_brain import build_prompt
+
     prompt = build_prompt(build_decision_context(persona, status))
     assert "5 turns" in prompt or "made your point" in prompt.lower()
     assert "end" in prompt.lower()
@@ -876,9 +925,14 @@ def test_decision_context_has_social_goal_field_defaulting_to_empty():
 def test_build_decision_context_copies_role_from_persona():
     """build_decision_context must copy role=persona.role into the context."""
     from worldgm.residents.personas import Persona
+
     persona = Persona(
-        name="test_role", display_name="Test Role",
-        personality="p", appearance="a", traits=("t",), hangout="plaza",
+        name="test_role",
+        display_name="Test Role",
+        personality="p",
+        appearance="a",
+        traits=("t",),
+        hangout="plaza",
         role="quiet experimenter",
     )
     ctx = build_decision_context(persona, _status())
@@ -907,9 +961,14 @@ def test_build_decision_context_social_goal_defaults_empty():
 def test_build_prompt_renders_role_and_social_goal_when_both_set():
     """build_prompt must render role, social_goal, and the faction-gravity nudge when both are set."""
     from worldgm.residents.personas import Persona
+
     persona = Persona(
-        name="test_role", display_name="Test Role",
-        personality="p", appearance="a", traits=("t",), hangout="plaza",
+        name="test_role",
+        display_name="Test Role",
+        personality="p",
+        appearance="a",
+        traits=("t",),
+        hangout="plaza",
         role="town philosopher",
     )
     status = _status(social_goal="start a debate with anyone who'll bite")
@@ -924,9 +983,14 @@ def test_build_prompt_renders_role_and_social_goal_when_both_set():
 def test_build_prompt_renders_role_without_social_goal():
     """build_prompt must render role + nudge even when social_goal is empty."""
     from worldgm.residents.personas import Persona
+
     persona = Persona(
-        name="test_role2", display_name="Test Role Two",
-        personality="p", appearance="a", traits=("t",), hangout="plaza",
+        name="test_role2",
+        display_name="Test Role Two",
+        personality="p",
+        appearance="a",
+        traits=("t",),
+        hangout="plaza",
         role="restless wanderer",
     )
     ctx = build_decision_context(persona, _status())

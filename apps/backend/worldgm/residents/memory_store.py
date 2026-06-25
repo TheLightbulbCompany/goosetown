@@ -1,5 +1,6 @@
 """Subject-indexed resident memory store (DynamoDB). No embeddings — retrieval is
 recency·importance over a subject GSI. All methods best-effort at the call site."""
+
 from __future__ import annotations
 
 import datetime as _dt
@@ -27,9 +28,14 @@ class MemoryStore:
 
     def put(self, agent_id, subject, kind, text, importance, created_at, source_ids=()):
         item = {
-            "agentId": agent_id, "createdAt": created_at, "memoryId": str(uuid.uuid4()),
-            "subject": subject, "kind": kind, "text": text,
-            "importance": int(importance), "reflected": False,
+            "agentId": agent_id,
+            "createdAt": created_at,
+            "memoryId": str(uuid.uuid4()),
+            "subject": subject,
+            "kind": kind,
+            "text": text,
+            "importance": int(importance),
+            "reflected": False,
             "sourceIds": list(source_ids),
         }
         self._t.put_item(Item=item)
@@ -39,7 +45,8 @@ class MemoryStore:
         resp = self._t.query(
             KeyConditionExpression="agentId = :a",
             ExpressionAttributeValues={":a": agent_id},
-            ScanIndexForward=False, Limit=limit,
+            ScanIndexForward=False,
+            Limit=limit,
         )
         return resp.get("Items", [])
 
@@ -66,6 +73,7 @@ _store_cache: dict[str, "MemoryStore"] = {}
 
 def memory_store_from_env():
     from core.config import settings
+
     name = settings.RESIDENT_MEMORIES_TABLE
     if not name:
         return None
@@ -73,6 +81,7 @@ def memory_store_from_env():
     if cached is not None:
         return cached
     import boto3
+
     store = MemoryStore(boto3.resource("dynamodb").Table(name))
     _store_cache[name] = store
     return store

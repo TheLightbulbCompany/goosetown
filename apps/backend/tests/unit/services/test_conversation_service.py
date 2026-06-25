@@ -3,7 +3,6 @@
 from core.services.town_agent_ws import TownAgentWsManager
 from core.services.town_service import TownService
 
-
 # ---------------------------------------------------------------------------
 # Task 4: env-tunable turn cap
 # ---------------------------------------------------------------------------
@@ -12,12 +11,15 @@ from core.services.town_service import TownService
 def test_max_conversation_turns_reads_env(monkeypatch):
     monkeypatch.setenv("CONVERSATION_MAX_TURNS", "6")
     import importlib
+
     from core.services import conversation_service
+
     importlib.reload(conversation_service)
     assert conversation_service._MAX_CONVERSATION_TURNS == 6
     monkeypatch.delenv("CONVERSATION_MAX_TURNS")
     importlib.reload(conversation_service)
     assert conversation_service._MAX_CONVERSATION_TURNS == 12
+
 
 # ---------------------------------------------------------------------------
 # Helpers

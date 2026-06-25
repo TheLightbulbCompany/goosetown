@@ -633,7 +633,9 @@ async def generate_dialogue(model, ctx: DecisionContext, action: dict) -> str:
     try:
         async with _get_decide_semaphore():
             raw = await asyncio.to_thread(
-                model.sample_text, prompt, max_tokens=_DIALOGUE_MAX_TOKENS,
+                model.sample_text,
+                prompt,
+                max_tokens=_DIALOGUE_MAX_TOKENS,
                 temperature=_dialogue_temperature(ctx.name),
             )
     except Exception:

@@ -12,6 +12,7 @@ Helper
 ------
 _extract_json(raw: str) -> dict | None
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -32,6 +33,7 @@ _TEMPERATURE = 0.3
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+
 def _extract_json(raw: str) -> dict | None:
     """Tolerant JSON extraction: finds first '{' … last '}' and parses that slice."""
     try:
@@ -49,6 +51,7 @@ def _clamp(value, lo, hi):
 # ---------------------------------------------------------------------------
 # recall_about — synchronous, no model call
 # ---------------------------------------------------------------------------
+
 
 def recall_about(store: MemoryStore, my_id: str, other_name: str, now_iso: str, k: int = 3) -> str:
     """Return a rendered string of the top-k memories about other_name, or "" if none."""
@@ -79,6 +82,7 @@ def recall_self(store: MemoryStore, my_id: str, now_iso: str, k: int = 2) -> str
 # reflect_on_conversation — one Nova-Lite call
 # ---------------------------------------------------------------------------
 
+
 async def reflect_on_conversation(
     model,
     store: MemoryStore,
@@ -90,9 +94,7 @@ async def reflect_on_conversation(
     now_iso: str,
 ) -> bool:
     """Write one observation memory + relationship update. Returns True iff written."""
-    transcript_text = "\n".join(
-        f"{turn['speaker']}: {turn['text']}" for turn in transcript
-    )
+    transcript_text = "\n".join(f"{turn['speaker']}: {turn['text']}" for turn in transcript)
     prompt = (
         f"You just had a conversation with {other_name}. Reflect on it.\n\n"
         f"Transcript:\n{transcript_text}\n\n"
@@ -101,9 +103,7 @@ async def reflect_on_conversation(
         '"affinity_delta": <-10 to 10>, "note": "<short stance label>"}'
     )
     try:
-        raw = await asyncio.to_thread(
-            model.sample_text, prompt, max_tokens=_CONV_MAX_TOKENS, temperature=_TEMPERATURE
-        )
+        raw = await asyncio.to_thread(model.sample_text, prompt, max_tokens=_CONV_MAX_TOKENS, temperature=_TEMPERATURE)
         parsed = _extract_json(raw)
         if not parsed:
             return False
@@ -132,6 +132,7 @@ async def reflect_on_conversation(
 # synthesize_reflection — one Nova-Lite call over unreflected observations
 # ---------------------------------------------------------------------------
 
+
 async def synthesize_reflection(
     model,
     store: MemoryStore,
@@ -154,9 +155,7 @@ async def synthesize_reflection(
         '{"insights": [{"insight": "<text>", "importance": <1-10>}, ...]}'
     )
     try:
-        raw = await asyncio.to_thread(
-            model.sample_text, prompt, max_tokens=_SYNTH_MAX_TOKENS, temperature=_TEMPERATURE
-        )
+        raw = await asyncio.to_thread(model.sample_text, prompt, max_tokens=_SYNTH_MAX_TOKENS, temperature=_TEMPERATURE)
         parsed = _extract_json(raw)
         if not parsed:
             return 0
@@ -186,8 +185,7 @@ async def synthesize_reflection(
                 insight_iso = insight_dt.strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
             else:
                 insight_iso = insight_dt.isoformat()
-            store.put(my_id, "self", "reflection", text, importance, insight_iso,
-                      source_ids=source_ids)
+            store.put(my_id, "self", "reflection", text, importance, insight_iso, source_ids=source_ids)
             count += 1
         except Exception:
             _log.exception("synthesize_reflection: failed to store insight")

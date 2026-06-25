@@ -11,6 +11,7 @@ Returns a single short-term social aim (≤140 chars, plain text), e.g.
 
 Returns "" on any error or empty output (never propagates).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -59,9 +60,7 @@ async def generate_social_goal(
         ]
         prompt = "\n".join(prompt_parts)
 
-        raw: str = await asyncio.to_thread(
-            model.sample_text, prompt, max_tokens=_MAX_TOKENS, temperature=_TEMPERATURE
-        )
+        raw: str = await asyncio.to_thread(model.sample_text, prompt, max_tokens=_MAX_TOKENS, temperature=_TEMPERATURE)
     except Exception:
         _log.debug("generate_social_goal: failed", exc_info=True)
         return ""
