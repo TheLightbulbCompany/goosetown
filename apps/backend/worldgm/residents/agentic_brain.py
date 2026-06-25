@@ -9,6 +9,7 @@ docs/superpowers/specs/2026-06-05-agentic-resident-brain-design.md.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -42,6 +43,14 @@ _TEMPERATURE = 0.8
 # Slightly hotter for voice/creativity; 160 tokens covers 1-3 sentences with room.
 _DIALOGUE_MAX_TOKENS = 160
 _DIALOGUE_TEMPERATURE = 0.9
+
+
+def _dialogue_temperature(slug: str) -> float:
+    """Stable per-resident temperature in [0.8, 1.0], so the cast doesn't collapse
+    to one phrasing distribution. hashlib (not builtin hash) → stable across procs."""
+    h = int(hashlib.md5(slug.encode()).hexdigest(), 16)
+    return round(0.8 + (h % 5) * 0.05, 2)  # 0.80, 0.85, 0.90, 0.95, 1.00
+
 
 # Cap concurrent Bedrock decisions so 20 residents firing at once don't saturate
 # the small worldgm task's CPU/GIL and starve the in-process daemons' WS loops.
@@ -575,6 +584,7 @@ def build_dialogue_prompt(ctx: DecisionContext, action: dict) -> str:
             f"{ctx.display_name} would say — specific to who you are and your read on them, not a generic "
             f"greeting. {_disagreeableness_instruction(ctx.disagreeableness)}"
         )
+    lines.append("Don't restate your last point or reach for your usual catchphrases — move it forward or land it.")
     lines.append(
         "Talk about what's actually here — what they just said, a real recent event, what's going on in "
         "town. Do NOT invent events, places, projects, or people that aren't above. "
@@ -594,7 +604,8 @@ async def generate_dialogue(model, ctx: DecisionContext, action: dict) -> str:
     try:
         async with _get_decide_semaphore():
             raw = await asyncio.to_thread(
-                model.sample_text, prompt, max_tokens=_DIALOGUE_MAX_TOKENS, temperature=_DIALOGUE_TEMPERATURE
+                model.sample_text, prompt, max_tokens=_DIALOGUE_MAX_TOKENS,
+                temperature=_dialogue_temperature(ctx.name),
             )
     except Exception:
         logger.warning("generate_dialogue: model call failed for %s; using fallback line", ctx.name, exc_info=True)

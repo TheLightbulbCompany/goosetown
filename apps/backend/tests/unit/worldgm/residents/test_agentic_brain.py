@@ -593,6 +593,20 @@ async def test_decide_and_speak_move_skips_dialogue_model():
 
 
 # ---------------------------------------------------------------------------
+# Task 5: per-persona dialogue temperature variance + anti-tic line
+# ---------------------------------------------------------------------------
+
+
+def test_dialogue_temperature_is_deterministic_and_varies():
+    from worldgm.residents.agentic_brain import _dialogue_temperature
+    a = _dialogue_temperature("dwight")
+    b = _dialogue_temperature("lebron")
+    assert _dialogue_temperature("dwight") == a   # stable across calls (hashlib, not salted hash)
+    assert 0.8 <= a <= 1.0 and 0.8 <= b <= 1.0
+    assert a != b                                  # the cast doesn't share one temperature
+
+
+# ---------------------------------------------------------------------------
 # Task 1: sample_lines removal
 # ---------------------------------------------------------------------------
 
