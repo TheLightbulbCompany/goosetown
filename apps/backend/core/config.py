@@ -52,6 +52,10 @@ class Settings:
     RESIDENT_MEMORY_ENABLED: bool = os.environ.get("RESIDENT_MEMORY_ENABLED", "false").lower() == "true"
     RESIDENT_MEMORIES_TABLE: str = os.environ.get("RESIDENT_MEMORIES_TABLE", "")
 
+    # Phase 3: town-level culture. Both default false; prod stays off until a dev soak.
+    RESIDENT_SOCIAL_GOALS_ENABLED: bool = os.environ.get("RESIDENT_SOCIAL_GOALS_ENABLED", "false").lower() == "true"
+    TOWN_LORE_ENABLED: bool = os.environ.get("TOWN_LORE_ENABLED", "false").lower() == "true"
+
     def validate(self) -> None:
         """Validate required env vars. Raises RuntimeError in non-dev environments if critical vars are missing."""
         if self.ENVIRONMENT == "dev":
