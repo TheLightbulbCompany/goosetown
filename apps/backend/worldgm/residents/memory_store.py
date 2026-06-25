@@ -61,10 +61,18 @@ class MemoryStore:
             )
 
 
+_store_cache: dict[str, "MemoryStore"] = {}
+
+
 def memory_store_from_env():
     from core.config import settings
     name = settings.RESIDENT_MEMORIES_TABLE
     if not name:
         return None
+    cached = _store_cache.get(name)
+    if cached is not None:
+        return cached
     import boto3
-    return MemoryStore(boto3.resource("dynamodb").Table(name))
+    store = MemoryStore(boto3.resource("dynamodb").Table(name))
+    _store_cache[name] = store
+    return store
