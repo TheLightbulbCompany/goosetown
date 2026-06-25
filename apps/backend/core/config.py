@@ -47,6 +47,11 @@ class Settings:
     # /town/internal/sprite-event. Empty in the backend itself.
     BACKEND_INTERNAL_URL: str = os.environ.get("BACKEND_INTERNAL_URL", "")
 
+    # Phase 2: persistent resident memory + reflection. Default false; prod stays
+    # off until a dev soak validates Nova-Lite reflection quality.
+    RESIDENT_MEMORY_ENABLED: bool = os.environ.get("RESIDENT_MEMORY_ENABLED", "false").lower() == "true"
+    RESIDENT_MEMORIES_TABLE: str = os.environ.get("RESIDENT_MEMORIES_TABLE", "")
+
     def validate(self) -> None:
         """Validate required env vars. Raises RuntimeError in non-dev environments if critical vars are missing."""
         if self.ENVIRONMENT == "dev":
