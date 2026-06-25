@@ -658,3 +658,24 @@ def test_dialogue_prompt_includes_disagreeableness_in_opening_branch():
     )
     prompt = build_dialogue_prompt(ctx, {"action": "chat", "_agent_id": "a1", "target": "LeBron James"})
     assert "hold your ground" in prompt.lower() or "disagree" in prompt.lower()
+
+
+# ---------------------------------------------------------------------------
+# Task 3: ground dialogue in real world-state + ban invented entities
+# ---------------------------------------------------------------------------
+
+
+def test_dialogue_prompt_grounds_in_real_events_and_bans_invention():
+    from worldgm.residents.agentic_brain import DecisionContext, build_dialogue_prompt
+    ctx = DecisionContext(
+        name="lebron", display_name="LeBron James", personality="legend",
+        traits=("driven",), location="cafe", location_context="town",
+        nearby=[{"agent_id": "a1", "display_name": "Dwight Schrute"}],
+        active_conversation=None, pending_messages=[], available_activities=[],
+        legal_actions=frozenset({"chat"}), voice="confident",
+        recent_events=["Taylor Swift arrived at the cafe", "You finished a workout"],
+    )
+    prompt = build_dialogue_prompt(ctx, {"action": "chat", "_agent_id": "a1", "target": "Dwight Schrute"})
+    assert "Taylor Swift arrived at the cafe" in prompt          # real event surfaced
+    assert "do not invent" in prompt.lower()                     # invention banned
+    assert "cafe" in prompt.lower()                              # location grounded

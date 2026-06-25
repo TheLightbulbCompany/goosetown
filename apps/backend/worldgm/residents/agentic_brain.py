@@ -548,6 +548,11 @@ def build_dialogue_prompt(ctx: DecisionContext, action: dict) -> str:
     if ctx.active_storyline:
         lines.append(f"Happening around you: {ctx.active_storyline}")
 
+    lines.append(f"Right now: you're at the {ctx.location}, feeling {ctx.mood}.")
+    if ctx.recent_events:
+        lines.append("What's actually happened lately:")
+        lines += [f"  - {e}" for e in ctx.recent_events]
+
     lines.append("")
     if history:
         lines.append(f"You're mid-conversation with {addressee_name}. So far:")
@@ -564,6 +569,8 @@ def build_dialogue_prompt(ctx: DecisionContext, action: dict) -> str:
             f"greeting. {_disagreeableness_instruction(ctx.disagreeableness)}"
         )
     lines.append(
+        "Talk about what's actually here — what they just said, a real recent event, what's going on in "
+        "town. Do NOT invent events, places, projects, or people that aren't above. "
         "Reply with ONLY the words you speak — 1-3 sentences, no name prefix, no quotation marks, no stage directions."
     )
     return "\n".join(lines)
