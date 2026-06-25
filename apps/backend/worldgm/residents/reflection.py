@@ -14,6 +14,7 @@ _extract_json(raw: str) -> dict | None
 from __future__ import annotations
 
 import asyncio
+import datetime
 import json
 import logging
 
@@ -128,7 +129,7 @@ async def synthesize_reflection(
     if len(unreflected) < min_new:
         return 0
 
-    snippets = "\n".join(f"- [{m['subject']}] {m['text']}" for m in unreflected)
+    snippets = "\n".join(f"- [{m.get('subject', '?')}] {m['text']}" for m in unreflected)
     prompt = (
         "Here are recent observations you have not yet reflected on:\n"
         f"{snippets}\n\n"
@@ -153,14 +154,23 @@ async def synthesize_reflection(
     source_ids = [m["memoryId"] for m in unreflected]
     source_created_ats = [m["createdAt"] for m in unreflected]
 
+    # Parse base time once; add microsecond offsets per insight so each SK is distinct.
+    _use_z = now_iso.endswith("Z")
+    _base_dt = datetime.datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
+
     count = 0
-    for item in insights:
+    for i, item in enumerate(insights):
         try:
             text = str(item.get("insight", "")).strip()
             if not text:
                 continue
             importance = max(6, _clamp(int(item.get("importance", 6)), 1, 10))
-            store.put(my_id, "_reflection", "reflection", text, importance, now_iso,
+            insight_dt = _base_dt + datetime.timedelta(microseconds=i)
+            if _use_z:
+                insight_iso = insight_dt.strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
+            else:
+                insight_iso = insight_dt.isoformat()
+            store.put(my_id, "_reflection", "reflection", text, importance, insight_iso,
                       source_ids=source_ids)
             count += 1
         except Exception:

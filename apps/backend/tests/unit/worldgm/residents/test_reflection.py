@@ -62,6 +62,24 @@ def test_synthesize_reflection_stores_insights_and_marks_sources():
     refl = [m for m in store.recent("me") if m["kind"]=="reflection"]
     assert refl and refl[0]["text"]=="X is exhausting" and refl[0]["importance"]>=6
     assert all(m["reflected"] for m in store.recent("me") if m["kind"]=="observation")
+    assert refl[0].get("sourceIds")
+
+
+def test_synthesize_reflection_distinct_timestamps_for_multiple_insights():
+    """Bug 1 regression: two insights from one call must get distinct createdAt SKs."""
+    store = MemoryStore(FakeTable())
+    for i in range(6): store.put("me","Y","observation",f"obs{i}",5,f"2026-06-25T0{i}:00:00Z")
+    two_insights = json.dumps({"insights":[
+        {"insight":"insight alpha","importance":7},
+        {"insight":"insight beta","importance":8},
+    ]})
+    model = FakeModel(two_insights)
+    n = asyncio.run(reflection.synthesize_reflection(model, store, "me", "2026-06-25T10:00:00Z", min_new=6))
+    assert n == 2
+    refl = [m for m in store.recent("me") if m["kind"]=="reflection"]
+    assert len(refl) == 2, f"Expected 2 reflection rows, got {len(refl)} (SK collision overwrites on real DDB)"
+    created_ats = {m["createdAt"] for m in refl}
+    assert len(created_ats) == 2, f"createdAt values must differ; got {created_ats}"
 
 
 def test_synthesize_reflection_noop_below_threshold():
