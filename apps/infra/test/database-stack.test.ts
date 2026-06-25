@@ -137,6 +137,67 @@ describe("DatabaseStack — ledger table (GooseTown Exchange)", () => {
   });
 });
 
+describe("DatabaseStack — memories table (Phase 2 resident memory)", () => {
+  test("dev memories table exists with correct name, PK and SK", () => {
+    const template = buildTestApp("dev");
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "goosetown-dev-memories",
+      KeySchema: Match.arrayWith([
+        Match.objectLike({ AttributeName: "agentId", KeyType: "HASH" }),
+        Match.objectLike({ AttributeName: "createdAt", KeyType: "RANGE" }),
+      ]),
+      BillingMode: "PAY_PER_REQUEST",
+    });
+  });
+
+  test("prod memories table exists with correct name", () => {
+    const template = buildTestApp("prod");
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "goosetown-prod-memories",
+      BillingMode: "PAY_PER_REQUEST",
+    });
+  });
+
+  test("memories table has agentId-subject-index GSI with PK agentId, SK subject, projection ALL", () => {
+    const template = buildTestApp("dev");
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "goosetown-dev-memories",
+      GlobalSecondaryIndexes: Match.arrayWith([
+        Match.objectLike({
+          IndexName: "agentId-subject-index",
+          KeySchema: Match.arrayWith([
+            Match.objectLike({ AttributeName: "agentId", KeyType: "HASH" }),
+            Match.objectLike({ AttributeName: "subject", KeyType: "RANGE" }),
+          ]),
+          Projection: Match.objectLike({ ProjectionType: "ALL" }),
+        }),
+      ]),
+    });
+  });
+
+  test("prod memories table has PITR enabled", () => {
+    const template = buildTestApp("prod");
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "goosetown-prod-memories",
+      PointInTimeRecoverySpecification: {
+        PointInTimeRecoveryEnabled: true,
+      },
+    });
+  });
+
+  test("dev memories table does NOT have PITR enabled", () => {
+    const template = buildTestApp("dev");
+    const tables = template.findResources("AWS::DynamoDB::Table");
+    const memoriesTable = Object.values(tables).find(
+      (t: any) => t?.Properties?.TableName === "goosetown-dev-memories"
+    ) as any;
+    const pitr =
+      memoriesTable?.Properties?.PointInTimeRecoverySpecification
+        ?.PointInTimeRecoveryEnabled;
+    expect(pitr).toBeFalsy();
+  });
+});
+
 describe("DatabaseStack — provider-subscriptions table (Wave 2 ProviderDirectory)", () => {
   test("dev table exists with correct name, PK and SK", () => {
     const template = buildTestApp("dev");

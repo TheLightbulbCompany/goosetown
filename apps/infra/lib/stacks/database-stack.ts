@@ -20,6 +20,7 @@ export interface DatabaseTables {
   jobs: dynamodb.Table;
   ledger: dynamodb.Table;
   providerSubscriptions: dynamodb.Table;
+  memories: dynamodb.Table;
 }
 
 export class DatabaseStack extends cdk.Stack {
@@ -261,7 +262,27 @@ export class DatabaseStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
-    this.tables = { agents, instances, relationships, conversations, connections, ownerChats, users, completedGoals, worldgmArcs, worldEvents, jobs, ledger, providerSubscriptions };
+    // memories — per-agent observation + reflection log (Phase 2 resident memory)
+    // PK: agentId (S), SK: createdAt (S) — time-ordered per-agent recall
+    // GSI agentId-subject-index: PK agentId (S), SK subject (S) — topic lookup
+    const memories = new dynamodb.Table(this, "MemoriesTable", {
+      tableName: `goosetown-${env}-memories`,
+      partitionKey: { name: "agentId", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "createdAt", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      pointInTimeRecoverySpecification: {
+        pointInTimeRecoveryEnabled: env === "prod",
+      },
+      removalPolicy,
+    });
+    memories.addGlobalSecondaryIndex({
+      indexName: "agentId-subject-index",
+      partitionKey: { name: "agentId", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "subject", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    this.tables = { agents, instances, relationships, conversations, connections, ownerChats, users, completedGoals, worldgmArcs, worldEvents, jobs, ledger, providerSubscriptions, memories };
 
     // Outputs
     new cdk.CfnOutput(this, "AgentsTableName", {
