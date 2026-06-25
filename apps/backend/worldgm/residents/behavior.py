@@ -57,6 +57,11 @@ class ResidentRuntime:
     reflected_conv_ids: set = field(default_factory=set)  # convs already reflected on (dedupe)
     memories_since_reflection: int = 0  # new observation memories since last synthesis
 
+    # ---- Phase 3 social-goal bookkeeping (only used by the agentic path) ----
+    # Gated on settings.RESIDENT_SOCIAL_GOALS_ENABLED; left at defaults when off.
+    social_goal: str = ""  # current short-term social aim injected into status each tick
+    ticks_since_social_goal: int = 0  # ticks elapsed since last goal generation
+
 
 def _move_cmd(destination: str) -> dict:
     """Build a real handle_tool_command move payload."""
