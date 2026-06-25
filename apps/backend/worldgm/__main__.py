@@ -360,7 +360,7 @@ async def _tick_one_resident(state: GmState, name: str, handle) -> None:
                     _now_iso(),
                     min_new=_REFLECT_EVERY_N,
                 )
-            runtime.memories_since_reflection = 0
+                runtime.memories_since_reflection = 0
         except Exception:
             logger.exception("Periodic reflection failed for %s; continuing", name)
 
