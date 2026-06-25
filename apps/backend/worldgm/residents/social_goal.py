@@ -39,31 +39,31 @@ async def generate_social_goal(
 
     Calls model.sample_text via asyncio.to_thread. Returns "" on any failure.
     """
-    self_reflections = _reflection.recall_self(store, my_id, now_iso)
-
-    prompt_parts = [
-        f"You are {persona.display_name}, {persona.role}.",
-        f"Personality: {persona.personality}",
-    ]
-    if self_reflections:
-        prompt_parts.append(f"What you know about yourself: {self_reflections}")
-    if relationship_summary:
-        prompt_parts.append(f"Your current relationships: {relationship_summary}")
-    prompt_parts += [
-        "",
-        "Based on who you are and where things stand with the people around you, "
-        "state ONE short concrete social aim you want to pursue right now.",
-        "Reply with plain text only — a single sentence, no quotes, no bullet points, ≤140 characters.",
-        "Examples: patch things up with Dwight | hold court at the café | find someone worth debating",
-    ]
-    prompt = "\n".join(prompt_parts)
-
     try:
+        self_reflections = _reflection.recall_self(store, my_id, now_iso)
+
+        prompt_parts = [
+            f"You are {persona.display_name}, {persona.role}.",
+            f"Personality: {persona.personality}",
+        ]
+        if self_reflections:
+            prompt_parts.append(f"What you know about yourself: {self_reflections}")
+        if relationship_summary:
+            prompt_parts.append(f"Your current relationships: {relationship_summary}")
+        prompt_parts += [
+            "",
+            "Based on who you are and where things stand with the people around you, "
+            "state ONE short concrete social aim you want to pursue right now.",
+            "Reply with plain text only — a single sentence, no quotes, no bullet points, ≤140 characters.",
+            "Examples: patch things up with Dwight | hold court at the café | find someone worth debating",
+        ]
+        prompt = "\n".join(prompt_parts)
+
         raw: str = await asyncio.to_thread(
             model.sample_text, prompt, max_tokens=_MAX_TOKENS, temperature=_TEMPERATURE
         )
     except Exception:
-        _log.debug("generate_social_goal: model call failed", exc_info=True)
+        _log.debug("generate_social_goal: failed", exc_info=True)
         return ""
 
     # Clean: take first non-empty line, strip surrounding whitespace/quotes, cap length.

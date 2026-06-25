@@ -125,3 +125,18 @@ def test_generate_social_goal_strips_only_first_line():
         social_goal.generate_social_goal(model, store, "agent-1", _PERSONA, "context", _NOW)
     )
     assert result == "seek out Tesla"
+
+
+def test_generate_social_goal_returns_empty_on_store_exception():
+    """Store DynamoDB failure during recall_self → returns "" (never propagates)."""
+
+    class RaisingTable:
+        def query(self, **kw):
+            raise RuntimeError("DynamoDB table missing")
+
+    store = MemoryStore(RaisingTable())
+    model = FakeModel("should not be reached")
+    result = asyncio.run(
+        social_goal.generate_social_goal(model, store, "agent-1", _PERSONA, "context", _NOW)
+    )
+    assert result == ""
