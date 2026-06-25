@@ -424,7 +424,6 @@ _RICH_PERSONA = Persona(
     obsessions=("legacy", "wine"),
     opinions=(("Ada Lovelace", "sharp mind, I respect that"),),
     current_life="Building the empire.",
-    sample_lines=("Nothing is given, young king.",),
 )
 
 
@@ -485,7 +484,6 @@ def test_context_carries_persona_bible_fields():
     ctx = build_decision_context(_RICH_PERSONA, _status())
     assert ctx.voice.startswith("Calls people")
     assert ctx.obsessions == ("legacy", "wine")
-    assert ctx.sample_lines == ("Nothing is given, young king.",)
     assert dict(ctx.opinions)["Ada Lovelace"].startswith("sharp")
 
 
@@ -516,7 +514,6 @@ def _rich_ctx(**over):
         obsessions=("legacy", "wine"),
         opinions=(("Ada Lovelace", "sharp mind"),),
         current_life="Building the empire.",
-        sample_lines=("Nothing is given, young king.",),
     )
     base.update(over)
     return DecisionContext(**base)
@@ -528,11 +525,11 @@ def test_build_dialogue_prompt_chat_opening_uses_bible():
     prompt = build_dialogue_prompt(ctx, action)
     assert "LeBron James" in prompt
     assert "young king" in prompt  # voice
-    assert "Nothing is given" in prompt  # sample line
     assert "sharp mind" in prompt  # opinion of the addressee
     assert "Ada Lovelace" in prompt
     assert "walking up" in prompt.lower()  # opening framing
     assert "ONLY the words you speak" in prompt
+    assert "don't reuse these lines" not in prompt  # sample_lines scaffold removed
 
 
 def test_build_dialogue_prompt_say_includes_history():
@@ -593,3 +590,27 @@ async def test_decide_and_speak_move_skips_dialogue_model():
     out = await decide_and_speak(_FakeModel('{"action": "move", "destination": "cafe"}'), dialogue, ctx)
     assert out["action"] == "move"
     assert dialogue.calls == 0
+
+
+# ---------------------------------------------------------------------------
+# Task 1: sample_lines removal
+# ---------------------------------------------------------------------------
+
+
+def test_dialogue_prompt_has_no_sample_lines_section():
+    from worldgm.residents.agentic_brain import DecisionContext, build_dialogue_prompt
+    ctx = DecisionContext(
+        name="dwight", display_name="Dwight Schrute", personality="beet farmer",
+        traits=("intense",), location="cafe", location_context="town",
+        nearby=[{"agent_id": "a1", "display_name": "LeBron James"}],
+        active_conversation=None, pending_messages=[], available_activities=[],
+        legal_actions=frozenset({"chat"}), voice="clipped, declarative",
+    )
+    prompt = build_dialogue_prompt(ctx, {"action": "chat", "_agent_id": "a1", "target": "LeBron James"})
+    assert "how" in prompt.lower()  # voice still rendered
+    assert "don't reuse these lines" not in prompt  # the sample-lines scaffold is gone
+
+
+def test_decision_context_has_no_sample_lines_field():
+    from worldgm.residents.agentic_brain import DecisionContext
+    assert "sample_lines" not in DecisionContext.__dataclass_fields__

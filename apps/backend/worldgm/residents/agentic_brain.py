@@ -81,7 +81,6 @@ class DecisionContext:
     obsessions: tuple[str, ...] = ()
     opinions: tuple[tuple[str, str], ...] = ()
     current_life: str = ""
-    sample_lines: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +307,6 @@ def build_decision_context(persona: Persona, parsed_status: dict) -> DecisionCon
         obsessions=persona.obsessions,
         opinions=persona.opinions,
         current_life=persona.current_life,
-        sample_lines=persona.sample_lines,
     )
 
 
@@ -530,11 +528,6 @@ def build_dialogue_prompt(ctx: DecisionContext, action: dict) -> str:
 
     if ctx.active_storyline:
         lines.append(f"Happening around you: {ctx.active_storyline}")
-
-    if ctx.sample_lines:
-        lines.append("")
-        lines.append(f"This is how {ctx.display_name} sounds — match the voice, don't reuse these lines:")
-        lines += [f'  "{s}"' for s in ctx.sample_lines]
 
     lines.append("")
     if history:

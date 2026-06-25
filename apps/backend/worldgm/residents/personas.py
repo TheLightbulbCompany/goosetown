@@ -32,7 +32,6 @@ class Persona:
     # Seeds relationship colour the affinity score can't carry on its own.
     opinions: tuple[tuple[str, str], ...] = ()
     current_life: str = ""  # what's on their mind right now (fresh conversation fuel)
-    sample_lines: tuple[str, ...] = ()  # few-shot voice anchors — the single biggest lever
 
 
 # ── The full resident cast (Phase 2a) ───────────────────────────────────────
