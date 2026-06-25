@@ -614,3 +614,32 @@ def test_dialogue_prompt_has_no_sample_lines_section():
 def test_decision_context_has_no_sample_lines_field():
     from worldgm.residents.agentic_brain import DecisionContext
     assert "sample_lines" not in DecisionContext.__dataclass_fields__
+
+
+# ---------------------------------------------------------------------------
+# Task 2: disagreeableness trait + trait-conditioned dialogue instruction
+# ---------------------------------------------------------------------------
+
+
+def test_disagreeableness_instruction_varies_by_level():
+    from worldgm.residents.agentic_brain import _disagreeableness_instruction
+    hi = _disagreeableness_instruction(5)
+    lo = _disagreeableness_instruction(1)
+    assert hi != lo
+    assert "hold your ground" in hi.lower() or "disagree" in hi.lower()
+    assert "warm" in lo.lower() or "agree" in lo.lower()
+
+
+def test_dialogue_prompt_includes_disagreeableness_for_contrarian():
+    from worldgm.residents.agentic_brain import DecisionContext, build_dialogue_prompt
+    ctx = DecisionContext(
+        name="dwight", display_name="Dwight Schrute", personality="beet farmer",
+        traits=("intense",), location="cafe", location_context="town",
+        nearby=[{"agent_id": "a1", "display_name": "LeBron James"}],
+        active_conversation={"conv_id": "c1", "participants": ["Dwight Schrute", "LeBron James"],
+                             "turns": [{"speaker": "LeBron James", "text": "We should all just get along."}]},
+        pending_messages=[], available_activities=[], legal_actions=frozenset({"say", "end"}),
+        voice="clipped", disagreeableness=5,
+    )
+    prompt = build_dialogue_prompt(ctx, {"action": "say", "_conv_id": "c1"})
+    assert "hold your ground" in prompt.lower() or "don't fold" in prompt.lower()

@@ -81,6 +81,7 @@ class DecisionContext:
     obsessions: tuple[str, ...] = ()
     opinions: tuple[tuple[str, str], ...] = ()
     current_life: str = ""
+    disagreeableness: int = 3
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +308,7 @@ def build_decision_context(persona: Persona, parsed_status: dict) -> DecisionCon
         obsessions=persona.obsessions,
         opinions=persona.opinions,
         current_life=persona.current_life,
+        disagreeableness=persona.disagreeableness,
     )
 
 
@@ -481,6 +483,23 @@ def _clean_line(raw: str, speaker: str) -> str:
     return s[:_MAX_MSG_CHARS]
 
 
+def _disagreeableness_instruction(level: int) -> str:
+    """Trait-conditioned guidance on how readily this resident agrees.
+
+    Heterogeneous disagreeableness — not uniform agreement — is what makes
+    multi-agent conversation believable (2026-06-24 design, §4.2). NO chain-of-
+    thought 'do I really agree?' step: that measurably amplifies sycophancy.
+    """
+    if level >= 4:
+        return (
+            "You don't soften your view to be liked. If you see it differently, say so plainly "
+            "and hold your ground — agreement should cost them a real reason."
+        )
+    if level <= 2:
+        return "You're warm and easy, but still bring your own real opinion — don't just validate them."
+    return "Speak your honest take. Agree when you mean it; push back when you don't."
+
+
 def build_dialogue_prompt(ctx: DecisionContext, action: dict) -> str:
     """Voice-first prompt for the dialogue model.
 
@@ -535,13 +554,14 @@ def build_dialogue_prompt(ctx: DecisionContext, action: dict) -> str:
         lines += history
         lines.append("")
         lines.append(
-            f"Say your next line as {ctx.display_name}: react to what they just said — agree, riff, "
-            "push back, joke, get specific. Don't just acknowledge; add something."
+            f"Say your next line as {ctx.display_name}: react to what they just said — get specific, "
+            f"add something new. {_disagreeableness_instruction(ctx.disagreeableness)}"
         )
     else:
         lines.append(
             f"You're walking up to {addressee_name} to start talking. Open with something only "
-            f"{ctx.display_name} would say — specific to who you are and your read on them, not a generic greeting."
+            f"{ctx.display_name} would say — specific to who you are and your read on them, not a generic "
+            f"greeting. {_disagreeableness_instruction(ctx.disagreeableness)}"
         )
     lines.append(
         "Reply with ONLY the words you speak — 1-3 sentences, no name prefix, no quotation marks, no stage directions."
