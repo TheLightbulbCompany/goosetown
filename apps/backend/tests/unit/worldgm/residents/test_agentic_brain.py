@@ -854,3 +854,102 @@ def test_build_dialogue_prompt_beliefs_distinct_from_remembered():
     assert "Discipline beats talent every time." in prompt
     # beliefs is NOT mixed into the addressee-memory line
     assert "What you actually remember about Ada Lovelace: Discipline beats talent every time." not in prompt
+
+
+# ---------------------------------------------------------------------------
+# Task 2 (Phase 3): role + social_goal + faction-gravity in the decision prompt
+# ---------------------------------------------------------------------------
+
+
+def test_decision_context_has_role_field_defaulting_to_empty():
+    """DecisionContext must have a role field defaulting to empty string."""
+    ctx = _ctx()
+    assert ctx.role == ""
+
+
+def test_decision_context_has_social_goal_field_defaulting_to_empty():
+    """DecisionContext must have a social_goal field defaulting to empty string."""
+    ctx = _ctx()
+    assert ctx.social_goal == ""
+
+
+def test_build_decision_context_copies_role_from_persona():
+    """build_decision_context must copy role=persona.role into the context."""
+    from worldgm.residents.personas import Persona
+    persona = Persona(
+        name="test_role", display_name="Test Role",
+        personality="p", appearance="a", traits=("t",), hangout="plaza",
+        role="quiet experimenter",
+    )
+    ctx = build_decision_context(persona, _status())
+    assert ctx.role == "quiet experimenter"
+
+
+def test_build_decision_context_role_defaults_empty_when_persona_has_no_role():
+    """Personas without a role field produce an empty role in the context."""
+    ctx = build_decision_context(_PERSONA, _status())
+    assert ctx.role == ""
+
+
+def test_build_decision_context_copies_social_goal_from_status():
+    """build_decision_context must copy social_goal from parsed_status."""
+    status = _status(social_goal="befriend a newcomer")
+    ctx = build_decision_context(_PERSONA, status)
+    assert ctx.social_goal == "befriend a newcomer"
+
+
+def test_build_decision_context_social_goal_defaults_empty():
+    """When social_goal is absent from parsed_status, ctx.social_goal is empty."""
+    ctx = build_decision_context(_PERSONA, _status())
+    assert ctx.social_goal == ""
+
+
+def test_build_prompt_renders_role_and_social_goal_when_both_set():
+    """build_prompt must render role, social_goal, and the faction-gravity nudge when both are set."""
+    from worldgm.residents.personas import Persona
+    persona = Persona(
+        name="test_role", display_name="Test Role",
+        personality="p", appearance="a", traits=("t",), hangout="plaza",
+        role="town philosopher",
+    )
+    status = _status(social_goal="start a debate with anyone who'll bite")
+    ctx = build_decision_context(persona, status)
+    prompt = build_prompt(ctx)
+    assert "town philosopher" in prompt
+    assert "start a debate with anyone who'll bite" in prompt
+    assert "spend time with" in prompt.lower() or "gravitate toward" in prompt.lower()
+    assert "steer clear" in prompt.lower()
+
+
+def test_build_prompt_renders_role_without_social_goal():
+    """build_prompt must render role + nudge even when social_goal is empty."""
+    from worldgm.residents.personas import Persona
+    persona = Persona(
+        name="test_role2", display_name="Test Role Two",
+        personality="p", appearance="a", traits=("t",), hangout="plaza",
+        role="restless wanderer",
+    )
+    ctx = build_decision_context(persona, _status())
+    prompt = build_prompt(ctx)
+    assert "restless wanderer" in prompt
+    assert "gravitate toward" in prompt.lower() or "spend time with" in prompt.lower()
+    # social_goal text should not appear as a blank "Right now you want to: ." line
+    assert "Right now you want to: ." not in prompt
+
+
+def test_build_prompt_renders_social_goal_without_role():
+    """build_prompt must render social_goal + nudge even when role is empty."""
+    status = _status(social_goal="find someone who knows the old library secret")
+    ctx = build_decision_context(_PERSONA, status)
+    prompt = build_prompt(ctx)
+    assert "find someone who knows the old library secret" in prompt
+    assert "gravitate toward" in prompt.lower() or "steer clear" in prompt.lower()
+
+
+def test_build_prompt_omits_role_section_when_both_empty():
+    """When role and social_goal are both empty, no faction-gravity nudge appears."""
+    ctx = build_decision_context(_PERSONA, _status())
+    prompt = build_prompt(ctx)
+    assert "gravitate toward" not in prompt.lower()
+    assert "steer clear" not in prompt.lower()
+    assert "act on what you" not in prompt.lower()

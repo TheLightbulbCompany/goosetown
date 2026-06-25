@@ -93,6 +93,8 @@ class DecisionContext:
     disagreeableness: int = 3
     remembered: str = ""
     beliefs: str = ""
+    role: str = ""
+    social_goal: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -322,6 +324,8 @@ def build_decision_context(persona: Persona, parsed_status: dict) -> DecisionCon
         disagreeableness=persona.disagreeableness,
         remembered=parsed_status.get("remembered", ""),
         beliefs=parsed_status.get("beliefs", ""),
+        role=persona.role,
+        social_goal=parsed_status.get("social_goal", ""),
     )
 
 
@@ -393,6 +397,18 @@ def build_prompt(ctx: DecisionContext) -> str:
     if ctx.recent_events:
         lines.append("Recently:")
         lines += [f"  - {e}" for e in ctx.recent_events]
+
+    if ctx.role or ctx.social_goal:
+        bits = []
+        if ctx.role:
+            bits.append(f"You are {ctx.display_name}, the town's {ctx.role}.")
+        if ctx.social_goal:
+            bits.append(f"Right now you want to: {ctx.social_goal}.")
+        bits.append(
+            "Gravitate toward people you click with, steer clear of those you clash with, "
+            "and act on what you're after — don't drift aimlessly."
+        )
+        lines.append(" ".join(bits))
 
     if ctx.active_conversation:
         participants = ", ".join(ctx.active_conversation.get("participants", []) or ["someone"])
