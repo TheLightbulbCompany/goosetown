@@ -51,7 +51,7 @@ from .arc_orchestrator import maybe_kickoff_arc, process_arc_beats
 from .bedrock_model import BedrockLanguageModel
 from .location_sync import sync_locations
 from .residents.behavior import ResidentRuntime
-from .residents.brain import read_status, step_resident_brain
+from .residents.brain import _now_iso, read_status, step_resident_brain
 
 TICK_INTERVAL_SECONDS = float(os.environ.get("WORLDGM_TICK_INTERVAL", "30"))
 RESIDENTS_ENABLED = os.environ.get("RESIDENTS_ENABLED", "false").lower() == "true"
@@ -71,6 +71,10 @@ CONVO_TURN_PACING_SECONDS = float(os.environ.get("WORLDGM_CONVO_TURN_PACING", "3
 # Set to "off"/"" to fall back to Nova-Lite dialogue without a redeploy. Doubles
 # as the A/B lever — set to ``anthropic.claude-haiku-4-5`` for a Claude soak.
 DIALOGUE_MODEL_ID = os.environ.get("WORLDGM_DIALOGUE_MODEL", "amazon.nova-pro-v1:0").strip()
+# Phase-2 periodic reflection: once a resident has accumulated this many new
+# observation memories (since its last synthesis), the stepper distils them into
+# higher-order insights (one Nova-Lite call). Gated on RESIDENT_MEMORY_ENABLED.
+_REFLECT_EVERY_N = int(os.environ.get("WORLDGM_REFLECT_EVERY_N", "6"))
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -324,9 +328,41 @@ async def _tick_one_resident(state: GmState, name: str, handle) -> None:
             model=getattr(state, "model_lite", None),
             dialogue_model=getattr(state, "model_dialogue", None),
             persona=handle.persona,
+            agent_id=agent_id,
+            town_service=getattr(state, "town_service", None),
         )
     except Exception:
         logger.exception("Resident brain tick failed for %s", name)
+
+    # Phase-2 periodic reflection (flag-gated, best-effort). After the brain
+    # step, if the resident is idle (not mid-conversation) and has accrued
+    # enough new observation memories, distil them into insights. One Nova-Lite
+    # call; resets the counter on completion. A failure here must never break
+    # the tick — it's pure background memory consolidation.
+    from core.config import settings
+
+    if (
+        settings.RESIDENT_MEMORY_ENABLED
+        and agent_id
+        and not status.get("active_conversation")
+        and runtime.memories_since_reflection >= _REFLECT_EVERY_N
+    ):
+        try:
+            from worldgm.residents.memory_store import memory_store_from_env
+            from worldgm.residents.reflection import synthesize_reflection
+
+            store = memory_store_from_env()
+            if store is not None:
+                await synthesize_reflection(
+                    getattr(state, "model_lite", None),
+                    store,
+                    agent_id,
+                    _now_iso(),
+                    min_new=_REFLECT_EVERY_N,
+                )
+                runtime.memories_since_reflection = 0
+        except Exception:
+            logger.exception("Periodic reflection failed for %s; continuing", name)
 
 
 async def _resident_stepper(state: GmState, name: str, handle) -> None:

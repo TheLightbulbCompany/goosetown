@@ -715,3 +715,142 @@ def test_decision_prompt_adds_end_pressure_in_conversation():
     prompt = build_prompt(build_decision_context(persona, status))
     assert "5 turns" in prompt or "made your point" in prompt.lower()
     assert "end" in prompt.lower()
+
+
+# ---------------------------------------------------------------------------
+# Task 5: render recalled memory in the dialogue prompt
+# ---------------------------------------------------------------------------
+
+
+def test_remembered_field_in_decision_context():
+    """DecisionContext must have a remembered field defaulting to empty string."""
+    ctx = _ctx()
+    assert ctx.remembered == ""
+
+
+def test_build_decision_context_copies_remembered_from_status():
+    """build_decision_context must copy remembered from parsed_status."""
+    status = _status(remembered="Last time LeBron only talked legacy.")
+    ctx = build_decision_context(_PERSONA, status)
+    assert ctx.remembered == "Last time LeBron only talked legacy."
+
+
+def test_build_decision_context_remembered_defaults_to_empty():
+    """When remembered is absent from parsed_status, ctx.remembered is empty."""
+    ctx = build_decision_context(_PERSONA, _status())
+    assert ctx.remembered == ""
+
+
+def test_build_dialogue_prompt_renders_remembered_memory():
+    """When ctx.remembered is set, build_dialogue_prompt must include the text."""
+    ctx = _rich_ctx(
+        active_conversation={
+            "conv_id": "c1",
+            "participants": ["LeBron James", "Ada Lovelace"],
+            "turns": [{"speaker": "Ada Lovelace", "text": "What do you think of my work?"}],
+        },
+        legal_actions=frozenset({"say", "end"}),
+        remembered="Last time LeBron only talked legacy.",
+    )
+    action = {"action": "say", "message": "fallback", "_conv_id": "c1"}
+    prompt = build_dialogue_prompt(ctx, action)
+    assert "Last time LeBron only talked legacy." in prompt
+    assert "Ada Lovelace" in prompt  # addressee_name used in the rendered line
+
+
+def test_build_dialogue_prompt_empty_remembered_renders_nothing():
+    """When ctx.remembered is empty, no 'What you actually remember' line appears."""
+    ctx = _rich_ctx(
+        active_conversation={
+            "conv_id": "c1",
+            "participants": ["LeBron James", "Ada Lovelace"],
+            "turns": [{"speaker": "Ada Lovelace", "text": "Hello."}],
+        },
+        legal_actions=frozenset({"say", "end"}),
+    )
+    action = {"action": "say", "message": "fallback", "_conv_id": "c1"}
+    prompt = build_dialogue_prompt(ctx, action)
+    assert "What you actually remember" not in prompt
+
+
+def test_build_dialogue_prompt_remembered_in_chat_opening():
+    """remembered also surfaces in the chat (opening) branch."""
+    ctx = _rich_ctx(remembered="Ada once challenged LeBron to a debate and won.")
+    action = {"action": "chat", "_agent_id": "uuid-ada", "target": "Ada Lovelace", "message": "fallback"}
+    prompt = build_dialogue_prompt(ctx, action)
+    assert "Ada once challenged LeBron to a debate and won." in prompt
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: beliefs field — self-reflections surfaced in dialogue
+# ---------------------------------------------------------------------------
+
+
+def test_decision_context_has_beliefs_field_defaulting_to_empty():
+    """DecisionContext must have a beliefs field defaulting to empty string."""
+    ctx = _ctx()
+    assert ctx.beliefs == ""
+
+
+def test_build_decision_context_copies_beliefs_from_status():
+    """build_decision_context must copy beliefs from parsed_status."""
+    status = _status(beliefs="I tend to overthink things.")
+    ctx = build_decision_context(_PERSONA, status)
+    assert ctx.beliefs == "I tend to overthink things."
+
+
+def test_build_decision_context_beliefs_defaults_to_empty():
+    """When beliefs is absent from parsed_status, ctx.beliefs is empty."""
+    ctx = build_decision_context(_PERSONA, _status())
+    assert ctx.beliefs == ""
+
+
+def test_build_dialogue_prompt_renders_beliefs_when_set():
+    """When ctx.beliefs is set, build_dialogue_prompt includes it on its own line."""
+    ctx = _rich_ctx(
+        active_conversation={
+            "conv_id": "c1",
+            "participants": ["LeBron James", "Ada Lovelace"],
+            "turns": [{"speaker": "Ada Lovelace", "text": "What's your take?"}],
+        },
+        legal_actions=frozenset({"say", "end"}),
+        beliefs="I tend to overthink things.",
+    )
+    action = {"action": "say", "message": "fallback", "_conv_id": "c1"}
+    prompt = build_dialogue_prompt(ctx, action)
+    assert "Lately you've come to believe: I tend to overthink things." in prompt
+
+
+def test_build_dialogue_prompt_empty_beliefs_renders_nothing():
+    """When ctx.beliefs is empty, no 'Lately you've come to believe' line appears."""
+    ctx = _rich_ctx(
+        active_conversation={
+            "conv_id": "c1",
+            "participants": ["LeBron James", "Ada Lovelace"],
+            "turns": [{"speaker": "Ada Lovelace", "text": "Hello."}],
+        },
+        legal_actions=frozenset({"say", "end"}),
+    )
+    action = {"action": "say", "message": "fallback", "_conv_id": "c1"}
+    prompt = build_dialogue_prompt(ctx, action)
+    assert "Lately you've come to believe" not in prompt
+
+
+def test_build_dialogue_prompt_beliefs_distinct_from_remembered():
+    """beliefs and remembered are separate lines; one present without the other must not bleed."""
+    ctx = _rich_ctx(
+        active_conversation={
+            "conv_id": "c1",
+            "participants": ["LeBron James", "Ada Lovelace"],
+            "turns": [{"speaker": "Ada Lovelace", "text": "Discuss."}],
+        },
+        legal_actions=frozenset({"say", "end"}),
+        remembered="Ada once beat LeBron at chess.",
+        beliefs="Discipline beats talent every time.",
+    )
+    action = {"action": "say", "message": "fallback", "_conv_id": "c1"}
+    prompt = build_dialogue_prompt(ctx, action)
+    assert "Ada once beat LeBron at chess." in prompt
+    assert "Discipline beats talent every time." in prompt
+    # beliefs is NOT mixed into the addressee-memory line
+    assert "What you actually remember about Ada Lovelace: Discipline beats talent every time." not in prompt

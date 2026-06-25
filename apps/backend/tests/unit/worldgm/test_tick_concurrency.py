@@ -315,3 +315,137 @@ async def test_stepper_exits_on_cancel(monkeypatch):
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+# ---------------------------------------------------------------------------
+# Reflection counter guard — store=None must NOT reset the counter
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reflection_counter_not_reset_when_store_is_none(monkeypatch):
+    """When memory_store_from_env() returns None (RESIDENT_MEMORIES_TABLE not set),
+    runtime.memories_since_reflection must NOT be zeroed — synthesis never ran."""
+    import worldgm.__main__ as main_mod
+
+    monkeypatch.setattr(main_mod, "step_resident_brain", AsyncMock())
+
+    # Patch settings so the reflection block is entered.
+    fake_settings = SimpleNamespace(RESIDENT_MEMORY_ENABLED=True)
+    monkeypatch.setattr("worldgm.__main__.__builtins__", {}, raising=False)
+
+    # Patch at the import site used by _tick_one_resident (deferred import).
+    import types
+
+    fake_memory_mod = types.ModuleType("worldgm.residents.memory_store")
+    fake_memory_mod.memory_store_from_env = lambda: None  # store is None
+    monkeypatch.setitem(
+        __import__("sys").modules, "worldgm.residents.memory_store", fake_memory_mod
+    )
+
+    reflection_called = []
+
+    fake_reflection_mod = types.ModuleType("worldgm.residents.reflection")
+
+    async def fake_synthesize(*args, **kwargs):
+        reflection_called.append(True)
+        return 0
+
+    fake_reflection_mod.synthesize_reflection = fake_synthesize
+    monkeypatch.setitem(
+        __import__("sys").modules, "worldgm.residents.reflection", fake_reflection_mod
+    )
+
+    import core.config  # noqa: F401 — ensure importable; patch settings attr directly
+
+    monkeypatch.setattr("core.config.settings", fake_settings, raising=False)
+
+    # Re-patch via the module reference _tick_one_resident actually uses.
+    import importlib
+    import sys
+
+    core_config_mod = sys.modules.get("core.config")
+    if core_config_mod is not None:
+        monkeypatch.setattr(core_config_mod, "settings", fake_settings, raising=False)
+
+    handle = _FakeHandle(persona=_persona("ada"), daemon=_connected_daemon())
+    handle.config = SimpleNamespace(agent_id="agent-uuid-1")
+    state = _state_with_residents({"ada": handle})
+
+    # Seed the runtime with a count above the threshold.
+    from worldgm.residents.behavior import ResidentRuntime
+
+    rt = ResidentRuntime(
+        name="ada",
+        location="plaza",
+        state="idle",
+        idle_ticks=0,
+        hangout="plaza",
+    )
+    rt.memories_since_reflection = 6  # >= _REFLECT_EVERY_N (default 6)
+    state.resident_runtimes["ada"] = rt
+
+    await main_mod._tick_one_resident(state, "ada", handle)
+
+    # synthesis was NOT called (store was None)
+    assert reflection_called == [], "synthesize_reflection should not have been called"
+    # counter must NOT have been zeroed
+    assert rt.memories_since_reflection == 6, (
+        "memories_since_reflection was reset to 0 even though store was None — bug!"
+    )
+
+
+@pytest.mark.asyncio
+async def test_reflection_counter_reset_when_store_is_present(monkeypatch):
+    """When memory_store_from_env() returns a real store, runtime.memories_since_reflection
+    IS reset to 0 after synthesize_reflection completes."""
+    import worldgm.__main__ as main_mod
+
+    monkeypatch.setattr(main_mod, "step_resident_brain", AsyncMock())
+
+    fake_settings = SimpleNamespace(RESIDENT_MEMORY_ENABLED=True)
+
+    import types, sys
+
+    fake_store = object()  # truthy non-None store
+    fake_memory_mod = types.ModuleType("worldgm.residents.memory_store")
+    fake_memory_mod.memory_store_from_env = lambda: fake_store
+    monkeypatch.setitem(sys.modules, "worldgm.residents.memory_store", fake_memory_mod)
+
+    reflection_called = []
+
+    fake_reflection_mod = types.ModuleType("worldgm.residents.reflection")
+
+    async def fake_synthesize(*args, **kwargs):
+        reflection_called.append(True)
+        return 2
+
+    fake_reflection_mod.synthesize_reflection = fake_synthesize
+    monkeypatch.setitem(sys.modules, "worldgm.residents.reflection", fake_reflection_mod)
+
+    core_config_mod = sys.modules.get("core.config")
+    if core_config_mod is not None:
+        monkeypatch.setattr(core_config_mod, "settings", fake_settings, raising=False)
+
+    handle = _FakeHandle(persona=_persona("ada"), daemon=_connected_daemon())
+    handle.config = SimpleNamespace(agent_id="agent-uuid-2")
+    state = _state_with_residents({"ada": handle})
+
+    from worldgm.residents.behavior import ResidentRuntime
+
+    rt = ResidentRuntime(
+        name="ada",
+        location="plaza",
+        state="idle",
+        idle_ticks=0,
+        hangout="plaza",
+    )
+    rt.memories_since_reflection = 6
+    state.resident_runtimes["ada"] = rt
+
+    await main_mod._tick_one_resident(state, "ada", handle)
+
+    assert reflection_called == [True], "synthesize_reflection should have been called once"
+    assert rt.memories_since_reflection == 0, (
+        "memories_since_reflection should be 0 after successful synthesis"
+    )
