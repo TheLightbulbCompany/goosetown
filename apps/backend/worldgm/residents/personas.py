@@ -22,6 +22,8 @@ class Persona:
     # neutral/contrarian: a uniformly-agreeable population is the worst config
     # for believable conversation (see 2026-06-24 design, §4.2).
     disagreeableness: int = 3
+    # stable social archetype that differentiates behavior (Phase 3)
+    role: str = ""
 
     # ── Character bible (optional) ──────────────────────────────────────────
     # Richer voice fields that turn a one-line logline into a performable

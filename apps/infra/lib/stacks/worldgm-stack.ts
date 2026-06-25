@@ -105,6 +105,8 @@ export class WorldgmStack extends cdk.Stack {
         RESIDENT_SLATE: env === "prod" ? "prod" : "default",
         RESIDENT_MEMORIES_TABLE: `goosetown-${env}-memories`,
         RESIDENT_MEMORY_ENABLED: env === "prod" ? "false" : "true",
+        RESIDENT_SOCIAL_GOALS_ENABLED: env === "prod" ? "false" : "true",
+        TOWN_LORE_ENABLED: env === "prod" ? "false" : "true",
       },
       secrets: {
         CLERK_ISSUER: ecs.Secret.fromSecretsManager(props.secrets.clerkIssuer),

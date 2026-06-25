@@ -331,7 +331,9 @@ async def test_reflection_counter_not_reset_when_store_is_none(monkeypatch):
     monkeypatch.setattr(main_mod, "step_resident_brain", AsyncMock())
 
     # Patch settings so the reflection block is entered.
-    fake_settings = SimpleNamespace(RESIDENT_MEMORY_ENABLED=True)
+    # RESIDENT_SOCIAL_GOALS_ENABLED=False keeps the Phase-3 block from
+    # triggering (which would also need its own memory_store fake).
+    fake_settings = SimpleNamespace(RESIDENT_MEMORY_ENABLED=True, RESIDENT_SOCIAL_GOALS_ENABLED=False)
     monkeypatch.setattr("worldgm.__main__.__builtins__", {}, raising=False)
 
     # Patch at the import site used by _tick_one_resident (deferred import).
@@ -403,7 +405,8 @@ async def test_reflection_counter_reset_when_store_is_present(monkeypatch):
 
     monkeypatch.setattr(main_mod, "step_resident_brain", AsyncMock())
 
-    fake_settings = SimpleNamespace(RESIDENT_MEMORY_ENABLED=True)
+    # RESIDENT_SOCIAL_GOALS_ENABLED=False isolates this test to the Phase-2 path.
+    fake_settings = SimpleNamespace(RESIDENT_MEMORY_ENABLED=True, RESIDENT_SOCIAL_GOALS_ENABLED=False)
 
     import types, sys
 
@@ -449,3 +452,352 @@ async def test_reflection_counter_reset_when_store_is_present(monkeypatch):
     assert rt.memories_since_reflection == 0, (
         "memories_since_reflection should be 0 after successful synthesis"
     )
+
+
+# ---------------------------------------------------------------------------
+# Social-goal integration — Phase 3
+# ---------------------------------------------------------------------------
+
+
+def _fake_settings(*, social_goals: bool = False, memory: bool = False):
+    return SimpleNamespace(
+        RESIDENT_SOCIAL_GOALS_ENABLED=social_goals,
+        RESIDENT_MEMORY_ENABLED=memory,
+    )
+
+
+def _patch_settings(monkeypatch, fake_settings):
+    import sys
+
+    core_config_mod = sys.modules.get("core.config")
+    if core_config_mod is not None:
+        monkeypatch.setattr(core_config_mod, "settings", fake_settings, raising=False)
+
+
+def _install_social_goal_fakes(monkeypatch, store_value, goal_return: str = "find a debate partner"):
+    import types, sys
+
+    fake_memory_mod = types.ModuleType("worldgm.residents.memory_store")
+    fake_memory_mod.memory_store_from_env = lambda: store_value
+    monkeypatch.setitem(sys.modules, "worldgm.residents.memory_store", fake_memory_mod)
+
+    goal_calls = []
+
+    fake_sg_mod = types.ModuleType("worldgm.residents.social_goal")
+
+    async def fake_generate(*args, **kwargs):
+        goal_calls.append(args)
+        return goal_return
+
+    fake_sg_mod.generate_social_goal = fake_generate
+    monkeypatch.setitem(sys.modules, "worldgm.residents.social_goal", fake_sg_mod)
+
+    return goal_calls
+
+
+@pytest.mark.asyncio
+async def test_social_goal_flag_off_no_generation(monkeypatch):
+    """When RESIDENT_SOCIAL_GOALS_ENABLED=False, generate_social_goal must never be called
+    and the status dict gets social_goal="" (the runtime default)."""
+    import worldgm.__main__ as main_mod
+
+    monkeypatch.setattr(main_mod, "step_resident_brain", AsyncMock())
+    _patch_settings(monkeypatch, _fake_settings(social_goals=False))
+    goal_calls = _install_social_goal_fakes(monkeypatch, store_value=object())
+
+    handle = _FakeHandle(persona=_persona("ada"), daemon=_connected_daemon())
+    handle.config = SimpleNamespace(agent_id="agent-uuid-sg-off")
+    state = _state_with_residents({"ada": handle})
+
+    from worldgm.residents.behavior import ResidentRuntime
+
+    rt = ResidentRuntime(name="ada", location="plaza", state="idle", idle_ticks=0, hangout="plaza")
+    rt.ticks_since_social_goal = 20  # well above threshold
+    state.resident_runtimes["ada"] = rt
+
+    captured_statuses: list[dict] = []
+
+    async def capture_step(daemon, runtime, status, **_):
+        captured_statuses.append(dict(status))
+
+    monkeypatch.setattr(main_mod, "step_resident_brain", capture_step)
+
+    await main_mod._tick_one_resident(state, "ada", handle)
+
+    assert goal_calls == [], "generate_social_goal must not be called when flag is off"
+    # social_goal key is injected with the runtime default ("") before the brain step
+    assert captured_statuses[0].get("social_goal") == ""
+
+
+@pytest.mark.asyncio
+async def test_social_goal_generated_and_counter_reset_when_store_present(monkeypatch):
+    """Flag on + counter >= threshold + store present → generate_social_goal called,
+    runtime.social_goal set, counter reset to 0."""
+    import worldgm.__main__ as main_mod
+
+    monkeypatch.setattr(main_mod, "step_resident_brain", AsyncMock())
+    _patch_settings(monkeypatch, _fake_settings(social_goals=True))
+    fake_store = object()
+    goal_calls = _install_social_goal_fakes(monkeypatch, store_value=fake_store, goal_return="hold court at the café")
+
+    handle = _FakeHandle(persona=_persona("ada"), daemon=_connected_daemon())
+    handle.config = SimpleNamespace(agent_id="agent-uuid-sg-gen")
+    state = _state_with_residents({"ada": handle})
+
+    from worldgm.residents.behavior import ResidentRuntime
+
+    rt = ResidentRuntime(name="ada", location="plaza", state="idle", idle_ticks=0, hangout="plaza")
+    rt.ticks_since_social_goal = 10  # == _SOCIAL_GOAL_EVERY_N default
+    state.resident_runtimes["ada"] = rt
+
+    await main_mod._tick_one_resident(state, "ada", handle)
+
+    assert len(goal_calls) == 1, "generate_social_goal should have been called exactly once"
+    assert rt.social_goal == "hold court at the café"
+    assert rt.ticks_since_social_goal == 0, "counter must be reset after successful generation"
+
+
+@pytest.mark.asyncio
+async def test_social_goal_counter_not_reset_when_store_is_none(monkeypatch):
+    """When memory_store_from_env() returns None, the counter must NOT be reset
+    (mirroring the Phase-2 store-None guard)."""
+    import worldgm.__main__ as main_mod
+
+    monkeypatch.setattr(main_mod, "step_resident_brain", AsyncMock())
+    _patch_settings(monkeypatch, _fake_settings(social_goals=True))
+    goal_calls = _install_social_goal_fakes(monkeypatch, store_value=None)
+
+    handle = _FakeHandle(persona=_persona("ada"), daemon=_connected_daemon())
+    handle.config = SimpleNamespace(agent_id="agent-uuid-sg-none")
+    state = _state_with_residents({"ada": handle})
+
+    from worldgm.residents.behavior import ResidentRuntime
+
+    rt = ResidentRuntime(name="ada", location="plaza", state="idle", idle_ticks=0, hangout="plaza")
+    rt.ticks_since_social_goal = 10
+    state.resident_runtimes["ada"] = rt
+
+    await main_mod._tick_one_resident(state, "ada", handle)
+
+    assert goal_calls == [], "generate_social_goal must not be called when store is None"
+    assert rt.ticks_since_social_goal == 11, (
+        "counter must NOT be reset when store is None (was 10 before tick, incremented to 11)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_social_goal_blank_return_preserves_prior_goal(monkeypatch):
+    """When generate_social_goal returns "" (transient Nova hiccup), the prior
+    runtime.social_goal must NOT be wiped, but ticks_since_social_goal IS reset
+    to 0 (cost bound preserved — no retry-storm on persistent blanks)."""
+    import worldgm.__main__ as main_mod
+
+    monkeypatch.setattr(main_mod, "step_resident_brain", AsyncMock())
+    _patch_settings(monkeypatch, _fake_settings(social_goals=True))
+    fake_store = object()
+    goal_calls = _install_social_goal_fakes(monkeypatch, store_value=fake_store, goal_return="")
+
+    handle = _FakeHandle(persona=_persona("ada"), daemon=_connected_daemon())
+    handle.config = SimpleNamespace(agent_id="agent-uuid-sg-blank")
+    state = _state_with_residents({"ada": handle})
+
+    from worldgm.residents.behavior import ResidentRuntime
+
+    rt = ResidentRuntime(name="ada", location="plaza", state="idle", idle_ticks=0, hangout="plaza")
+    rt.social_goal = "old goal"
+    rt.ticks_since_social_goal = 10  # == _SOCIAL_GOAL_EVERY_N default
+    state.resident_runtimes["ada"] = rt
+
+    await main_mod._tick_one_resident(state, "ada", handle)
+
+    assert len(goal_calls) == 1, "generate_social_goal should have been called"
+    assert rt.social_goal == "old goal", (
+        "prior social_goal must be preserved when generate_social_goal returns ''"
+    )
+    assert rt.ticks_since_social_goal == 0, (
+        "ticks_since_social_goal must be reset to 0 even on a blank/failed gen (cost bound)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_social_goal_injected_into_status_before_brain_step(monkeypatch):
+    """runtime.social_goal is always injected into status['social_goal'] BEFORE
+    the brain step, regardless of flag state."""
+    import worldgm.__main__ as main_mod
+
+    _patch_settings(monkeypatch, _fake_settings(social_goals=False))
+    _install_social_goal_fakes(monkeypatch, store_value=None)
+
+    captured_statuses: list[dict] = []
+
+    async def capture_step(daemon, runtime, status, **_):
+        captured_statuses.append(dict(status))
+
+    monkeypatch.setattr(main_mod, "step_resident_brain", capture_step)
+
+    handle = _FakeHandle(persona=_persona("ada"), daemon=_connected_daemon())
+    handle.config = SimpleNamespace(agent_id="agent-uuid-sg-inject")
+    state = _state_with_residents({"ada": handle})
+
+    from worldgm.residents.behavior import ResidentRuntime
+
+    rt = ResidentRuntime(name="ada", location="plaza", state="idle", idle_ticks=0, hangout="plaza")
+    rt.social_goal = "find someone worth debating"
+    state.resident_runtimes["ada"] = rt
+
+    await main_mod._tick_one_resident(state, "ada", handle)
+
+    assert len(captured_statuses) == 1
+    assert captured_statuses[0]["social_goal"] == "find someone worth debating", (
+        "social_goal must be injected into status before the brain step"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Town-lore injection + tick gating — Phase 3 Task 5
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_town_lore_injected_into_status_before_brain_step(monkeypatch):
+    """_tick_one_resident injects the 3 most-recent town_lore lines (joined with
+    ' · ') into status['town_lore'] BEFORE the brain step."""
+    import worldgm.__main__ as main_mod
+
+    _patch_settings(monkeypatch, _fake_settings(social_goals=False))
+    _install_social_goal_fakes(monkeypatch, store_value=None)
+
+    captured_statuses: list[dict] = []
+
+    async def capture_step(daemon, runtime, status, **_):
+        captured_statuses.append(dict(status))
+
+    monkeypatch.setattr(main_mod, "step_resident_brain", capture_step)
+
+    handle = _FakeHandle(persona=_persona("ada"), daemon=_connected_daemon())
+    handle.config = SimpleNamespace(agent_id="agent-uuid-lore")
+    state = _state_with_residents({"ada": handle})
+    # 4 lore lines — only the 3 most recent should be injected.
+    state.town_lore = ["lore-1", "lore-2", "lore-3", "lore-4"]
+
+    await main_mod._tick_one_resident(state, "ada", handle)
+
+    assert len(captured_statuses) == 1
+    assert captured_statuses[0]["town_lore"] == "lore-2 · lore-3 · lore-4"
+
+
+@pytest.mark.asyncio
+async def test_town_lore_injected_empty_when_no_lore(monkeypatch):
+    """With no town lore, status['town_lore'] is an empty string (not missing)."""
+    import worldgm.__main__ as main_mod
+
+    _patch_settings(monkeypatch, _fake_settings(social_goals=False))
+    _install_social_goal_fakes(monkeypatch, store_value=None)
+
+    captured_statuses: list[dict] = []
+
+    async def capture_step(daemon, runtime, status, **_):
+        captured_statuses.append(dict(status))
+
+    monkeypatch.setattr(main_mod, "step_resident_brain", capture_step)
+
+    handle = _FakeHandle(persona=_persona("ada"), daemon=_connected_daemon())
+    handle.config = SimpleNamespace(agent_id="agent-uuid-lore-empty")
+    state = _state_with_residents({"ada": handle})
+
+    await main_mod._tick_one_resident(state, "ada", handle)
+
+    assert captured_statuses[0]["town_lore"] == ""
+
+
+def _stub_tick_deps(monkeypatch):
+    """Neutralise sync_locations + the arc step so _tick can be exercised in
+    isolation for the lore gating tests."""
+    import worldgm.__main__ as main_mod
+
+    async def _noop_sync(*a, **k):
+        return {}
+
+    async def _noop_kickoff(*a, **k):
+        return None
+
+    async def _noop_beats(*a, **k):
+        return []
+
+    monkeypatch.setattr(main_mod, "sync_locations", _noop_sync)
+    monkeypatch.setattr(main_mod, "maybe_kickoff_arc", _noop_kickoff)
+    monkeypatch.setattr(main_mod, "process_arc_beats", _noop_beats)
+
+
+@pytest.mark.asyncio
+async def test_tick_skips_lore_when_flag_off(monkeypatch):
+    """TOWN_LORE_ENABLED=False → synthesize_town_lore is never called in _tick."""
+    import worldgm.__main__ as main_mod
+
+    _stub_tick_deps(monkeypatch)
+    monkeypatch.setattr(main_mod, "TOWN_LORE_ENABLED", False)
+    calls: list[int] = []
+
+    async def fake_synth(state, now_ms, **_):
+        calls.append(now_ms)
+        return []
+
+    monkeypatch.setattr(main_mod, "synthesize_town_lore", fake_synth)
+
+    state = _state_with_residents({})
+    await main_mod._tick(state)
+
+    assert calls == [], "synthesize_town_lore must not run when the flag is off"
+
+
+@pytest.mark.asyncio
+async def test_tick_runs_lore_when_flag_on_and_interval_elapsed(monkeypatch):
+    """Flag on + last_lore_at_ms far in the past → synthesize runs once and the
+    interval guard timestamp is advanced."""
+    import worldgm.__main__ as main_mod
+
+    _stub_tick_deps(monkeypatch)
+    monkeypatch.setattr(main_mod, "TOWN_LORE_ENABLED", True)
+    monkeypatch.setattr(main_mod, "_LORE_CYCLE_MS", 1000)
+    calls: list[int] = []
+
+    async def fake_synth(state, now_ms, **_):
+        calls.append(now_ms)
+        return ["new lore"]
+
+    monkeypatch.setattr(main_mod, "synthesize_town_lore", fake_synth)
+
+    state = _state_with_residents({})
+    state.last_lore_at_ms = 0  # epoch — well past the cycle
+
+    await main_mod._tick(state)
+
+    assert len(calls) == 1, "synthesize_town_lore should run when the interval has elapsed"
+    assert state.last_lore_at_ms > 0, "the interval guard timestamp must be advanced"
+
+
+@pytest.mark.asyncio
+async def test_tick_skips_lore_when_interval_not_elapsed(monkeypatch):
+    """Flag on but last_lore_at_ms is recent → the interval guard skips synthesis."""
+    import time as _time
+
+    import worldgm.__main__ as main_mod
+
+    _stub_tick_deps(monkeypatch)
+    monkeypatch.setattr(main_mod, "TOWN_LORE_ENABLED", True)
+    monkeypatch.setattr(main_mod, "_LORE_CYCLE_MS", 30 * 60_000)  # 30 min
+    calls: list[int] = []
+
+    async def fake_synth(state, now_ms, **_):
+        calls.append(now_ms)
+        return []
+
+    monkeypatch.setattr(main_mod, "synthesize_town_lore", fake_synth)
+
+    state = _state_with_residents({})
+    # Synthesized 'just now' → well inside the 30-min window.
+    state.last_lore_at_ms = int(_time.time() * 1000)
+
+    await main_mod._tick(state)
+
+    assert calls == [], "synthesize_town_lore must be skipped inside the interval window"

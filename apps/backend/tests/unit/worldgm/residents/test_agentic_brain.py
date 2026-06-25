@@ -854,3 +854,166 @@ def test_build_dialogue_prompt_beliefs_distinct_from_remembered():
     assert "Discipline beats talent every time." in prompt
     # beliefs is NOT mixed into the addressee-memory line
     assert "What you actually remember about Ada Lovelace: Discipline beats talent every time." not in prompt
+
+
+# ---------------------------------------------------------------------------
+# Task 2 (Phase 3): role + social_goal + faction-gravity in the decision prompt
+# ---------------------------------------------------------------------------
+
+
+def test_decision_context_has_role_field_defaulting_to_empty():
+    """DecisionContext must have a role field defaulting to empty string."""
+    ctx = _ctx()
+    assert ctx.role == ""
+
+
+def test_decision_context_has_social_goal_field_defaulting_to_empty():
+    """DecisionContext must have a social_goal field defaulting to empty string."""
+    ctx = _ctx()
+    assert ctx.social_goal == ""
+
+
+def test_build_decision_context_copies_role_from_persona():
+    """build_decision_context must copy role=persona.role into the context."""
+    from worldgm.residents.personas import Persona
+    persona = Persona(
+        name="test_role", display_name="Test Role",
+        personality="p", appearance="a", traits=("t",), hangout="plaza",
+        role="quiet experimenter",
+    )
+    ctx = build_decision_context(persona, _status())
+    assert ctx.role == "quiet experimenter"
+
+
+def test_build_decision_context_role_defaults_empty_when_persona_has_no_role():
+    """Personas without a role field produce an empty role in the context."""
+    ctx = build_decision_context(_PERSONA, _status())
+    assert ctx.role == ""
+
+
+def test_build_decision_context_copies_social_goal_from_status():
+    """build_decision_context must copy social_goal from parsed_status."""
+    status = _status(social_goal="befriend a newcomer")
+    ctx = build_decision_context(_PERSONA, status)
+    assert ctx.social_goal == "befriend a newcomer"
+
+
+def test_build_decision_context_social_goal_defaults_empty():
+    """When social_goal is absent from parsed_status, ctx.social_goal is empty."""
+    ctx = build_decision_context(_PERSONA, _status())
+    assert ctx.social_goal == ""
+
+
+def test_build_prompt_renders_role_and_social_goal_when_both_set():
+    """build_prompt must render role, social_goal, and the faction-gravity nudge when both are set."""
+    from worldgm.residents.personas import Persona
+    persona = Persona(
+        name="test_role", display_name="Test Role",
+        personality="p", appearance="a", traits=("t",), hangout="plaza",
+        role="town philosopher",
+    )
+    status = _status(social_goal="start a debate with anyone who'll bite")
+    ctx = build_decision_context(persona, status)
+    prompt = build_prompt(ctx)
+    assert "town philosopher" in prompt
+    assert "start a debate with anyone who'll bite" in prompt
+    assert "spend time with" in prompt.lower() or "gravitate toward" in prompt.lower()
+    assert "steer clear" in prompt.lower()
+
+
+def test_build_prompt_renders_role_without_social_goal():
+    """build_prompt must render role + nudge even when social_goal is empty."""
+    from worldgm.residents.personas import Persona
+    persona = Persona(
+        name="test_role2", display_name="Test Role Two",
+        personality="p", appearance="a", traits=("t",), hangout="plaza",
+        role="restless wanderer",
+    )
+    ctx = build_decision_context(persona, _status())
+    prompt = build_prompt(ctx)
+    assert "restless wanderer" in prompt
+    assert "gravitate toward" in prompt.lower() or "spend time with" in prompt.lower()
+    # social_goal text should not appear as a blank "Right now you want to: ." line
+    assert "Right now you want to: ." not in prompt
+
+
+def test_build_prompt_renders_social_goal_without_role():
+    """build_prompt must render social_goal + nudge even when role is empty."""
+    status = _status(social_goal="find someone who knows the old library secret")
+    ctx = build_decision_context(_PERSONA, status)
+    prompt = build_prompt(ctx)
+    assert "find someone who knows the old library secret" in prompt
+    assert "gravitate toward" in prompt.lower() or "steer clear" in prompt.lower()
+
+
+def test_build_prompt_omits_role_section_when_both_empty():
+    """When role and social_goal are both empty, no faction-gravity nudge appears."""
+    ctx = build_decision_context(_PERSONA, _status())
+    prompt = build_prompt(ctx)
+    assert "gravitate toward" not in prompt.lower()
+    assert "steer clear" not in prompt.lower()
+    assert "act on what you" not in prompt.lower()
+
+
+# ---------------------------------------------------------------------------
+# Task 5 (Phase 3): town lore — shared cultural reference in the dialogue prompt
+# ---------------------------------------------------------------------------
+
+
+def test_decision_context_has_town_lore_field_defaulting_to_empty():
+    """DecisionContext must have a town_lore field defaulting to empty string."""
+    ctx = _ctx()
+    assert ctx.town_lore == ""
+
+
+def test_build_decision_context_copies_town_lore_from_status():
+    """build_decision_context must copy town_lore from parsed_status."""
+    status = _status(town_lore="the beet-wine week · the great library debate")
+    ctx = build_decision_context(_PERSONA, status)
+    assert ctx.town_lore == "the beet-wine week · the great library debate"
+
+
+def test_build_decision_context_town_lore_defaults_empty():
+    """When town_lore is absent from parsed_status, ctx.town_lore is empty."""
+    ctx = build_decision_context(_PERSONA, _status())
+    assert ctx.town_lore == ""
+
+
+def test_build_dialogue_prompt_renders_town_lore_when_set():
+    """When ctx.town_lore is set, build_dialogue_prompt surfaces it as shared
+    culture so residents reference the same touchstones in conversation."""
+    ctx = _rich_ctx(
+        active_conversation={
+            "conv_id": "c1",
+            "participants": ["LeBron James", "Ada Lovelace"],
+            "turns": [{"speaker": "Ada Lovelace", "text": "What's new in town?"}],
+        },
+        legal_actions=frozenset({"say", "end"}),
+        town_lore="the week Dwight and LeBron launched beet-wine",
+    )
+    action = {"action": "say", "message": "fallback", "_conv_id": "c1"}
+    prompt = build_dialogue_prompt(ctx, action)
+    assert "Town lore everyone knows: the week Dwight and LeBron launched beet-wine" in prompt
+
+
+def test_build_dialogue_prompt_renders_town_lore_in_chat_opening():
+    """Town lore also surfaces in the chat (opening) branch."""
+    ctx = _rich_ctx(town_lore="the great library debate of last Tuesday")
+    action = {"action": "chat", "_agent_id": "uuid-ada", "target": "Ada Lovelace", "message": "fallback"}
+    prompt = build_dialogue_prompt(ctx, action)
+    assert "the great library debate of last Tuesday" in prompt
+
+
+def test_build_dialogue_prompt_empty_town_lore_renders_nothing():
+    """When ctx.town_lore is empty, no 'Town lore everyone knows' line appears."""
+    ctx = _rich_ctx(
+        active_conversation={
+            "conv_id": "c1",
+            "participants": ["LeBron James", "Ada Lovelace"],
+            "turns": [{"speaker": "Ada Lovelace", "text": "Hello."}],
+        },
+        legal_actions=frozenset({"say", "end"}),
+    )
+    action = {"action": "say", "message": "fallback", "_conv_id": "c1"}
+    prompt = build_dialogue_prompt(ctx, action)
+    assert "Town lore everyone knows" not in prompt

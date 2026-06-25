@@ -44,14 +44,18 @@ import asyncio
 import logging
 import os
 import signal
+import time
 from dataclasses import dataclass, field
 from typing import Any
+
+from core.config import settings
 
 from .arc_orchestrator import maybe_kickoff_arc, process_arc_beats
 from .bedrock_model import BedrockLanguageModel
 from .location_sync import sync_locations
 from .residents.behavior import ResidentRuntime
 from .residents.brain import _now_iso, read_status, step_resident_brain
+from .town_lore import synthesize_town_lore, warm_boot_lore
 
 TICK_INTERVAL_SECONDS = float(os.environ.get("WORLDGM_TICK_INTERVAL", "30"))
 RESIDENTS_ENABLED = os.environ.get("RESIDENTS_ENABLED", "false").lower() == "true"
@@ -75,6 +79,15 @@ DIALOGUE_MODEL_ID = os.environ.get("WORLDGM_DIALOGUE_MODEL", "amazon.nova-pro-v1
 # observation memories (since its last synthesis), the stepper distils them into
 # higher-order insights (one Nova-Lite call). Gated on RESIDENT_MEMORY_ENABLED.
 _REFLECT_EVERY_N = int(os.environ.get("WORLDGM_REFLECT_EVERY_N", "6"))
+# Phase-3 social-goal regeneration: after this many ticks the stepper
+# regenerates the resident's social goal (one Nova-Lite call). Gated on
+# RESIDENT_SOCIAL_GOALS_ENABLED.
+_SOCIAL_GOAL_EVERY_N = int(os.environ.get("WORLDGM_SOCIAL_GOAL_EVERY_N", "10"))
+# Phase-3 town-lore synthesis: the GM distils recent events into shared town
+# lore at most this often (one Nova-Lite call town-wide). Gated on
+# TOWN_LORE_ENABLED. Default 30 min keeps the cost negligible.
+TOWN_LORE_ENABLED = settings.TOWN_LORE_ENABLED
+_LORE_CYCLE_MS = max(1, int(os.environ.get("WORLDGM_LORE_CYCLE_MIN", "30"))) * 60_000
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -163,6 +176,11 @@ class GmState:
     resident_manager: Any = None
     resident_runtimes: dict = field(default_factory=dict)
     active_arcs: list = field(default_factory=list)
+    # Phase-3 town lore: a rolling digest of shared cultural touchstones (capped
+    # FIFO by town_lore.synthesize_town_lore). last_lore_at_ms is the interval
+    # guard so synthesis fires at most every _LORE_CYCLE_MS.
+    town_lore: list = field(default_factory=list)
+    last_lore_at_ms: int = 0
     # One brain-driver task per resident (event-driven + periodic). See
     # ``_resident_stepper``. Tracked here so ``main`` can cancel them on exit.
     resident_steppers: list = field(default_factory=list)
@@ -274,6 +292,19 @@ async def _tick(state: GmState) -> None:
         except Exception:
             logger.exception("GM arc step failed; continuing with stale arcs")
 
+    # --- GM town-lore step: at most every _LORE_CYCLE_MS, distil recent events
+    # into shared town lore (one Nova-Lite call). Best-effort + interval-gated +
+    # flag-gated; synthesize_town_lore never raises but the wrapper is belt-and-
+    # suspenders so a clock/guard surprise can't break the tick. The timestamp is
+    # advanced regardless of outcome so a transient failure doesn't retry-storm.
+    now_ms = int(time.time() * 1000)
+    if TOWN_LORE_ENABLED and now_ms - state.last_lore_at_ms >= _LORE_CYCLE_MS:
+        state.last_lore_at_ms = now_ms
+        try:
+            await synthesize_town_lore(state, now_ms)
+        except Exception:
+            logger.exception("GM town-lore step failed; continuing")
+
     # Resident brains are NOT stepped here anymore. Each resident has its own
     # ``_resident_stepper`` task (started in ``main``) that wakes on a fresh
     # conversation message OR every TICK_INTERVAL_SECONDS — so replies fire at
@@ -320,6 +351,16 @@ async def _tick_one_resident(state: GmState, name: str, handle) -> None:
             wake_hour=handle.persona.wake_hour,
         )
         state.resident_runtimes[name] = runtime
+    # Phase-3: inject the resident's current social goal into the status snapshot
+    # BEFORE the brain step so the LLM prompt carries it as world context.
+    # Also increment the tick counter here (outside any flag gate) so the counter
+    # advances uniformly whether or not the feature is enabled.
+    status["social_goal"] = runtime.social_goal
+    runtime.ticks_since_social_goal += 1
+    # Phase-3: inject the 3 most-recent shared town-lore lines so every resident
+    # references the same cultural touchstones in their decision + dialogue.
+    status["town_lore"] = " · ".join(state.town_lore[-3:])
+
     try:
         await step_resident_brain(
             daemon,
@@ -334,13 +375,45 @@ async def _tick_one_resident(state: GmState, name: str, handle) -> None:
     except Exception:
         logger.exception("Resident brain tick failed for %s", name)
 
+    # Phase-3 periodic social-goal regeneration (flag-gated, best-effort).
+    # After the brain step, when not mid-conversation and the tick counter has
+    # reached the threshold, generate a fresh short-term social aim grounded in
+    # memory + persona. Mirrors the Phase-2 reflection safety shape exactly:
+    # reset the counter ONLY inside the ``store is not None`` guard.
+    from core.config import settings
+
+    if (
+        settings.RESIDENT_SOCIAL_GOALS_ENABLED
+        and agent_id
+        and not status.get("active_conversation")
+        and runtime.ticks_since_social_goal >= _SOCIAL_GOAL_EVERY_N
+    ):
+        try:
+            from worldgm.residents.memory_store import memory_store_from_env
+            from worldgm.residents.social_goal import generate_social_goal
+
+            store = memory_store_from_env()
+            if store is not None:
+                goal = await generate_social_goal(
+                    getattr(state, "model_lite", None),
+                    store,
+                    agent_id,
+                    handle.persona,
+                    "",  # relationship_summary: best-effort empty; grounding via self-reflections
+                    _now_iso(),
+                )
+                if goal:
+                    runtime.social_goal = goal
+                runtime.ticks_since_social_goal = 0  # reset regardless, to bound cost even on a failed/blank gen
+        except Exception:
+            logger.exception("Periodic social-goal regeneration failed for %s; continuing", name)
+
     # Phase-2 periodic reflection (flag-gated, best-effort). After the brain
     # step, if the resident is idle (not mid-conversation) and has accrued
     # enough new observation memories, distil them into insights. One Nova-Lite
     # call; resets the counter on completion. A failure here must never break
     # the tick — it's pure background memory consolidation.
-    from core.config import settings
-
+    # (``settings`` already imported above for the social-goal block.)
     if (
         settings.RESIDENT_MEMORY_ENABLED
         and agent_id
@@ -410,6 +483,12 @@ async def main() -> None:
     logger.info("Starting WorldGM service (tick=%.1fs)", TICK_INTERVAL_SECONDS)
     state = _bootstrap_gm()
     logger.info("Concordia GM bootstrapped")
+
+    # Phase-3 warm-boot: re-warm the town-lore digest from recent persisted
+    # tag="town.lore" rows so a GM restart doesn't lose shared culture. Best-
+    # effort (warm_boot_lore never raises); a read failure just starts empty.
+    # _bootstrap_gm is synchronous, so this runs here in the async entrypoint.
+    await warm_boot_lore(state)
 
     if RESIDENTS_ENABLED:
         from core.town_token import sign_town_token
