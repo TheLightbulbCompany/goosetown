@@ -715,3 +715,67 @@ def test_decision_prompt_adds_end_pressure_in_conversation():
     prompt = build_prompt(build_decision_context(persona, status))
     assert "5 turns" in prompt or "made your point" in prompt.lower()
     assert "end" in prompt.lower()
+
+
+# ---------------------------------------------------------------------------
+# Task 5: render recalled memory in the dialogue prompt
+# ---------------------------------------------------------------------------
+
+
+def test_remembered_field_in_decision_context():
+    """DecisionContext must have a remembered field defaulting to empty string."""
+    ctx = _ctx()
+    assert ctx.remembered == ""
+
+
+def test_build_decision_context_copies_remembered_from_status():
+    """build_decision_context must copy remembered from parsed_status."""
+    status = _status(remembered="Last time LeBron only talked legacy.")
+    ctx = build_decision_context(_PERSONA, status)
+    assert ctx.remembered == "Last time LeBron only talked legacy."
+
+
+def test_build_decision_context_remembered_defaults_to_empty():
+    """When remembered is absent from parsed_status, ctx.remembered is empty."""
+    ctx = build_decision_context(_PERSONA, _status())
+    assert ctx.remembered == ""
+
+
+def test_build_dialogue_prompt_renders_remembered_memory():
+    """When ctx.remembered is set, build_dialogue_prompt must include the text."""
+    ctx = _rich_ctx(
+        active_conversation={
+            "conv_id": "c1",
+            "participants": ["LeBron James", "Ada Lovelace"],
+            "turns": [{"speaker": "Ada Lovelace", "text": "What do you think of my work?"}],
+        },
+        legal_actions=frozenset({"say", "end"}),
+        remembered="Last time LeBron only talked legacy.",
+    )
+    action = {"action": "say", "message": "fallback", "_conv_id": "c1"}
+    prompt = build_dialogue_prompt(ctx, action)
+    assert "Last time LeBron only talked legacy." in prompt
+    assert "Ada Lovelace" in prompt  # addressee_name used in the rendered line
+
+
+def test_build_dialogue_prompt_empty_remembered_renders_nothing():
+    """When ctx.remembered is empty, no 'What you actually remember' line appears."""
+    ctx = _rich_ctx(
+        active_conversation={
+            "conv_id": "c1",
+            "participants": ["LeBron James", "Ada Lovelace"],
+            "turns": [{"speaker": "Ada Lovelace", "text": "Hello."}],
+        },
+        legal_actions=frozenset({"say", "end"}),
+    )
+    action = {"action": "say", "message": "fallback", "_conv_id": "c1"}
+    prompt = build_dialogue_prompt(ctx, action)
+    assert "What you actually remember" not in prompt
+
+
+def test_build_dialogue_prompt_remembered_in_chat_opening():
+    """remembered also surfaces in the chat (opening) branch."""
+    ctx = _rich_ctx(remembered="Ada once challenged LeBron to a debate and won.")
+    action = {"action": "chat", "_agent_id": "uuid-ada", "target": "Ada Lovelace", "message": "fallback"}
+    prompt = build_dialogue_prompt(ctx, action)
+    assert "Ada once challenged LeBron to a debate and won." in prompt

@@ -91,6 +91,7 @@ class DecisionContext:
     opinions: tuple[tuple[str, str], ...] = ()
     current_life: str = ""
     disagreeableness: int = 3
+    remembered: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +319,7 @@ def build_decision_context(persona: Persona, parsed_status: dict) -> DecisionCon
         opinions=persona.opinions,
         current_life=persona.current_life,
         disagreeableness=persona.disagreeableness,
+        remembered=parsed_status.get("remembered", ""),
     )
 
 
@@ -560,6 +562,9 @@ def build_dialogue_prompt(ctx: DecisionContext, action: dict) -> str:
         rel = _relationship_phrase(addressee)
         if rel:
             lines.append(f"Where you stand with {addressee_name}: {rel}.")
+
+    if ctx.remembered:
+        lines.append(f"What you actually remember about {addressee_name}: {ctx.remembered}")
 
     if ctx.active_storyline:
         lines.append(f"Happening around you: {ctx.active_storyline}")
