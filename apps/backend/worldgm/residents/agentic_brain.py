@@ -95,6 +95,7 @@ class DecisionContext:
     beliefs: str = ""
     role: str = ""
     social_goal: str = ""
+    town_lore: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -326,6 +327,7 @@ def build_decision_context(persona: Persona, parsed_status: dict) -> DecisionCon
         beliefs=parsed_status.get("beliefs", ""),
         role=persona.role,
         social_goal=parsed_status.get("social_goal", ""),
+        town_lore=parsed_status.get("town_lore", ""),
     )
 
 
@@ -588,6 +590,8 @@ def build_dialogue_prompt(ctx: DecisionContext, action: dict) -> str:
 
     if ctx.active_storyline:
         lines.append(f"Happening around you: {ctx.active_storyline}")
+    if ctx.town_lore:
+        lines.append(f"Town lore everyone knows: {ctx.town_lore}")
 
     lines.append(f"Right now: you're at the {ctx.location}, feeling {ctx.mood}.")
     if ctx.recent_events:

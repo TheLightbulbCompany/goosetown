@@ -953,3 +953,67 @@ def test_build_prompt_omits_role_section_when_both_empty():
     assert "gravitate toward" not in prompt.lower()
     assert "steer clear" not in prompt.lower()
     assert "act on what you" not in prompt.lower()
+
+
+# ---------------------------------------------------------------------------
+# Task 5 (Phase 3): town lore — shared cultural reference in the dialogue prompt
+# ---------------------------------------------------------------------------
+
+
+def test_decision_context_has_town_lore_field_defaulting_to_empty():
+    """DecisionContext must have a town_lore field defaulting to empty string."""
+    ctx = _ctx()
+    assert ctx.town_lore == ""
+
+
+def test_build_decision_context_copies_town_lore_from_status():
+    """build_decision_context must copy town_lore from parsed_status."""
+    status = _status(town_lore="the beet-wine week · the great library debate")
+    ctx = build_decision_context(_PERSONA, status)
+    assert ctx.town_lore == "the beet-wine week · the great library debate"
+
+
+def test_build_decision_context_town_lore_defaults_empty():
+    """When town_lore is absent from parsed_status, ctx.town_lore is empty."""
+    ctx = build_decision_context(_PERSONA, _status())
+    assert ctx.town_lore == ""
+
+
+def test_build_dialogue_prompt_renders_town_lore_when_set():
+    """When ctx.town_lore is set, build_dialogue_prompt surfaces it as shared
+    culture so residents reference the same touchstones in conversation."""
+    ctx = _rich_ctx(
+        active_conversation={
+            "conv_id": "c1",
+            "participants": ["LeBron James", "Ada Lovelace"],
+            "turns": [{"speaker": "Ada Lovelace", "text": "What's new in town?"}],
+        },
+        legal_actions=frozenset({"say", "end"}),
+        town_lore="the week Dwight and LeBron launched beet-wine",
+    )
+    action = {"action": "say", "message": "fallback", "_conv_id": "c1"}
+    prompt = build_dialogue_prompt(ctx, action)
+    assert "Town lore everyone knows: the week Dwight and LeBron launched beet-wine" in prompt
+
+
+def test_build_dialogue_prompt_renders_town_lore_in_chat_opening():
+    """Town lore also surfaces in the chat (opening) branch."""
+    ctx = _rich_ctx(town_lore="the great library debate of last Tuesday")
+    action = {"action": "chat", "_agent_id": "uuid-ada", "target": "Ada Lovelace", "message": "fallback"}
+    prompt = build_dialogue_prompt(ctx, action)
+    assert "the great library debate of last Tuesday" in prompt
+
+
+def test_build_dialogue_prompt_empty_town_lore_renders_nothing():
+    """When ctx.town_lore is empty, no 'Town lore everyone knows' line appears."""
+    ctx = _rich_ctx(
+        active_conversation={
+            "conv_id": "c1",
+            "participants": ["LeBron James", "Ada Lovelace"],
+            "turns": [{"speaker": "Ada Lovelace", "text": "Hello."}],
+        },
+        legal_actions=frozenset({"say", "end"}),
+    )
+    action = {"action": "say", "message": "fallback", "_conv_id": "c1"}
+    prompt = build_dialogue_prompt(ctx, action)
+    assert "Town lore everyone knows" not in prompt

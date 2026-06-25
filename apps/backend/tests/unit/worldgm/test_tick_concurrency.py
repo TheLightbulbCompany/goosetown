@@ -617,3 +617,153 @@ async def test_social_goal_injected_into_status_before_brain_step(monkeypatch):
     assert captured_statuses[0]["social_goal"] == "find someone worth debating", (
         "social_goal must be injected into status before the brain step"
     )
+
+
+# ---------------------------------------------------------------------------
+# Town-lore injection + tick gating — Phase 3 Task 5
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_town_lore_injected_into_status_before_brain_step(monkeypatch):
+    """_tick_one_resident injects the 3 most-recent town_lore lines (joined with
+    ' · ') into status['town_lore'] BEFORE the brain step."""
+    import worldgm.__main__ as main_mod
+
+    _patch_settings(monkeypatch, _fake_settings(social_goals=False))
+    _install_social_goal_fakes(monkeypatch, store_value=None)
+
+    captured_statuses: list[dict] = []
+
+    async def capture_step(daemon, runtime, status, **_):
+        captured_statuses.append(dict(status))
+
+    monkeypatch.setattr(main_mod, "step_resident_brain", capture_step)
+
+    handle = _FakeHandle(persona=_persona("ada"), daemon=_connected_daemon())
+    handle.config = SimpleNamespace(agent_id="agent-uuid-lore")
+    state = _state_with_residents({"ada": handle})
+    # 4 lore lines — only the 3 most recent should be injected.
+    state.town_lore = ["lore-1", "lore-2", "lore-3", "lore-4"]
+
+    await main_mod._tick_one_resident(state, "ada", handle)
+
+    assert len(captured_statuses) == 1
+    assert captured_statuses[0]["town_lore"] == "lore-2 · lore-3 · lore-4"
+
+
+@pytest.mark.asyncio
+async def test_town_lore_injected_empty_when_no_lore(monkeypatch):
+    """With no town lore, status['town_lore'] is an empty string (not missing)."""
+    import worldgm.__main__ as main_mod
+
+    _patch_settings(monkeypatch, _fake_settings(social_goals=False))
+    _install_social_goal_fakes(monkeypatch, store_value=None)
+
+    captured_statuses: list[dict] = []
+
+    async def capture_step(daemon, runtime, status, **_):
+        captured_statuses.append(dict(status))
+
+    monkeypatch.setattr(main_mod, "step_resident_brain", capture_step)
+
+    handle = _FakeHandle(persona=_persona("ada"), daemon=_connected_daemon())
+    handle.config = SimpleNamespace(agent_id="agent-uuid-lore-empty")
+    state = _state_with_residents({"ada": handle})
+
+    await main_mod._tick_one_resident(state, "ada", handle)
+
+    assert captured_statuses[0]["town_lore"] == ""
+
+
+def _stub_tick_deps(monkeypatch):
+    """Neutralise sync_locations + the arc step so _tick can be exercised in
+    isolation for the lore gating tests."""
+    import worldgm.__main__ as main_mod
+
+    async def _noop_sync(*a, **k):
+        return {}
+
+    async def _noop_kickoff(*a, **k):
+        return None
+
+    async def _noop_beats(*a, **k):
+        return []
+
+    monkeypatch.setattr(main_mod, "sync_locations", _noop_sync)
+    monkeypatch.setattr(main_mod, "maybe_kickoff_arc", _noop_kickoff)
+    monkeypatch.setattr(main_mod, "process_arc_beats", _noop_beats)
+
+
+@pytest.mark.asyncio
+async def test_tick_skips_lore_when_flag_off(monkeypatch):
+    """TOWN_LORE_ENABLED=False → synthesize_town_lore is never called in _tick."""
+    import worldgm.__main__ as main_mod
+
+    _stub_tick_deps(monkeypatch)
+    monkeypatch.setattr(main_mod, "TOWN_LORE_ENABLED", False)
+    calls: list[int] = []
+
+    async def fake_synth(state, now_ms, **_):
+        calls.append(now_ms)
+        return []
+
+    monkeypatch.setattr(main_mod, "synthesize_town_lore", fake_synth)
+
+    state = _state_with_residents({})
+    await main_mod._tick(state)
+
+    assert calls == [], "synthesize_town_lore must not run when the flag is off"
+
+
+@pytest.mark.asyncio
+async def test_tick_runs_lore_when_flag_on_and_interval_elapsed(monkeypatch):
+    """Flag on + last_lore_at_ms far in the past → synthesize runs once and the
+    interval guard timestamp is advanced."""
+    import worldgm.__main__ as main_mod
+
+    _stub_tick_deps(monkeypatch)
+    monkeypatch.setattr(main_mod, "TOWN_LORE_ENABLED", True)
+    monkeypatch.setattr(main_mod, "_LORE_CYCLE_MS", 1000)
+    calls: list[int] = []
+
+    async def fake_synth(state, now_ms, **_):
+        calls.append(now_ms)
+        return ["new lore"]
+
+    monkeypatch.setattr(main_mod, "synthesize_town_lore", fake_synth)
+
+    state = _state_with_residents({})
+    state.last_lore_at_ms = 0  # epoch — well past the cycle
+
+    await main_mod._tick(state)
+
+    assert len(calls) == 1, "synthesize_town_lore should run when the interval has elapsed"
+    assert state.last_lore_at_ms > 0, "the interval guard timestamp must be advanced"
+
+
+@pytest.mark.asyncio
+async def test_tick_skips_lore_when_interval_not_elapsed(monkeypatch):
+    """Flag on but last_lore_at_ms is recent → the interval guard skips synthesis."""
+    import time as _time
+
+    import worldgm.__main__ as main_mod
+
+    _stub_tick_deps(monkeypatch)
+    monkeypatch.setattr(main_mod, "TOWN_LORE_ENABLED", True)
+    monkeypatch.setattr(main_mod, "_LORE_CYCLE_MS", 30 * 60_000)  # 30 min
+    calls: list[int] = []
+
+    async def fake_synth(state, now_ms, **_):
+        calls.append(now_ms)
+        return []
+
+    monkeypatch.setattr(main_mod, "synthesize_town_lore", fake_synth)
+
+    state = _state_with_residents({})
+    # Synthesized 'just now' → well inside the 30-min window.
+    state.last_lore_at_ms = int(_time.time() * 1000)
+
+    await main_mod._tick(state)
+
+    assert calls == [], "synthesize_town_lore must be skipped inside the interval window"
