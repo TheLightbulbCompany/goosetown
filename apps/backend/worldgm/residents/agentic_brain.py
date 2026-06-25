@@ -47,8 +47,9 @@ _DIALOGUE_TEMPERATURE = 0.9
 
 def _dialogue_temperature(slug: str) -> float:
     """Stable per-resident temperature in [0.8, 1.0], so the cast doesn't collapse
-    to one phrasing distribution. hashlib (not builtin hash) → stable across procs."""
-    h = int(hashlib.md5(slug.encode()).hexdigest(), 16)
+    to one phrasing distribution. SHA-256 (not builtin hash, which is salted) →
+    stable across processes; not security-sensitive, just deterministic bucketing."""
+    h = int(hashlib.sha256(slug.encode()).hexdigest(), 16)
     return round(0.8 + (h % 5) * 0.05, 2)  # 0.80, 0.85, 0.90, 0.95, 1.00
 
 
