@@ -1,3 +1,6 @@
+from unittest.mock import MagicMock, patch
+
+import worldgm.residents.memory_store as memory_store_mod
 from worldgm.residents.memory_store import MemoryStore, retrieval_score
 
 
@@ -45,3 +48,44 @@ def test_mark_reflected():
     s.put("me", "self", "observation", "x", 5, "2026-06-25T10:00:00Z")
     s.mark_reflected("me", ["2026-06-25T10:00:00Z"])
     assert t.items[0]["reflected"] is True
+
+
+# --- memory_store_from_env cache tests ---
+
+def test_memory_store_from_env_empty_table_name_returns_none(monkeypatch):
+    memory_store_mod._store_cache.clear()
+    monkeypatch.setattr("core.config.settings.RESIDENT_MEMORIES_TABLE", "")
+    from worldgm.residents.memory_store import memory_store_from_env
+    assert memory_store_from_env() is None
+
+
+def test_memory_store_from_env_caches_instance(monkeypatch):
+    memory_store_mod._store_cache.clear()
+    monkeypatch.setattr("core.config.settings.RESIDENT_MEMORIES_TABLE", "goosetown-dev-memories")
+    fake_table = MagicMock()
+    fake_resource = MagicMock()
+    fake_resource.return_value.Table.return_value = fake_table
+
+    from worldgm.residents.memory_store import memory_store_from_env
+    with patch("boto3.resource", fake_resource) as mock_resource:
+        first = memory_store_from_env()
+        second = memory_store_from_env()
+
+    assert first is second, "Same object must be returned on repeated calls"
+    mock_resource.assert_called_once_with("dynamodb")
+
+
+def test_memory_store_from_env_different_names_build_separate_stores(monkeypatch):
+    memory_store_mod._store_cache.clear()
+    fake_resource = MagicMock()
+    fake_resource.return_value.Table.side_effect = lambda name: MagicMock(name=name)
+
+    from worldgm.residents.memory_store import memory_store_from_env
+    with patch("boto3.resource", fake_resource):
+        monkeypatch.setattr("core.config.settings.RESIDENT_MEMORIES_TABLE", "table-a")
+        store_a = memory_store_from_env()
+        monkeypatch.setattr("core.config.settings.RESIDENT_MEMORIES_TABLE", "table-b")
+        store_b = memory_store_from_env()
+
+    assert store_a is not store_b
+    assert fake_resource.call_count == 2
