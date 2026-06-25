@@ -3,6 +3,7 @@
 Public API
 ----------
 recall_about(store, my_id, other_name, now_iso, k=3) -> str
+recall_self(store, my_id, now_iso, k=2) -> str
 async reflect_on_conversation(model, store, town_service, my_id, other_id,
                                other_name, transcript, now_iso) -> bool
 async synthesize_reflection(model, store, my_id, now_iso, min_new=6) -> int
@@ -57,6 +58,21 @@ def recall_about(store: MemoryStore, my_id: str, other_name: str, now_iso: str, 
     ranked = sorted(mems, key=lambda m: retrieval_score(m, now_iso), reverse=True)[:k]
     lines = [f"- [{m['kind']}] {m['text']}" for m in ranked]
     return "\n".join(lines)
+
+
+def recall_self(store: MemoryStore, my_id: str, now_iso: str, k: int = 2) -> str:
+    """Return a rendered string of the top-k self-reflections (insights), or "" if none.
+
+    Fetches memories stored with subject="self" (written by synthesize_reflection),
+    ranks by retrieval_score (most salient first), and returns the top-k insight
+    texts as a short string. Mirrors recall_about's structure.
+    """
+    mems = store.about(my_id, "self")
+    if not mems:
+        return ""
+    ranked = sorted(mems, key=lambda m: retrieval_score(m, now_iso), reverse=True)[:k]
+    lines = [m["text"] for m in ranked]
+    return "; ".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +186,7 @@ async def synthesize_reflection(
                 insight_iso = insight_dt.strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
             else:
                 insight_iso = insight_dt.isoformat()
-            store.put(my_id, "_reflection", "reflection", text, importance, insight_iso,
+            store.put(my_id, "self", "reflection", text, importance, insight_iso,
                       source_ids=source_ids)
             count += 1
         except Exception:

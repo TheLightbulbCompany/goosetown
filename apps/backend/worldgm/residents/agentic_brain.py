@@ -92,6 +92,7 @@ class DecisionContext:
     current_life: str = ""
     disagreeableness: int = 3
     remembered: str = ""
+    beliefs: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -320,6 +321,7 @@ def build_decision_context(persona: Persona, parsed_status: dict) -> DecisionCon
         current_life=persona.current_life,
         disagreeableness=persona.disagreeableness,
         remembered=parsed_status.get("remembered", ""),
+        beliefs=parsed_status.get("beliefs", ""),
     )
 
 
@@ -565,6 +567,8 @@ def build_dialogue_prompt(ctx: DecisionContext, action: dict) -> str:
 
     if ctx.remembered:
         lines.append(f"What you actually remember about {addressee_name}: {ctx.remembered}")
+    if ctx.beliefs:
+        lines.append(f"Lately you've come to believe: {ctx.beliefs}")
 
     if ctx.active_storyline:
         lines.append(f"Happening around you: {ctx.active_storyline}")

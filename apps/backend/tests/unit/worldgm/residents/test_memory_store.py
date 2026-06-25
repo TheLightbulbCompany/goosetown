@@ -1,4 +1,3 @@
-import math, uuid
 from worldgm.residents.memory_store import MemoryStore, retrieval_score
 
 

@@ -85,3 +85,37 @@ def test_synthesize_reflection_distinct_timestamps_for_multiple_insights():
 def test_synthesize_reflection_noop_below_threshold():
     store = MemoryStore(FakeTable()); store.put("me","X","observation","only one",5,"2026-06-25T01:00:00Z")
     assert asyncio.run(reflection.synthesize_reflection(FakeModel("{}"), store, "me","2026-06-25T10:00:00Z", min_new=6)) == 0
+
+
+def test_recall_self_returns_top_reflection_text():
+    """recall_self surfaces the highest-scored reflection when reflections exist."""
+    store = MemoryStore(FakeTable())
+    store.put("me", "self", "reflection", "I thrive in solitude", 8, "2026-06-25T09:00:00Z")
+    store.put("me", "self", "reflection", "Coffee is overrated", 4, "2026-06-25T08:00:00Z")
+    out = reflection.recall_self(store, "me", "2026-06-25T10:00:00Z", k=2)
+    assert "I thrive in solitude" in out
+    assert "Coffee is overrated" in out
+
+
+def test_recall_self_returns_empty_when_none():
+    """recall_self returns "" when there are no self-reflections."""
+    store = MemoryStore(FakeTable())
+    assert reflection.recall_self(store, "me", "2026-06-25T10:00:00Z") == ""
+
+
+def test_reflection_loop_observations_synthesize_then_recalled_via_recall_self():
+    """Seed 6 unreflected observations → synthesize_reflection → recall_self surfaces the insight.
+
+    This proves the observation→reflection→recall arm is no longer write-only.
+    """
+    store = MemoryStore(FakeTable())
+    for i in range(6):
+        store.put("me", "Y", "observation", f"obs{i}", 5, f"2026-06-25T0{i}:00:00Z")
+
+    model = FakeModel(json.dumps({"insights": [{"insight": "I talk too much about myself", "importance": 7}]}))
+    n = asyncio.run(reflection.synthesize_reflection(model, store, "me", "2026-06-25T10:00:00Z", min_new=6))
+    assert n == 1
+
+    # The insight must be retrievable via recall_self (not just sitting in DDB with no read path).
+    out = reflection.recall_self(store, "me", "2026-06-25T10:00:00Z")
+    assert "I talk too much about myself" in out

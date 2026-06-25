@@ -190,17 +190,25 @@ def _inject_recall(parsed_status: dict, store, my_id: str, persona, now_iso: str
 
     Best-effort and read-only on the world snapshot: resolves the addressee
     (conversation partner or nearest nearby), reads the top-k memories about
-    them, and sets ``parsed_status["remembered"]``. Skips (and reads nothing)
-    when there is no addressee. Any failure logs and leaves the key unset."""
+    them, and sets ``parsed_status["remembered"]``. Also sets
+    ``parsed_status["beliefs"]`` from the resident's own self-reflections
+    (synthesized insights stored with subject="self"). Skips (and reads
+    nothing) when there is no addressee for the ``remembered`` path. Any
+    failure logs and leaves the key unset."""
     addressee = _recall_addressee_name(parsed_status, persona)
-    if not addressee:
-        return
+    if addressee:
+        try:
+            remembered = reflection.recall_about(store, my_id, addressee, now_iso)
+            if remembered:
+                parsed_status["remembered"] = remembered
+        except Exception:
+            logger.exception("recall_about failed for %s; no recall this tick", my_id)
     try:
-        remembered = reflection.recall_about(store, my_id, addressee, now_iso)
-        if remembered:
-            parsed_status["remembered"] = remembered
+        beliefs = reflection.recall_self(store, my_id, now_iso)
+        if beliefs:
+            parsed_status["beliefs"] = beliefs
     except Exception:
-        logger.exception("recall_about failed for %s; no recall this tick", my_id)
+        logger.exception("recall_self failed for %s; skipping beliefs this tick", my_id)
 
 
 async def step_resident_brain(
