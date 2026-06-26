@@ -272,6 +272,123 @@ class TestResyncAgentJobs:
         assert mailbox.notify.call_count == 0
 
 
+class TestOpenOfferResync:
+    """Wave 2 §3.5 / codex P1 — the dropped-offer recovery's SECOND seam.
+
+    A provider that was offline when a job was posted holds a durable
+    ``offeredTo`` bidding right (the matcher commits it before the best-effort
+    ``job_offered`` notify — proven in test_exchange_matcher), but has no local
+    TOWN_OFFERS entry because the live wake was lost. On reconnect,
+    ``resync_agent_jobs`` must re-deliver ``job_offered`` for every OPEN job
+    where the agent is in ``offeredTo`` (and isn't the consumer). Without this,
+    a missed offer is never healed and the provider silently can't bid.
+    """
+
+    def test_offered_provider_gets_job_offered_on_resync(self, dynamodb_tables, mailbox):
+        deadline = time.time() + 600
+        _seed_job(
+            dynamodb_tables,
+            "jo1",
+            status="OPEN",
+            consumerId="cons-1",
+            consumerName="carol",
+            category="writing.poetry",
+            maxPrice=25,
+            offeredTo={"prov-1"},
+            bidWindowEndsAt=Decimal(str(deadline)),
+            successCriteria=["5-7-5 haiku", "mentions the fountain"],
+        )
+
+        sent = ex.resync_agent_jobs("prov-1")
+
+        assert sent == 1
+        (evt,) = _events_for(mailbox, "prov-1")
+        assert evt["event"] == "job_offered"
+        assert evt["resync"] is True
+        assert evt["job_id"] == "jo1"
+        assert evt["title"] == "Research tools"  # _seed_job default
+        assert evt["category"] == "writing.poetry"
+        assert evt["max_price"] == 25
+        assert isinstance(evt["max_price"], int)  # int(), not Decimal — daemon-friendly
+        assert evt["consumer_name"] == "carol"
+        assert evt["description"] == "Compare three pixel-art tools."
+        assert evt["bid_deadline"] is not None and evt["bid_deadline"] > time.time()
+        assert evt["criteria"] == ["5-7-5 haiku", "mentions the fountain"]
+
+    def test_consumer_excluded_from_own_open_offer(self, dynamodb_tables, mailbox):
+        """The matcher excludes the consumer, but the resync guard must also skip
+        a job where the agent IS the consumer even if somehow in offeredTo."""
+        _seed_job(
+            dynamodb_tables,
+            "jo2",
+            status="OPEN",
+            consumerId="cons-1",
+            offeredTo={"cons-1"},
+            bidWindowEndsAt=Decimal(str(time.time() + 600)),
+        )
+
+        assert ex.resync_agent_jobs("cons-1") == 0
+        assert _events_for(mailbox, "cons-1") == []
+
+    def test_agent_not_in_offeredto_gets_no_open_offer(self, dynamodb_tables, mailbox):
+        _seed_job(
+            dynamodb_tables,
+            "jo3",
+            status="OPEN",
+            consumerId="cons-1",
+            offeredTo={"someone-else"},
+            bidWindowEndsAt=Decimal(str(time.time() + 600)),
+        )
+
+        assert ex.resync_agent_jobs("prov-1") == 0
+        assert _events_for(mailbox, "prov-1") == []
+
+    def test_open_job_without_offeredto_is_pull_only(self, dynamodb_tables, mailbox):
+        """A job with no subscribers (no offeredTo) lives on the public board
+        only — resync must not invent an offer for anyone."""
+        _seed_job(
+            dynamodb_tables,
+            "jo4",
+            status="OPEN",
+            consumerId="cons-1",
+            bidWindowEndsAt=Decimal(str(time.time() + 600)),
+        )
+
+        assert ex.resync_agent_jobs("prov-1") == 0
+
+    def test_open_offer_bid_deadline_none_and_no_criteria_when_unset(self, dynamodb_tables, mailbox):
+        """Optional fields degrade cleanly: no bid window → bid_deadline None;
+        no success criteria → no ``criteria`` key at all."""
+        _seed_job(
+            dynamodb_tables,
+            "jo5",
+            status="OPEN",
+            consumerId="cons-1",
+            offeredTo={"prov-1"},
+        )
+
+        ex.resync_agent_jobs("prov-1")
+
+        (evt,) = _events_for(mailbox, "prov-1")
+        assert evt["bid_deadline"] is None
+        assert "criteria" not in evt
+
+    def test_undelivered_open_offer_not_counted(self, dynamodb_tables, mailbox):
+        """If the reconnect notify itself fails (still racing the new connection),
+        the offer is not counted as delivered — the next reconnect heals it."""
+        mailbox.notify.return_value = False
+        _seed_job(
+            dynamodb_tables,
+            "jo6",
+            status="OPEN",
+            consumerId="cons-1",
+            offeredTo={"prov-1"},
+            bidWindowEndsAt=Decimal(str(time.time() + 600)),
+        )
+
+        assert ex.resync_agent_jobs("prov-1") == 0
+
+
 class TestAwardNotifyFailureLogsWarning:
     async def test_winner_notify_false_logs_heal_on_reconnect(self, dynamodb_tables, mailbox, ws, caplog):
         # Seed a closable OPEN job with one connected bidder, but make every
