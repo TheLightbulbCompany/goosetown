@@ -38,6 +38,18 @@ def connections_table():
     return get_client().Table(table_name("connections"))
 
 
+def delete_connection(connection_id: str) -> None:
+    """Delete a row from the connections table (dead-connection prune).
+
+    The ``$connect``/``$disconnect`` Lambdas own normal connection lifecycle,
+    but an abrupt drop can leave a row behind when ``$disconnect`` never fires
+    or fails. The backend calls this on ``GoneException`` so a dead connection
+    isn't retried (and re-seeded across restarts) forever. Raises on DynamoDB
+    failure — callers treat pruning as best-effort and swallow exceptions.
+    """
+    connections_table().delete_item(Key={"connectionId": connection_id})
+
+
 def owner_chats_table():
     return get_client().Table(table_name("owner-chats"))
 

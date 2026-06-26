@@ -110,8 +110,10 @@ class DaemonMailbox:
         every caller wrapped it in ``try/except``.
         """
         try:
-            return self._mgmt.send_message(connection_id, event)
+            delivered = self._mgmt.send_message(connection_id, event)
         except Exception as exc:
+            # Non-gone transport error (throttle, network blip). Do NOT prune —
+            # the connection may still be live; let the next send retry it.
             logger.warning(
                 "DaemonMailbox.notify_connection: send failed for connection %s, event=%r: %s",
                 connection_id[:12],
@@ -119,6 +121,30 @@ class DaemonMailbox:
                 exc,
             )
             return False
+        if not delivered:
+            # GoneException — the connection is dead. Prune it from the registry
+            # and the durable connections table so it isn't retried on every
+            # broadcast cycle. Unpruned dead connections flooded the event loop
+            # and crash-looped the backend (2026-06-26): the stale rows survived
+            # task restarts because nothing deleted them from DynamoDB.
+            self._prune_dead_connection(connection_id)
+        return delivered
+
+    def _prune_dead_connection(self, connection_id: str) -> None:
+        """Best-effort removal of a gone connection from the in-memory registry
+        and the durable connections table. Never raises — pruning is cleanup,
+        not the caller's concern, so a failure here must not change the delivery
+        verdict or break the 57 call sites that depend on notify_connection."""
+        try:
+            self._ws_manager.unregister(connection_id)
+        except Exception:
+            logger.debug("prune: ws_manager.unregister failed for %s", connection_id[:12], exc_info=True)
+        try:
+            from core import dynamo
+
+            dynamo.delete_connection(connection_id)
+        except Exception:
+            logger.debug("prune: delete_connection failed for %s", connection_id[:12], exc_info=True)
 
     # ---- common patterns ----------------------------------------------------
 
