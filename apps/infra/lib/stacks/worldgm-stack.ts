@@ -103,6 +103,10 @@ export class WorldgmStack extends cdk.Stack {
         // cast; prod runs the real-public-figures cast (personas_prod.py).
         RESIDENTS_ENABLED: "true",
         RESIDENT_SLATE: env === "prod" ? "prod" : "default",
+        RESIDENT_MEMORIES_TABLE: `goosetown-${env}-memories`,
+        RESIDENT_MEMORY_ENABLED: env === "prod" ? "false" : "true",
+        RESIDENT_SOCIAL_GOALS_ENABLED: env === "prod" ? "false" : "true",
+        TOWN_LORE_ENABLED: env === "prod" ? "false" : "true",
       },
       secrets: {
         CLERK_ISSUER: ecs.Secret.fromSecretsManager(props.secrets.clerkIssuer),
@@ -218,6 +222,7 @@ export class WorldgmStack extends cdk.Stack {
     props.tables.worldEvents.grantWriteData(taskDef.taskRole);
     props.tables.conversations.grantReadData(taskDef.taskRole);
     props.tables.relationships.grantReadWriteData(taskDef.taskRole);
+    props.tables.memories.grantReadWriteData(taskDef.taskRole);
 
     this.service = new ecs.FargateService(this, "Service", {
       serviceName: `goosetown-${env}-worldgm`,

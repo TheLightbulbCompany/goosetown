@@ -3,7 +3,7 @@
 No I/O, no daemon coupling — same inputs always produce the same output.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 # Town locations a resident may move to.
 _VALID_DESTINATIONS = (
@@ -45,6 +45,22 @@ class ResidentRuntime:
     location_context: str = "town"  # "town" | "apartment"
     sleep_hour: int = 22  # UTC hour they go to sleep
     wake_hour: int = 6  # UTC hour they wake up
+
+    # ---- Phase 2 memory bookkeeping (only used by the agentic path) ----
+    # The live conversation transcript is cached each in-conversation tick so
+    # that when ``active_conversation`` goes set→None the brain can reflect on
+    # the just-ended exchange (covers end-action, inactivity, and turn-cap
+    # paths uniformly — no _finalize_conversation hook). All gated on
+    # settings.RESIDENT_MEMORY_ENABLED; left at defaults when memory is off.
+    last_conv_id: str | None = None  # conv_id cached while talking
+    last_conv_turns: list = field(default_factory=list)  # cached transcript turns
+    reflected_conv_ids: set = field(default_factory=set)  # convs already reflected on (dedupe)
+    memories_since_reflection: int = 0  # new observation memories since last synthesis
+
+    # ---- Phase 3 social-goal bookkeeping (only used by the agentic path) ----
+    # Gated on settings.RESIDENT_SOCIAL_GOALS_ENABLED; left at defaults when off.
+    social_goal: str = ""  # current short-term social aim injected into status each tick
+    ticks_since_social_goal: int = 0  # ticks elapsed since last goal generation
 
 
 def _move_cmd(destination: str) -> dict:

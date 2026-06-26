@@ -43,7 +43,27 @@ _UUID_RE = re.compile(
 logger = logging.getLogger(__name__)
 
 
-_MAX_CONVERSATION_TURNS = 20
+def _read_max_conversation_turns() -> int:
+    """Hard backstop on conversation length (all conversations, incl. human↔agent).
+
+    Default 12 — a gentle cap; resident self-ending (worldgm end-pressure) is the
+    primary loop fix, this just bounds the tail. Tunable via CONVERSATION_MAX_TURNS
+    so we can dial it in prod without a redeploy (mirrors the inactivity timeout).
+    """
+    raw = os.environ.get("CONVERSATION_MAX_TURNS", "").strip()
+    if not raw:
+        return 12
+    try:
+        value = int(raw)
+        if value <= 0:
+            raise ValueError
+        return value
+    except ValueError:
+        logger.warning("CONVERSATION_MAX_TURNS=%r is not a positive int — using default 12", raw)
+        return 12
+
+
+_MAX_CONVERSATION_TURNS = _read_max_conversation_turns()
 
 
 def _maybe_enqueue_talking(agent_row: dict | None) -> None:

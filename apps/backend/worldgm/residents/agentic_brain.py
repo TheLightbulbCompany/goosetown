@@ -9,6 +9,7 @@ docs/superpowers/specs/2026-06-05-agentic-resident-brain-design.md.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -42,6 +43,15 @@ _TEMPERATURE = 0.8
 # Slightly hotter for voice/creativity; 160 tokens covers 1-3 sentences with room.
 _DIALOGUE_MAX_TOKENS = 160
 _DIALOGUE_TEMPERATURE = 0.9
+
+
+def _dialogue_temperature(slug: str) -> float:
+    """Stable per-resident temperature in [0.8, 1.0], so the cast doesn't collapse
+    to one phrasing distribution. SHA-256 (not builtin hash, which is salted) →
+    stable across processes; not security-sensitive, just deterministic bucketing."""
+    h = int(hashlib.sha256(slug.encode()).hexdigest(), 16)
+    return round(0.8 + (h % 5) * 0.05, 2)  # 0.80, 0.85, 0.90, 0.95, 1.00
+
 
 # Cap concurrent Bedrock decisions so 20 residents firing at once don't saturate
 # the small worldgm task's CPU/GIL and starve the in-process daemons' WS loops.
@@ -81,7 +91,12 @@ class DecisionContext:
     obsessions: tuple[str, ...] = ()
     opinions: tuple[tuple[str, str], ...] = ()
     current_life: str = ""
-    sample_lines: tuple[str, ...] = ()
+    disagreeableness: int = 3
+    remembered: str = ""
+    beliefs: str = ""
+    role: str = ""
+    social_goal: str = ""
+    town_lore: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +323,12 @@ def build_decision_context(persona: Persona, parsed_status: dict) -> DecisionCon
         obsessions=persona.obsessions,
         opinions=persona.opinions,
         current_life=persona.current_life,
-        sample_lines=persona.sample_lines,
+        disagreeableness=persona.disagreeableness,
+        remembered=parsed_status.get("remembered", ""),
+        beliefs=parsed_status.get("beliefs", ""),
+        role=persona.role,
+        social_goal=parsed_status.get("social_goal", ""),
+        town_lore=parsed_status.get("town_lore", ""),
     )
 
 
@@ -381,6 +401,18 @@ def build_prompt(ctx: DecisionContext) -> str:
         lines.append("Recently:")
         lines += [f"  - {e}" for e in ctx.recent_events]
 
+    if ctx.role or ctx.social_goal:
+        bits = []
+        if ctx.role:
+            bits.append(f"You are {ctx.display_name}, the town's {ctx.role}.")
+        if ctx.social_goal:
+            bits.append(f"Right now you want to: {ctx.social_goal}.")
+        bits.append(
+            "Gravitate toward people you click with, steer clear of those you clash with, "
+            "and act on what you're after — don't drift aimlessly."
+        )
+        lines.append(" ".join(bits))
+
     if ctx.active_conversation:
         participants = ", ".join(ctx.active_conversation.get("participants", []) or ["someone"])
         lines.append(f"You are talking with {participants}. Conversation so far:")
@@ -401,6 +433,13 @@ def build_prompt(ctx: DecisionContext) -> str:
                 "A real person watching the town has spoken to you directly. "
                 "Acknowledge them and answer naturally, like a resident talking "
                 "to a curious visitor — stay in character."
+            )
+        n_turns = len(turns)
+        if n_turns >= 4:
+            lines.append(
+                f"This exchange has run {n_turns} turns. People make their point and move on — they don't "
+                "agree back and forth forever. If you've said what you came to say (or it's going in circles), "
+                "choose 'end'."
             )
 
     if ctx.available_activities:
@@ -483,6 +522,23 @@ def _clean_line(raw: str, speaker: str) -> str:
     return s[:_MAX_MSG_CHARS]
 
 
+def _disagreeableness_instruction(level: int) -> str:
+    """Trait-conditioned guidance on how readily this resident agrees.
+
+    Heterogeneous disagreeableness — not uniform agreement — is what makes
+    multi-agent conversation believable (2026-06-24 design, §4.2). NO chain-of-
+    thought 'do I really agree?' step: that measurably amplifies sycophancy.
+    """
+    if level >= 4:
+        return (
+            "You don't soften your view to be liked. If you see it differently, say so plainly "
+            "and hold your ground — agreement should cost them a real reason."
+        )
+    if level <= 2:
+        return "You're warm and easy, but still bring your own real opinion — don't just validate them."
+    return "Speak your honest take. Agree when you mean it; push back when you don't."
+
+
 def build_dialogue_prompt(ctx: DecisionContext, action: dict) -> str:
     """Voice-first prompt for the dialogue model.
 
@@ -528,13 +584,20 @@ def build_dialogue_prompt(ctx: DecisionContext, action: dict) -> str:
         if rel:
             lines.append(f"Where you stand with {addressee_name}: {rel}.")
 
+    if ctx.remembered:
+        lines.append(f"What you actually remember about {addressee_name}: {ctx.remembered}")
+    if ctx.beliefs:
+        lines.append(f"Lately you've come to believe: {ctx.beliefs}")
+
     if ctx.active_storyline:
         lines.append(f"Happening around you: {ctx.active_storyline}")
+    if ctx.town_lore:
+        lines.append(f"Town lore everyone knows: {ctx.town_lore}")
 
-    if ctx.sample_lines:
-        lines.append("")
-        lines.append(f"This is how {ctx.display_name} sounds — match the voice, don't reuse these lines:")
-        lines += [f'  "{s}"' for s in ctx.sample_lines]
+    lines.append(f"Right now: you're at the {ctx.location}, feeling {ctx.mood}.")
+    if ctx.recent_events:
+        lines.append("What's actually happened lately:")
+        lines += [f"  - {e}" for e in ctx.recent_events]
 
     lines.append("")
     if history:
@@ -542,15 +605,19 @@ def build_dialogue_prompt(ctx: DecisionContext, action: dict) -> str:
         lines += history
         lines.append("")
         lines.append(
-            f"Say your next line as {ctx.display_name}: react to what they just said — agree, riff, "
-            "push back, joke, get specific. Don't just acknowledge; add something."
+            f"Say your next line as {ctx.display_name}: react to what they just said — get specific, "
+            f"add something new. {_disagreeableness_instruction(ctx.disagreeableness)}"
         )
     else:
         lines.append(
             f"You're walking up to {addressee_name} to start talking. Open with something only "
-            f"{ctx.display_name} would say — specific to who you are and your read on them, not a generic greeting."
+            f"{ctx.display_name} would say — specific to who you are and your read on them, not a generic "
+            f"greeting. {_disagreeableness_instruction(ctx.disagreeableness)}"
         )
+    lines.append("Don't restate your last point or reach for your usual catchphrases — move it forward or land it.")
     lines.append(
+        "Talk about what's actually here — what they just said, a real recent event, what's going on in "
+        "town. Do NOT invent events, places, projects, or people that aren't above. "
         "Reply with ONLY the words you speak — 1-3 sentences, no name prefix, no quotation marks, no stage directions."
     )
     return "\n".join(lines)
@@ -567,7 +634,10 @@ async def generate_dialogue(model, ctx: DecisionContext, action: dict) -> str:
     try:
         async with _get_decide_semaphore():
             raw = await asyncio.to_thread(
-                model.sample_text, prompt, max_tokens=_DIALOGUE_MAX_TOKENS, temperature=_DIALOGUE_TEMPERATURE
+                model.sample_text,
+                prompt,
+                max_tokens=_DIALOGUE_MAX_TOKENS,
+                temperature=_dialogue_temperature(ctx.name),
             )
     except Exception:
         logger.warning("generate_dialogue: model call failed for %s; using fallback line", ctx.name, exc_info=True)

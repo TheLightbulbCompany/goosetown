@@ -68,6 +68,12 @@ def test_prod_at_least_one_resident_awake_every_hour():
         assert awake, f"no resident awake at UTC hour {hour}"
 
 
+def test_prod_cast_disagreeableness_mean_floor():
+    """Cast mean disagreeableness must stay >= 3.2; a single drop would breach the design target."""
+    mean = sum(p.disagreeableness for p in PROD_RESIDENT_PERSONAS) / len(PROD_RESIDENT_PERSONAS)
+    assert mean >= 3.2, f"Cast mean disagreeableness {mean:.2f} fell below 3.2"
+
+
 def test_resident_slate_env_selects_prod(monkeypatch):
     """RESIDENT_SLATE=prod -> prod cast; unset/other -> default cast."""
     from worldgm.__main__ import _resident_personas
