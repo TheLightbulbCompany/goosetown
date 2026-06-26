@@ -370,3 +370,305 @@ class TestTownAgentWsManagerGetByAgentId:
 
         conn = mgr.get_by_agent_id("agent-uuid-1")
         assert conn.connection_id == "conn-new"
+
+
+# ===========================================================================
+# restore_inactivity_timers — startup timer recovery
+# ===========================================================================
+
+
+class TestRestoreInactivityTimers:
+    """Tests for restore_inactivity_timers() in conversation_service."""
+
+    def test_empty_list_returns_zero_no_scheduling(self, monkeypatch):
+        """Empty active conversations → returns 0, no timer scheduled."""
+        from unittest.mock import MagicMock, patch
+
+        from core.services import conversation_service
+
+        monkeypatch.setattr(
+            "core.services.conversation_service._schedule_inactivity_timeout",
+            MagicMock(),
+        )
+
+        with patch("core.services.conversation_service.TownService") as MockSvc:
+            MockSvc.return_value.get_active_conversations.return_value = []
+            import asyncio
+
+            result = asyncio.run(conversation_service.restore_inactivity_timers())
+
+        assert result == 0
+        conversation_service._schedule_inactivity_timeout.assert_not_called()
+
+    def test_stale_conv_scheduled_with_delay_zero(self, monkeypatch):
+        """A conv whose updatedAt is well past the timeout gets delay≈0."""
+        from datetime import datetime, timedelta, timezone
+        from unittest.mock import MagicMock, patch
+
+        from core.services import conversation_service
+
+        schedule_mock = MagicMock()
+        monkeypatch.setattr(
+            "core.services.conversation_service._schedule_inactivity_timeout",
+            schedule_mock,
+        )
+
+        # updatedAt far in the past (10 minutes ago — well past the 180s timeout)
+        stale_ts = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        stale_conv = {"id": "conv-stale", "status": "active", "updatedAt": stale_ts}
+
+        with patch("core.services.conversation_service.TownService") as MockSvc:
+            MockSvc.return_value.get_active_conversations.return_value = [stale_conv]
+            import asyncio
+
+            result = asyncio.run(conversation_service.restore_inactivity_timers())
+
+        assert result == 1
+        args = schedule_mock.call_args
+        conv_id_arg = args[0][0]
+        delay_kwarg = args[1].get("delay") if args[1] else args[0][1]
+        assert conv_id_arg == "conv-stale"
+        assert delay_kwarg == 0.0
+
+    def test_fresh_conv_scheduled_with_remaining_delay(self, monkeypatch):
+        """A conv updated just now gets delay ≈ _INACTIVITY_TIMEOUT_SEC."""
+        from datetime import datetime, timedelta, timezone
+        from unittest.mock import MagicMock, patch
+
+        from core.services import conversation_service
+
+        schedule_mock = MagicMock()
+        monkeypatch.setattr(
+            "core.services.conversation_service._schedule_inactivity_timeout",
+            schedule_mock,
+        )
+
+        # updatedAt is 5 seconds ago — still has ~175s remaining (at 180s timeout)
+        fresh_ts = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+        fresh_conv = {"id": "conv-fresh", "status": "active", "updatedAt": fresh_ts}
+
+        with patch("core.services.conversation_service.TownService") as MockSvc:
+            MockSvc.return_value.get_active_conversations.return_value = [fresh_conv]
+            import asyncio
+
+            result = asyncio.run(conversation_service.restore_inactivity_timers())
+
+        assert result == 1
+        args = schedule_mock.call_args
+        delay_kwarg = args[1].get("delay") if args[1] else args[0][1]
+        # Should be close to (timeout - 5), with some slack for test execution time
+        assert delay_kwarg > 0.0
+        assert delay_kwarg <= conversation_service._INACTIVITY_TIMEOUT_SEC
+
+    def test_both_stale_and_fresh_both_scheduled(self, monkeypatch):
+        """Both a stale and a fresh conv are scheduled; stale gets delay 0."""
+        from datetime import datetime, timedelta, timezone
+        from unittest.mock import MagicMock, patch
+
+        from core.services import conversation_service
+
+        schedule_mock = MagicMock()
+        monkeypatch.setattr(
+            "core.services.conversation_service._schedule_inactivity_timeout",
+            schedule_mock,
+        )
+
+        stale_ts = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        fresh_ts = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+        convs = [
+            {"id": "conv-stale", "status": "active", "updatedAt": stale_ts},
+            {"id": "conv-fresh", "status": "active", "updatedAt": fresh_ts},
+        ]
+
+        with patch("core.services.conversation_service.TownService") as MockSvc:
+            MockSvc.return_value.get_active_conversations.return_value = convs
+            import asyncio
+
+            result = asyncio.run(conversation_service.restore_inactivity_timers())
+
+        assert result == 2
+        assert schedule_mock.call_count == 2
+
+        calls_by_id = {}
+        for c in schedule_mock.call_args_list:
+            cid = c[0][0]
+            delay = c[1].get("delay") if c[1] else c[0][1]
+            calls_by_id[cid] = delay
+
+        assert calls_by_id["conv-stale"] == 0.0
+        assert calls_by_id["conv-fresh"] > 0.0
+
+    def test_bad_updated_at_skips_conv_no_exception(self, monkeypatch):
+        """A conv with unparseable updatedAt is skipped; no exception escapes."""
+        from datetime import datetime, timedelta, timezone
+        from unittest.mock import MagicMock, patch
+
+        from core.services import conversation_service
+
+        schedule_mock = MagicMock()
+        monkeypatch.setattr(
+            "core.services.conversation_service._schedule_inactivity_timeout",
+            schedule_mock,
+        )
+
+        fresh_ts = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+        convs = [
+            {"id": "conv-bad", "status": "active", "updatedAt": "not-a-timestamp"},
+            {"id": "conv-good", "status": "active", "updatedAt": fresh_ts},
+        ]
+
+        with patch("core.services.conversation_service.TownService") as MockSvc:
+            MockSvc.return_value.get_active_conversations.return_value = convs
+            import asyncio
+
+            # Must not raise
+            result = asyncio.run(conversation_service.restore_inactivity_timers())
+
+        # Only the good one was scheduled
+        assert result == 1
+        assert schedule_mock.call_count == 1
+        assert schedule_mock.call_args[0][0] == "conv-good"
+
+    def test_uses_started_at_when_updated_at_missing(self, monkeypatch):
+        """Falls back to startedAt when updatedAt is absent."""
+        from datetime import datetime, timedelta, timezone
+        from unittest.mock import MagicMock, patch
+
+        from core.services import conversation_service
+
+        schedule_mock = MagicMock()
+        monkeypatch.setattr(
+            "core.services.conversation_service._schedule_inactivity_timeout",
+            schedule_mock,
+        )
+
+        stale_ts = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        conv = {"id": "conv-no-updated", "status": "active", "startedAt": stale_ts}
+
+        with patch("core.services.conversation_service.TownService") as MockSvc:
+            MockSvc.return_value.get_active_conversations.return_value = [conv]
+            import asyncio
+
+            result = asyncio.run(conversation_service.restore_inactivity_timers())
+
+        assert result == 1
+        delay = schedule_mock.call_args[1].get("delay") if schedule_mock.call_args[1] else schedule_mock.call_args[0][1]
+        assert delay == 0.0
+
+
+# ===========================================================================
+# _schedule_inactivity_timeout — optional delay parameter
+# ===========================================================================
+
+
+class TestScheduleInactivityTimeoutDelay:
+    """_schedule_inactivity_timeout passes an explicit delay through to the task."""
+
+    def test_custom_delay_is_used_not_default(self, monkeypatch):
+        """When delay=5.0 is passed, the created task sleeps 5.0 not _INACTIVITY_TIMEOUT_SEC."""
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        from core.services import conversation_service
+
+        sleep_calls = []
+
+        async def capturing_sleep(seconds):
+            sleep_calls.append(seconds)
+            # Don't actually sleep in the test
+
+        monkeypatch.setattr(asyncio, "sleep", capturing_sleep)
+
+        # Patch finalize so the timer doesn't do real DDB work when it fires
+        mock_finalize = AsyncMock()
+        monkeypatch.setattr(
+            "core.services.conversation_service._finalize_conversation",
+            mock_finalize,
+        )
+        # Patch TownService get_conversation_by_id to return non-active so finalize bails early
+        with patch("core.services.conversation_service.TownService") as MockSvc:
+            MockSvc.return_value.get_conversation_by_id.return_value = {"status": "ended"}
+
+            async def run():
+                conversation_service._schedule_inactivity_timeout("test-conv-delay", delay=5.0)
+                # Run the event loop briefly to let the task execute
+                task = conversation_service._inactivity_tasks.get("test-conv-delay")
+                if task:
+                    await asyncio.wait_for(task, timeout=2.0)
+
+            asyncio.run(run())
+
+        assert sleep_calls == [5.0], f"Expected [5.0] but got {sleep_calls}"
+
+    def test_no_delay_uses_default_timeout(self, monkeypatch):
+        """When no delay is passed, the task sleeps _INACTIVITY_TIMEOUT_SEC."""
+        import asyncio
+        from unittest.mock import patch
+
+        from core.services import conversation_service
+
+        sleep_calls = []
+
+        async def capturing_sleep(seconds):
+            sleep_calls.append(seconds)
+
+        monkeypatch.setattr(asyncio, "sleep", capturing_sleep)
+
+        with patch("core.services.conversation_service.TownService") as MockSvc:
+            MockSvc.return_value.get_conversation_by_id.return_value = {"status": "ended"}
+
+            async def run():
+                conversation_service._schedule_inactivity_timeout("test-conv-default")
+                task = conversation_service._inactivity_tasks.get("test-conv-default")
+                if task:
+                    await asyncio.wait_for(task, timeout=2.0)
+
+            asyncio.run(run())
+
+        assert sleep_calls == [conversation_service._INACTIVITY_TIMEOUT_SEC]
+
+
+# ===========================================================================
+# get_active_conversations — TownService DynamoDB query
+# ===========================================================================
+
+
+class TestGetActiveConversations:
+    """get_active_conversations queries the status-updatedAt-index GSI."""
+
+    def test_queries_correct_gsi_with_status_active(self, monkeypatch):
+        """Asserts that the method queries status-updatedAt-index with status=active."""
+        from unittest.mock import MagicMock, patch
+
+        from core.services.town_service import TownService
+
+        mock_table = MagicMock()
+        mock_table.query.return_value = {"Items": []}
+
+        with patch("core.services.town_service.dynamo") as mock_dynamo:
+            mock_dynamo.conversations_table.return_value = mock_table
+            svc = TownService()
+            result = svc.get_active_conversations()
+
+        assert result == []
+        mock_table.query.assert_called_once()
+        call_kwargs = mock_table.query.call_args[1]
+        assert call_kwargs.get("IndexName") == "status-updatedAt-index"
+
+    def test_returns_decimal_native_items(self, monkeypatch):
+        """Items are converted from Decimal to native Python types."""
+        from decimal import Decimal
+        from unittest.mock import MagicMock, patch
+
+        from core.services.town_service import TownService
+
+        mock_table = MagicMock()
+        mock_table.query.return_value = {"Items": [{"id": "conv-1", "status": "active", "turnCount": Decimal("3")}]}
+
+        with patch("core.services.town_service.dynamo") as mock_dynamo:
+            mock_dynamo.conversations_table.return_value = mock_table
+            svc = TownService()
+            result = svc.get_active_conversations()
+
+        assert len(result) == 1
+        assert isinstance(result[0]["turnCount"], int)

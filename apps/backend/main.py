@@ -33,6 +33,13 @@ async def lifespan(app: FastAPI):
     # Reconnect active agents to game server on startup
     await _reconnect_active_agents()
 
+    # Restore in-memory conversation inactivity timers from DynamoDB.
+    # Must run AFTER _reconnect_active_agents so the ws_manager is warm
+    # when _finalize_conversation sends conversation_ended events.
+    from core.services.conversation_service import restore_inactivity_timers
+
+    await restore_inactivity_timers()
+
     # Start Exchange deadline sweeper
     import asyncio
 

@@ -26,6 +26,7 @@ import asyncio
 import logging
 import os
 import re
+from datetime import datetime, timezone
 
 from core.services.daemon_bridge import _apply_event_with_sleep_guard
 from core.services.game_server_client import get_game_server_client
@@ -130,14 +131,23 @@ _INACTIVITY_TIMEOUT_SEC: float = _read_inactivity_timeout()
 _inactivity_tasks: dict[str, asyncio.Task] = {}
 
 
-async def _inactivity_timeout(conv_id: str) -> None:
+async def _inactivity_timeout(conv_id: str, delay: float | None = None) -> None:
     """Background coroutine: wait the silence window, then auto-end the conv.
 
     Cancelled (and replaced) on every new turn or join, so it only fires
     when a conversation has genuinely gone quiet.
+
+    Args:
+        conv_id: Conversation UUID.
+        delay: Custom sleep duration in seconds.  When ``None`` (the default,
+               used by all normal call sites), sleeps ``_INACTIVITY_TIMEOUT_SEC``.
+               Pass an explicit value during startup recovery so timers fire at
+               their original deadline (or immediately when the deadline has
+               already passed).
     """
+    sleep_duration = delay if delay is not None else _INACTIVITY_TIMEOUT_SEC
     try:
-        await asyncio.sleep(_INACTIVITY_TIMEOUT_SEC)
+        await asyncio.sleep(sleep_duration)
     except asyncio.CancelledError:
         return
     finally:
@@ -156,24 +166,31 @@ async def _inactivity_timeout(conv_id: str) -> None:
     logger.info(
         "Conversation %s silent for %.0fs — auto-ending (inactivity)",
         conv_id,
-        _INACTIVITY_TIMEOUT_SEC,
+        sleep_duration,
     )
     ws_manager = get_town_agent_ws_manager()
     await _finalize_conversation(conv_id, service, ws_manager, auto_ended=True, end_reason_override="inactivity")
 
 
-def _schedule_inactivity_timeout(conv_id: str) -> None:
+def _schedule_inactivity_timeout(conv_id: str, delay: float | None = None) -> None:
     """Schedule (or reset) the silence-auto-end timer for a conversation.
 
     Called on ``chat`` / ``say`` / ``join_conversation`` — any "activity"
     signal that proves the conversation is still ongoing. Cancels any
     previous timer for the same ``conv_id`` so the window is always
     measured from the most recent activity.
+
+    Args:
+        conv_id: Conversation UUID.
+        delay: Optional custom sleep duration passed through to
+               ``_inactivity_timeout``.  Normal call sites omit this (uses
+               the module-level default).  Startup recovery passes the
+               *remaining* time so the timer fires at its original deadline.
     """
     existing = _inactivity_tasks.get(conv_id)
     if existing and not existing.done():
         existing.cancel()
-    _inactivity_tasks[conv_id] = asyncio.create_task(_inactivity_timeout(conv_id))
+    _inactivity_tasks[conv_id] = asyncio.create_task(_inactivity_timeout(conv_id, delay=delay))
 
 
 def _cancel_inactivity_timeout(conv_id: str) -> None:
@@ -185,6 +202,66 @@ def _cancel_inactivity_timeout(conv_id: str) -> None:
     task = _inactivity_tasks.pop(conv_id, None)
     if task and not task.done():
         task.cancel()
+
+
+async def restore_inactivity_timers() -> int:
+    """Re-arm inactivity timers for all active conversations on backend startup.
+
+    Inactivity timers are in-memory (``_inactivity_tasks``).  A backend restart
+    drops them, causing active conversations to never auto-end and trapping
+    participants in ``currentConversationId`` forever (the 2-day freeze bug).
+
+    This function is called once during lifespan startup, after active agents
+    are reconnected.  It mirrors how activity timers are restored in
+    ``_reconnect_active_agents``:
+
+    * Conversations whose last activity is *older* than ``_INACTIVITY_TIMEOUT_SEC``
+      are scheduled with ``delay=0`` so they fire immediately and go through the
+      normal ``_finalize_conversation`` → ``end_conversation`` path.
+    * Conversations still within their window get ``delay=remaining`` so they
+      fire at their original deadline.
+
+    Returns:
+        The number of timers successfully scheduled.
+    """
+    service = TownService()
+    try:
+        convs = service.get_active_conversations()
+    except Exception:
+        logger.warning("restore_inactivity_timers: failed to query active conversations", exc_info=True)
+        return 0
+
+    now = datetime.now(timezone.utc)
+    scheduled = 0
+
+    for conv in convs:
+        conv_id = conv.get("id", "")
+        if not conv_id:
+            continue
+        try:
+            # Prefer updatedAt (last activity); fall back to startedAt.
+            ts_str = conv.get("updatedAt") or conv.get("startedAt")
+            if not ts_str:
+                raise ValueError("no timestamp field")
+            updated = datetime.fromisoformat(ts_str)
+            # Ensure timezone-aware for comparison.
+            if updated.tzinfo is None:
+                updated = updated.replace(tzinfo=timezone.utc)
+            elapsed = (now - updated).total_seconds()
+            remaining = _INACTIVITY_TIMEOUT_SEC - elapsed
+            delay = max(0.0, remaining)
+            _schedule_inactivity_timeout(conv_id, delay=delay)
+            scheduled += 1
+        except Exception:
+            logger.warning(
+                "restore_inactivity_timers: skipping conv %s (bad timestamp or error)",
+                conv_id,
+                exc_info=True,
+            )
+            continue
+
+    logger.info("Startup: restored %d conversation inactivity timers", scheduled)
+    return scheduled
 
 
 async def _handle_chat(connection_id: str, body: dict, agent_conn) -> None:
