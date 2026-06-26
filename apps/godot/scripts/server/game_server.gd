@@ -18,6 +18,11 @@ var _library_manager: LibraryManager = null
 var _viewer_peers: Array[int] = []
 var _viewer_timer: float = 0.0
 var _last_viewer_agents: Array = []
+## Initialized to 0.0 so the first _maybe_broadcast_world_state tick computes
+## (now_sec - 0.0) = a large time delta, forcing heartbeat_due = true and
+## guaranteeing an immediate full world_state broadcast on the first viewer
+## connect. Uses Time.get_ticks_msec() for engine ticks (required in headless
+## Godot) — DO NOT change to wall-clock functions like Time.get_unix_time_from_system().
 var _last_broadcast_sec: float = 0.0
 
 
@@ -81,6 +86,9 @@ func _ready() -> void:
 
 
 func _process(delta: float) -> void:
+	# While no viewers are connected, _last_broadcast_sec is not advanced.
+	# When the first viewer connects, the heartbeat timer produces an immediate
+	# broadcast (same mechanism as initialization) — intentional.
 	if _viewer_peers.is_empty():
 		return
 
