@@ -24,6 +24,7 @@ window/size/viewport_width=1408
 window/size/viewport_height=864
 window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
+window/stretch/scale_mode="integer"
 
 [editor_plugins]
 
