@@ -25,6 +25,9 @@ class ViewerRelay:
         self._viewer_connections: set[str] = set()
         self._running = False
         self._listen_task: Optional[asyncio.Task] = None
+        self._pending: Optional[dict] = None
+        self._pending_event: Optional[asyncio.Event] = None
+        self._worker_task: Optional[asyncio.Task] = None
 
     def register_viewer(self, connection_id: str) -> None:
         """Add a browser viewer connection to the broadcast set."""
@@ -68,6 +71,8 @@ class ViewerRelay:
     async def start(self) -> None:
         """Start the relay: connect to game server and begin listening."""
         self._running = True
+        self._pending_event = asyncio.Event()
+        self._worker_task = asyncio.create_task(self._broadcast_worker())
         self.seed_from_dynamodb()
         self._listen_task = asyncio.create_task(self._run_loop())
 
@@ -78,6 +83,12 @@ class ViewerRelay:
             self._listen_task.cancel()
             try:
                 await self._listen_task
+            except asyncio.CancelledError:
+                pass
+        if self._worker_task:
+            self._worker_task.cancel()
+            try:
+                await self._worker_task
             except asyncio.CancelledError:
                 pass
         if self._ws:
@@ -110,7 +121,9 @@ class ViewerRelay:
                     except json.JSONDecodeError:
                         continue
                     if data.get("event") == "world_state":
-                        await self._broadcast(data)
+                        self._pending = data
+                        if self._pending_event is not None:
+                            self._pending_event.set()
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -119,6 +132,23 @@ class ViewerRelay:
                 logger.warning("ViewerRelay disconnected: %s — reconnecting in %.0fs", e, backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30)
+
+    async def _broadcast_worker(self) -> None:
+        """Fan out the most recent world_state, dropping superseded frames.
+
+        Latest-wins: while a fan-out is in flight, newer frames overwrite the
+        pending slot, so the next iteration always sends the freshest one. This
+        keeps viewers real-time and stops 10Hz inbound from piling up overlapping
+        fan-outs.
+        """
+        assert self._pending_event is not None
+        while self._running:
+            await self._pending_event.wait()
+            self._pending_event.clear()
+            data = self._pending
+            self._pending = None
+            if data is not None:
+                await self._broadcast(data)
 
     async def _broadcast(self, data: dict) -> None:
         """Send world_state to all registered viewer connections."""
