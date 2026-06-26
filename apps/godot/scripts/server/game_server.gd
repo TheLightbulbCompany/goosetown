@@ -7,7 +7,9 @@
 extends Node
 
 const PORT: int = 8080
-const VIEWER_STATE_INTERVAL: float = 2.0
+const VIEWER_STATE_INTERVAL: float = 0.1
+const VIEWER_HEARTBEAT_INTERVAL: float = 2.0
+const POSITION_EPSILON: float = 1.0
 
 var _protocol: ServerProtocol = null
 var _controller: AgentController = null
@@ -15,6 +17,13 @@ var _apartment_manager: ApartmentManager = null
 var _library_manager: LibraryManager = null
 var _viewer_peers: Array[int] = []
 var _viewer_timer: float = 0.0
+var _last_viewer_agents: Array = []
+## Initialized to 0.0 so the first _maybe_broadcast_world_state tick computes
+## (now_sec - 0.0) = a large time delta, forcing heartbeat_due = true and
+## guaranteeing an immediate full world_state broadcast on the first viewer
+## connect. Uses Time.get_ticks_msec() for engine ticks (required in headless
+## Godot) — DO NOT change to wall-clock functions like Time.get_unix_time_from_system().
+var _last_broadcast_sec: float = 0.0
 
 
 func _ready() -> void:
@@ -77,21 +86,52 @@ func _ready() -> void:
 
 
 func _process(delta: float) -> void:
+	# While no viewers are connected, _last_broadcast_sec is not advanced.
+	# When the first viewer connects, the heartbeat timer produces an immediate
+	# broadcast (same mechanism as initialization) — intentional.
 	if _viewer_peers.is_empty():
 		return
 
 	_viewer_timer += delta
 	if _viewer_timer >= VIEWER_STATE_INTERVAL:
 		_viewer_timer -= VIEWER_STATE_INTERVAL
-		_broadcast_world_state()
+		_maybe_broadcast_world_state()
 
 
 # ---------------------------------------------------------------------------
 # World state broadcast
 # ---------------------------------------------------------------------------
 
-func _broadcast_world_state() -> void:
-	# Combine town, apartment, and library agents into one world_state message.
+static func viewer_state_changed(prev: Array, curr: Array, epsilon: float) -> bool:
+	## Returns true if the viewer agent list has materially changed since the
+	## last broadcast — roster size differs, an agent is new, position moved
+	## beyond epsilon, or facing/activity/speechText changed.
+	if prev.size() != curr.size():
+		return true
+	var prev_by_id := {}
+	for a in prev:
+		prev_by_id[str(a.get("id", ""))] = a
+	var eps_sq := epsilon * epsilon
+	for c in curr:
+		var pid := str(c.get("id", ""))
+		if not prev_by_id.has(pid):
+			return true
+		var p: Dictionary = prev_by_id[pid]
+		var dx := float(c.get("x", 0.0)) - float(p.get("x", 0.0))
+		var dy := float(c.get("y", 0.0)) - float(p.get("y", 0.0))
+		if dx * dx + dy * dy > eps_sq:
+			return true
+		if str(c.get("facing", "")) != str(p.get("facing", "")):
+			return true
+		if str(c.get("activity", "")) != str(p.get("activity", "")):
+			return true
+		if str(c.get("speechText", "")) != str(p.get("speechText", "")):
+			return true
+	return false
+
+
+func _collect_viewer_agents() -> Array:
+	## Combine town, apartment, and library agents into one flat array.
 	var town_state: Dictionary = _controller.get_world_state_for_viewer()
 	var town_agents: Array = town_state.get("agents", [])
 	var apartment_agents: Array = _apartment_manager.get_all_agent_states()
@@ -101,13 +141,31 @@ func _broadcast_world_state() -> void:
 	all_agents.append_array(town_agents)
 	all_agents.append_array(apartment_agents)
 	all_agents.append_array(library_agents)
+	return all_agents
 
+
+func _send_world_state(agents: Array) -> void:
+	## Broadcast world_state packet with the given agents array to all viewers.
 	var data: Dictionary = {
 		"event": "world_state",
-		"agents": all_agents,
+		"agents": agents,
 	}
 	for peer_id in _viewer_peers:
 		_protocol.send_to(peer_id, data)
+
+
+func _maybe_broadcast_world_state() -> void:
+	## Skip broadcast if the viewer state is unchanged AND the heartbeat has
+	## not come due. This caps viewer traffic at 10 Hz while ensuring viewers
+	## receive at least one frame every VIEWER_HEARTBEAT_INTERVAL seconds.
+	var agents := _collect_viewer_agents()
+	var now_sec := Time.get_ticks_msec() / 1000.0
+	var changed := viewer_state_changed(_last_viewer_agents, agents, POSITION_EPSILON)
+	var heartbeat_due := (now_sec - _last_broadcast_sec) >= VIEWER_HEARTBEAT_INTERVAL
+	if changed or heartbeat_due:
+		_send_world_state(agents)
+		_last_viewer_agents = agents
+		_last_broadcast_sec = now_sec
 
 
 # ---------------------------------------------------------------------------

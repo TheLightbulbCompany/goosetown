@@ -298,6 +298,7 @@ export default function GodotCanvas({ className, scene = 'town' }: GodotCanvasPr
         ref={canvasRef}
         id="godot-canvas"
         className="w-full h-full"
+        style={{ backgroundColor: '#1a1722' }}
         tabIndex={-1}
       />
       {showOverlay && (

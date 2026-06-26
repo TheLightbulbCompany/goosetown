@@ -97,7 +97,7 @@ var _interp_start_ms: int = 0
 ## a wall-clock gap > REFOCUS_DELTA_THRESHOLD_MS means the render loop was paused.
 var _last_physics_ms: int = 0
 ## Nominal time to traverse between two broadcasts. Matches game server broadcast cadence.
-const INTERP_DURATION_MS: int = 2000
+const INTERP_DURATION_MS: int = 150
 ## Threshold (in pixels) for a journey to count as "walking" in viewer mode.
 ## See ``_physics_process``'s _viewer_interp branch — anything below this is
 ## treated as a same-tile micro-adjustment (idle), anything above triggers the
