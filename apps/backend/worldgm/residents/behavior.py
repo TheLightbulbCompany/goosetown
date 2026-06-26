@@ -54,6 +54,7 @@ class ResidentRuntime:
     # settings.RESIDENT_MEMORY_ENABLED; left at defaults when memory is off.
     last_conv_id: str | None = None  # conv_id cached while talking
     last_conv_turns: list = field(default_factory=list)  # cached transcript turns
+    last_conv_participants: list = field(default_factory=list)  # cached participant display names
     reflected_conv_ids: set = field(default_factory=set)  # convs already reflected on (dedupe)
     memories_since_reflection: int = 0  # new observation memories since last synthesis
 

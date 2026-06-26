@@ -102,9 +102,10 @@ def _other_participant_name(turns: list, participants: list, my_display_name: st
     for p in participants or []:
         if str(p).strip().lower() != mine:
             return str(p)
+    _self_labels = {"you", "me", "i"}
     for turn in turns or []:
         speaker = str(turn.get("speaker", "")).strip()
-        if speaker and speaker.lower() != mine:
+        if speaker and speaker.lower() != mine and speaker.lower() not in _self_labels:
             return speaker
     return None
 
@@ -130,9 +131,10 @@ async def _maybe_reflect_on_ended_conversation(
     """
     active = parsed_status.get("active_conversation")
     if active:
-        # Still talking — keep the transcript fresh for when it ends.
+        # Still talking — keep the transcript and participants fresh for when it ends.
         runtime.last_conv_id = active.get("conv_id") or runtime.last_conv_id
         runtime.last_conv_turns = list(active.get("turns", []))
+        runtime.last_conv_participants = list(active.get("participants", []))
         return
 
     conv_id = runtime.last_conv_id
@@ -144,15 +146,17 @@ async def _maybe_reflect_on_ended_conversation(
     # retries on every subsequent tick — best-effort, one shot per conv.
     runtime.reflected_conv_ids.add(conv_id)
     turns = list(runtime.last_conv_turns)
+    participants = list(runtime.last_conv_participants)
     runtime.last_conv_id = None
     runtime.last_conv_turns = []
+    runtime.last_conv_participants = []
 
-    # Resolve the other side from the cached transcript's speakers (active is
-    # None here — the conversation is gone). The other's agent_id is resolved
-    # from nearby; it may be absent if they walked off, in which case we still
-    # store the memory keyed by display name but skip the relationship write
-    # (reflect_on_conversation tolerates a falsy other_id).
-    other_name = _other_participant_name(turns, [], getattr(persona, "display_name", ""))
+    # Resolve the other side. Prefer the cached participants list (display names
+    # populated from the live active_conversation while it was in progress).
+    # Fall back to scanning the transcript — the hardened fallback skips
+    # daemon self-labels ("you", "me", "i") so it never returns "you" as the
+    # other participant even when participants is empty.
+    other_name = _other_participant_name(turns, participants, getattr(persona, "display_name", ""))
     if not other_name:
         return
     other_id = _resolve_nearby_id(other_name, parsed_status.get("nearby", [])) or ""
