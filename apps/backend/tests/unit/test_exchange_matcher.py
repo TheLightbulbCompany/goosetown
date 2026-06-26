@@ -349,3 +349,51 @@ class TestPostJobOffers:
         assert result["status"] == "ok"
         # offeredTo committed despite the notify blowing up.
         assert _offered_to(dynamodb_tables, result["job_id"]) == {"sub"}
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: dropped offer heals on reconnect (matcher seam + resync seam)
+# ---------------------------------------------------------------------------
+
+
+class TestDroppedOfferHealsOnReconnect:
+    """The full backend->daemon dropped-offer recovery, end to end.
+
+    A provider subscribed to the category but offline at post time loses the
+    best-effort live ``job_offered`` wake. The matcher still commits the durable
+    ``offeredTo`` bidding right (first seam), and ``resync_agent_jobs`` re-delivers
+    the offer when the provider's daemon reconnects (second seam). This ties the
+    two seams together — the single backend->daemon link previously unproven in
+    code.
+    """
+
+    async def test_offline_provider_offer_redelivered_by_resync(self, dynamodb_tables, mailbox, ws):
+        # Provider offline at post time: model the real DaemonMailbox reporting
+        # non-delivery for a disconnected daemon by failing every notify.
+        mailbox.notify.return_value = False
+        _register_provider(dynamodb_tables, "prov-1", "pat", ["writing"])
+
+        _cc, job_id = await _post(dynamodb_tables, ws, category="writing")
+
+        # First seam: the bidding right is committed even though the live wake
+        # was lost — and the matcher DID attempt to push the offer.
+        assert _offered_to(dynamodb_tables, job_id) == {"prov-1"}
+        assert "prov-1" in _offer_targets(mailbox)
+
+        # --- provider's daemon reconnects: notify now lands ---
+        mailbox.notify.reset_mock()
+        mailbox.notify.return_value = True
+
+        sent = ex.resync_agent_jobs("prov-1")
+
+        # Second seam: the missed offer is re-delivered as a resync job_offered.
+        assert sent >= 1
+        offers = [
+            c.args[1]
+            for c in mailbox.notify.call_args_list
+            if c.args[0] == "prov-1" and c.args[1].get("event") == "job_offered"
+        ]
+        assert len(offers) == 1
+        assert offers[0]["job_id"] == job_id
+        assert offers[0]["resync"] is True
+        assert offers[0]["category"] == "writing"
