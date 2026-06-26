@@ -128,20 +128,35 @@ class ViewerRelay:
         from core.services.management_api_client import ManagementApiClient
 
         agent_count = len(data.get("agents", []))
-        logger.info("Broadcasting world_state (%d agents) to %d viewers", agent_count, len(self._viewer_connections))
+        conns = list(self._viewer_connections)
+        logger.info("Broadcasting world_state (%d agents) to %d viewers", agent_count, len(conns))
 
         mgmt = ManagementApiClient()
-        stale: list[str] = []
-        for conn_id in list(self._viewer_connections):
-            try:
-                sent = mgmt.send_message(conn_id, data)
-                if not sent:
-                    stale.append(conn_id)
-            except Exception:
-                stale.append(conn_id)
-        for conn_id in stale:
+        # Fan out in threads: each send_message is a blocking boto3 call, so a
+        # synchronous loop here blocks the event loop for the whole fan-out
+        # (~20ms/viewer) and starves /health — the proximate cause of the
+        # 2026-06-26 crash loop. asyncio.to_thread keeps the loop responsive.
+        results = await asyncio.gather(
+            *(asyncio.to_thread(mgmt.send_message, conn_id, data) for conn_id in conns),
+            return_exceptions=True,
+        )
+        # send_message returns False ONLY on GoneException; a raised exception is
+        # a transient transport error — leave that viewer in the set to retry.
+        gone = [conn_id for conn_id, res in zip(conns, results) if res is False]
+        if not gone:
+            return
+        for conn_id in gone:
             self._viewer_connections.discard(conn_id)
-            logger.debug("Removed stale viewer connection: %s", conn_id)
+        # Delete the durable rows too: discarding from the in-memory set alone
+        # lets seed_from_dynamodb re-load these corpses on the next restart and
+        # re-flood them (the crash loop's persistence across task replacements).
+        import core.dynamo as dynamo
+
+        await asyncio.gather(
+            *(asyncio.to_thread(dynamo.delete_connection, conn_id) for conn_id in gone),
+            return_exceptions=True,
+        )
+        logger.info("Pruned %d stale viewer connection(s)", len(gone))
 
 
 _viewer_relay: Optional[ViewerRelay] = None
