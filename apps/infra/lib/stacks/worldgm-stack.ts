@@ -211,7 +211,9 @@ export class WorldgmStack extends cdk.Stack {
     //     on start / deactivate on stop). grantReadWriteData covers table +
     //     /index/*. (Read-only here crash-loops resident daemons on PutItem.)
     //   - worldgm-arcs: read+write (arc_orchestrator query/scan/put/update)
-    //   - world-events: write (event_publisher put_item)
+    //   - world-events: read+write — event_publisher put_item, AND Phase-3
+    //     town_lore reads recent events (Query on the byTimestamp GSI) + writes
+    //     tag="town.lore" rows. Read is required or synthesize_town_lore fails.
     //   - conversations: read — world_snapshot.build_snapshot reads recent
     //     conversations (Query on status-startedAt-index) as a GM X-factor.
     //   - relationships: read+write — build_snapshot resolves affinity via
@@ -219,7 +221,7 @@ export class WorldgmStack extends cdk.Stack {
     //     never-seen pair). grantReadWriteData covers table + /index/*.
     props.tables.agents.grantReadWriteData(taskDef.taskRole);
     props.tables.worldgmArcs.grantReadWriteData(taskDef.taskRole);
-    props.tables.worldEvents.grantWriteData(taskDef.taskRole);
+    props.tables.worldEvents.grantReadWriteData(taskDef.taskRole);
     props.tables.conversations.grantReadData(taskDef.taskRole);
     props.tables.relationships.grantReadWriteData(taskDef.taskRole);
     props.tables.memories.grantReadWriteData(taskDef.taskRole);

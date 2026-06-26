@@ -1476,6 +1476,29 @@ class TownService:
             return None
         return _decimal_to_native(items[0])
 
+    def get_active_conversations(self, limit: int = 200) -> list[dict]:
+        """Return all currently active conversations.
+
+        Queries the ``status-updatedAt-index`` GSI (same index used by
+        ``get_recent_speech``) with ``status="active"``.  Items are returned as
+        plain Python dicts (Decimals converted to native types).
+
+        Args:
+            limit: Maximum number of items to return (default 200).  Avoids
+                   unbounded scans in the unlikely event the table is huge.
+
+        Returns:
+            List of conversation dicts, possibly empty.
+        """
+        table = dynamo.conversations_table()
+        resp = table.query(
+            IndexName="status-updatedAt-index",
+            KeyConditionExpression=Key("status").eq("active"),
+            ScanIndexForward=False,
+            Limit=limit,
+        )
+        return [_decimal_to_native(item) for item in resp.get("Items", [])]
+
     def get_recent_speech(self, since_seconds: float = 5.0) -> list[dict]:
         """Get chat messages from the last N seconds for speech bubbles."""
         cutoff = (datetime.now(timezone.utc) - timedelta(seconds=since_seconds)).isoformat()
