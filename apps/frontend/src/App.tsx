@@ -8,7 +8,7 @@ import GodotCanvas from './components/GodotCanvas.tsx';
 import ApartmentCard from './components/ApartmentCard.tsx';
 import ConversationsLog from './components/ConversationsLog.tsx';
 import { WorldFeed } from './components/WorldFeed.tsx';
-import { ExchangeBoard } from './components/ExchangeBoard.tsx';
+import { ExchangeTicker } from './components/ExchangeTicker.tsx';
 import { ProvidersPanel } from './components/ProvidersPanel.tsx';
 import LoginButton from './components/buttons/LoginButton.tsx';
 import MusicButton from './components/buttons/MusicButton.tsx';
@@ -129,7 +129,7 @@ function AgentsSidebar({
           <AnonymousViewerHint />
         </SignedOut>
         <WorldFeed />
-        <ExchangeBoard />
+        <ExchangeTicker />
         <ProvidersPanel />
         <ConversationsLog />
         <QuotaIndicator />
@@ -188,7 +188,7 @@ function AgentsSidebar({
         </div>
       )}
       <WorldFeed />
-      <ExchangeBoard />
+      <ExchangeTicker />
       <ProvidersPanel />
       <ConversationsLog />
       <QuotaIndicator />
