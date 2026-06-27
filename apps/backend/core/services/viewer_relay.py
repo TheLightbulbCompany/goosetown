@@ -150,36 +150,23 @@ class ViewerRelay:
             if data is not None:
                 await self._broadcast(data)
 
-    async def _broadcast(self, data: dict) -> None:
-        """Send world_state to all registered viewer connections."""
-        if not self._viewer_connections:
+    async def _fan_out(self, conns: list[str], data: dict) -> None:
+        """Send `data` to each connection off the event loop; prune gone ones.
+        Shared by _broadcast (world_state) and push_event (discrete events)."""
+        if not conns:
             return
-
         from core.services.management_api_client import ManagementApiClient
 
-        agent_count = len(data.get("agents", []))
-        conns = list(self._viewer_connections)
-        logger.info("Broadcasting world_state (%d agents) to %d viewers", agent_count, len(conns))
-
         mgmt = ManagementApiClient()
-        # Fan out in threads: each send_message is a blocking boto3 call, so a
-        # synchronous loop here blocks the event loop for the whole fan-out
-        # (~20ms/viewer) and starves /health — the proximate cause of the
-        # 2026-06-26 crash loop. asyncio.to_thread keeps the loop responsive.
         results = await asyncio.gather(
             *(asyncio.to_thread(mgmt.send_message, conn_id, data) for conn_id in conns),
             return_exceptions=True,
         )
-        # send_message returns False ONLY on GoneException; a raised exception is
-        # a transient transport error — leave that viewer in the set to retry.
         gone = [conn_id for conn_id, res in zip(conns, results) if res is False]
         if not gone:
             return
         for conn_id in gone:
             self._viewer_connections.discard(conn_id)
-        # Delete the durable rows too: discarding from the in-memory set alone
-        # lets seed_from_dynamodb re-load these corpses on the next restart and
-        # re-flood them (the crash loop's persistence across task replacements).
         import core.dynamo as dynamo
 
         await asyncio.gather(
@@ -187,6 +174,27 @@ class ViewerRelay:
             return_exceptions=True,
         )
         logger.info("Pruned %d stale viewer connection(s)", len(gone))
+
+    def push_event(self, payload: dict) -> None:
+        """Best-effort discrete fan-out of an event (e.g. economy_event) to all
+        viewer connections. Non-coalescing — every event lands. Fire-and-forget;
+        silently no-ops when there is no running loop (tests/local)."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._fan_out(list(self._viewer_connections), payload))
+
+    async def _broadcast(self, data: dict) -> None:
+        """Send world_state to all registered viewer connections."""
+        conns = list(self._viewer_connections)
+        if conns:
+            logger.info(
+                "Broadcasting world_state (%d agents) to %d viewers",
+                len(data.get("agents", [])),
+                len(conns),
+            )
+        await self._fan_out(conns, data)
 
 
 _viewer_relay: Optional[ViewerRelay] = None
