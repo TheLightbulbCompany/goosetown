@@ -19,6 +19,7 @@ import type {
   AgentDescription,
   SpeechBubble,
 } from '../types/town';
+import { type EconomyTickerEntry, toTickerEntry, capEvents } from '../lib/economyTicker';
 
 const API_URL = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000/api/v1';
 
@@ -63,8 +64,11 @@ function prefetchAnonViewerToken(): Promise<string | null> {
 
 export function useTownState(getToken?: () => Promise<string | null>, userId?: string | null): {
   game: TownGameState | undefined;
+  economyEvents: EconomyTickerEntry[];
 } {
   const [game, setGame] = useState<TownGameState>();
+  const [economyEvents, setEconomyEvents] = useState<EconomyTickerEntry[]>([]);
+  const economyIdRef = useRef(0);
   const wsConnectedRef = useRef(false);
 
   // Kick off the anonymous-viewer-token fetch immediately on mount so the token
@@ -237,6 +241,19 @@ export function useTownState(getToken?: () => Promise<string | null>, userId?: s
             return;
           }
 
+          if (msg.event === 'economy_event') {
+            try {
+              const w = window as unknown as Record<string, unknown>;
+              if (w.godotEconomyEvent) {
+                (w.godotEconomyEvent as (s: string) => void)(JSON.stringify(msg));
+              }
+            } catch { /* Godot not loaded */ }
+            economyIdRef.current += 1;
+            const entry = toTickerEntry(msg, `e:${economyIdRef.current}`);
+            setEconomyEvents((prev) => capEvents(prev, entry));
+            return;
+          }
+
           // Agent switched context (town <-> apartment). Just log it — DO NOT
           // touch Godot's scene or React's route. The WS broadcast goes to
           // every viewer, so reacting to it would force every viewer's
@@ -383,5 +400,5 @@ export function useTownState(getToken?: () => Promise<string | null>, userId?: s
     };
   }, [processState]);
 
-  return { game };
+  return { game, economyEvents };
 }

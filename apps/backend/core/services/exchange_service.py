@@ -27,6 +27,7 @@ from core.services.daemon_mailbox import get_daemon_mailbox
 from core.services.provider_directory import ProviderDirectory
 from core.services.town_agent_ws import get_town_agent_ws_manager
 from core.services.town_service import TownService
+from core.services.viewer_relay import get_viewer_relay
 
 logger = logging.getLogger(__name__)
 
@@ -746,6 +747,35 @@ def _emit_economy_event(tag: str, summary: str, location: str = "bank", **detail
         logger.debug("_emit_economy_event suppressed error for tag=%s", tag)
 
 
+def _push_economy_to_viewers(
+    event_type: str,
+    actor_id: str,
+    actor_name: str,
+    counterparty_id: str | None,
+    counterparty_name: str | None,
+    amount: int | None,
+    title: str,
+) -> None:
+    """Push a discrete economy_event to viewer WS connections so the Godot
+    viewer can animate an in-world cue and the sidebar ticker can log it.
+    Best-effort — a viewer-push failure must never break the economy flow."""
+    try:
+        get_viewer_relay().push_event(
+            {
+                "event": "economy_event",
+                "type": event_type,
+                "actorId": actor_id,
+                "actorName": actor_name,
+                "counterpartyId": counterparty_id,
+                "counterpartyName": counterparty_name,
+                "amount": amount,
+                "title": title,
+            }
+        )
+    except Exception:
+        logger.warning("economy viewer-push failed (type=%s)", event_type, exc_info=True)
+
+
 def _update_trust(
     agent_id: str,
     outcome: str,
@@ -1000,6 +1030,7 @@ async def post_job(
         title=job["title"],
         max_price=max_price,
     )
+    _push_economy_to_viewers("posted", agent_conn.agent_id, agent_conn.agent_name, None, None, max_price, job["title"])
 
     # Wave 2 (spec §3.3, codex P1): the subscription matcher runs SYNCHRONOUSLY
     # here — it replaces the old all-connections broadcast. Query subscribers for
@@ -1975,6 +2006,9 @@ async def _close_bid_window_once(job_id: str, guard_revision: bool) -> bool:
         consumer_name=job.get("consumerName", ""),
         agreed_price=agreed,
     )
+    _push_economy_to_viewers(
+        "awarded", winner, provider_name, consumer_id, job.get("consumerName", ""), agreed, job.get("title", "")
+    )
 
     _schedule(job_id, DELIVERY_SEC, _delivery_timeout)
     return True
@@ -2088,6 +2122,15 @@ async def _settle(
             provider_id=provider_id,
             consumer_id=consumer_id,
             payout=agreed - fee,
+        )
+        _push_economy_to_viewers(
+            "payout",
+            provider_id,
+            job.get("providerName", provider_id),
+            consumer_id,
+            job.get("consumerName", ""),
+            agreed - fee,
+            job.get("title", ""),
         )
     else:
         # ESCROW_REFUND on consumer rejection: counterparty is the provider (who failed)

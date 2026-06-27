@@ -11,6 +11,7 @@ signal update_agent_state_requested(agent_id: String, data: Dictionary)
 signal set_camera_requested(x: float, y: float, zoom: float)
 signal switch_scene_requested(scene_name: String)
 signal world_state_received(data: Dictionary)
+signal economy_event_received(data: Dictionary)
 
 ## Scene registry — single source of truth for scene id → asset path.
 ## Coupled by id with the frontend's ``apps/frontend/src/scenes.ts``.
@@ -52,6 +53,7 @@ func _register_js_callbacks() -> void:
 	_callbacks["setCamera"] = JavaScriptBridge.create_callback(_on_set_camera)
 	_callbacks["switchScene"] = JavaScriptBridge.create_callback(_on_switch_scene)
 	_callbacks["updateWorldState"] = JavaScriptBridge.create_callback(_on_update_world_state)
+	_callbacks["economyEvent"] = JavaScriptBridge.create_callback(_on_economy_event)
 
 	var window: JavaScriptObject = JavaScriptBridge.get_interface("window")
 	window.set("godotSpawnAgent", _callbacks["spawnAgent"])
@@ -61,6 +63,7 @@ func _register_js_callbacks() -> void:
 	window.set("godotSetCamera", _callbacks["setCamera"])
 	window.set("godotSwitchScene", _callbacks["switchScene"])
 	window.set("godotUpdateWorldState", _callbacks["updateWorldState"])
+	window.set("godotEconomyEvent", _callbacks["economyEvent"])
 
 
 func _emit_ready_event() -> void:
@@ -203,6 +206,12 @@ func _on_update_world_state(args: Array) -> void:
 	var parsed: Variant = JSON.parse_string(str(args[0]))
 	if parsed is Dictionary:
 		world_state_received.emit(parsed as Dictionary)
+
+
+func _on_economy_event(args: Array) -> void:
+	var parsed: Variant = JSON.parse_string(str(args[0]))
+	if parsed is Dictionary:
+		economy_event_received.emit(parsed as Dictionary)
 
 
 ## Handles scene switch requests from React.
