@@ -5,6 +5,7 @@
 extends Node
 
 const AgentScene: PackedScene = preload("res://scenes/agent.tscn")
+const EconomyCueScene := preload("res://scenes/economy_cue.tscn")
 
 ## Single source of truth: agent_id -> Agent node.
 ## (Previously split across `agents` and `_known_agents`; consolidated for clarity.)
@@ -28,6 +29,9 @@ func _ready() -> void:
 
 	# Listen for world_state forwarded from React via JS bridge
 	JsBridge.world_state_received.connect(_on_world_state)
+
+	# Listen for economy events forwarded from React via JS bridge
+	JsBridge.economy_event_received.connect(_on_economy_event)
 
 
 ## Connect to a ViewerProtocol instance to receive world_state events.
@@ -275,5 +279,24 @@ func _on_sprite_loaded(args: Array) -> void:
 		print("[sprite] id=%s name=%s anim=%s %dx%d" % [agent_id, agents[agent_id].display_name, animation_name, image.get_width(), image.get_height()])
 		agents[agent_id].set_spritesheet(tex, animation_name)
 		print("AgentManager: Loaded %s spritesheet for %s (%dx%d)" % [animation_name, agent_id, image.get_width(), image.get_height()])
+
+
+func _on_economy_event(data: Dictionary) -> void:
+	var actor_id: String = str(data.get("actorId", ""))
+	var counterparty_id: String = str(data.get("counterpartyId", ""))
+	if not agents.has(actor_id):
+		return  # actor not on-screen — skip the cue (ticker still logs it)
+	var actor: Node2D = agents[actor_id]
+	var from_pos: Vector2 = actor.global_position
+	var to_pos: Vector2 = from_pos
+	if counterparty_id != "" and agents.has(counterparty_id):
+		# payout arc starts at the counterparty (consumer) and flies to the actor
+		to_pos = from_pos
+		from_pos = (agents[counterparty_id] as Node2D).global_position
+	var amount_v: Variant = data.get("amount")
+	var amount: int = -1 if amount_v == null else int(amount_v)
+	var cue: Node2D = EconomyCueScene.instantiate()
+	add_child(cue)
+	cue.play(str(data.get("type", "")), amount, from_pos, to_pos)
 
 
