@@ -5,7 +5,7 @@
 extends Node
 
 const AgentScene: PackedScene = preload("res://scenes/agent.tscn")
-const EconomyCueScene := preload("res://scenes/economy_cue.tscn")
+const EconomyCueScene: PackedScene = preload("res://scenes/economy_cue.tscn")
 
 ## Single source of truth: agent_id -> Agent node.
 ## (Previously split across `agents` and `_known_agents`; consolidated for clarity.)
@@ -290,13 +290,14 @@ func _on_economy_event(data: Dictionary) -> void:
 	var from_pos: Vector2 = actor.global_position
 	var to_pos: Vector2 = from_pos
 	if counterparty_id != "" and agents.has(counterparty_id):
-		# payout arc starts at the counterparty (consumer) and flies to the actor
+		# payout arc: caller swaps from_pos/to_pos so the particle flies from
+		# the consumer (counterparty) to the actor (provider). Note: play() also
+		# branches on cue_type == "payout" to pick the arc target, so both sites
+		# must stay in sync whenever a new arc-type is added.
 		to_pos = from_pos
 		from_pos = (agents[counterparty_id] as Node2D).global_position
 	var amount_v: Variant = data.get("amount")
 	var amount: int = -1 if amount_v == null else int(amount_v)
-	var cue: Node2D = EconomyCueScene.instantiate()
+	var cue := EconomyCueScene.instantiate()
 	add_child(cue)
 	cue.play(str(data.get("type", "")), amount, from_pos, to_pos)
-
-

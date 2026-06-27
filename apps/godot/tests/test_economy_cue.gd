@@ -5,7 +5,7 @@ extends GdUnitTestSuite
 const EconomyCue := preload("res://scripts/economy_cue.gd")
 
 
-func test_payout_is_gold_with_plus():
+func test_payout_is_gold_with_plus() -> void:
 	var s: Dictionary = EconomyCue.style_for("payout")
 	assert_that(s.has("color")).is_true()
 	assert_that(str(s.get("glyph", "")).contains("+")).is_true()
