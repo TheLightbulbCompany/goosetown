@@ -83,6 +83,48 @@ def test_reflect_on_conversation_writes_memory_and_relationship():
     assert ts.stance and ts.stance[0][2] == "exhausting"
 
 
+class _RaisingTownService(FakeTownService):
+    """Mimics DynamoDB rejecting an empty partition key (the real failure mode):
+    update_relationship/upsert sort the (a, b) pair, so an empty id becomes the
+    empty ``agentAId`` partition key → ValidationException."""
+
+    def update_relationship(self, a, b, affinity_delta=0, new_type=None):
+        if not a or not b:
+            raise ValueError("AttributeValue for a key attribute cannot contain an empty string value")
+        return super().update_relationship(a, b, affinity_delta, new_type)
+
+    def upsert_relationship_stance(self, a, b, stance_a_to_b=None, stance_b_to_a=None, stance_updated_at=None):
+        if not a or not b:
+            raise ValueError("AttributeValue for a key attribute cannot contain an empty string value")
+        return super().upsert_relationship_stance(a, b, stance_a_to_b=stance_a_to_b)
+
+
+def test_reflect_skips_relationship_writes_when_other_id_empty():
+    """Partner has left the nearby list → other_id is "". The id-keyed
+    relationship + stance writes must be SKIPPED (an empty id → empty agentAId
+    key → DynamoDB ValidationException), but the name-keyed observation memory
+    is still recorded and the call succeeds."""
+    store = MemoryStore(FakeTable())
+    ts = _RaisingTownService()
+    model = FakeModel(json.dumps({"summary": "Pat was kind", "importance": 5, "affinity_delta": 4, "note": "warm"}))
+    wrote = asyncio.run(
+        reflection.reflect_on_conversation(
+            model,
+            store,
+            ts,
+            "me",
+            "",
+            "Pat",
+            transcript=[{"speaker": "Pat", "text": "hi"}, {"speaker": "Me", "text": "hello"}],
+            now_iso="2026-06-28T10:00:00Z",
+        )
+    )
+    assert wrote is True  # no crash; observation still written
+    assert store.about("me", "Pat")[0]["text"] == "Pat was kind"  # observation recorded (name-keyed)
+    assert ts.affinity == []  # relationship write skipped (empty other_id)
+    assert ts.stance == []  # stance write skipped
+
+
 def test_reflect_on_conversation_tolerates_bad_json():
     store = MemoryStore(FakeTable())
     ts = FakeTownService()

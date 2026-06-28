@@ -119,8 +119,15 @@ async def reflect_on_conversation(
 
     try:
         store.put(my_id, other_name, "observation", summary, importance, now_iso)
-        town_service.update_relationship(my_id, other_id, affinity_delta=affinity_delta)
-        town_service.upsert_relationship_stance(my_id, other_id, stance_a_to_b=note)
+        # The name-keyed observation above always records; the id-keyed
+        # relationship + stance writes need both ids. other_id is "" when the
+        # partner has left the nearby list by reflection time (brain.py resolves
+        # it from the live `nearby` snapshot) — and update_relationship sorts the
+        # pair, so an empty id becomes the empty agentAId partition key, which
+        # DynamoDB rejects (ValidationException). Skip those writes in that case.
+        if other_id:
+            town_service.update_relationship(my_id, other_id, affinity_delta=affinity_delta)
+            town_service.upsert_relationship_stance(my_id, other_id, stance_a_to_b=note)
     except Exception:
         _log.exception("reflect_on_conversation: write error")
         return False
