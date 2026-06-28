@@ -30,19 +30,19 @@ async def lifespan(app: FastAPI):
     relay = get_viewer_relay()
     await relay.start()
 
-    # Reconnect active agents to game server on startup
-    await _reconnect_active_agents()
-
-    # Restore in-memory conversation inactivity timers from DynamoDB.
-    # Must run AFTER _reconnect_active_agents so the ws_manager is warm
-    # when _finalize_conversation sends conversation_ended events.
-    from core.services.conversation_service import restore_inactivity_timers
-
-    await restore_inactivity_timers()
-
-    # Start Exchange deadline sweeper
+    # Reconnect active agents + restore conversation timers in the BACKGROUND.
+    # _reconnect_active_agents connects each active agent to the game server
+    # sequentially with a per-connect open_timeout; awaiting it here blocks the
+    # lifespan, and uvicorn does not start serving /health until the lifespan
+    # reaches `yield`. Slow/timing-out connects then starve the ALB health
+    # check → ECS replaces the task → crash loop (2026-06-26 dev incident).
+    # Running it off the critical path lets /health serve immediately while
+    # recovery proceeds; the event loop stays responsive between the connects.
     import asyncio
 
+    app.state.startup_recovery = asyncio.create_task(_startup_recovery())
+
+    # Start Exchange deadline sweeper
     from core.services.exchange_service import exchange_sweeper_loop
 
     app.state.exchange_sweeper = asyncio.create_task(exchange_sweeper_loop())
@@ -50,6 +50,9 @@ async def lifespan(app: FastAPI):
     yield
 
     # Cleanup
+    app.state.startup_recovery.cancel()
+    with suppress(asyncio.CancelledError):
+        await app.state.startup_recovery
     app.state.exchange_sweeper.cancel()
     with suppress(asyncio.CancelledError):
         await app.state.exchange_sweeper
@@ -61,6 +64,27 @@ async def lifespan(app: FastAPI):
 
     await close_pixellab_client()
     logger.info("GooseTown backend stopping")
+
+
+async def _startup_recovery() -> None:
+    """Off-critical-path startup recovery (see lifespan).
+
+    Runs the slow, network-bound recovery so the lifespan can reach `yield`
+    immediately. restore_inactivity_timers MUST run AFTER _reconnect_active_agents
+    so the ws_manager is warm when _finalize_conversation sends conversation_ended
+    events. Cancelled on shutdown; a failure here must never crash the process.
+    """
+    import asyncio
+
+    try:
+        await _reconnect_active_agents()
+        from core.services.conversation_service import restore_inactivity_timers
+
+        await restore_inactivity_timers()
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning("Startup recovery failed", exc_info=True)
 
 
 async def _reconnect_active_agents() -> None:
