@@ -29,6 +29,7 @@ continue to resolve to the same function object.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -52,17 +53,26 @@ def _make_agent_event_callback():
     async def _on_game_server_event(agent_id: str, event_data: dict) -> None:
         evt_type = event_data.get("event", "")
 
-        # Update DynamoDB location on arrival
+        # Update DynamoDB location on arrival. This is a blocking boto3 write;
+        # run it off the event loop (see the _send_to_daemon note below).
         if evt_type == "arrived":
             location = event_data.get("location", "")
             if location:
                 try:
-                    TownService().update_agent_state(agent_id, current_location=location)
+                    await asyncio.to_thread(TownService().update_agent_state, agent_id, current_location=location)
                 except Exception:
                     logger.warning("Failed to update location for %s", agent_id)
 
-        # Forward event to daemon via in-memory connection lookup
-        _send_to_daemon(agent_id, event_data)
+        # Forward event to daemon via in-memory connection lookup.
+        # _send_to_daemon is synchronous and, for every ``agent_state`` event
+        # (~once every 2s per connected agent), does blocking boto3 DynamoDB
+        # reads to enrich each nearby agent (goal + stance + relationship +
+        # nearby conversations). Running that on the event loop starves /health
+        # under a reconnect storm → the ALB kills the task → ECS replaces it in
+        # a loop (2026-06-28 dev crash loop). Offload to a worker thread, the
+        # same pattern as ViewerRelay._fan_out (PR #416). Ordering and
+        # backpressure are preserved because we await each event in turn.
+        await asyncio.to_thread(_send_to_daemon, agent_id, event_data)
 
     return _on_game_server_event
 
