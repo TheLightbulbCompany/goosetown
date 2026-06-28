@@ -12,7 +12,10 @@ the `agent_state` enrichment pass in `_send_to_daemon`.
 
 from __future__ import annotations
 
+import threading
 from unittest.mock import MagicMock, call, patch
+
+import pytest
 
 # Module-level patch targets (same as test_send_to_daemon_cache.py)
 WS_MANAGER_PATH = "core.services.daemon_bridge.get_town_agent_ws_manager"
@@ -495,3 +498,58 @@ def test_nearby_agent_stance_fields_none_when_relationship_exists_but_stances_un
     nearby_out = sent[0][1]["nearby_agents"]
     assert nearby_out[0]["stanceFromMe"] is None
     assert nearby_out[0]["stanceFromThem"] is None
+
+
+# ---------------------------------------------------------------------------
+# Event-loop safety: the per-agent callback must NOT run the blocking boto3
+# enrichment on the event loop thread (the 2026-06-28 dev crash loop).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_on_game_server_event_runs_send_off_event_loop():
+    """_send_to_daemon does synchronous boto3 DynamoDB reads (goal + stance +
+    relationship + nearby-conversation enrichment) on every ``agent_state`` —
+    once every 2s per connected agent. Run on the event loop thread, under a
+    reconnect storm those blocking reads starve /health → the ALB marks the
+    task unhealthy → ECS replaces it in a loop. The callback must offload the
+    send to a worker thread so the event loop stays responsive.
+    """
+    from core.services.daemon_bridge import _make_agent_event_callback
+
+    loop_thread_id = threading.get_ident()
+    seen: dict[str, int] = {}
+
+    def _record(agent_id, payload):
+        seen["thread"] = threading.get_ident()
+        return True
+
+    cb = _make_agent_event_callback()
+    with patch("core.services.daemon_bridge._send_to_daemon", _record):
+        await cb("self-agent", {"event": "agent_state"})
+
+    assert "thread" in seen, "_send_to_daemon was not called"
+    assert seen["thread"] != loop_thread_id, "_send_to_daemon must run off the event loop thread"
+
+
+@pytest.mark.asyncio
+async def test_on_game_server_event_arrived_write_runs_off_event_loop():
+    """The ``arrived`` branch writes currentLocation via a synchronous boto3
+    call too; it must also run off the event loop thread."""
+    from core.services.daemon_bridge import _make_agent_event_callback
+
+    loop_thread_id = threading.get_ident()
+    seen: dict[str, int] = {}
+
+    svc_instance = MagicMock()
+    svc_instance.update_agent_state.side_effect = lambda *a, **k: seen.__setitem__("thread", threading.get_ident())
+
+    cb = _make_agent_event_callback()
+    with (
+        patch(SERVICE_PATH, return_value=svc_instance),
+        patch("core.services.daemon_bridge._send_to_daemon", lambda *a, **k: True),
+    ):
+        await cb("self-agent", {"event": "arrived", "location": "plaza"})
+
+    assert "thread" in seen, "update_agent_state was not called on arrival"
+    assert seen["thread"] != loop_thread_id, "the arrival location write must run off the event loop thread"
