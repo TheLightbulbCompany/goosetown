@@ -2,8 +2,8 @@
  * network-stack.test.ts
  *
  * Asserts that:
- * 1. Prod gets 2 NAT gateways (one per AZ) for HA egress — issue #165 resolved.
- * 2. Dev keeps 1 NAT gateway to save ~$32/mo per the intentional cost decision.
+ * 1. Every env gets exactly 1 NAT gateway — an intentional cost-over-HA
+ *    decision (~$32/mo per extra NAT; a NAT-AZ outage pauses egress).
  * 3. A CloudWatch alarm exists on the NAT/ErrorPortAllocation metric so that
  *    NAT exhaustion or AZ-level trouble triggers an alert.
  * 4. Free Gateway VPC endpoints exist for DynamoDB and S3, routing Fargate
@@ -50,15 +50,15 @@ describe("NetworkStack — NAT gateway count", () => {
   });
 });
 
-describe("NetworkStack — multi-AZ NAT for HA egress (issue #165)", () => {
-  test("prod has 2 NAT gateways across AZs for HA egress", () => {
+describe("NetworkStack — single NAT in all envs (cost over HA)", () => {
+  test("prod has exactly 1 NAT gateway", () => {
     const app = new cdk.App();
     const stack = new NetworkStack(app, "prod-net", {
       stackName: "goosetown-prod-network",
       environment: "prod",
       env: { account: "123456789012", region: "us-east-1" },
     });
-    Template.fromStack(stack).resourceCountIs("AWS::EC2::NatGateway", 2);
+    Template.fromStack(stack).resourceCountIs("AWS::EC2::NatGateway", 1);
   });
 
   test("dev keeps single NAT gateway to save on cost", () => {

@@ -20,9 +20,10 @@ export class NetworkStack extends cdk.Stack {
     this.vpc = new ec2.Vpc(this, "Vpc", {
       vpcName: `goosetown-${props.environment}-vpc`,
       maxAzs: 2,
-      // Prod gets one NAT per AZ so a single-AZ failure doesn't kill all private-subnet
-      // egress (Known Issue #165). Dev stays at 1 to save the ~$32/mo per extra NAT.
-      natGateways: props.environment === "prod" ? 2 : 1,
+      // Single NAT in every env. This is a deliberate cost-over-HA call:
+      // a NAT-AZ outage takes down private-subnet egress until AWS recovers
+      // the AZ, and we accept that in exchange for ~$32/mo per extra NAT.
+      natGateways: 1,
       subnetConfiguration: [
         {
           cidrMask: 24,
@@ -59,9 +60,9 @@ export class NetworkStack extends cdk.Stack {
       service: ec2.GatewayVpcEndpointAwsService.DYNAMODB,
     });
 
-    // NAT port-exhaustion alarm. Prod now has 2 NATs (one per AZ, issue #165 resolved);
-    // dev stays at 1. Port allocation errors signal traffic bursts rather than AZ loss,
-    // so `notBreaching` on missing data avoids false alarms during quiet periods.
+    // NAT port-exhaustion alarm. Port allocation errors signal traffic bursts
+    // rather than AZ loss, so `notBreaching` on missing data avoids false
+    // alarms during quiet periods.
     if (props.alarmTopic) {
       const natErrorAlarm = new cloudwatch.Alarm(this, "NatPortErrorAlarm", {
         alarmName: `goosetown-${props.environment}-nat-port-exhaustion`,
