@@ -74,10 +74,12 @@ export class SpriteWorkerStack extends cdk.Stack {
     });
 
     const taskDef = new ecs.FargateTaskDefinition(this, "TaskDef", {
-      // 0.5 vCPU / 1 GB: PixelLab polling is IO-bound; PIL compositing bursts
-      // are the only CPU users and they're per-agent serialized.
-      cpu: 512,
-      memoryLimitMiB: 1024,
+      // 0.25 vCPU / 0.5 GB: PixelLab polling is IO-bound; PIL compositing
+      // bursts are the only CPU users and they're per-agent serialized.
+      // Rightsized from 0.5/1GB per Compute Optimizer (14-day usage well
+      // under a quarter vCPU / 512 MB). Watch for OOM on heavy sprite batches.
+      cpu: 256,
+      memoryLimitMiB: 512,
     });
 
     taskDef.addContainer("SpriteWorker", {
