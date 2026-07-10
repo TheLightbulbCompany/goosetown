@@ -56,10 +56,12 @@ export class GameServerStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
-    // Task definition - 512 CPU, 1GB RAM
+    // Task definition - 256 CPU, 0.5GB RAM. Rightsized from 512/1024 per
+    // Compute Optimizer (14-day p50/peak well under half a vCPU; the game
+    // loop is IO-bound on the WS broadcast, not CPU).
     const taskDef = new ecs.FargateTaskDefinition(this, "TaskDef", {
-      cpu: 512,
-      memoryLimitMiB: 1024,
+      cpu: 256,
+      memoryLimitMiB: 512,
     });
 
     taskDef.addContainer("GameServer", {
