@@ -1458,7 +1458,6 @@ jobs:
       - dev-goosetown-dev-auth-Deploy
       - dev-goosetown-dev-cluster-Deploy
       - dev-goosetown-dev-network-Deploy
-      - dev-goosetown-dev-observability-Deploy
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
@@ -2207,7 +2206,6 @@ jobs:
       - prod-goosetown-prod-auth-Deploy
       - prod-goosetown-prod-cluster-Deploy
       - prod-goosetown-prod-network-Deploy
-      - prod-goosetown-prod-observability-Deploy
       - dev-goosetown-dev-auth-Deploy
       - dev-goosetown-dev-cluster-Deploy
       - dev-goosetown-dev-database-Deploy

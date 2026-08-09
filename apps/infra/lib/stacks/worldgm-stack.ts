@@ -38,6 +38,14 @@ export interface WorldgmStackProps extends cdk.StackProps {
  * in-memory between ticks. If the task restarts, durable arc state survives
  * in DynamoDB (worldgm-arcs table); only the in-flight tick queue is lost.
  */
+
+// WorldGM is PAUSED fleet-wide (dev + prod). The tick loop calls Nova
+// Pro/Lite continuously (~130k invocations/day, ~$35/day) with nothing
+// consuming the narrative output. desiredCount is CloudFormation-managed,
+// so a manual `ecs update-service --desired-count 0` is silently reverted
+// on the next deploy — pausing must happen here. Flip to 1 to re-enable.
+const WORLDGM_DESIRED_COUNT = 0;
+
 export class WorldgmStack extends cdk.Stack {
   public readonly service: ecs.FargateService;
 
@@ -230,7 +238,7 @@ export class WorldgmStack extends cdk.Stack {
       serviceName: `goosetown-${env}-worldgm`,
       cluster: props.cluster,
       taskDefinition: taskDef,
-      desiredCount: 1,
+      desiredCount: WORLDGM_DESIRED_COUNT,
       assignPublicIp: false,
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       circuitBreaker: { rollback: true },
@@ -243,7 +251,9 @@ export class WorldgmStack extends cdk.Stack {
     // narrative events stop firing until the task restarts. The 5-minute
     // evaluation window (one eval per minute) avoids paging on transient
     // task replacement during rolling deploys.
-    if (props.alarmTopic) {
+    // Skipped while paused: zero running tasks is the intended state, and
+    // treatMissingData=BREACHING would otherwise hold the alarm on forever.
+    if (props.alarmTopic && WORLDGM_DESIRED_COUNT > 0) {
       const taskMissingAlarm = new cloudwatch.Alarm(this, "WorldgmTaskMissing", {
         alarmName: `goosetown-${env}-worldgm-task-missing`,
         metric: new cloudwatch.Metric({
