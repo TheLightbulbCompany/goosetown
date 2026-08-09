@@ -122,12 +122,12 @@ def test_ws_lambda_secret_required_in_prod_config():
 
     s = Settings()
     s.ENVIRONMENT = "prod"
-    s.TOWN_TOKEN_SECRET = "x"
+    s.TOWN_TOKEN_SECRET = "x"  # nosec B105: placeholder so validate() reaches the WS_LAMBDA_SECRET check
     s.WS_MANAGEMENT_API_URL = "x"
     s.SPRITE_S3_BUCKET = "x"
     s.SPRITE_CDN_URL = "x"
     s.CLERK_ISSUER = "x"
-    s.WS_LAMBDA_SECRET = ""
+    s.WS_LAMBDA_SECRET = ""  # nosec B105: deliberately empty — this is the condition under test
 
     with pytest.raises(RuntimeError, match="WS_LAMBDA_SECRET"):
         s.validate()
