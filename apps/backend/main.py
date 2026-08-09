@@ -226,7 +226,20 @@ async def _reconnect_active_agents() -> None:
     logger.info("Startup: resumed %d activity timers", activities_resumed)
 
 
-app = FastAPI(title="GooseTown API", lifespan=lifespan)
+# Public API schema + interactive docs are dev-only (#429). In prod the schema
+# is a complete recon map — every route, method, and declared security scheme —
+# and its annotations don't necessarily match runtime, so it misleads defenders
+# as readily as it helps attackers. Passing None makes FastAPI not register the
+# routes at all, so /openapi.json, /docs and /redoc 404 rather than 403.
+_is_prod = settings.ENVIRONMENT == "prod"
+
+app = FastAPI(
+    title="GooseTown API",
+    lifespan=lifespan,
+    openapi_url=None if _is_prod else "/openapi.json",
+    docs_url=None if _is_prod else "/docs",
+    redoc_url=None if _is_prod else "/redoc",
+)
 
 
 # ---------------------------------------------------------------------------
