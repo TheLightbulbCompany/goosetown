@@ -28,6 +28,11 @@ class Settings:
     # the x-ws-lambda-secret header), and compute-stack injects the value
     # into the backend.
     WS_LAMBDA_SECRET: str = os.getenv("WS_LAMBDA_SECRET", "")
+    # Comma-separated Clerk user IDs allowed to call /town/admin/* (#430).
+    # When set, only these users pass; when empty, any *authenticated* Clerk
+    # user does. Either way the endpoints are no longer anonymous, and the
+    # dev-only environment gate still applies on top.
+    ADMIN_USER_IDS: str = os.getenv("ADMIN_USER_IDS", "")
     # Shared secret for the sprite worker -> backend /town/internal/sprite-event
     # seam. CDK wires this into BOTH the backend (compute-stack) and the sprite
     # worker (sprite-worker-stack), so the gate is real.
