@@ -20,12 +20,12 @@
     "@types/node": "22.7.9",
     "jest": "^29.7.0",
     "ts-jest": "^29.2.5",
-    "aws-cdk": "2.1125.0",
+    "aws-cdk": "2.1135.1",
     "ts-node": "^10.9.2",
     "typescript": "~5.6.3"
   },
   "dependencies": {
-    "aws-cdk-lib": "2.246.0",
+    "aws-cdk-lib": "2.260.0",
     "cdk-pipelines-github": "0.4.137",
     "constructs": "^10.0.0"
   }
