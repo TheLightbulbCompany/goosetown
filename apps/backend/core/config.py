@@ -22,6 +22,11 @@ class Settings:
     WS_MANAGEMENT_API_URL: str = os.getenv("WS_MANAGEMENT_API_URL", "")
     GAME_SERVER_URL: str = os.getenv("GAME_SERVER_URL", "ws://localhost:8080")
     WS_LAMBDA_SECRET: str = os.getenv("WS_LAMBDA_SECRET", "")
+    # Comma-separated Clerk user IDs allowed to call /town/admin/* (#430).
+    # When set, only these users pass; when empty, any *authenticated* Clerk
+    # user does. Either way the endpoints are no longer anonymous, and the
+    # dev-only environment gate still applies on top.
+    ADMIN_USER_IDS: str = os.getenv("ADMIN_USER_IDS", "")
     # Shared secret for the sprite worker -> backend /town/internal/sprite-event
     # seam. Unlike WS_LAMBDA_SECRET (never wired end-to-end — see the note in
     # validate() below), CDK wires this into BOTH the backend (compute-stack)

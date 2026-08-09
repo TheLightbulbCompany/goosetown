@@ -772,7 +772,31 @@ async def reactivate_agent(
 _recomposite_tasks: set = set()
 
 
-@router.post("/admin/recomposite-sprites")
+async def require_admin_user(auth: AuthContext = Depends(get_current_user)) -> AuthContext:
+    """Authenticate an operator for the /town/admin/* ops tools (#430).
+
+    These endpoints used to be guarded ONLY by ``settings.ENVIRONMENT != "dev"``.
+    That is a deploy-environment kill switch, not an authentication check: it
+    made them unreachable in prod (including for real admins) while leaving them
+    **completely anonymous on the public dev ALB** — where ``regenerate-sprite``
+    spends real PixelLab credits and ``recomposite-sprites`` fans out across
+    every agent in the table.
+
+    Now: a valid Clerk JWT is required, and if ``ADMIN_USER_IDS`` is configured
+    the caller must additionally be on that allowlist. Declaring this via
+    ``Depends`` also makes the HTTPBearer security scheme show up in the OpenAPI
+    spec, so the schema stops advertising these routes as public.
+    """
+    from core.config import settings
+
+    allowlist = {uid.strip() for uid in settings.ADMIN_USER_IDS.split(",") if uid.strip()}
+    if allowlist and auth.user_id not in allowlist:
+        logger.warning("Admin endpoint denied for non-admin user %s", auth.user_id)
+        raise HTTPException(status_code=403, detail="admin access required")
+    return auth
+
+
+@router.post("/admin/recomposite-sprites", dependencies=[Depends(require_admin_user)])
 async def recomposite_sprites():
     """DEV-ONLY: re-composite existing sprites for every agent through the fixed
     gray-strip path (#347).
@@ -783,8 +807,11 @@ async def recomposite_sprites():
     re-uploads to S3. The cache-bust (#354) makes the new sheets show immediately.
 
     One-off backfill for sprites generated before the gray-strip fix landed.
-    Gated to dev (403 elsewhere) — it's an internal ops tool, not a user action.
     Runs sequentially in a background task to avoid hammering the PixelLab API.
+
+    Auth: ``require_admin_user`` (Clerk JWT + optional ``ADMIN_USER_IDS``
+    allowlist), THEN the dev-only environment gate. Both layers matter — the
+    env gate alone left this anonymous on the public dev ALB (#430).
     """
     from core import dynamo
     from core.config import settings
@@ -826,7 +853,7 @@ async def recomposite_sprites():
     return {"queued": len(agents)}
 
 
-@router.post("/admin/regenerate-sprite/{agent_id}")
+@router.post("/admin/regenerate-sprite/{agent_id}", dependencies=[Depends(require_admin_user)])
 async def regenerate_sprite(agent_id: str):
     """DEV-ONLY: full from-scratch sprite regeneration for ONE agent.
 
@@ -836,7 +863,12 @@ async def regenerate_sprite(agent_id: str):
     fix that). Clears pixellabCharacterId + sets spriteStatus="queued" so the
     SQS sprite worker starts from the ``creating`` phase.
 
-    Gated to dev (403 elsewhere). Single-agent only — not a batch.
+    Single-agent only — not a batch.
+
+    Auth: ``require_admin_user`` (Clerk JWT + optional ``ADMIN_USER_IDS``
+    allowlist), THEN the dev-only environment gate. This endpoint SPENDS
+    PixelLab credits, so anonymous reachability on the public dev ALB was a
+    real cost vector against a PixelLab account shared with prod (#430).
     """
     from core.config import settings
 
