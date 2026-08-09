@@ -118,6 +118,9 @@ export class ApiStack extends cdk.Stack {
         CONNECTIONS_TABLE: props.connectionsTable.tableName,
         BACKEND_URL:
           props.backendUrl ?? `http://api-${env}.goosetown.isol8.co`,
+        // #427: shared secret proving to the backend that this request came
+        // from the API Gateway integration and not the public internet.
+        WS_LAMBDA_SECRET_NAME: props.secrets.wsLambdaSecret.secretName,
       },
       // Lambda code is in apps/infra/lambda/ws-disconnect/index.py.
       code: lambda_.Code.fromAsset(
@@ -126,6 +129,7 @@ export class ApiStack extends cdk.Stack {
     });
 
     props.connectionsTable.grantReadWriteData(disconnectFn);
+    props.secrets.wsLambdaSecret.grantRead(disconnectFn);
 
     // ─── Default Route Lambda (forwards WS messages to backend ALB) ──
     const defaultLogGroup = new logs.LogGroup(this, "DefaultRouteLogs", {
@@ -147,12 +151,17 @@ export class ApiStack extends cdk.Stack {
       logGroup: defaultLogGroup,
       environment: {
         BACKEND_URL: backendUrl,
+        // #427: shared secret proving to the backend that this request came
+        // from the API Gateway integration and not the public internet.
+        WS_LAMBDA_SECRET_NAME: props.secrets.wsLambdaSecret.secretName,
       },
       // Lambda code is in apps/infra/lambda/ws-default/index.py.
       code: lambda_.Code.fromAsset(
         path.join(__dirname, "..", "..", "lambda", "ws-default")
       ),
     });
+
+    props.secrets.wsLambdaSecret.grantRead(defaultFn);
 
     // ─── L2 WebSocket API ────────────────────────────────────────────
     // The L2 WebSocketApi does not natively support REQUEST authorizers

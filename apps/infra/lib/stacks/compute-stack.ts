@@ -196,6 +196,12 @@ export class ComputeStack extends cdk.Stack {
         SPRITE_EVENT_SECRET: ecs.Secret.fromSecretsManager(
           props.secrets.spriteEventSecret
         ),
+        // #427: authenticates the API Gateway WS Lambdas' POSTs to
+        // /town/ws-message and /town/ws-disconnect. Same secret is wired into
+        // the ws-default / ws-disconnect Lambdas (api-stack).
+        WS_LAMBDA_SECRET: ecs.Secret.fromSecretsManager(
+          props.secrets.wsLambdaSecret
+        ),
       },
       portMappings: [{ containerPort: 8000, protocol: ecs.Protocol.TCP }],
       healthCheck: {

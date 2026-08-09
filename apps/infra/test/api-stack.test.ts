@@ -58,6 +58,10 @@ function buildTestApp(env: "dev" | "prod" = "dev"): { template: Template } {
       "PixelLabApiKey",
       `goosetown-${env}-pixellab-api-key`
     ),
+    wsLambdaSecret: makeSecret(
+      "WsLambdaSecret",
+      `goosetown-${env}-ws-lambda-secret`
+    ),
   };
 
   const stack = new ApiStack(app, `goosetown-${env}-api`, {
@@ -236,5 +240,57 @@ describe("ApiStack — authorizer token-source migration", () => {
     // Old pattern used to log the entire event — including queryStringParameters,
     // including the token. Confirm that's gone.
     expect(authorizerSource).not.toMatch(/Authorizer event: %s.*json\.dumps\(event/);
+  });
+});
+
+/**
+ * #427 — the API Gateway WS bridge must prove itself to the backend.
+ *
+ * The backend now refuses /town/ws-message and /town/ws-disconnect without a
+ * matching `x-ws-lambda-secret`. These guard the *other* half of that seam:
+ * if the Lambdas stop being given the secret (or stop sending the header),
+ * live WebSocket delivery breaks silently. Fail here instead.
+ */
+describe("ApiStack — WS Lambda shared secret wiring", () => {
+  const { template } = buildTestApp("dev");
+
+  test.each([
+    ["DefaultRouteFunction", "goosetown-dev-ws-default"],
+    ["DisconnectFunction", "goosetown-dev-ws-disconnect"],
+  ])("%s receives WS_LAMBDA_SECRET_NAME", (_label, functionName) => {
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      FunctionName: functionName,
+      Environment: {
+        Variables: Match.objectLike({
+          WS_LAMBDA_SECRET_NAME: Match.anyValue(),
+        }),
+      },
+    });
+  });
+
+  test("both WS Lambda roles may read the secret", () => {
+    // grantRead attaches a GetSecretValue statement per function role.
+    const policies = template.findResources("AWS::IAM::Policy");
+    const withGet = Object.entries(policies).filter(([, r]) =>
+      JSON.stringify((r as any).Properties.PolicyDocument).includes(
+        "secretsmanager:GetSecretValue"
+      )
+    );
+    const roles = withGet.map(([logicalId]) => logicalId).join(",");
+    expect(roles).toMatch(/DefaultRouteFunctionServiceRole/);
+    expect(roles).toMatch(/DisconnectFunctionServiceRole/);
+  });
+
+  test.each([
+    ["ws-default", "ws-default/index.py"],
+    ["ws-disconnect", "ws-disconnect/index.py"],
+  ])("%s Lambda actually sends the header", (_label, relPath) => {
+    const source = fs.readFileSync(
+      path.join(__dirname, "..", "lambda", relPath),
+      "utf8"
+    );
+    expect(source).toMatch(/x-ws-lambda-secret/);
+    expect(source).toMatch(/WS_LAMBDA_SECRET_NAME/);
+    expect(source).toMatch(/get_secret_value/);
   });
 });

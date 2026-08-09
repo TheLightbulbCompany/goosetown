@@ -13,6 +13,7 @@ export interface AuthSecrets {
   pixelLabApiKey: secretsmanager.ISecret;
   resendApiKey: secretsmanager.ISecret;
   spriteEventSecret: secretsmanager.ISecret;
+  wsLambdaSecret: secretsmanager.ISecret;
 }
 
 export class AuthStack extends cdk.Stack {
@@ -56,9 +57,24 @@ export class AuthStack extends cdk.Stack {
       description: "Resend API key for landing page email signups",
     });
 
+    // Shared secret authenticating the API Gateway WebSocket Lambdas' POSTs to
+    // the backend's /town/ws-message and /town/ws-disconnect endpoints (#427).
+    // Both sides are wired in CDK: api-stack passes the secret NAME to the
+    // ws-default / ws-disconnect Lambdas (they fetch it at cold start), and
+    // compute-stack injects the VALUE into the backend task.
+    const wsLambdaSecret = new secretsmanager.Secret(this, "WsLambdaSecret", {
+      secretName: `goosetown/${env}/ws_lambda_secret`,
+      description:
+        "Shared secret for API Gateway WS Lambdas -> backend /town/ws-message + /town/ws-disconnect",
+      generateSecretString: {
+        excludePunctuation: true,
+        passwordLength: 48,
+      },
+    });
+
     // Shared secret authenticating the sprite worker's POSTs to the backend's
-    // /town/internal/sprite-event endpoint. Unlike WS_LAMBDA_SECRET (vacuous —
-    // see core/config.py), BOTH sides of this seam are wired here in CDK.
+    // /town/internal/sprite-event endpoint. BOTH sides of this seam are wired
+    // here in CDK.
     const spriteEventSecret = new secretsmanager.Secret(
       this,
       "SpriteEventSecret",
@@ -80,6 +96,7 @@ export class AuthStack extends cdk.Stack {
       pixelLabApiKey,
       resendApiKey,
       spriteEventSecret,
+      wsLambdaSecret,
     };
 
     // Outputs

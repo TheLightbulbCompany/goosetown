@@ -77,6 +77,10 @@ function buildTestApp(env: string, withAlarmTopic = false): Template {
       "SpriteEventSecret",
       `goosetown-${env}-sprite-event-secret`
     ),
+    wsLambdaSecret: makeSecret(
+      "WsLambdaSecret",
+      `goosetown-${env}-ws-lambda-secret`
+    ),
   };
 
   const alarmTopic = withAlarmTopic

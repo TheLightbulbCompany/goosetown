@@ -100,6 +100,10 @@ function buildTestApp(env: string): {
       "SpriteEventSecret",
       `goosetown-${env}-sprite-event-secret`
     ),
+    wsLambdaSecret: makeSecret(
+      "WsLambdaSecret",
+      `goosetown-${env}-ws-lambda-secret`
+    ),
   };
 
   const computeStack = new ComputeStack(app, `goosetown-${env}-compute`, {
@@ -282,6 +286,10 @@ describe("ComputeStack — backend-task-missing alarm metric", () => {
       spriteEventSecret: makeSecret(
         "SpriteEventSecret",
         "goosetown-dev-sprite-event-secret"
+      ),
+      wsLambdaSecret: makeSecret(
+        "WsLambdaSecret",
+        "goosetown-dev-ws-lambda-secret"
       ),
     };
     const alarmTopic = new (require("aws-cdk-lib/aws-sns").Topic)(
