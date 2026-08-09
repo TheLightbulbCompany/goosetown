@@ -70,13 +70,22 @@ from core.services.daemon_bridge import (  # noqa: E402, F401
 
 
 async def get_town_token_user(
-    authorization: str = Header(..., alias="Authorization"),
+    authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> tuple:
     """Validate a town_token from Authorization: Bearer <token>.
     Returns (user_id, token) or raises 401.
+
+    The header is declared Optional deliberately. With ``Header(...)``
+    (required) FastAPI treats a missing Authorization as a *body/param
+    validation* error and returns **422 before this function ever runs** —
+    which reads from the outside exactly like "no auth gate at all" and is
+    how #426 came to be filed against /exchange/upload-url. Accepting None
+    and raising here keeps the wire contract honest: no credentials → 401.
     """
     from core.town_token import verify_town_token
 
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing Bearer token")
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing Bearer token")
     token = authorization[7:]
