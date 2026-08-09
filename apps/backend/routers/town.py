@@ -17,6 +17,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Requ
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from core.auth import AuthContext, get_current_user
+from core.internal_auth import require_ws_lambda_secret
 from core.services import exchange_scoring, exchange_service, goals_service, stances_service, town_mood_engine
 from core.services.game_server_client import get_game_server_client
 from core.services.owner_chat_service import (
@@ -1606,9 +1607,16 @@ from core.services.agent_connect_service import (  # noqa: E402, F401
 )
 
 
-@router.post("/ws-disconnect")
+@router.post("/ws-disconnect", dependencies=[Depends(require_ws_lambda_secret)])
 async def handle_ws_disconnect(request: WsDisconnectRequest):
-    """Handle WebSocket disconnect — clean up agent from game server and DynamoDB."""
+    """Handle WebSocket disconnect — clean up agent from game server and DynamoDB.
+
+    Auth: shared-secret gate (``x-ws-lambda-secret``), only the API Gateway
+    $disconnect Lambda holds it. Before #427 this route had **no gate at all**:
+    a bare ``{"connectionId": ...}`` POST from anywhere on the internet would
+    evict that agent from the game server, clear its activity, and (paired with
+    a forged ``town_agent_sleep``) mark it inactive and move it to bed.
+    """
     ws_manager = get_town_agent_ws_manager()
     agent_conn = ws_manager.get_by_connection(request.connectionId)
 
@@ -1681,17 +1689,16 @@ class WsMessageRequest(BaseModel):
 _ws_message_adapter: TypeAdapter[WsMessage] = TypeAdapter(WsMessage)
 
 
-@router.post("/ws-message")
+@router.post("/ws-message", dependencies=[Depends(require_ws_lambda_secret)])
 async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
-    """Receive forwarded WebSocket messages from API Gateway $default Lambda."""
-    from core.config import settings
+    """Receive forwarded WebSocket messages from API Gateway $default Lambda.
 
-    # In non-dev environments, require shared secret from API Gateway Lambda.
-    # In dev, skip if WS_LAMBDA_SECRET is unset (local dev ergonomics).
-    if settings.ENVIRONMENT != "dev" or settings.WS_LAMBDA_SECRET:
-        provided = raw_request.headers.get("x-ws-lambda-secret", "")
-        if provided != settings.WS_LAMBDA_SECRET:
-            raise HTTPException(status_code=403, detail="Invalid or missing WS lambda secret")
+    Auth: shared-secret gate (``x-ws-lambda-secret``) as a dependency, so it
+    runs *before* body validation. The previous inline check was vacuous —
+    ``WS_LAMBDA_SECRET`` was never wired through CDK, so it compared
+    ``"" != ""`` and admitted every anonymous caller (#427).
+    """
+    from core.config import settings
 
     # Boundary validation (sub-project #1 CRITICAL fix): reject malformed
     # bodies at the request boundary instead of forwarding to the game

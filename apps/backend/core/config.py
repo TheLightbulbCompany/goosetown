@@ -21,11 +21,16 @@ class Settings:
     SPRITE_CDN_URL: str = os.getenv("SPRITE_CDN_URL", "")
     WS_MANAGEMENT_API_URL: str = os.getenv("WS_MANAGEMENT_API_URL", "")
     GAME_SERVER_URL: str = os.getenv("GAME_SERVER_URL", "ws://localhost:8080")
+    # Shared secret for the API Gateway WS Lambdas -> backend /town/ws-message
+    # and /town/ws-disconnect seam. Wired end-to-end as of #427: auth-stack
+    # generates it, api-stack passes the secret NAME to the ws-default and
+    # ws-disconnect Lambdas (which fetch it via boto3 at cold start and send
+    # the x-ws-lambda-secret header), and compute-stack injects the value
+    # into the backend.
     WS_LAMBDA_SECRET: str = os.getenv("WS_LAMBDA_SECRET", "")
     # Shared secret for the sprite worker -> backend /town/internal/sprite-event
-    # seam. Unlike WS_LAMBDA_SECRET (never wired end-to-end — see the note in
-    # validate() below), CDK wires this into BOTH the backend (compute-stack)
-    # and the sprite worker (sprite-worker-stack), so the gate is real.
+    # seam. CDK wires this into BOTH the backend (compute-stack) and the sprite
+    # worker (sprite-worker-stack), so the gate is real.
     SPRITE_EVENT_SECRET: str = os.getenv("SPRITE_EVENT_SECRET", "")
     # Set WS_STRICT_VALIDATION=false to roll back to legacy dict-based body handling for 48h post-deploy
     WS_STRICT_VALIDATION: bool = os.getenv("WS_STRICT_VALIDATION", "true").lower() != "false"
@@ -61,25 +66,19 @@ class Settings:
         if self.ENVIRONMENT == "dev":
             return
 
-        # WS_LAMBDA_SECRET is intentionally NOT in the required list. The
-        # corresponding shared-secret authentication between the API
-        # Gateway WS Lambdas and the backend's /ws-message endpoint was
-        # never wired through CDK — the Lambdas at apps/infra/lambda/
-        # don't read or send the x-ws-lambda-secret header, so the
-        # backend's check at routers/town.py:1219 is vacuously satisfied
-        # ("" != "" → False, no rejection). Adding it to ``required``
-        # blocks prod startup with no security benefit, since neither
-        # side actually enforces the secret today. If we later wire the
-        # secret end-to-end (auth-stack creates it; api-stack passes
-        # it to Lambdas as env or fetched-from-Secrets-Manager;
-        # compute-stack passes it to the backend as a Secret), this
-        # check can be reinstated.
+        # WS_LAMBDA_SECRET IS required outside dev as of #427. It is now wired
+        # end-to-end through CDK (see the field comment above), so a missing
+        # value means the ws-message / ws-disconnect seam would be refusing
+        # every call from the API Gateway Lambdas — fail fast at startup with a
+        # clear message instead of serving a backend that silently drops all
+        # agent WebSocket traffic.
         required = {
             "TOWN_TOKEN_SECRET": self.TOWN_TOKEN_SECRET,
             "WS_MANAGEMENT_API_URL": self.WS_MANAGEMENT_API_URL,
             "SPRITE_S3_BUCKET": self.SPRITE_S3_BUCKET,
             "SPRITE_CDN_URL": self.SPRITE_CDN_URL,
             "CLERK_ISSUER": self.CLERK_ISSUER,
+            "WS_LAMBDA_SECRET": self.WS_LAMBDA_SECRET,
         }
         missing = [name for name, val in required.items() if not val]
         if missing:
