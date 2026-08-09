@@ -71,3 +71,6 @@ def require_shared_secret(header_name: str, setting_name: str) -> Callable[[Requ
 #: Gate for the API Gateway WebSocket Lambdas → backend seam
 #: (``/town/ws-message``, ``/town/ws-disconnect``).
 require_ws_lambda_secret = require_shared_secret("x-ws-lambda-secret", "WS_LAMBDA_SECRET")
+
+#: Gate for the sprite worker → backend seam (``/town/internal/sprite-event``).
+require_sprite_event_secret = require_shared_secret("x-sprite-event-secret", "SPRITE_EVENT_SECRET")

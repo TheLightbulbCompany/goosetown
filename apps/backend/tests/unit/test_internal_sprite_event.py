@@ -276,3 +276,66 @@ class TestInputValidation:
             headers=_DEV_HEADERS,
         )
         assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Case 5: auth resolves BEFORE body validation (#428)
+# ---------------------------------------------------------------------------
+
+
+class TestAuthPrecedesBodyValidation:
+    """The gate must not be reachable only via a well-formed body.
+
+    #428 was filed because an empty-body probe returned 422, read as "no auth
+    gate". The gate was in fact real and fail-closed — but it lived *inside*
+    the handler, so Pydantic rejected the body first and the auth code never
+    ran. Moving it to a dependency makes the refusal honest.
+
+    The 422 cases in TestValidation above remain correct: those are *authorized*
+    callers (dev + no secret) sending bad bodies.
+    """
+
+    @pytest.fixture
+    def prod_with_secret(self, monkeypatch):
+        from core.config import settings
+
+        monkeypatch.setattr(settings, "ENVIRONMENT", "prod")
+        monkeypatch.setattr(settings, "SPRITE_EVENT_SECRET", "sprite-secret-abc")  # nosec B105: test fixture
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {},  # the exact probe from the issue
+            {"garbage": True},
+            {"agent_id": "agent-1"},  # missing `type`
+            {"agent_id": "agent-1", "type": "explode_the_sprites"},  # bad enum
+        ],
+        ids=["empty", "garbage", "missing-type", "bad-enum"],
+    )
+    def test_unauthenticated_returns_403_regardless_of_body(self, client, prod_with_secret, body):
+        """No secret header → 403 for every body shape, well-formed or not."""
+        resp = client.post(_URL, json=body)
+        assert resp.status_code == 403, f"body={body} returned {resp.status_code}"
+
+    def test_empty_header_returns_403(self, client, prod_with_secret):
+        """An empty header must not satisfy the gate."""
+        resp = client.post(_URL, json={}, headers={"x-sprite-event-secret": ""})
+        assert resp.status_code == 403
+
+    def test_unconfigured_secret_outside_dev_fails_closed(self, client, monkeypatch):
+        """Missing secret in prod refuses rather than opening the seam."""
+        from core.config import settings
+
+        monkeypatch.setattr(settings, "ENVIRONMENT", "prod")
+        monkeypatch.setattr(settings, "SPRITE_EVENT_SECRET", "")
+        resp = client.post(_URL, json={})
+        assert resp.status_code == 403
+
+    def test_authorized_caller_still_reaches_body_validation(self, client, prod_with_secret):
+        """With the right secret, a bad body still gets 422 — gate isn't swallowing traffic."""
+        resp = client.post(
+            _URL,
+            json={"agent_id": "agent-1"},
+            headers={"x-sprite-event-secret": "sprite-secret-abc"},
+        )
+        assert resp.status_code == 422

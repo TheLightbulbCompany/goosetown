@@ -17,7 +17,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Requ
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from core.auth import AuthContext, get_current_user
-from core.internal_auth import require_ws_lambda_secret
+from core.internal_auth import require_sprite_event_secret, require_ws_lambda_secret
 from core.services import exchange_scoring, exchange_service, goals_service, stances_service, town_mood_engine
 from core.services.game_server_client import get_game_server_client
 from core.services.owner_chat_service import (
@@ -2032,8 +2032,8 @@ class SpriteEventRequest(BaseModel):
     status: str | None = None
 
 
-@router.post("/internal/sprite-event")
-async def internal_sprite_event(request: SpriteEventRequest, raw_request: Request):
+@router.post("/internal/sprite-event", dependencies=[Depends(require_sprite_event_secret)])
+async def internal_sprite_event(request: SpriteEventRequest):
     """Sprite-worker → backend seam (spec 2026-06-11 §4).
 
     The sprite worker owns PixelLab API calls and DynamoDB writes
@@ -2044,22 +2044,14 @@ async def internal_sprite_event(request: SpriteEventRequest, raw_request: Reques
 
     Auth: dedicated ``SPRITE_EVENT_SECRET`` shared-secret gate (header
     ``x-sprite-event-secret``), wired end-to-end through CDK into both the
-    backend and the sprite worker.
+    backend and the sprite worker. Fails closed outside dev.
+
+    The gate is a **dependency**, not an inline check (#428): dependencies
+    resolve before request-body validation, so an unauthenticated caller gets
+    403 rather than a Pydantic 422 that never reaches the auth code at all.
+    The behaviour was always correct — only the ordering made it look absent
+    to external probing.
     """
-    from core.config import settings
-
-    # Real shared-secret auth — CDK wires SPRITE_EVENT_SECRET into both the
-    # backend and the sprite worker (unlike WS_LAMBDA_SECRET, which was never
-    # wired end-to-end; see core/config.py). Fail CLOSED outside dev if the
-    # secret is missing: an unset secret in prod is a misconfiguration, not
-    # an excuse to accept unauthenticated internal calls.
-    secret = settings.SPRITE_EVENT_SECRET
-    if secret:
-        if raw_request.headers.get("x-sprite-event-secret", "") != secret:
-            raise HTTPException(status_code=403, detail="forbidden")
-    elif settings.ENVIRONMENT != "dev":
-        raise HTTPException(status_code=403, detail="forbidden")
-
     if request.type == "progress":
         _send_to_daemon(
             request.agent_id,
