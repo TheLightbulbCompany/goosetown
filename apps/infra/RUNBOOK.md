@@ -914,9 +914,12 @@ If a user gets a 429 for agents with fewer than 5 active (or holds more than 5),
 
 The sprite worker receives `PIXELLAB_REQUESTS_PER_DAY` from CDK context
 `pixellabDailyRequests:dev` / `pixellabDailyRequests:prod` (nonnegative integer,
-default **0**). Set a reviewed value explicitly when preparing the release,
-for example `-c pixellabDailyRequests:dev=N` with the approved integer replacing
-`N`. Zero pauses paid generation with a queued placeholder; it does not disable
+default **0** if missing). The checked-in starting ceilings are **dev 50** and
+**prod 200** requests per UTC day, proposed in the coordinated review. Confirm
+them at release review; no provider call or deployment is authorized by these
+numbers. Edit `cdk.json` to persist a reviewed change across normal synths;
+a one-off `-c` override is not a durable configuration. Zero pauses paid
+generation with a queued placeholder; it does not disable
 town access or read-only retrieval of existing sprites. Do not select a budget
 by enabling a workflow. Dev and prod have separate counters, so the account's
 combined request allowance is their sum. This is a request ceiling, not measured
