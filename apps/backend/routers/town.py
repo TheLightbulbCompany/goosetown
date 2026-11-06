@@ -123,9 +123,15 @@ async def get_town_token_user(
 
     service = TownService()
     instance = service.get_instance_by_token(token)
-    if not instance or instance.get("isActive") != "true":
+    if (
+        payload["iid"] in {"viewer", "anonymous-viewer"}
+        or not instance
+        or instance.get("isActive") != "true"
+        or instance.get("userId") != payload["uid"]
+        or instance.get("id") != payload["iid"]
+    ):
         raise HTTPException(status_code=401, detail="Invalid or expired town token")
-    return instance.get("userId"), token
+    return payload["uid"], token
 
 
 # ---------------------------------------------------------------------------
