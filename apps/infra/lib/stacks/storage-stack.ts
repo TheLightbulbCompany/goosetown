@@ -238,13 +238,8 @@ export class StorageStack extends cdk.Stack {
       }),
     });
 
-    const canonicalZone = route53.HostedZone.fromHostedZoneAttributes(this, "CanonicalZone", {
-      hostedZoneId: canonicalZoneId, zoneName: canonicalZoneName,
-    });
-    new route53.ARecord(this, "CanonicalAssetsDnsRecord", {
-      zone: canonicalZone, recordName: canonicalHost("assets", env),
-      target: route53.RecordTarget.fromAlias(new route53Targets.CloudFrontTarget(this.distribution)),
-    });
+    // Existing canonical resources remain unmanaged pending reviewed adoption.
+    // Never delete and recreate working public records as part of this stack.
 
     // Outputs
     new cdk.CfnOutput(this, "SpriteBucketName", {

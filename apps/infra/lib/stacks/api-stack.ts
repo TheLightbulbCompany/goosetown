@@ -257,20 +257,8 @@ export class ApiStack extends cdk.Stack {
       );
     }
 
-    const canonicalZone = route53.HostedZone.fromHostedZoneAttributes(this, "CanonicalZone", {
-      hostedZoneId: canonicalZoneId, zoneName: canonicalZoneName,
-    });
-    const canonicalDomain = new apigatewayv2.DomainName(this, "CanonicalWsDomain", {
-      domainName: canonicalHost("ws", env),
-      certificate: acm.Certificate.fromCertificateArn(this, "CanonicalWsCertificate", canonicalCertificateArn),
-    });
-    new apigatewayv2.ApiMapping(this, "CanonicalWsMapping", { api: wsApi, domainName: canonicalDomain, stage });
-    new route53.ARecord(this, "CanonicalWsDnsRecord", {
-      zone: canonicalZone, recordName: canonicalHost("ws", env),
-      target: route53.RecordTarget.fromAlias(new route53Targets.ApiGatewayv2DomainProperties(
-        canonicalDomain.regionalDomainName, canonicalDomain.regionalHostedZoneId,
-      )),
-    });
+    // Existing canonical resources remain unmanaged pending reviewed adoption.
+    // Never delete and recreate working public records as part of this stack.
 
     // ─── Outputs ─────────────────────────────────────────────────────
     new cdk.CfnOutput(this, "WebSocketApiId", {

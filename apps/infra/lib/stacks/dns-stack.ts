@@ -15,9 +15,17 @@ export class DnsStack extends cdk.Stack {
     this.hostedZone = route53.HostedZone.fromHostedZoneAttributes(this, "CanonicalZone", {
       hostedZoneId: canonicalZoneId, zoneName: canonicalZoneName,
     });
+    // Keep the old resource and auto-export until deployed importers migrate.
+    const legacyZone = route53.HostedZone.fromLookup(this, "HostedZone", { domainName: "isol8.co" });
+    const legacyCertificate = new acm.Certificate(this, "Certificate", {
+      domainName: "*.goosetown.isol8.co",
+      subjectAlternativeNames: ["goosetown.isol8.co"],
+      validation: acm.CertificateValidation.fromDns(legacyZone),
+    });
+    this.exportValue(legacyCertificate.certificateArn);
     this.certificate = acm.Certificate.fromCertificateArn(this, "CanonicalCertificate", canonicalCertificateArn);
     new cdk.CfnOutput(this, "CertificateArn", {
-      value: this.certificate.certificateArn,
+      value: legacyCertificate.certificateArn,
       exportName: `goosetown-${props.environment}-certificate-arn`,
     });
   }

@@ -295,9 +295,9 @@ describe("ApiStack — WS Lambda shared secret wiring", () => {
   });
 });
 
-test.each(["dev", "prod"] as const)("%s exposes the canonical WebSocket domain", (env) => {
-  const suffix = env === "prod" ? "" : "-dev";
-  buildTestApp(env).template.hasResourceProperties("AWS::ApiGatewayV2::DomainName", {
-    DomainName: `ws${suffix}.goosetown.thelightbulb.company`,
-  });
+test.each(["dev", "prod"] as const)("%s leaves existing canonical WebSocket resources unmanaged", (env) => {
+  const template = buildTestApp(env).template;
+  template.resourceCountIs("AWS::ApiGatewayV2::DomainName", 0);
+  template.resourceCountIs("AWS::ApiGatewayV2::ApiMapping", 0);
+  template.resourceCountIs("AWS::Route53::RecordSet", 0);
 });
