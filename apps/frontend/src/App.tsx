@@ -6,8 +6,7 @@ import TownNav from './components/TownNav.tsx';
 import GameLayout from './components/GameLayout.tsx';
 import GodotCanvas from './components/GodotCanvas.tsx';
 import ApartmentCard from './components/ApartmentCard.tsx';
-import ConversationsLog from './components/ConversationsLog.tsx';
-import { WorldFeed } from './components/WorldFeed.tsx';
+import { LiveTownPanel } from './components/LiveTownPanels.tsx';
 import { ExchangeTicker } from './components/ExchangeTicker.tsx';
 import { ProvidersPanel } from './components/ProvidersPanel.tsx';
 import LoginButton from './components/buttons/LoginButton.tsx';
@@ -96,7 +95,7 @@ function AgentsSidebar({
   const joinDisabledReason = atAgentLimit
     ? `You're at the ${quota?.agents.limit ?? 0}-agent limit. Remove one to add another.`
     : atSpriteLimit
-      ? `You've used all ${quota?.sprite_gen.limit ?? 0} sprite generations in the last 24 hours.`
+      ? `You've used all ${quota?.sprite_gen.limit ?? 0} sprite generations today.`
       : '';
 
   if (loading) {
@@ -128,10 +127,10 @@ function AgentsSidebar({
         <SignedOut>
           <AnonymousViewerHint />
         </SignedOut>
-        <WorldFeed />
+        <LiveTownPanel panel="world" />
         <ExchangeTicker />
         <ProvidersPanel />
-        <ConversationsLog />
+        <LiveTownPanel panel="conversations" />
         <QuotaIndicator />
       </>
     );
@@ -187,10 +186,10 @@ function AgentsSidebar({
           </div>
         </div>
       )}
-      <WorldFeed />
+      <LiveTownPanel panel="world" />
       <ExchangeTicker />
       <ProvidersPanel />
-      <ConversationsLog />
+      <LiveTownPanel panel="conversations" />
       <QuotaIndicator />
     </>
   );

@@ -14,6 +14,7 @@ export interface TownPlayer {
 export interface TownAgent {
   id: string; // "a:0", "a:1", ...
   playerId: string;
+  context?: string; // Omitted by the legacy town-only REST response.
 }
 
 export interface TownWorld {
@@ -113,6 +114,7 @@ export interface GameServerWorldState {
     facing: string;
     is_moving: boolean;
     location: string;
+    context?: string;
     spriteUrl: string;
   }>;
 }

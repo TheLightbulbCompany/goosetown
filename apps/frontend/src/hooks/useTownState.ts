@@ -214,6 +214,7 @@ export function useTownState(getToken?: () => Promise<string | null>, userId?: s
             const agents = gsMsg.agents.map((a, i) => ({
               id: `a:${i}`,
               playerId: `p:${i}`,
+              context: a.context ?? 'town',
             }));
             const playerDescs: PlayerDescription[] = gsMsg.agents.map((a, i) => ({
               playerId: `p:${i}`,

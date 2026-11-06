@@ -15,7 +15,7 @@ export function QuotaIndicator() {
         limit={data.agents.limit}
       />
       <QuotaBar
-        label="sprite-gens (24h)"
+        label="sprite-gens (today)"
         used={data.sprite_gen.used_24h}
         limit={data.sprite_gen.limit}
       />
