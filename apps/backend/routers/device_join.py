@@ -90,11 +90,11 @@ async def start(body: Start):
 def _existing_actor(row, owner):
     from core.services.town_service import TownService
 
-    found = TownService().get_agent_by_name(owner, row["persona"]["agent_name"])
+    found = TownService()._get_town_agent(owner, row["persona"]["agent_name"])
     if not found:
         return None
     actor = TownService().get_town_agent_by_id(found["id"], consistent=True)
-    return actor if actor and actor.get("userId") == owner and actor.get("isActive") == "true" else None
+    return actor if actor and actor.get("userId") == owner else None
 
 
 def _public_persona(actor):
@@ -171,11 +171,14 @@ async def approve(code: str, auth: AuthContext = Depends(get_current_user)):
         actor = TownService().get_town_agent_by_id(registered["agent_id"], consistent=True)
     if actor.get("instanceId") not in (None, instance_id):
         raise HTTPException(409, "Actor belongs to another town context")
+    if actor.get("isActive") != "true":
+        TownService().set_agent_active(actor["id"], True)
     dynamo.agents_table().update_item(
         Key={"id": actor["id"]},
         UpdateExpression="SET instanceId = :iid",
-        ConditionExpression=("userId = :owner AND isActive = :active "
-                             "AND (attribute_not_exists(instanceId) OR instanceId = :iid)"),
+        ConditionExpression=(
+            "userId = :owner AND isActive = :active AND (attribute_not_exists(instanceId) OR instanceId = :iid)"
+        ),
         ExpressionAttributeValues={":iid": instance_id, ":owner": auth.user_id, ":active": "true"},
     )
     scoped = sign_town_token(auth.user_id, instance_id, actor_id=actor["id"], device_id=code)

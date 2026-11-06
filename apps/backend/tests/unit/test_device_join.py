@@ -285,6 +285,7 @@ def test_scoped_device_binds_and_arrives_only_after_its_proven_connection(device
     monkeypatch.setattr("core.services.daemon_mailbox._singleton", mailbox)
     gs = MagicMock()
     gs.connect_agent = AsyncMock()
+    gs.send_command = AsyncMock()
     monkeypatch.setattr("core.services.agent_connect_service.get_game_server_client", lambda: gs)
     monkeypatch.setattr("core.services.sprite_jobs.enqueue_signup", lambda *_: False)
     dynamo.connections_table().put_item(Item={"connectionId": "fresh-connection"})
@@ -303,6 +304,18 @@ def test_scoped_device_binds_and_arrives_only_after_its_proven_connection(device
     )
     assert connected.json()["statusCode"] == 200, connected.text
     assert c.get(path).json()["actor_id"] == actor
+    for strict in (True, False):
+        monkeypatch.setattr(settings, "WS_STRICT_VALIDATION", strict)
+        raw = c.post(
+            "/town/ws-message",
+            json={
+                "connectionId": "fresh-connection",
+                "principalId": "owner",
+                "body": {"type": "town_disconnect", "cmd": "transition", "to": "apartment", "user_id": "ANOTHER_OWNER"},
+            },
+        )
+        assert raw.json()["statusCode"] == 403
+    gs.send_command.assert_not_called()
     rejected = c.post(
         "/town/ws-message",
         json={
@@ -320,3 +333,54 @@ def test_scoped_device_binds_and_arrives_only_after_its_proven_connection(device
         ).status_code
         == 403
     )
+
+
+def test_owner_approval_reactivates_sleeping_actor_preserving_binding_and_persona(device):
+    from core.services.town_service import TownService
+    from core.town_token import verify_town_token
+
+    c, _, _, _ = device
+    credential = redeem(device)
+    actor_id = verify_town_token(credential["town_token"])["aid"]
+    retained = {"memberKey": "existing-key", "sessionId": "existing-session", "revision": 1}
+    dynamo.agents_table().update_item(
+        Key={"id": actor_id},
+        UpdateExpression="SET runtimeBinding = :binding, bindingRevision = :rev",
+        ExpressionAttributeValues={":binding": retained, ":rev": 1},
+    )
+    TownService().set_agent_active(actor_id, False)
+    before = TownService().get_town_agent_by_id(actor_id, consistent=True)
+    started = c.post(
+        "/town/device-join", json={"agent_name": "lucky", "appearance": "Changed", "personality": "Changed"}
+    ).json()
+    path = "/town/device-join/" + started["user_code"]
+    assert c.get(path).json()["persona"]["appearance"] == before["appearance"]
+    assert c.post(path + "/approve").status_code == 200
+    after = TownService().get_town_agent_by_id(actor_id, consistent=True)
+    assert after["isActive"] == "true"
+    assert after["runtimeBinding"] == retained
+    assert after["appearance"] == before["appearance"]
+    assert after["personalitySummary"] == before["personalitySummary"]
+    assert len(TownService().get_active_agents_for_user("owner")) == 1
+    assert "actor_id" not in c.get(path).json()
+
+
+def test_sleeping_actor_reactivation_cannot_exceed_owner_quota(device):
+    from core.quota import QuotaExceeded
+    from core.services.town_service import TownService
+    from core.town_token import verify_town_token
+
+    c, _, _, _ = device
+    credential = redeem(device)
+    actor_id = verify_town_token(credential["town_token"])["aid"]
+    TownService().set_agent_active(actor_id, False)
+    dynamo.users_table().update_item(
+        Key={"userId": "owner"}, UpdateExpression="SET activeAgents = :full", ExpressionAttributeValues={":full": 9999}
+    )
+    started = c.post("/town/device-join", json={"agent_name": "lucky"}).json()
+    path = "/town/device-join/" + started["user_code"]
+    with pytest.raises(QuotaExceeded):
+        c.post(path + "/approve")
+    assert TownService().get_town_agent_by_id(actor_id, consistent=True)["isActive"] == "false"
+    row = dynamo.connections_table().get_item(Key={"connectionId": "town-device:" + started["user_code"]})["Item"]
+    assert "credential" not in row

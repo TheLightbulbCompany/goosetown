@@ -1928,6 +1928,14 @@ async def _handle_ws_message_inner(request: WsMessageRequest, raw_request: Reque
         )
         return {"statusCode": 200}
 
+    # Device consent never authorizes legacy arbitrary game-server commands,
+    # even when strict shape validation is disabled. In particular, caller-
+    # supplied user_id/context fields must not cross into apartment routing.
+    device_connection = ws_manager.get_by_connection(request.connectionId)
+    if ("cmd" in body and device_connection
+            and (device_connection.runtime_session_claims or {}).get("device_id")):
+        return {"statusCode": 403, "error": "public_connection_scope"}
+
     # Check the current binding before any agent action or clean-leave side effect.
     if settings.RUNTIME_SESSION_ENFORCEMENT_ENABLED and (
         msg_type in ("town_agent_act", "town_agent_sleep") or "cmd" in body
