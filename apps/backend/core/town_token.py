@@ -112,6 +112,7 @@ def verify_town_token(token: str) -> dict | None:
         return payload
     try:
         from core.services.user_service import UserService
+
         if UserService().is_token_revoked(payload["uid"], iat * 1000):
             return None
     except Exception:
