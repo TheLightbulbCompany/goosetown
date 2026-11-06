@@ -7,8 +7,7 @@
 # UID files
 *.uid
 
-# Export artifacts (built by CI/editor, not source)
-export_presets.cfg
+# Export presets are source; generated web artifacts are built separately.
 
 # PixelLab terrain imports (generated, large)
 pixellab_import/
