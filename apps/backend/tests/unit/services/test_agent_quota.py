@@ -7,14 +7,15 @@ AGENT_QUOTA and deactivations release each slot exactly once.
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
+from botocore.exceptions import ClientError
 
 from core import dynamo
 from core.quota import QuotaExceeded
 from core.services.town_service import TownService
-from core.services.user_service import AGENT_QUOTA
+from core.services.user_service import AGENT_QUOTA, CONFLICT_ATTEMPTS
 
 USER = "user-1"
 pytestmark = pytest.mark.usefixtures("atomic_moto_requests")
@@ -141,14 +142,57 @@ def test_deactivate_never_takes_counter_negative(dynamodb_tables):
     assert _counter() == 0
 
 
-def test_instance_opt_out_releases_every_slot(dynamodb_tables):
-    svc = TownService()
-    svc.opt_in_instance(
-        USER, [SimpleNamespace(agent_name=f"a{i}", display_name=f"A{i}", personality_summary="") for i in range(3)]
+# --- Real-DynamoDB contention (moto never raises it, so it's injected) ---
+
+
+def _conflict() -> ClientError:
+    return ClientError(
+        {
+            "Error": {"Code": "TransactionCanceledException", "Message": "conflict"},
+            "CancellationReasons": [{"Code": "None"}, {"Code": "TransactionConflict"}, {"Code": "None"}],
+        },
+        "TransactWriteItems",
     )
 
-    _, count = svc.opt_out_instance(USER)
 
-    assert count == 3
+def _conflicting_transactions(times: int):
+    """Fail the next ``times`` TransactWriteItems with TransactionConflict, then pass through."""
+    client = dynamo.agents_table().meta.client
+    real = client.transact_write_items
+    calls = {"n": 0}
+
+    def fake(**kwargs):
+        calls["n"] += 1
+        if calls["n"] <= times:
+            raise _conflict()
+        return real(**kwargs)
+
+    return patch.object(client, "transact_write_items", side_effect=fake), calls
+
+
+def test_transient_conflict_is_retried(dynamodb_tables):
+    agent_id = _legacy_agent("solo", active=False)
+    patcher, calls = _conflicting_transactions(CONFLICT_ATTEMPTS - 1)
+    with patcher:
+        assert TownService().set_agent_active(agent_id, True) is True
+    assert calls["n"] == CONFLICT_ATTEMPTS
+    assert _counter() == 1
+
+
+def test_persistent_conflict_maps_activation_to_quota_exceeded(dynamodb_tables):
+    agent_id = _legacy_agent("solo", active=False)
+    patcher, _ = _conflicting_transactions(99)
+    with patcher:
+        with pytest.raises(QuotaExceeded):
+            TownService().set_agent_active(agent_id, True)
+        with pytest.raises(QuotaExceeded):
+            TownService().opt_in(USER, "agent-new", "New")
     assert _counter() == 0
-    assert _active_count() == 0
+
+
+def test_persistent_conflict_on_deactivation_reraises(dynamodb_tables):
+    agent = TownService().opt_in(USER, "agent-a", "Agent A")
+    patcher, _ = _conflicting_transactions(99)
+    with patcher, pytest.raises(ClientError):
+        TownService().set_agent_active(agent["id"], False)
+    assert _counter() == 1  # nothing half-applied

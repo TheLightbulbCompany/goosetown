@@ -138,6 +138,61 @@ def test_sprite_counter_resets_on_new_utc_day(users_table_resource):
     assert svc.sprites_used_today("user_abc") == 1
 
 
+def test_request_straddling_midnight_cannot_rewind_the_new_day(users_table_resource):
+    """Review F1: a request whose clock still says day D must not reset a row
+    other requests already rolled to D+1 (and used up)."""
+    from datetime import datetime, timezone
+    from unittest.mock import patch
+
+    from core.services.user_service import SPRITE_QUOTA_DAILY, UserService
+
+    svc = UserService()
+    svc.get_or_create("user_abc")
+    users_table_resource.update_item(
+        Key={"userId": "user_abc"},
+        UpdateExpression="SET spriteDay = :d, spriteCount = :n",
+        ExpressionAttributeValues={":d": "2026-11-07", ":n": SPRITE_QUOTA_DAILY},
+    )
+
+    class LateClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 11, 6, 23, 59, 59, 990000, tzinfo=timezone.utc)
+
+    with patch("core.services.user_service.datetime", LateClock), pytest.raises(QuotaExceeded):
+        svc.consume_sprite_quota("user_abc")
+
+    user = svc.get_or_create("user_abc")
+    assert (user["spriteDay"], int(user["spriteCount"])) == ("2026-11-07", SPRITE_QUOTA_DAILY)
+
+
+def test_sprite_quota_retries_transaction_conflict(users_table_resource):
+    """Real DynamoDB rejects an UpdateItem on a row inside an in-flight
+    transaction (TransactionConflictException); moto never does, so inject it."""
+    from unittest.mock import patch
+
+    from botocore.exceptions import ClientError
+
+    import core.dynamo as dynamo_mod
+    from core.services.user_service import UserService
+
+    svc = UserService()
+    svc.get_or_create("user_abc")
+    client = dynamo_mod.users_table().meta.client
+    real = client.update_item
+    calls = {"n": 0}
+
+    def flaky(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ClientError({"Error": {"Code": "TransactionConflictException", "Message": "x"}}, "UpdateItem")
+        return real(**kwargs)
+
+    with patch.object(client, "update_item", side_effect=flaky):
+        svc.consume_sprite_quota("user_abc")
+    assert svc.sprites_used_today("user_abc") == 1
+
+
 def test_legacy_sprite_list_counts_only_today(users_table_resource):
     """Rows from the old sliding-window code: today's entries carry over once, older ones don't."""
     from core.services.user_service import SPRITE_QUOTA_DAILY, SPRITE_QUOTA_WINDOW_MS, UserService

@@ -264,6 +264,25 @@ async def test_clean_leave_flips_is_active_false_to_free_quota_slot():
 
 
 @pytest.mark.asyncio
+async def test_clean_leave_still_unregisters_when_quota_release_fails():
+    """Review F2: a contended set_agent_active must not skip ws_manager.unregister."""
+    from routers.town import WsDisconnectRequest, handle_ws_disconnect
+
+    ws_mock = _make_ws_manager_mock(_make_agent_conn(leaving_cleanly=True))
+    svc_mock = MagicMock()
+    svc_mock.set_agent_active.side_effect = RuntimeError("TransactionConflict")
+
+    with (
+        patch(WS_MANAGER_PATH, return_value=ws_mock),
+        patch(SERVICE_PATH, return_value=svc_mock),
+        patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
+    ):
+        await handle_ws_disconnect(WsDisconnectRequest(connectionId="conn-1"))
+
+    ws_mock.unregister.assert_called_once_with("conn-1")
+
+
+@pytest.mark.asyncio
 async def test_grace_expiry_flips_is_active_false_to_free_quota_slot():
     """Quota-leak regression on the drop path: when the grace window
     expires without a reconnect, the delayed-sleep task must also set

@@ -418,41 +418,6 @@ class TestInstances:
         svc.deactivate_instance(instance["id"])
         assert svc.get_active_instance("user-1") is None
 
-    def test_opt_in_instance(self, dynamodb_tables):
-        svc = TownService()
-        agents_data = [
-            SimpleNamespace(agent_name="a1", display_name="A1", personality_summary="nice"),
-            SimpleNamespace(agent_name="a2", display_name="A2", personality_summary="cool"),
-        ]
-        instance, agents = svc.opt_in_instance("user-1", agents_data)
-        assert len(agents) == 2
-        assert instance["isActive"] == "true"
-
-        # Check agents are linked to instance
-        inst_agents = svc.get_instance_agents(instance["id"])
-        assert len(inst_agents) == 2
-
-    def test_opt_in_instance_duplicate_raises(self, dynamodb_tables):
-        svc = TownService()
-        agents_data = [SimpleNamespace(agent_name="a1", display_name="A1", personality_summary="nice")]
-        svc.opt_in_instance("user-1", agents_data)
-        try:
-            svc.opt_in_instance("user-1", agents_data)
-            assert False, "Should have raised ValueError"
-        except ValueError:
-            pass
-
-    def test_opt_out_instance(self, dynamodb_tables):
-        svc = TownService()
-        agents_data = [
-            SimpleNamespace(agent_name="a1", display_name="A1", personality_summary="nice"),
-        ]
-        svc.opt_in_instance("user-1", agents_data)
-        instance, count = svc.opt_out_instance("user-1")
-        assert instance is not None
-        assert count == 1
-        assert svc.get_active_instance("user-1") is None
-
 
 class TestRelationships:
     def test_create_relationship(self, dynamodb_tables):

@@ -463,13 +463,23 @@ async def register_agent(
         bool(request.appearance),
         request.appearance[:50] if request.appearance else "empty",
     )
+    sprite_skipped = False
     if request.appearance:
         from core.config import settings
+        from core.quota import QuotaExceeded
         from core.services.user_service import UserService
 
         # Sprite-quota check BEFORE kicking off PixelLab — so a rejected
         # request doesn't enqueue work that will never be allowed to run.
-        UserService().consume_sprite_quota(user_id)
+        # The agent is already registered (opt_in above), so out-of-sprites
+        # completes the registration on the placeholder avatar instead of a
+        # 429 that would leave it half-registered. Charging before opt_in
+        # would instead burn a sprite credit on an agent-quota 429.
+        try:
+            UserService().consume_sprite_quota(user_id)
+        except QuotaExceeded:
+            sprite_skipped = True
+            logger.info("register: sprite skipped for %s (daily limit)", agent["id"][:8])
 
         logger.info(
             "Sprite settings: api_key=%s, bucket=%s, cdn=%s",
@@ -477,7 +487,7 @@ async def register_agent(
             settings.SPRITE_S3_BUCKET,
             settings.SPRITE_CDN_URL,
         )
-        if settings.PIXELLAB_API_KEY and settings.SPRITE_S3_BUCKET and settings.SPRITE_CDN_URL:
+        if not sprite_skipped and settings.PIXELLAB_API_KEY and settings.SPRITE_S3_BUCKET and settings.SPRITE_CDN_URL:
             _agent_id = agent["id"]
 
             _existing = service.get_town_agent_by_id(_agent_id)
@@ -526,10 +536,11 @@ async def register_agent(
         "agent_id": agent["id"],
         "agent_name": agent.get("agentName", request.agent_name),
         "display_name": agent.get("displayName", request.display_name),
-        "status": "generating_sprite",
+        "status": "sprite skipped: daily limit" if sprite_skipped else "generating_sprite",
         "ws_url": _TOWN_WS_URL,
         "api_url": _TOWN_API_URL,
-        "message": f"Welcome to GooseTown, {request.display_name}!",
+        "message": f"Welcome to GooseTown, {request.display_name}!"
+        + (" Daily sprite limit reached, so you'll use the placeholder avatar for now." if sprite_skipped else ""),
     }
 
 
@@ -1179,13 +1190,16 @@ async def get_quota(
     from core.services.town_service import TownService
     from core.services.user_service import AGENT_QUOTA, SPRITE_QUOTA_DAILY, UserService
 
-    sprites_used = UserService().sprites_used_today(auth.user_id)
-
-    active_agents = TownService().get_active_agents_for_user(auth.user_id)
+    users = UserService()
+    sprites_used = users.sprites_used_today(auth.user_id)
+    # Show the counter that's enforced; users not yet seeded fall back to the index count.
+    agents_used = users.get_or_create(auth.user_id).get("activeAgents")
+    if agents_used is None:
+        agents_used = len(TownService().get_active_agents_for_user(auth.user_id))
 
     return {
         "agents": {
-            "used": len(active_agents),
+            "used": int(agents_used),
             "limit": AGENT_QUOTA,
         },
         "sprite_gen": {
@@ -1689,7 +1703,10 @@ async def handle_ws_disconnect(request: WsDisconnectRequest):
         #   ``opt_in`` so this is symmetric.
         if clean_leave:
             service.update_agent_context(agent_id, "apartment", "bed")
-            service.set_agent_active(agent_id, False)
+            try:
+                service.set_agent_active(agent_id, False)
+            except Exception as exc:  # never skip the unregister below
+                logger.warning("[agent:%s] Failed to release quota slot on leave: %s", agent_id[:8], exc)
         else:
             _schedule_sleep_grace(agent_id)
 

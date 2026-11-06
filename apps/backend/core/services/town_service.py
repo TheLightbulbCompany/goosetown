@@ -12,6 +12,8 @@ from boto3.dynamodb.conditions import Attr, Key
 from botocore.exceptions import ClientError
 
 from core import dynamo
+from core.quota import QuotaExceeded
+from core.services.user_service import AGENT_QUOTA, CONFLICT_ATTEMPTS, is_transaction_conflict
 from core.town_token import sign_town_token
 
 logger = logging.getLogger(__name__)
@@ -20,6 +22,11 @@ logger = logging.getLogger(__name__)
 # Residents share this sentinel so they're invisible to every per-user quota
 # check (get_active_agents_for_user filters by the real user's userId).
 RESIDENT_USER_ID = "system:resident"
+
+
+def _agent_quota_exceeded() -> QuotaExceeded:
+    # Reports the limit rather than paying a strongly consistent read for the exact count.
+    return QuotaExceeded(kind="agents", limit=AGENT_QUOTA, current=AGENT_QUOTA)
 
 
 def _now_iso() -> str:
@@ -397,10 +404,9 @@ class TownService:
         }
 
         table = dynamo.agents_table()
-        client = table.meta.client
         try:
-            client.transact_write_items(
-                TransactItems=[
+            self._transact(
+                [
                     {
                         "Put": {
                             "TableName": table.name,
@@ -417,16 +423,18 @@ class TownService:
                     self._agent_counter_update(user_id, +1),
                 ]
             )
-        except client.exceptions.TransactionCanceledException as exc:
+        except ClientError as exc:
             # The claim's condition failed (another registration for the
             # same name won the race) and/or the quota counter is full.
             # On a claim conflict re-read; if the winner's row is visible,
             # return it so the race is invisible to this caller.
-            reasons = getattr(exc, "response", {}).get("CancellationReasons", []) or []
+            if is_transaction_conflict(exc):
+                raise _agent_quota_exceeded() from exc  # still contended after retries: 429, not 500
+            reasons = exc.response.get("CancellationReasons") or []
             codes = [r.get("Code") for r in reasons] + [None] * 3
             claim_conflict = codes[0] == "ConditionalCheckFailed"
             if not claim_conflict and codes[2] == "ConditionalCheckFailed":
-                raise self._agent_quota_exceeded(user_id) from exc
+                raise _agent_quota_exceeded() from exc
             if claim_conflict:
                 winner = self._get_town_agent(user_id, agent_name)
                 if winner is not None:
@@ -482,13 +490,24 @@ class TownService:
                 ExpressionAttributeValues={":n": len(self.get_active_agents_for_user(user_id))},
             )
         except ClientError as exc:
-            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            # Lost the seed race, or the row is mid-transaction: either way
+            # the transaction that follows decides.
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException" and not is_transaction_conflict(exc):
                 raise
+
+    def _transact(self, items: list[dict]) -> None:
+        """TransactWriteItems, retried on real-DynamoDB contention (TransactionConflict)."""
+        client = dynamo.agents_table().meta.client
+        for attempt in range(CONFLICT_ATTEMPTS):
+            try:
+                client.transact_write_items(TransactItems=items)
+                return
+            except ClientError as exc:
+                if not is_transaction_conflict(exc) or attempt == CONFLICT_ATTEMPTS - 1:
+                    raise
 
     def _agent_counter_update(self, user_id: str, delta: int) -> dict:
         """Transaction item: move ``activeAgents`` by ``delta``, never past 0..AGENT_QUOTA."""
-        from core.services.user_service import AGENT_QUOTA
-
         cond, bound = ("activeAgents < :bound", AGENT_QUOTA) if delta > 0 else ("activeAgents > :bound", 0)
         return {
             "Update": {
@@ -500,20 +519,14 @@ class TownService:
             }
         }
 
-    def _agent_quota_exceeded(self, user_id: str):
-        from core.quota import QuotaExceeded
-        from core.services.user_service import AGENT_QUOTA
-
-        user = dynamo.users_table().get_item(Key={"userId": user_id}, ConsistentRead=True).get("Item") or {}
-        return QuotaExceeded(kind="agents", limit=AGENT_QUOTA, current=int(user.get("activeAgents", AGENT_QUOTA)))
-
     def set_agent_active(self, agent_id: str, active: bool) -> bool:
         """Flip ``isActive`` and the owner's ``activeAgents`` counter together.
 
         One transaction, so concurrent activations can't exceed
         ``AGENT_QUOTA`` and each deactivation releases exactly one slot.
         Returns False if the agent is missing or already in that state.
-        Raises ``QuotaExceeded`` when activating past the quota.
+        Raises ``QuotaExceeded`` when activating past the quota (or still
+        contended after retries); a deactivation still contended re-raises.
         """
         agent = self.get_town_agent_by_id(agent_id, consistent=True)
         if not agent:
@@ -533,24 +546,25 @@ class TownService:
 
         user_id = agent["userId"]
         self._seed_active_agent_counter(user_id)
-        client = table.meta.client
         try:
-            client.transact_write_items(
-                TransactItems=[
+            self._transact(
+                [
                     {"Update": {"TableName": table.name, **agent_update}},
                     self._agent_counter_update(user_id, 1 if active else -1),
                 ]
             )
             return True
-        except client.exceptions.TransactionCanceledException as exc:
-            reasons = getattr(exc, "response", {}).get("CancellationReasons", []) or []
+        except ClientError as exc:
+            if active and is_transaction_conflict(exc):
+                raise _agent_quota_exceeded() from exc  # still contended after retries: 429, not 500
+            reasons = exc.response.get("CancellationReasons") or []
             codes = [r.get("Code") for r in reasons] + [None, None]
             if codes[0] == "ConditionalCheckFailed":
                 return False  # a concurrent request already flipped it
             if codes[1] != "ConditionalCheckFailed":
                 raise
             if active:
-                raise self._agent_quota_exceeded(user_id) from exc
+                raise _agent_quota_exceeded() from exc
 
         # Deactivating with the counter already at 0 (drift from a legacy
         # write): free the row anyway, never take the counter negative.
@@ -898,78 +912,6 @@ class TownService:
             KeyConditionExpression=Key("instanceId").eq(instance_id),
         )
         return [_decimal_to_native(item) for item in resp.get("Items", []) if item.get("isActive") == "true"]
-
-    def deactivate_instance_agents(self, instance_id: str) -> int:
-        """Deactivate all agents for an instance. Returns count."""
-        agents = self.get_instance_agents(instance_id)
-        for agent in agents:
-            self.set_agent_active(agent["id"], False)
-        return len(agents)
-
-    def opt_in_instance(
-        self,
-        user_id: str,
-        agents_data: list,
-    ) -> tuple[dict, list[dict]]:
-        """Instance-level opt-in: create instance + all agents + states."""
-        existing = self.get_active_instance(user_id)
-        if existing:
-            raise ValueError("User already has an active GooseTown instance")
-
-        instance = self.create_instance(user_id)
-        created_agents = []
-
-        now = _now_iso()
-
-        table = dynamo.agents_table()
-        for agent_data in agents_data:
-            agent_id = str(uuid.uuid4())
-            item = {
-                "id": agent_id,
-                "userId": user_id,
-                "agentName": agent_data.agent_name,
-                "displayName": agent_data.display_name,
-                "personalitySummary": agent_data.personality_summary,
-                "homeLocation": "apartment",
-                "instanceId": instance["id"],
-                "isActive": "true",
-                "joinedAt": now,
-                "lastActiveAt": now,
-                "spriteReady": False,
-                "spriteUrl": None,
-                "character": None,
-                "traits": "",
-                "currentLocation": "exit",
-                "locationContext": "apartment",
-                "currentConversationId": None,
-                "lastHeartbeatAt": None,
-                "mood": "neutral",
-                "energy": Decimal("100"),
-                "statusMessage": None,
-                "lastConversationAt": None,
-            }
-            table.put_item(Item=item)
-            created_agents.append(_decimal_to_native(item))
-
-        logger.info(
-            "Instance opt-in for user %s: apartment_unit=%s, agents=%d",
-            user_id,
-            instance.get("apartmentUnit"),
-            len(created_agents),
-        )
-        return instance, created_agents
-
-    def opt_out_instance(self, user_id: str) -> tuple[Optional[dict], int]:
-        """Instance-level opt-out: deactivate instance + all agents."""
-        instance = self.get_active_instance(user_id)
-        if not instance:
-            return None, 0
-
-        count = self.deactivate_instance_agents(instance["id"])
-        self.deactivate_instance(instance["id"])
-
-        logger.info("Instance opt-out for user %s: deactivated %d agents", user_id, count)
-        return instance, count
 
     # ------------------------------------------------------------------
     # Relationships

@@ -34,6 +34,17 @@ def _is_conditional_fail(exc: ClientError) -> bool:
     return exc.response["Error"]["Code"] == "ConditionalCheckFailedException"
 
 
+# Attempts per quota write when real DynamoDB reports contention on the users
+# row. botocore doesn't retry these and moto never raises them.
+CONFLICT_ATTEMPTS: int = 3
+
+
+def is_transaction_conflict(exc: ClientError) -> bool:
+    if exc.response["Error"]["Code"] == "TransactionConflictException":
+        return True
+    return any(r.get("Code") == "TransactionConflict" for r in exc.response.get("CancellationReasons") or [])
+
+
 class UserService:
     """CRUD + quota enforcement for the goosetown-{env}-users table.
 
@@ -97,7 +108,7 @@ class UserService:
         )
         table = users_table()
         key = {"userId": user_id}
-        for _ in range(2):
+        for _ in range(CONFLICT_ATTEMPTS):
             try:  # same day: increment while under the cap
                 table.update_item(
                     Key=key,
@@ -107,20 +118,24 @@ class UserService:
                 )
                 return
             except ClientError as exc:
+                if is_transaction_conflict(exc):
+                    continue
                 if not _is_conditional_fail(exc):
                     raise
             if legacy_today >= SPRITE_QUOTA_DAILY:
                 break
             try:  # first generation of a new UTC day: restart the counter
+                # `<` (not `<>`): a request that read its clock before midnight
+                # must never rewind a row another request already moved forward.
                 table.update_item(
                     Key=key,
                     UpdateExpression="SET spriteDay = :today, spriteCount = :n REMOVE sprite_jobs_24h",
-                    ConditionExpression="attribute_not_exists(spriteDay) OR spriteDay <> :today",
+                    ConditionExpression="attribute_not_exists(spriteDay) OR spriteDay < :today",
                     ExpressionAttributeValues={":today": today, ":n": legacy_today + 1},
                 )
                 return
             except ClientError as exc:
-                if not _is_conditional_fail(exc):
+                if not (_is_conditional_fail(exc) or is_transaction_conflict(exc)):
                     raise
             # A concurrent request started today's counter; retry the increment.
         raise QuotaExceeded(kind="sprite_generation", limit=SPRITE_QUOTA_DAILY, current=SPRITE_QUOTA_DAILY)

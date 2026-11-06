@@ -901,3 +901,9 @@ If that ever happens, the mechanical steps are:
      --force-new-deployment --profile isol8-admin
    ```
 4. Verify: register a throwaway dev agent; confirm the sprite generates and the prod account's generation count does not move.
+
+---
+
+## 20. Per-user agent quota drift
+
+If a user gets a 429 for agents with fewer than 5 active (or holds more than 5), the `activeAgents` counter on their `goosetown-{env}-users` row has drifted. Run `REMOVE activeAgents` on that row (`aws dynamodb update-item --table-name goosetown-{env}-users --key '{"userId":{"S":"<user_id>"}}' --update-expression "REMOVE activeAgents" --profile isol8-admin`). The next activation, deactivation or registration reseeds it from the real active-agent count.
