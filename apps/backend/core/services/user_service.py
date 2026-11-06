@@ -62,7 +62,7 @@ class UserService:
         )
 
     def is_token_revoked(self, user_id: str, token_iat_ms: int) -> bool:
-        user = self.get_or_create(user_id)
+        user = users_table().get_item(Key={"userId": user_id}, ConsistentRead=True).get("Item", {})
         revoked_at = user.get("tokenRevokedAt")
         if revoked_at is None:
             return False

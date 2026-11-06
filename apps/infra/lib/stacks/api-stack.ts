@@ -16,6 +16,7 @@ import { AuthSecrets } from "./auth-stack";
 export interface ApiStackProps extends cdk.StackProps {
   environment: string;
   connectionsTable: dynamodb.ITable;
+  usersTable: dynamodb.ITable;
   secrets: AuthSecrets;
   fargateTaskRole?: iam.IRole;
   vpc: ec2.IVpc;
@@ -52,6 +53,7 @@ export class ApiStack extends cdk.Stack {
         CLERK_ISSUER: props.secrets.clerkIssuer.secretName,
         CLERK_AUTHORIZED_PARTIES: env === "prod" ? "https://goosetown.thelightbulb.company" : "https://dev.goosetown.thelightbulb.company",
         TOWN_TOKEN_SECRET: props.secrets.townTokenSecret.secretName,
+        USERS_TABLE: props.usersTable.tableName,
       },
       // Lambda code is in apps/infra/lambda/ws-authorizer/index.py.
       // Code.fromAsset bundles the directory as a ZIP asset; CDK treats this
@@ -61,6 +63,8 @@ export class ApiStack extends cdk.Stack {
         path.join(__dirname, "..", "..", "lambda", "ws-authorizer")
       ),
     });
+
+    props.usersTable.grant(authorizerFn, "dynamodb:GetItem");
 
     // Grant authorizer access to secrets
     props.secrets.clerkIssuer.grantRead(authorizerFn);

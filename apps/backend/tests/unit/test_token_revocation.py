@@ -74,6 +74,8 @@ def test_verify_passes_for_token_issued_after_revoke(users_table_resource):
     # Issue a fresh token 2 seconds after the revoke timestamp to be safe
     iat_after = int(time.time()) + 2
     token = sign_town_token(user_id="user_abc", instance_id="inst_1", issued_at=iat_after)
-    payload = verify_town_token(token)
+    from unittest.mock import patch
+    with patch("core.town_token.time.time", return_value=iat_after):
+        payload = verify_town_token(token)
     assert payload is not None
     assert payload["uid"] == "user_abc"

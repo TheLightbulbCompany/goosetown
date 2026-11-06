@@ -100,6 +100,7 @@ export class GooseTownStage extends cdk.Stage {
       stackName: `goosetown-${env}-api`,
       environment: env,
       connectionsTable: database.tables.connections,
+      usersTable: database.tables.users,
       secrets: auth.secrets,
       fargateTaskRole: compute.service.taskDefinition.taskRole,
       vpc: network.vpc,
