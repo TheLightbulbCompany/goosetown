@@ -34,14 +34,14 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_const",
         const="dev",
         dest="env_override",
-        help="Use dev endpoints (api-dev.goosetown.isol8.co).",
+        help="Use dev endpoints (api-dev.goosetown.thelightbulb.company).",
     )
     env_group.add_argument(
         "--prod",
         action="store_const",
         const="prod",
         dest="env_override",
-        help="Use prod endpoints (api.goosetown.isol8.co) — default.",
+        help="Use prod endpoints (api.goosetown.thelightbulb.company) — default.",
     )
     parser.add_argument(
         "--version",
