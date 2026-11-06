@@ -6,13 +6,13 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
     "boto3>=1.35",
-    # 2.13.0 clears PYSEC-2026-175/177/178/179 (4 pyjwt advisories).
-    "pyjwt[crypto]>=2.13.0",
+    # 2.15.0 clears the 2.13.0 pyjwt advisories (PYSEC-2026-175/177/178/179 and later).
+    "pyjwt[crypto]>=2.15.0",
     "httpx>=0.28",
     "python-dotenv>=1.0",
     "requests>=2.33",
-    # 12.3.0 clears 12 pillow advisories (PYSEC-2026-2253..2257, 3451..3454, 3493..3496).
-    "Pillow>=12.3.0",
+    # 13.0.0 clears the pillow advisories open against 12.3.0.
+    "Pillow>=13.0.0",
     "websockets>=14.0",
     # Pin transitive deps with known CVEs (see pip-audit output).
     # cryptography is pulled in via pyjwt[crypto]; 50.0.0 clears PYSEC-2026-3552.
@@ -23,10 +23,14 @@ dependencies = [
     "idna>=3.15",
     # starlette pulled in via fastapi; 1.3.1 clears PYSEC-2026-248/249.
     "starlette>=1.3.1",
-    # msgpack pulled in via cachecontrol; 1.2.1 clears GHSA-6v7p-g79w-8964.
-    "msgpack>=1.2.1",
-    # urllib3 pulled in via requests/botocore; 2.7.0 clears PYSEC-2026-141/142.
-    "urllib3>=2.7.0",
+    # msgpack pulled in via cachecontrol; 1.2.3 clears GHSA-6v7p-g79w-8964 and CVE-2026-114613.
+    "msgpack>=1.2.3",
+    # anyio pulled in via httpx/starlette; 4.14.2 clears PYSEC-2026-4024/4025.
+    "anyio>=4.14.2",
+    # certifi pulled in via requests/httpx; 2026.10.18 clears PYSEC-2026-4320.
+    "certifi>=2026.10.18",
+    # urllib3 pulled in via requests/botocore; 2.8.0 clears the advisories open against 2.7.0.
+    "urllib3>=2.8.0",
     # Concordia: interrupt-driven GameMaster framework used by the WorldGM service.
     # Latest stable is 2.4.0. The plan specified ^0.2.0 but the package is now 2.x.
     "gdm-concordia>=2.0.0,<3.0.0",
@@ -48,8 +52,12 @@ dev = [
     "pip-audit>=2.7",
     # Pin transitive (rich → pygments) to clear CVE-2026-4539.
     "pygments>=2.20.0",
-    # pip pulled in via pip-audit → pip-api; 26.1.2 clears PYSEC-2026-196.
-    "pip>=26.1.2",
+    # pip pulled in via pip-audit → pip-api; 26.2 clears the advisories open against 26.1.2.
+    "pip>=26.2",
+    # werkzeug pulled in via moto; 3.1.9 clears the advisories open against 3.1.6.
+    "werkzeug>=3.1.9",
+    # filelock pulled in via pip-audit → cachecontrol[filecache]; 4.2.1 clears CVE-2026-112907..112940.
+    "filelock>=4.2.1",
 ]
 
 [tool.ruff]
