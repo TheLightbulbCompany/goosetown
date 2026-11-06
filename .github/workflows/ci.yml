@@ -154,7 +154,9 @@ jobs:
         run: pnpm --filter @goosetown/frontend run test:e2e
         env:
           E2E_BASE_URL: https://dev.goosetown.thelightbulb.company
-          # The optional bypass supports protected Vercel preview deployments.
+          # dev.goosetown.thelightbulb.company points at a preview deployment, which
+          # Vercel Authentication gates with a 401. The bypass cookie in
+          # playwright.config.ts needs this secret to get through.
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
       - name: Upload Playwright report on failure
         if: failure()
