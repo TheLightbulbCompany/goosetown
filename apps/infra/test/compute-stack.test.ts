@@ -570,3 +570,17 @@ test.each(["dev", "prod"])("%s backend advertises canonical API and WebSocket", 
     })]),
   });
 });
+
+
+test.each(["dev", "prod"])("%s backend keeps device binding and runtime proof enforcement enabled", (env) => {
+  const { template } = buildTestApp(env);
+  template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+    ContainerDefinitions: Match.arrayWith([Match.objectLike({
+      Name: "backend",
+      Environment: Match.arrayWith([
+        { Name: "RUNTIME_BINDING_ENABLED", Value: "true" },
+        { Name: "RUNTIME_SESSION_ENFORCEMENT_ENABLED", Value: "true" },
+      ]),
+    })]),
+  });
+});

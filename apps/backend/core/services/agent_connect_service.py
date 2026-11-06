@@ -169,6 +169,26 @@ async def _handle_agent_connect(request, ws_manager):
         return {"statusCode": 404, "error": "agent_not_found"}
 
     agent_id = agent["id"]
+    if payload.get("scope") == "actor" and payload.get("aid") != agent_id:
+        return {"statusCode": 403, "error": "actor_scope_mismatch"}
+    runtime_claims = None
+    from core.config import settings
+
+    if settings.RUNTIME_SESSION_ENFORCEMENT_ENABLED or payload.get("scope") == "actor":
+        from routers.runtime_session import verify
+
+        runtime_claims = verify(body.get("runtime_session_token", ""))
+        if (
+            not runtime_claims
+            or runtime_claims["uid"] != user_id
+            or runtime_claims["iid"] != instance_id
+            or runtime_claims["actor_id"] != agent_id
+            or runtime_claims["town_iat"] != payload.get("iat")
+            or runtime_claims.get("device_id") != payload.get("device_id")
+        ):
+            mailbox.notify_connection(request.connectionId, {"event": "error", "message": "runtime session rejected"})
+            mailbox.disconnect(request.connectionId)
+            return {"statusCode": 401, "error": "invalid_runtime_session"}
 
     # Kick any existing daemon connection for this agent. When a daemon
     # reconnects, the previous WebSocket may still be open on API Gateway
@@ -196,6 +216,8 @@ async def _handle_agent_connect(request, ws_manager):
         agent_id=agent_id,
         instance_id=instance_id,
     )
+
+    ws_manager.get_by_connection(request.connectionId).runtime_session_claims = runtime_claims
 
     # Persist the daemon's connection ID to DynamoDB so it survives restarts
     logger.info("[agent:%s] daemonConnectionId updated: %s", agent_id[:8], request.connectionId[:12])
@@ -269,6 +291,9 @@ async def _handle_agent_connect(request, ws_manager):
             sprite_animations=_version_animation_urls(agent.get("spriteAnimations", {}), agent),
             on_event=_make_agent_event_callback(),
         )
+        from routers.device_join import record_arrival
+
+        record_arrival(payload, runtime_claims, request.connectionId)
         logger.info(
             "Agent %s connected to game server (context=%s, location=%s, userId=%s)",
             agent_name,

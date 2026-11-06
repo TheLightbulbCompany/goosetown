@@ -129,7 +129,7 @@ export class DatabaseStack extends cdk.Stack {
       sortKey: { name: "updatedAt", type: dynamodb.AttributeType.STRING },
     });
 
-    // Connections table (WebSocket state)
+    // Connections table (WebSocket state and short-lived device handoffs)
     const connections = new dynamodb.Table(this, "ConnectionsTable", {
       tableName: `goosetown-${env}-connections`,
       partitionKey: {
@@ -141,6 +141,7 @@ export class DatabaseStack extends cdk.Stack {
       pointInTimeRecoverySpecification: {
         pointInTimeRecoveryEnabled: env === "prod",
       },
+      timeToLiveAttribute: "ttl",
     });
 
     // Owner chats table (private owner ↔ agent DMs)

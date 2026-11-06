@@ -22,6 +22,7 @@ def _make_conn(agent_id: str = "alice-123", user_id: str = "user-1") -> SimpleNa
     """Minimal AgentConnection-like object with fields the handler reads."""
     return SimpleNamespace(
         agent_id=agent_id,
+        runtime_session_claims=None,
         user_id=user_id,
         agent_name="alice",
         location_context="town",

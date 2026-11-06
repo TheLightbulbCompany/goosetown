@@ -193,6 +193,7 @@ export function useTownState(getToken?: () => Promise<string | null>, userId?: s
                 if (a.context === 'town' || !a.context) {
                   const key = (a.name || '').toLowerCase();
                   const display = a.display_name || a.name || '';
+                  if (a.id) positions[a.id.toLowerCase()] = { x: a.x, y: a.y, display };
                   if (key) positions[key] = { x: a.x, y: a.y, display };
                   if (display) positions[display.toLowerCase()] = { x: a.x, y: a.y, display };
                 }

@@ -26,6 +26,7 @@ class AgentConnection:
     # network flap). Without this flag every disconnect was treated as
     # sleep, silently teleporting agents to bed even on error paths. F12
     # from the 2026-04-21 agent-team dry run.
+    runtime_session_claims: dict | None = None
     leaving_cleanly: bool = False
     # Cached fields the hot-path `_send_to_daemon` used to fetch from DynamoDB
     # on every game-server broadcast (every 2s per agent). Keeping them in

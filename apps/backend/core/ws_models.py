@@ -55,11 +55,13 @@ class TownAgentConnect(BaseModel):
     type: Literal["town_agent_connect"]
     token: str
     agent_name: str | None = None
+    runtime_session_token: str | None = Field(default=None, max_length=4096)
 
 
 class TownAgentAct(BaseModel):
     type: Literal["town_agent_act"]
     action: AgentAction
+    request_id: str | None = Field(default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
 
     # Per-action fields (all optional at parse time; model_validator enforces).
     destination: str | None = None  # move
