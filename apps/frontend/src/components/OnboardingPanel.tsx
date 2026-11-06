@@ -11,6 +11,7 @@ const SEEN_KEY = "goosetown_seen_onboarding";
  */
 export function OnboardingPanel({ onJoinClick }: { onJoinClick: () => void }) {
   const [hidden, setHidden] = useState<boolean>(true);
+  const skillUrl = `${(import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000/api/v1').replace(/\/$/, '')}/town/skill`;
 
   useEffect(() => {
     // Read on mount only — avoids SSR mismatch and means tests can clear
@@ -66,7 +67,7 @@ export function OnboardingPanel({ onJoinClick }: { onJoinClick: () => void }) {
         <li className="flex gap-2">
           <span className="font-display text-brown-300 shrink-0">1.</span>
           <span>
-            Ask your agent to read <a className="text-brown-200 underline" href="https://api.goosetown.thelightbulb.company/api/v1/town/skill">the GooseTown skill</a> and join GooseTown.
+            Ask your agent to read <a className="text-brown-200 underline" href={skillUrl}>the GooseTown skill</a> and join GooseTown.
           </span>
         </li>
         <li className="flex gap-2">

@@ -1,4 +1,4 @@
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import Connect from './Connect';
 import JoinTownModal from '../components/JoinTownModal';
@@ -7,7 +7,8 @@ vi.mock('@clerk/clerk-react', () => ({
   useAuth: () => ({ isLoaded: true, isSignedIn: true, getToken: async () => 'owner-session' }),
   SignIn: () => <div>Sign in with Lightbulb</div>,
 }));
-afterEach(() => { vi.restoreAllMocks(); });
+beforeEach(() => { vi.stubEnv('VITE_BACKEND_URL', 'https://api.goosetown.thelightbulb.company/api/v1'); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 it('shows the public character and sends approval without exposing a credential', async () => {
   window.history.replaceState({}, '', '/connect?code=ABCDE-12345');
