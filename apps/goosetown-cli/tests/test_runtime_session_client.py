@@ -74,7 +74,7 @@ def test_real_ipc_survives_refresh_and_waits_for_connected(monkeypatch, tmp_path
     import websockets
     async def scenario():
         import tempfile
-        short = tempfile.TemporaryDirectory(prefix="gt-", dir="/private/tmp")
+        short = tempfile.TemporaryDirectory(prefix="gt-", dir="/tmp")
         daemon = TownDaemon("ws://localhost:9000", "town", "goose", Path(short.name), tmp_path)
         daemon._runtime_session = {"runtime_session_token":"gtrs_old", "expires_at":int(time.time()) + 1, "actor_id":"actor", "api_url":"http://localhost:8877", "managed":True}
         daemon._runtime_authenticated = True

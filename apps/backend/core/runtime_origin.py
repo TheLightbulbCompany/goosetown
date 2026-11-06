@@ -25,7 +25,7 @@ def audience():
             raise ValueError("insecure origin")
         port = parsed.port
         suffix = "" if port is None or (parsed.scheme, port) in (("http", 80), ("https", 443)) else f":{port}"
-        canonical = f'{parsed.scheme}://{"[" + host + "]" if ":" in host else host}{suffix}'
+        canonical = f"{parsed.scheme}://{'[' + host + ']' if ':' in host else host}{suffix}"
         if value != canonical or len(canonical) > 480:
             raise ValueError("noncanonical origin")
     except (ValueError, UnicodeError, TypeError) as exc:

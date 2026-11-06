@@ -192,8 +192,13 @@ def _complete_for_owner(actor_id, body, owner_id, *, join_request=None, commit=N
         "AND bindingChallenge.challenge_id = :cid AND bindingChallenge.expires_at > :now"
     )
     values = {
-        ":binding": binding, ":next": rev + 1, ":owner": owner_id,
-        ":active": "true", ":rev": rev, ":cid": body.challenge_id, ":now": now,
+        ":binding": binding,
+        ":next": rev + 1,
+        ":owner": owner_id,
+        ":active": "true",
+        ":rev": rev,
+        ":cid": body.challenge_id,
+        ":now": now,
     }
     if join_request is not None:
         # Approval and challenge were stored together. Consume that exact grant,

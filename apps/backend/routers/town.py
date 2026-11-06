@@ -125,10 +125,15 @@ async def get_town_token_user(
     service = TownService()
     if payload.get("scope") == "actor":
         from core import dynamo
+
         instance = dynamo.instances_table().get_item(Key={"id": payload["iid"]}, ConsistentRead=True).get("Item")
         actor = service.get_town_agent_by_id(payload["aid"], consistent=True)
-        if (not actor or actor.get("userId") != payload["uid"]
-                or actor.get("instanceId") != payload["iid"] or actor.get("isActive") != "true"):
+        if (
+            not actor
+            or actor.get("userId") != payload["uid"]
+            or actor.get("instanceId") != payload["iid"]
+            or actor.get("isActive") != "true"
+        ):
             raise HTTPException(401, "Approved actor unavailable")
     else:
         instance = service.get_instance_by_token(token)
@@ -475,6 +480,7 @@ async def register_agent(
     """Register a new agent in GooseTown. Authenticated via town_token."""
     user_id, token = token_info
     from core.town_token import verify_town_token
+
     claims = verify_town_token(token)
     if claims and claims.get("scope") == "actor":
         # Device consent already created the public actor under Clerk auth.
@@ -626,6 +632,7 @@ async def get_agent_status(
     if not agent:
         raise HTTPException(404, "Agent not found")
     from core.town_token import require_actor_scope
+
     require_actor_scope(token_info[1], agent["id"])
 
     # Already done
@@ -1276,7 +1283,8 @@ async def get_or_create_instance(
 
         try:
             response["join_token"] = mint_join_token(
-                instance["id"], auth.user_id, instance["townToken"], agent_name=enrollment_agent_name)
+                instance["id"], auth.user_id, instance["townToken"], agent_name=enrollment_agent_name
+            )
         except EnrollmentStateChanged as exc:
             raise HTTPException(status_code=409, detail="Onboarding changed; please retry") from exc
     return response
@@ -1536,6 +1544,7 @@ async def exchange_upload_url(
 
     user_id, credential = token_info
     from core.town_token import verify_town_token
+
     if (verify_town_token(credential) or {}).get("scope") == "actor":
         raise HTTPException(403, "Public town connection does not authorize file sharing")
     if not settings.SPRITE_S3_BUCKET:
@@ -1932,8 +1941,7 @@ async def _handle_ws_message_inner(request: WsMessageRequest, raw_request: Reque
     # even when strict shape validation is disabled. In particular, caller-
     # supplied user_id/context fields must not cross into apartment routing.
     device_connection = ws_manager.get_by_connection(request.connectionId)
-    if ("cmd" in body and device_connection
-            and (device_connection.runtime_session_claims or {}).get("device_id")):
+    if "cmd" in body and device_connection and (device_connection.runtime_session_claims or {}).get("device_id"):
         return {"statusCode": 403, "error": "public_connection_scope"}
 
     # Check the current binding before any agent action or clean-leave side effect.
@@ -2008,8 +2016,18 @@ async def _handle_ws_message_inner(request: WsMessageRequest, raw_request: Reque
         action = body.get("action", "")
         claims = agent_conn.runtime_session_claims or {}
         if claims.get("device_id") and action not in {
-            "move", "chat", "say", "idle", "end_conversation", "join_conversation",
-            "context_transition", "activity", "reply_owner", "set_goal", "complete_goal", "describe_stance",
+            "move",
+            "chat",
+            "say",
+            "idle",
+            "end_conversation",
+            "join_conversation",
+            "context_transition",
+            "activity",
+            "reply_owner",
+            "set_goal",
+            "complete_goal",
+            "describe_stance",
         }:
             return {"statusCode": 403, "error": "public_connection_scope"}
 
@@ -2298,8 +2316,11 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
             or (isinstance(detail, dict) and detail.get("status") == "rejected")
         )
         uncertain = bool(result.get("uncertain"))
-        message = {"event": "action_result", "request_id": request_id,
-                   "status": "uncertain" if uncertain else "rejected" if rejected else "accepted"}
+        message = {
+            "event": "action_result",
+            "request_id": request_id,
+            "status": "uncertain" if uncertain else "rejected" if rejected else "accepted",
+        }
         if uncertain:
             message["error"] = "action_delivery_uncertain"
         elif rejected:

@@ -236,7 +236,7 @@ def test_valid_signature_for_unissued_owner_or_origin_is_refused(setup):
     raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
     import json
 
-    payload = json.loads(raw[len(DOMAIN):])
+    payload = json.loads(raw[len(DOMAIN) :])
     for name, changed in (
         ("owner_id", "other-owner"),
         ("audience", "goosetown-runtime-binding-v1:https://other.example"),

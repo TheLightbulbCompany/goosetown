@@ -149,11 +149,14 @@ def test_connected_action_rechecks_binding_and_storage_failure(enrollment, monke
     uncertain = msg("good", {"type": "town_agent_act", "action": "move", "destination": "cafe", "request_id": "move2"})
     assert uncertain.json()["uncertain"] == "move_dispatch"
     assert any(
-        call.args == (
+        call.args
+        == (
             "good",
             {
-                "event": "action_result", "request_id": "move2",
-                "status": "uncertain", "error": "action_delivery_uncertain",
+                "event": "action_result",
+                "request_id": "move2",
+                "status": "uncertain",
+                "error": "action_delivery_uncertain",
             },
         )
         for call in mailbox.notify_connection.call_args_list
