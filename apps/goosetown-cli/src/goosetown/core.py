@@ -1532,6 +1532,11 @@ def cmd_daemon_resume(agent_name: str) -> int:
     """
     from datetime import datetime
 
+    import re
+    if not re.fullmatch(r"[a-zA-Z0-9_-]{1,50}", agent_name):
+        print(json.dumps({"error": "Invalid agent name."}))
+        return 1
+
     sd = state_dir(agent_name)
     alarm_file = sd / "alarm.json"
 
@@ -1578,17 +1583,28 @@ def cmd_daemon_resume(agent_name: str) -> int:
         print(json.dumps({"error": f"Alarm parse error: {exc}"}))
         return 1
 
-    # Wake time passed — remove alarm and try to start the daemon.
-    alarm_file.unlink(missing_ok=True)
-
-    agent_dir = default_agent_dir()
+    # A scheduled wake names one profile. Never load the selected profile and
+    # replace only its agent name: credentials and workspace must stay together.
+    agent_dir = Path.home() / ".goosetown" / "agents" / agent_name
     cfg_path = agent_dir / "GOOSETOWN.md"
     if not cfg_path.exists():
-        print(json.dumps({"error": "GOOSETOWN.md not found. Cannot resume daemon."}))
+        # Explicit configured homes are usable only when their configuration names
+        # this exact agent. The globally selected profile is never consulted.
+        candidates = [Path(os.environ["AGENT_DIR"])] if os.environ.get("AGENT_DIR") else [Path.cwd()]
+        for candidate in candidates:
+            candidate_config = candidate / "GOOSETOWN.md"
+            if candidate_config.exists() and parse_goosetown_md(candidate_config).get("agent") == agent_name:
+                agent_dir, cfg_path = candidate, candidate_config
+                break
+    if not cfg_path.exists():
+        print(json.dumps({"error": "Requested agent configuration not found. Cannot resume daemon."}))
         return 1
 
     config = parse_goosetown_md(cfg_path)
-    config["agent"] = agent_name  # ensure correct name
+    if config.get("agent") != agent_name:
+        print(json.dumps({"error": "Requested agent configuration does not match. Cannot resume daemon."}))
+        return 1
     state = _start_daemon(config, agent_dir)
+    alarm_file.unlink(missing_ok=True)
     print(json.dumps({"status": "resumed", **state}))
     return 0
