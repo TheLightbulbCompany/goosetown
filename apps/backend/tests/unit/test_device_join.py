@@ -264,12 +264,11 @@ def test_scoped_device_binds_and_arrives_only_after_its_proven_connection(device
             "signature": base64.urlsafe_b64encode(signature).decode().rstrip("="),
         }
 
-    bound = c.post(
-        f"/town/agents/{actor}/runtime-join/{started['request_id']}/complete",
-        headers=headers,
-        json={**proof(started["challenge"]), "poll_secret": started["poll_secret"]},
-    )
+    completion = {**proof(started["challenge"]), "poll_secret": started["poll_secret"]}
+    finish_path = f"/town/agents/{actor}/runtime-join/{started['request_id']}/complete"
+    bound = c.post(finish_path, headers=headers, json=completion)
     assert bound.status_code == 200, bound.text
+    assert c.post(finish_path, headers=headers, json=completion).status_code == 404
     assert "actor_id" not in c.get(path).json()
     challenge = c.post(f"/town/agents/{actor}/runtime-session/challenge", headers=headers, json=identity)
     assert challenge.status_code == 200, challenge.text

@@ -133,7 +133,7 @@ async def challenge(actor_id: str, body: ChallengeRequest, auth: AuthContext = D
         actor_id,
         UpdateExpression="SET bindingChallenge = :challenge",
         ConditionExpression=(
-            f"userId = :owner AND isActive = :active AND ({_revision_condition(body.expected_revision)})"
+            f"userId = :owner AND isActive = :active AND {_revision_condition(body.expected_revision)}"
         ),
         ExpressionAttributeValues={
             ":challenge": payload,
@@ -188,7 +188,7 @@ def _complete_for_owner(actor_id, body, owner_id, *, join_request=None, commit=N
         "boundAt": now,
     }
     condition = (
-        f"userId = :owner AND isActive = :active AND ({_revision_condition(rev)}) "
+        f"userId = :owner AND isActive = :active AND {_revision_condition(rev)} "
         "AND bindingChallenge.challenge_id = :cid AND bindingChallenge.expires_at > :now"
     )
     values = {
@@ -228,7 +228,7 @@ async def unlink(actor_id: str, body: UnlinkRequest, auth: AuthContext = Depends
     _update(
         actor_id,
         UpdateExpression="SET bindingRevision = :next REMOVE runtimeBinding, bindingChallenge, runtimeJoin",
-        ConditionExpression=f"userId = :owner AND isActive = :active AND ({_revision_condition(rev)})",
+        ConditionExpression=f"userId = :owner AND isActive = :active AND {_revision_condition(rev)}",
         ExpressionAttributeValues={":next": rev + 1, ":owner": auth.user_id, ":active": "true", ":rev": rev},
     )
     return {"actor_id": actor_id, "revision": rev + 1}
