@@ -696,7 +696,7 @@ async def deactivate_agent(
         # Already inactive — idempotent return.
         return {"id": agent_id, "isActive": False}
 
-    service.update_agent_state(agent_id, is_active="false")
+    service.set_agent_active(agent_id, False)
 
     # Best-effort cleanup of in-memory connection state. None of these
     # raise on missing entries — they're idempotent no-ops if the agent
@@ -745,7 +745,7 @@ async def reactivate_agent(
     to the WebSocket and to the game server. This avoids surprising the
     user with a still-living daemon process from a previous session.
     """
-    from core.services.user_service import AGENT_QUOTA
+    from core.quota import QuotaExceeded
 
     service = TownService()
     agent = service.get_town_agent_by_id(agent_id)
@@ -757,23 +757,21 @@ async def reactivate_agent(
     if agent.get("isActive") == "true":
         return {"id": agent_id, "isActive": True}
 
-    active_agents = service.get_active_agents_for_user(auth.user_id)
-    if len(active_agents) >= AGENT_QUOTA:
+    try:
+        service.set_agent_active(agent_id, True)
+    except QuotaExceeded as exc:
         raise HTTPException(
             status_code=429,
             detail={
                 "error": "quota_exceeded",
                 "kind": "agents",
-                "limit": AGENT_QUOTA,
-                "current": len(active_agents),
+                "limit": exc.limit,
+                "current": exc.current,
                 "message": (
-                    f"You have {len(active_agents)} active agents (limit "
-                    f"{AGENT_QUOTA}). Deactivate another agent first."
+                    f"You have {exc.current} active agents (limit {exc.limit}). Deactivate another agent first."
                 ),
             },
-        )
-
-    service.update_agent_state(agent_id, is_active="true")
+        ) from exc
     return {"id": agent_id, "isActive": True}
 
 
@@ -1174,23 +1172,14 @@ async def get_quota(
     """Per-user quota state for UI display.
 
     Returns the authenticated user's current agent count and sprite-generation
-    usage within the rolling 24-hour window, alongside the corresponding hard
-    limits.  Used by the QuotaIndicator component on the agents sidebar.
+    usage in the current UTC day (``used_24h`` keeps its name for the UI),
+    alongside the corresponding hard limits.  Used by the QuotaIndicator
+    component on the agents sidebar.
     """
-    import time
-
     from core.services.town_service import TownService
-    from core.services.user_service import (
-        AGENT_QUOTA,
-        SPRITE_QUOTA_DAILY,
-        SPRITE_QUOTA_WINDOW_MS,
-        UserService,
-    )
+    from core.services.user_service import AGENT_QUOTA, SPRITE_QUOTA_DAILY, UserService
 
-    user = UserService().get_or_create(auth.user_id)
-    now_ms = int(time.time() * 1000)
-    cutoff = now_ms - SPRITE_QUOTA_WINDOW_MS
-    recent_sprites = [j for j in (user.get("sprite_jobs_24h") or []) if int(j.get("timestamp_ms", 0)) >= cutoff]
+    sprites_used = UserService().sprites_used_today(auth.user_id)
 
     active_agents = TownService().get_active_agents_for_user(auth.user_id)
 
@@ -1200,7 +1189,7 @@ async def get_quota(
             "limit": AGENT_QUOTA,
         },
         "sprite_gen": {
-            "used_24h": len(recent_sprites),
+            "used_24h": sprites_used,
             "limit": SPRITE_QUOTA_DAILY,
         },
     }
@@ -1693,14 +1682,14 @@ async def handle_ws_disconnect(request: WsDisconnectRequest):
         #
         # Why also flip ``isActive=false`` here:
         #   ``isActive`` gates the per-user agent quota
-        #   (``check_agent_quota`` filters by ``isActive == "true"``). If we
+        #   (``set_agent_active`` moves the ``activeAgents`` counter). If we
         #   leave it "true" after the daemon goes away, sleeping agents
         #   permanently occupy quota slots and re-registration eventually
         #   fails with HTTP 429. Re-register flips it back to "true" via
         #   ``opt_in`` so this is symmetric.
         if clean_leave:
             service.update_agent_context(agent_id, "apartment", "bed")
-            service.update_agent_state(agent_id, is_active="false")
+            service.set_agent_active(agent_id, False)
         else:
             _schedule_sleep_grace(agent_id)
 

@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import Optional
 
 from boto3.dynamodb.conditions import Attr, Key
+from botocore.exceptions import ClientError
 
 from core import dynamo
 from core.town_token import sign_town_token
@@ -334,15 +335,15 @@ class TownService:
         existing = self._get_town_agent(user_id, agent_name)
         if existing:
             if existing.get("isActive") != "true":
+                # Takes a quota slot atomically; raises QuotaExceeded when full.
+                self.set_agent_active(existing["id"], True)
                 table = dynamo.agents_table()
                 table.update_item(
                     Key={"id": existing["id"]},
                     UpdateExpression=(
-                        "SET isActive = :active, displayName = :dn, "
-                        "personalitySummary = :ps, avatarConfig = :ac, lastActiveAt = :now"
+                        "SET displayName = :dn, personalitySummary = :ps, avatarConfig = :ac, lastActiveAt = :now"
                     ),
                     ExpressionAttributeValues={
-                        ":active": "true",
                         ":dn": display_name,
                         ":ps": personality_summary,
                         ":ac": avatar_config,
@@ -356,12 +357,7 @@ class TownService:
                 return existing
             return existing
 
-        # Quota check: count active agents BEFORE creating a new one so a
-        # rejected request never burns an atomic transaction slot.
-        from core.services.user_service import UserService
-
-        active_agents = self.get_active_agents_for_user(user_id)
-        UserService().check_agent_quota(user_id, current_count=len(active_agents))
+        self._seed_active_agent_counter(user_id)
 
         now = _now_iso()
         agent_id = str(uuid.uuid4())
@@ -418,15 +414,19 @@ class TownService:
                             "Item": item,
                         }
                     },
+                    self._agent_counter_update(user_id, +1),
                 ]
             )
         except client.exceptions.TransactionCanceledException as exc:
-            # One of the puts failed — almost certainly the claim's
-            # condition (another registration for the same name won the
-            # race). Re-read; if the winner's row is now visible, return
-            # it so the race is invisible to this caller.
+            # The claim's condition failed (another registration for the
+            # same name won the race) and/or the quota counter is full.
+            # On a claim conflict re-read; if the winner's row is visible,
+            # return it so the race is invisible to this caller.
             reasons = getattr(exc, "response", {}).get("CancellationReasons", []) or []
-            claim_conflict = any(r.get("Code") == "ConditionalCheckFailed" for r in reasons)
+            codes = [r.get("Code") for r in reasons] + [None] * 3
+            claim_conflict = codes[0] == "ConditionalCheckFailed"
+            if not claim_conflict and codes[2] == "ConditionalCheckFailed":
+                raise self._agent_quota_exceeded(user_id) from exc
             if claim_conflict:
                 winner = self._get_town_agent(user_id, agent_name)
                 if winner is not None:
@@ -455,13 +455,112 @@ class TownService:
         if not agent:
             return False
 
-        table = dynamo.agents_table()
-        table.update_item(
-            Key={"id": agent["id"]},
-            UpdateExpression="SET isActive = :inactive",
-            ExpressionAttributeValues={":inactive": "false"},
-        )
+        self.set_agent_active(agent["id"], False)
         logger.info("Agent '%s' opted out of GooseTown", agent_name)
+        return True
+
+    # ------------------------------------------------------------------
+    # Active-agent quota: ``activeAgents`` counter on the users row
+    # ------------------------------------------------------------------
+
+    def _seed_active_agent_counter(self, user_id: str) -> None:
+        """Start ``activeAgents`` from the real count for users who predate it.
+
+        ponytail: the GSI count is eventually consistent, so a legacy write in
+        the same instant can be missed once. After seeding, every change is
+        transactional.
+        """
+        users = dynamo.users_table()
+        user = users.get_item(Key={"userId": user_id}, ConsistentRead=True).get("Item") or {}
+        if "activeAgents" in user:
+            return
+        try:
+            users.update_item(
+                Key={"userId": user_id},
+                UpdateExpression="SET activeAgents = :n",
+                ConditionExpression="attribute_not_exists(activeAgents)",
+                ExpressionAttributeValues={":n": len(self.get_active_agents_for_user(user_id))},
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+
+    def _agent_counter_update(self, user_id: str, delta: int) -> dict:
+        """Transaction item: move ``activeAgents`` by ``delta``, never past 0..AGENT_QUOTA."""
+        from core.services.user_service import AGENT_QUOTA
+
+        cond, bound = ("activeAgents < :bound", AGENT_QUOTA) if delta > 0 else ("activeAgents > :bound", 0)
+        return {
+            "Update": {
+                "TableName": dynamo.users_table().name,
+                "Key": {"userId": user_id},
+                "UpdateExpression": "ADD activeAgents :delta",
+                "ConditionExpression": cond,
+                "ExpressionAttributeValues": {":delta": delta, ":bound": bound},
+            }
+        }
+
+    def _agent_quota_exceeded(self, user_id: str):
+        from core.quota import QuotaExceeded
+        from core.services.user_service import AGENT_QUOTA
+
+        user = dynamo.users_table().get_item(Key={"userId": user_id}, ConsistentRead=True).get("Item") or {}
+        return QuotaExceeded(kind="agents", limit=AGENT_QUOTA, current=int(user.get("activeAgents", AGENT_QUOTA)))
+
+    def set_agent_active(self, agent_id: str, active: bool) -> bool:
+        """Flip ``isActive`` and the owner's ``activeAgents`` counter together.
+
+        One transaction, so concurrent activations can't exceed
+        ``AGENT_QUOTA`` and each deactivation releases exactly one slot.
+        Returns False if the agent is missing or already in that state.
+        Raises ``QuotaExceeded`` when activating past the quota.
+        """
+        agent = self.get_town_agent_by_id(agent_id, consistent=True)
+        if not agent:
+            return False
+        flag = "true" if active else "false"
+        table = dynamo.agents_table()
+        agent_update = {
+            "Key": {"id": agent_id},
+            "UpdateExpression": "SET isActive = :flag",
+            "ConditionExpression": "attribute_exists(id) AND isActive <> :flag",
+            "ExpressionAttributeValues": {":flag": flag},
+        }
+        if agent.get("userId") == RESIDENT_USER_ID:  # residents never count against a quota
+            agent_update.pop("ConditionExpression")
+            table.update_item(**agent_update)
+            return True
+
+        user_id = agent["userId"]
+        self._seed_active_agent_counter(user_id)
+        client = table.meta.client
+        try:
+            client.transact_write_items(
+                TransactItems=[
+                    {"Update": {"TableName": table.name, **agent_update}},
+                    self._agent_counter_update(user_id, 1 if active else -1),
+                ]
+            )
+            return True
+        except client.exceptions.TransactionCanceledException as exc:
+            reasons = getattr(exc, "response", {}).get("CancellationReasons", []) or []
+            codes = [r.get("Code") for r in reasons] + [None, None]
+            if codes[0] == "ConditionalCheckFailed":
+                return False  # a concurrent request already flipped it
+            if codes[1] != "ConditionalCheckFailed":
+                raise
+            if active:
+                raise self._agent_quota_exceeded(user_id) from exc
+
+        # Deactivating with the counter already at 0 (drift from a legacy
+        # write): free the row anyway, never take the counter negative.
+        try:
+            table.update_item(**agent_update)
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+            return False
+        logger.warning("activeAgents for %s was already 0 when deactivating %s", user_id, agent_id)
         return True
 
     def update_agent_state(self, agent_id: str, **kwargs) -> Optional[dict]:
@@ -803,13 +902,8 @@ class TownService:
     def deactivate_instance_agents(self, instance_id: str) -> int:
         """Deactivate all agents for an instance. Returns count."""
         agents = self.get_instance_agents(instance_id)
-        table = dynamo.agents_table()
         for agent in agents:
-            table.update_item(
-                Key={"id": agent["id"]},
-                UpdateExpression="SET isActive = :inactive",
-                ExpressionAttributeValues={":inactive": "false"},
-            )
+            self.set_agent_active(agent["id"], False)
         return len(agents)
 
     def opt_in_instance(

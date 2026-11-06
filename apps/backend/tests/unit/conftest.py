@@ -27,3 +27,27 @@ def stub_stances_service():
     no_stances.get_pair_stances.return_value = None
     with patch("core.services.daemon_bridge.stances_service", no_stances):
         yield
+
+
+@pytest.fixture
+def atomic_moto_requests():
+    """Make each moto DynamoDB request atomic, as real DynamoDB is.
+
+    Moto isn't thread-safe: a failed ``transact_write_items`` restores a
+    deep-copied table snapshot, wiping writes other threads committed
+    meanwhile. Serializing per request keeps the interleaving *between*
+    requests (the races under test) and removes moto's own.
+    """
+    import threading
+
+    from moto.dynamodb.responses import DynamoHandler
+
+    lock = threading.Lock()
+    original = DynamoHandler.call_action
+
+    def locked(self):
+        with lock:
+            return original(self)
+
+    with patch.object(DynamoHandler, "call_action", locked):
+        yield
