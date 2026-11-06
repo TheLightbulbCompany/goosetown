@@ -1144,10 +1144,12 @@ async def get_or_create_instance(
     from core.town_token import sign_town_token, verify_town_token
 
     service = TownService()
-    instance = service.get_active_instance(auth.user_id)
-
-    if not instance:
-        instance = service.create_instance(auth.user_id)
+    try:
+        instance = service.get_active_instance(auth.user_id)
+        if not instance:
+            instance = service.create_instance(auth.user_id)
+    except Exception:
+        raise HTTPException(status_code=503, detail="Token refresh unavailable; retry", headers={"Retry-After": "1"})
     # The user-index lookup is eventually consistent. Confirm ownership and
     # activity from the authoritative row before returning a credential.
     try:

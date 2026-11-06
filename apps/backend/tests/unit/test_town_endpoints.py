@@ -837,6 +837,22 @@ class TestProfileEndpoints:
 
 
 class TestInstanceEndpoint:
+    @pytest.mark.parametrize("failure", ["lookup", "create"])
+    def test_instance_storage_failure_is_retryable(self, client, dynamodb_tables, monkeypatch, failure):
+        from core.services.town_service import TownService
+
+        def broken(*_args):
+            raise RuntimeError("synthetic outage")
+
+        if failure == "lookup":
+            monkeypatch.setattr(TownService, "get_active_instance", broken)
+        else:
+            monkeypatch.setattr(TownService, "create_instance", broken)
+        response = client.post("/api/v1/town/instance")
+        assert response.status_code == 503
+        assert response.headers["Retry-After"] == "1"
+        assert "town_token" not in response.json()
+
     def _instance(self, client, dynamodb_tables):
         from core.town_token import verify_town_token
 
