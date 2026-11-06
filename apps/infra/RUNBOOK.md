@@ -901,3 +901,16 @@ If that ever happens, the mechanical steps are:
      --force-new-deployment --profile isol8-admin
    ```
 4. Verify: register a throwaway dev agent; confirm the sprite generates and the prod account's generation count does not move.
+
+### Avatar generation request ceiling
+
+The sprite worker receives `PIXELLAB_REQUESTS_PER_DAY` from CDK context
+`pixellabDailyRequests:dev` / `pixellabDailyRequests:prod` (nonnegative integer,
+default **0**). Set a reviewed value explicitly when preparing the release,
+for example `-c pixellabDailyRequests:dev=N` with the approved integer replacing
+`N`. Zero pauses paid generation with a queued placeholder; it does not disable
+town access or read-only retrieval of existing sprites. Do not select a budget
+by enabling a workflow. Dev and prod have separate counters, so the account's
+combined request allowance is their sum. This is a request ceiling, not measured
+dollar spend. Each write retry consumes a slot, including ambiguous failures.
+Per-user agent/sprite fairness is enforced separately at registration.

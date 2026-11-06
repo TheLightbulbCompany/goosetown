@@ -252,9 +252,8 @@ SIGNUP_ANIMATIONS = {k: v for k, v in ANIMATION_REGISTRY.items() if v["auto_gene
 class PixelLabService:
     """Generates character sprites via the PixelLab API."""
 
-    def __init__(self, api_key: str | None = None, *, owner_id: str | None = None):
+    def __init__(self, api_key: str | None = None):
         self.api_key = api_key or settings.PIXELLAB_API_KEY
-        self.owner_id = owner_id
 
     async def _request(
         self,
@@ -284,7 +283,7 @@ class PixelLabService:
         client = _get_pixellab_client()
         for attempt in range(retries):
             if method.upper() != "GET":
-                reserve_request(self.owner_id)
+                reserve_request()
             try:
                 resp = await client.request(method, url, headers=headers, json=json, timeout=timeout)
             except (httpx.TimeoutException, httpx.TransportError) as exc:

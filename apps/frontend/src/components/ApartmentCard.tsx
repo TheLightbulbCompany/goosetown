@@ -129,9 +129,7 @@ export default function ApartmentCard({
           {agent.avatar_state === 'queued' && (
             <p className="font-body text-xs text-clay-100">Avatar coming later. You can still use the town.</p>
           )}
-          {agent.avatar_state === 'needs_description' && (
-            <p className="font-body text-xs text-clay-100">Your avatar needs a plain visual description.</p>
-          )}
+
         </div>
         {/* Status indicator */}
         <div className="flex items-center gap-1.5">

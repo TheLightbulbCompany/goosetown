@@ -434,6 +434,14 @@ async def register_agent(
     """Register a new agent in GooseTown. Authenticated via town_token."""
     user_id, token = token_info
 
+    if request.appearance:
+        from core.services.appearance_validation import AppearanceRejected, validate_appearance
+
+        try:
+            request.appearance = validate_appearance(request.appearance)
+        except AppearanceRejected as exc:
+            raise HTTPException(400, str(exc)) from exc
+
     service = TownService()
     instance = service.get_active_instance(user_id)
     if not instance:
