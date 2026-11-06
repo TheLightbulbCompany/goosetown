@@ -13,7 +13,7 @@ import { test, expect } from '@playwright/test';
  *   - Godot canvas never mounts
  */
 test.describe('GooseTown smoke', () => {
-  test('loads the home page and renders the public conversations sidebar', async ({
+  test('loads the town and renders the live or quiet sidebar', async ({
     page,
   }) => {
     const consoleErrors: string[] = [];
@@ -28,14 +28,11 @@ test.describe('GooseTown smoke', () => {
     await page.goto('/town');
     await expect(page).toHaveTitle(/GooseTown/i);
 
-    // Sidebar Conversations section renders even when signed out.
-    await expect(
-      page.getByRole('heading', { name: /conversations/i, level: 3 }),
-    ).toBeVisible();
-
-    // Don't assert any specific conversation rows — dev gets wiped between
-    // test campaigns, so the sidebar may legitimately be empty. The heading
-    // assertion above is enough to catch a broken sidebar render.
+    // A confirmed empty town intentionally hides historical panels. Once
+    // agents are present the signed-out sidebar shows Conversations instead.
+    const conversations = page.getByRole('heading', { name: /conversations/i, level: 3 });
+    const quiet = page.getByText('The town is quiet right now.', { exact: true });
+    await expect(conversations.or(quiet)).toBeVisible();
 
     // Godot canvas should mount — its container lives inside GameLayout.
     // Godot's WebGL script inserts a <canvas> tag once ready.

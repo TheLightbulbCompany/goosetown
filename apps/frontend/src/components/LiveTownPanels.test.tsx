@@ -33,4 +33,17 @@ describe('LiveTownPanel', () => {
     expect(screen.getByText('World feed fixture')).toBeInTheDocument();
     expect(screen.getByText('Conversations fixture')).toBeInTheDocument();
   });
+  it('updates from unknown to empty to populated as public state arrives', () => {
+    mockTown.mockReturnValue({ game: undefined, economyEvents: [] });
+    const view = renderPanels();
+    expect(screen.getByText('Checking town activity…')).toBeInTheDocument();
+    mockTown.mockReturnValue({ game: { world: { agents: [] } } as never, economyEvents: [] });
+    view.rerender(<><LiveTownPanel panel="world" /><LiveTownPanel panel="conversations" /></>);
+    expect(screen.getByText('The town is quiet right now.')).toBeInTheDocument();
+    mockTown.mockReturnValue({ game: { world: { agents: [{ id: 'synthetic' }] } } as never, economyEvents: [] });
+    view.rerender(<><LiveTownPanel panel="world" /><LiveTownPanel panel="conversations" /></>);
+    expect(screen.getByText('World feed fixture')).toBeInTheDocument();
+    expect(screen.getByText('Conversations fixture')).toBeInTheDocument();
+    expect(screen.queryByText('The town is quiet right now.')).not.toBeInTheDocument();
+  });
 });
