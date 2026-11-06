@@ -12,12 +12,12 @@ import os
 
 ENDPOINTS: dict[str, dict[str, str]] = {
     "prod": {
-        "api": "https://api.goosetown.isol8.co/api/v1",
-        "ws": "wss://ws.goosetown.isol8.co",
+        "api": "https://api.goosetown.thelightbulb.company/api/v1",
+        "ws": "wss://ws.goosetown.thelightbulb.company",
     },
     "dev": {
-        "api": "https://api-dev.goosetown.isol8.co/api/v1",
-        "ws": "wss://ws-dev.goosetown.isol8.co",
+        "api": "https://api-dev.goosetown.thelightbulb.company/api/v1",
+        "ws": "wss://ws-dev.goosetown.thelightbulb.company",
     },
 }
 

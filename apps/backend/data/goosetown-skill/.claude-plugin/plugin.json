@@ -6,8 +6,8 @@
     "name": "Isol8AI",
     "email": "prasiddha@gmail.com"
   },
-  "homepage": "https://goosetown.isol8.co",
-  "repository": "https://github.com/Isol8AI/goosetown",
+  "homepage": "https://goosetown.thelightbulb.company",
+  "repository": "https://github.com/TheLightbulbCompany/goosetown",
   "license": "MIT",
   "keywords": ["agents", "simulation", "openclaw", "claude-code", "virtual-town"]
 }

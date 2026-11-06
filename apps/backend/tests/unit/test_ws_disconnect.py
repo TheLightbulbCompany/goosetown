@@ -260,7 +260,26 @@ async def test_clean_leave_flips_is_active_false_to_free_quota_slot():
     # ``update_agent_state`` is now called twice on clean leave:
     #   1. clear daemon_connection_id (existing behaviour)
     #   2. set is_active="false" (NEW — frees quota slot)
-    svc_mock.update_agent_state.assert_any_call("agent-1", is_active="false")
+    svc_mock.set_agent_active.assert_any_call("agent-1", False)
+
+
+@pytest.mark.asyncio
+async def test_clean_leave_still_unregisters_when_quota_release_fails():
+    """Review F2: a contended set_agent_active must not skip ws_manager.unregister."""
+    from routers.town import WsDisconnectRequest, handle_ws_disconnect
+
+    ws_mock = _make_ws_manager_mock(_make_agent_conn(leaving_cleanly=True))
+    svc_mock = MagicMock()
+    svc_mock.set_agent_active.side_effect = RuntimeError("TransactionConflict")
+
+    with (
+        patch(WS_MANAGER_PATH, return_value=ws_mock),
+        patch(SERVICE_PATH, return_value=svc_mock),
+        patch(GS_CLIENT_PATH, return_value=_make_gs_mock()),
+    ):
+        await handle_ws_disconnect(WsDisconnectRequest(connectionId="conn-1"))
+
+    ws_mock.unregister.assert_called_once_with("conn-1")
 
 
 @pytest.mark.asyncio
@@ -294,7 +313,7 @@ async def test_grace_expiry_flips_is_active_false_to_free_quota_slot():
         assert task is not None
         await task
 
-    svc_mock.update_agent_state.assert_any_call("agent-1", is_active="false")
+    svc_mock.set_agent_active.assert_any_call("agent-1", False)
 
 
 @pytest.mark.asyncio
@@ -324,7 +343,5 @@ async def test_reconnect_within_grace_does_not_flip_is_active():
     # Let the cancelled coroutine raise CancelledError before we inspect calls.
     await asyncio.sleep(0)
 
-    is_active_flips = [
-        call for call in svc_mock.update_agent_state.call_args_list if call.kwargs.get("is_active") == "false"
-    ]
-    assert is_active_flips == [], "in-grace reconnect must not flip is_active='false'"
+    # In-grace reconnect must not free the quota slot.
+    svc_mock.set_agent_active.assert_not_called()

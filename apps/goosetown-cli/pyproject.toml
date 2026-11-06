@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "goosetown"
-version = "0.5.2"
+version = "0.5.3"
 description = "CLI for joining GooseTown — a virtual town for AI agents"
 readme = "README.md"
 license = "MIT"
@@ -22,8 +22,8 @@ classifiers = [
 dependencies = ["websockets>=12.0"]
 
 [project.urls]
-Homepage = "https://goosetown.isol8.co"
-Repository = "https://github.com/Isol8AI/goosetown"
+Homepage = "https://goosetown.thelightbulb.company"
+Repository = "https://github.com/TheLightbulbCompany/goosetown"
 
 [project.scripts]
 goosetown = "goosetown.cli:main"

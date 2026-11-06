@@ -21,7 +21,7 @@ security_optional = HTTPBearer(auto_error=False)
 
 # JWKS cache with TTL
 _jwks_cache: dict = {"data": None, "expires_at": None}
-JWKS_CACHE_TTL = timedelta(hours=1)
+JWKS_CACHE_TTL = timedelta(minutes=5)
 # Maximum time we'll keep serving a stale-but-previously-valid JWKS after
 # Clerk starts failing. Long enough to ride out a short outage, short enough
 # that a compromised/rotated key doesn't stay trusted for days.
@@ -126,13 +126,29 @@ async def _decode_token(token: str) -> dict:
         raise HTTPException(status_code=401, detail="Invalid token headers")
 
     public_key = jwt.PyJWK(rsa_key).key
-    return jwt.decode(
-        token,
-        public_key,
-        algorithms=["RS256"],
-        audience=settings.CLERK_AUDIENCE,
-        issuer=settings.CLERK_ISSUER,
-    )
+    try:
+        payload = jwt.decode(
+            token,
+            public_key,
+            algorithms=["RS256"],
+            audience=settings.CLERK_AUDIENCE,
+            issuer=settings.CLERK_ISSUER,
+            options={"require": ["exp", "nbf", "sub"]},
+        )
+    except OverflowError as exc:
+        raise jwt.InvalidTokenError("Invalid numeric claim") from exc
+    if (
+        any(type(payload.get(k)) is not int for k in ("exp", "nbf"))
+        or not isinstance(payload.get("sub"), str)
+        or not payload["sub"]
+    ):
+        raise jwt.InvalidTokenError("Invalid required claims")
+    if "iat" in payload and type(payload["iat"]) is not int:
+        raise jwt.InvalidTokenError("Invalid issued at")
+    allowed = {v.strip() for v in settings.CLERK_AUTHORIZED_PARTIES.split(",") if v.strip()}
+    if not allowed or not isinstance(payload.get("azp"), str) or payload["azp"] not in allowed:
+        raise jwt.InvalidTokenError("Invalid authorized party")
+    return payload
 
 
 async def get_current_user(

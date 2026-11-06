@@ -156,8 +156,10 @@ class TestAgentCountQuota:
 
 
 class TestSpriteQuota:
-    def test_eleventh_sprite_request_returns_429(self, client, dynamodb_tables):
-        """11th sprite-gen in 24h → 429, even if the user has < 5 active agents."""
+    def test_eleventh_sprite_request_registers_without_sprite(self, client, dynamodb_tables):
+        """11th sprite-gen today → registration still succeeds on the placeholder
+        avatar (no 429 that would leave the agent half-registered), no sprite queued."""
+        from core.services.town_service import TownService
         from core.services.user_service import SPRITE_QUOTA_DAILY, UserService
 
         # Pre-consume the daily sprite quota
@@ -169,7 +171,7 @@ class TestSpriteQuota:
         # Now attempt a registration WITH an appearance — this triggers the
         # sprite-quota check BEFORE enqueue.  We stub enqueue_signup so the
         # test doesn't blow up if the quota guard happens to pass (it shouldn't).
-        with patch("core.services.sprite_jobs.enqueue_signup", return_value=True):
+        with patch("core.services.sprite_jobs.enqueue_signup", return_value=True) as p_enqueue:
             resp = client.post(
                 "/api/v1/town/agent/register",
                 json={
@@ -181,12 +183,12 @@ class TestSpriteQuota:
                 },
             )
 
-        assert resp.status_code == 429
-        body = resp.json()
-        assert body.get("error") == "quota_exceeded"
-        assert body.get("kind") == "sprite_generation"
-        assert int(body.get("limit", 0)) == SPRITE_QUOTA_DAILY
-        assert int(body.get("current", -1)) >= SPRITE_QUOTA_DAILY
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "sprite skipped: daily limit"
+        p_enqueue.assert_not_called()
+        agent = TownService().get_agent_by_name(TEST_USER_ID, "sprite-seeker")
+        assert agent is not None and not agent.get("spriteUrl")
+        assert UserService().sprites_used_today(TEST_USER_ID) == SPRITE_QUOTA_DAILY
 
     def test_no_appearance_skips_sprite_quota(self, client, dynamodb_tables):
         """When appearance is blank the sprite path is skipped entirely —

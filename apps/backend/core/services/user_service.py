@@ -1,13 +1,19 @@
-"""Per-user state: sprite-gen sliding window + token revocation timestamp.
+"""Per-user state: quota counters + token revocation timestamp.
 
 Quotas are global constants in code (no per-user override per spec).
-The user record lazy-creates on first read; quota checks read-modify-write
-the sprite-jobs window.
+The user record lazy-creates on first read. Both quotas are enforced by
+conditional writes on this row, so concurrent requests can't overshoot:
+
+* ``spriteDay`` / ``spriteCount`` — sprite generations in the current UTC day.
+* ``activeAgents`` — active-agent count, changed only by
+  ``TownService.set_agent_active`` and ``TownService.opt_in`` in the same
+  transaction as the agent row's ``isActive`` flip.
 """
 
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from botocore.exceptions import ClientError
@@ -17,7 +23,26 @@ from core.quota import QuotaExceeded
 
 AGENT_QUOTA: int = 5
 SPRITE_QUOTA_DAILY: int = 10
-SPRITE_QUOTA_WINDOW_MS: int = 24 * 60 * 60 * 1000
+SPRITE_QUOTA_WINDOW_MS: int = 24 * 60 * 60 * 1000  # legacy sprite_jobs_24h only
+
+
+def utc_day(now: datetime | None = None) -> str:
+    return (now or datetime.now(timezone.utc)).strftime("%Y-%m-%d")
+
+
+def _is_conditional_fail(exc: ClientError) -> bool:
+    return exc.response["Error"]["Code"] == "ConditionalCheckFailedException"
+
+
+# Attempts per quota write when real DynamoDB reports contention on the users
+# row. botocore doesn't retry these and moto never raises them.
+CONFLICT_ATTEMPTS: int = 3
+
+
+def is_transaction_conflict(exc: ClientError) -> bool:
+    if exc.response["Error"]["Code"] == "TransactionConflictException":
+        return True
+    return any(r.get("Code") == "TransactionConflict" for r in exc.response.get("CancellationReasons") or [])
 
 
 class UserService:
@@ -36,7 +61,6 @@ class UserService:
         record: dict[str, Any] = {
             "userId": user_id,
             "createdAt": now_ms,
-            "sprite_jobs_24h": [],
         }
         # ConditionExpression so a concurrent first-touch from another request
         # doesn't double-create. If we lose the race, re-fetch the winner.
@@ -69,31 +93,53 @@ class UserService:
         return token_iat_ms < int(revoked_at)
 
     def consume_sprite_quota(self, user_id: str) -> None:
+        """Atomically take one sprite generation from today's (UTC) allowance.
+
+        Raises ``QuotaExceeded`` once ``SPRITE_QUOTA_DAILY`` are used today.
+        """
         user = self.get_or_create(user_id)
-        now_ms = int(time.time() * 1000)
-        cutoff = now_ms - SPRITE_QUOTA_WINDOW_MS
-
-        existing_jobs = user.get("sprite_jobs_24h", []) or []
-        recent = [j for j in existing_jobs if int(j.get("timestamp_ms", 0)) >= cutoff]
-
-        if len(recent) >= SPRITE_QUOTA_DAILY:
-            raise QuotaExceeded(
-                kind="sprite_generation",
-                limit=SPRITE_QUOTA_DAILY,
-                current=len(recent),
-            )
-
-        recent.append({"timestamp_ms": now_ms})
-        users_table().update_item(
-            Key={"userId": user_id},
-            UpdateExpression="SET sprite_jobs_24h = :jobs",
-            ExpressionAttributeValues={":jobs": recent},
+        now = datetime.now(timezone.utc)
+        today = utc_day(now)
+        # Legacy rows kept a sliding list; count today's entries once when we
+        # start the first counter for a day so the cutover can't reset usage.
+        midnight_ms = int(now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
+        legacy_today = sum(
+            1 for j in (user.get("sprite_jobs_24h") or []) if int(j.get("timestamp_ms", 0)) >= midnight_ms
         )
+        table = users_table()
+        key = {"userId": user_id}
+        for _ in range(CONFLICT_ATTEMPTS):
+            try:  # same day: increment while under the cap
+                table.update_item(
+                    Key=key,
+                    UpdateExpression="ADD spriteCount :one",
+                    ConditionExpression="spriteDay = :today AND spriteCount < :limit",
+                    ExpressionAttributeValues={":one": 1, ":today": today, ":limit": SPRITE_QUOTA_DAILY},
+                )
+                return
+            except ClientError as exc:
+                if is_transaction_conflict(exc):
+                    continue
+                if not _is_conditional_fail(exc):
+                    raise
+            if legacy_today >= SPRITE_QUOTA_DAILY:
+                break
+            try:  # first generation of a new UTC day: restart the counter
+                # `<` (not `<>`): a request that read its clock before midnight
+                # must never rewind a row another request already moved forward.
+                table.update_item(
+                    Key=key,
+                    UpdateExpression="SET spriteDay = :today, spriteCount = :n REMOVE sprite_jobs_24h",
+                    ConditionExpression="attribute_not_exists(spriteDay) OR spriteDay < :today",
+                    ExpressionAttributeValues={":today": today, ":n": legacy_today + 1},
+                )
+                return
+            except ClientError as exc:
+                if not (_is_conditional_fail(exc) or is_transaction_conflict(exc)):
+                    raise
+            # A concurrent request started today's counter; retry the increment.
+        raise QuotaExceeded(kind="sprite_generation", limit=SPRITE_QUOTA_DAILY, current=SPRITE_QUOTA_DAILY)
 
-    def check_agent_quota(self, user_id: str, current_count: int) -> None:
-        if current_count >= AGENT_QUOTA:
-            raise QuotaExceeded(
-                kind="agents",
-                limit=AGENT_QUOTA,
-                current=current_count,
-            )
+    def sprites_used_today(self, user_id: str) -> int:
+        user = self.get_or_create(user_id)
+        return int(user.get("spriteCount", 0)) if user.get("spriteDay") == utc_day() else 0

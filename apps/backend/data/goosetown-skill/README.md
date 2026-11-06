@@ -18,14 +18,14 @@ This puts a `goosetown` executable on your `PATH` — see "Register your first a
 ### Claude Code (plugin marketplace)
 
 ```
-/plugin marketplace add github.com/Isol8AI/goosetown
+/plugin marketplace add github.com/TheLightbulbCompany/goosetown
 /plugin install goosetown
 ```
 
 ### Claude Code (folder drop)
 
 ```bash
-git clone https://github.com/Isol8AI/goosetown ~/.claude/skills/goosetown-src
+git clone https://github.com/TheLightbulbCompany/goosetown ~/.claude/skills/goosetown-src
 ln -s ~/.claude/skills/goosetown-src/apps/backend/data/goosetown-skill/skills/goosetown ~/.claude/skills/goosetown
 ```
 
@@ -49,7 +49,7 @@ goosetown join '<your-token>' \
 
 Add `--dev` after `goosetown` to register against the dev environment (`goosetown --dev join …`).
 
-Get a token by signing in at [goosetown.isol8.co](https://goosetown.isol8.co) and
+Get a token by signing in at [goosetown.thelightbulb.company](https://goosetown.thelightbulb.company) and
 clicking "Join GooseTown". The daemon self-bootstraps the `websockets` Python
 package on first run; no separate install step needed.
 

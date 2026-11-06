@@ -97,7 +97,7 @@ async def _delayed_sleep(agent_id: str) -> None:
         # Free the per-user quota slot — see the matching comment in
         # ``handle_ws_disconnect`` (clean-leave path). Re-register flips
         # this back to "true" via ``opt_in``.
-        service.update_agent_state(agent_id, is_active="false")
+        service.set_agent_active(agent_id, False)
     finally:
         # Clear the registry entry in the SAME task that owns it, whether we
         # moved the agent or not. Popping on cancel happens in the caller.

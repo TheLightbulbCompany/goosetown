@@ -489,13 +489,23 @@ async def register_agent(
         bool(request.appearance),
         request.appearance[:50] if request.appearance else "empty",
     )
+    sprite_skipped = False
     if request.appearance:
         from core.config import settings
+        from core.quota import QuotaExceeded
         from core.services.user_service import UserService
 
         # Sprite-quota check BEFORE kicking off PixelLab — so a rejected
         # request doesn't enqueue work that will never be allowed to run.
-        UserService().consume_sprite_quota(user_id)
+        # The agent is already registered (opt_in above), so out-of-sprites
+        # completes the registration on the placeholder avatar instead of a
+        # 429 that would leave it half-registered. Charging before opt_in
+        # would instead burn a sprite credit on an agent-quota 429.
+        try:
+            UserService().consume_sprite_quota(user_id)
+        except QuotaExceeded:
+            sprite_skipped = True
+            logger.info("register: sprite skipped for %s (daily limit)", agent["id"][:8])
 
         logger.info(
             "Sprite settings: api_key=%s, bucket=%s, cdn=%s",
@@ -503,7 +513,7 @@ async def register_agent(
             settings.SPRITE_S3_BUCKET,
             settings.SPRITE_CDN_URL,
         )
-        if settings.PIXELLAB_API_KEY and settings.SPRITE_S3_BUCKET and settings.SPRITE_CDN_URL:
+        if not sprite_skipped and settings.PIXELLAB_API_KEY and settings.SPRITE_S3_BUCKET and settings.SPRITE_CDN_URL:
             _agent_id = agent["id"]
 
             _existing = service.get_town_agent_by_id(_agent_id)
@@ -552,10 +562,11 @@ async def register_agent(
         "agent_id": agent["id"],
         "agent_name": agent.get("agentName", request.agent_name),
         "display_name": agent.get("displayName", request.display_name),
-        "status": "generating_sprite",
+        "status": "sprite skipped: daily limit" if sprite_skipped else "generating_sprite",
         "ws_url": _TOWN_WS_URL,
         "api_url": _TOWN_API_URL,
-        "message": f"Welcome to GooseTown, {request.display_name}!",
+        "message": f"Welcome to GooseTown, {request.display_name}!"
+        + (" Daily sprite limit reached, so you'll use the placeholder avatar for now." if sprite_skipped else ""),
     }
 
 
@@ -722,7 +733,7 @@ async def deactivate_agent(
         # Already inactive — idempotent return.
         return {"id": agent_id, "isActive": False}
 
-    service.update_agent_state(agent_id, is_active="false")
+    service.set_agent_active(agent_id, False)
 
     # Best-effort cleanup of in-memory connection state. None of these
     # raise on missing entries — they're idempotent no-ops if the agent
@@ -771,7 +782,7 @@ async def reactivate_agent(
     to the WebSocket and to the game server. This avoids surprising the
     user with a still-living daemon process from a previous session.
     """
-    from core.services.user_service import AGENT_QUOTA
+    from core.quota import QuotaExceeded
 
     service = TownService()
     agent = service.get_town_agent_by_id(agent_id)
@@ -783,23 +794,21 @@ async def reactivate_agent(
     if agent.get("isActive") == "true":
         return {"id": agent_id, "isActive": True}
 
-    active_agents = service.get_active_agents_for_user(auth.user_id)
-    if len(active_agents) >= AGENT_QUOTA:
+    try:
+        service.set_agent_active(agent_id, True)
+    except QuotaExceeded as exc:
         raise HTTPException(
             status_code=429,
             detail={
                 "error": "quota_exceeded",
                 "kind": "agents",
-                "limit": AGENT_QUOTA,
-                "current": len(active_agents),
+                "limit": exc.limit,
+                "current": exc.current,
                 "message": (
-                    f"You have {len(active_agents)} active agents (limit "
-                    f"{AGENT_QUOTA}). Deactivate another agent first."
+                    f"You have {exc.current} active agents (limit {exc.limit}). Deactivate another agent first."
                 ),
             },
-        )
-
-    service.update_agent_state(agent_id, is_active="true")
+        ) from exc
     return {"id": agent_id, "isActive": True}
 
 
@@ -818,15 +827,15 @@ async def require_admin_user(auth: AuthContext = Depends(get_current_user)) -> A
     spends real PixelLab credits and ``recomposite-sprites`` fans out across
     every agent in the table.
 
-    Now: a valid Clerk JWT is required, and if ``ADMIN_USER_IDS`` is configured
-    the caller must additionally be on that allowlist. Declaring this via
+    Now: a valid Clerk JWT is required, and the caller must be on the ``ADMIN_USER_IDS`` allowlist.
+    An empty allowlist denies all callers. Declaring this via
     ``Depends`` also makes the HTTPBearer security scheme show up in the OpenAPI
     spec, so the schema stops advertising these routes as public.
     """
     from core.config import settings
 
     allowlist = {uid.strip() for uid in settings.ADMIN_USER_IDS.split(",") if uid.strip()}
-    if allowlist and auth.user_id not in allowlist:
+    if auth.user_id not in allowlist:
         logger.warning("Admin endpoint denied for non-admin user %s", auth.user_id)
         raise HTTPException(status_code=403, detail="admin access required")
     return auth
@@ -1200,33 +1209,27 @@ async def get_quota(
     """Per-user quota state for UI display.
 
     Returns the authenticated user's current agent count and sprite-generation
-    usage within the rolling 24-hour window, alongside the corresponding hard
-    limits.  Used by the QuotaIndicator component on the agents sidebar.
+    usage in the current UTC day (``used_24h`` keeps its name for the UI),
+    alongside the corresponding hard limits.  Used by the QuotaIndicator
+    component on the agents sidebar.
     """
-    import time
-
     from core.services.town_service import TownService
-    from core.services.user_service import (
-        AGENT_QUOTA,
-        SPRITE_QUOTA_DAILY,
-        SPRITE_QUOTA_WINDOW_MS,
-        UserService,
-    )
+    from core.services.user_service import AGENT_QUOTA, SPRITE_QUOTA_DAILY, UserService
 
-    user = UserService().get_or_create(auth.user_id)
-    now_ms = int(time.time() * 1000)
-    cutoff = now_ms - SPRITE_QUOTA_WINDOW_MS
-    recent_sprites = [j for j in (user.get("sprite_jobs_24h") or []) if int(j.get("timestamp_ms", 0)) >= cutoff]
-
-    active_agents = TownService().get_active_agents_for_user(auth.user_id)
+    users = UserService()
+    sprites_used = users.sprites_used_today(auth.user_id)
+    # Show the counter that's enforced; users not yet seeded fall back to the index count.
+    agents_used = users.get_or_create(auth.user_id).get("activeAgents")
+    if agents_used is None:
+        agents_used = len(TownService().get_active_agents_for_user(auth.user_id))
 
     return {
         "agents": {
-            "used": len(active_agents),
+            "used": int(agents_used),
             "limit": AGENT_QUOTA,
         },
         "sprite_gen": {
-            "used_24h": len(recent_sprites),
+            "used_24h": sprites_used,
             "limit": SPRITE_QUOTA_DAILY,
         },
     }
@@ -1725,14 +1728,17 @@ async def handle_ws_disconnect(request: WsDisconnectRequest):
         #
         # Why also flip ``isActive=false`` here:
         #   ``isActive`` gates the per-user agent quota
-        #   (``check_agent_quota`` filters by ``isActive == "true"``). If we
+        #   (``set_agent_active`` moves the ``activeAgents`` counter). If we
         #   leave it "true" after the daemon goes away, sleeping agents
         #   permanently occupy quota slots and re-registration eventually
         #   fails with HTTP 429. Re-register flips it back to "true" via
         #   ``opt_in`` so this is symmetric.
         if clean_leave:
             service.update_agent_context(agent_id, "apartment", "bed")
-            service.update_agent_state(agent_id, is_active="false")
+            try:
+                service.set_agent_active(agent_id, False)
+            except Exception as exc:  # never skip the unregister below
+                logger.warning("[agent:%s] Failed to release quota slot on leave: %s", agent_id[:8], exc)
         else:
             _schedule_sleep_grace(agent_id)
 
