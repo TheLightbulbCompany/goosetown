@@ -115,8 +115,9 @@ def _apply_outcome(sqs, queue_url: str, msg: dict, outcome: Outcome) -> None:
     body = msg["Body"]
     if outcome is Outcome.DELETE:
         sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt)
-    elif outcome is Outcome.CREDIT_PAUSE:
-        _emit_credit_metric()
+    elif outcome in (Outcome.CREDIT_PAUSE, Outcome.BUDGET_PAUSE):
+        if outcome is Outcome.CREDIT_PAUSE:
+            _emit_credit_metric()
         # Re-enqueue a fresh copy with the max SQS delay and delete the
         # original. A fresh message resets the receive count, so a prolonged
         # credit outage cycles every 15 min indefinitely instead of burning

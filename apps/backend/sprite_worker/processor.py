@@ -6,8 +6,11 @@ import enum
 import json
 import logging
 
+from core.services.appearance_validation import AppearanceRejected
+from core.services.pixellab_quota import PixelLabQuotaDenied
 from core.services.pixellab_service import PixelLabCreditError
 from core.services.sprite_pipeline import SpriteEventSink, run_animation_job, run_signup_pipeline
+from core.services.town_service import TownService
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +18,7 @@ logger = logging.getLogger(__name__)
 class Outcome(enum.Enum):
     DELETE = "delete"  # done (or permanently un-processable) — remove from queue
     RELEASE = "release"  # transient failure / duplicate-in-flight — let visibility lapse
+    BUDGET_PAUSE = "budget_pause"  # no provider call; retain work until limits reset
     CREDIT_PAUSE = "credit_pause"  # 402 — long visibility + metric; queue effectively pauses
 
 
@@ -55,6 +59,14 @@ async def process_message(raw_body: str, *, sink: SpriteEventSink) -> Outcome:
             )
         else:
             await run_animation_job(agent_id, body.get("anim_name", ""), sink=sink)
+        return Outcome.DELETE
+    except PixelLabQuotaDenied:
+        TownService().update_agent_state(agent_id, avatarState="queued")
+        await sink.progress(agent_id, "Avatar queued; generation is temporarily unavailable. Try again later.")
+        return Outcome.BUDGET_PAUSE
+    except AppearanceRejected:
+        TownService().update_agent_state(agent_id, avatarState="needs_description", sprite_status=None)
+        await sink.progress(agent_id, "Avatar needs a plain visual description without links, code or instructions.")
         return Outcome.DELETE
     except PixelLabCreditError:
         logger.error("sprite-worker: PixelLab credits exhausted (agent %s)", agent_id[:8])

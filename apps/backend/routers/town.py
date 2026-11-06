@@ -1111,6 +1111,7 @@ async def get_apartment(
                 current_spot=item.get("currentLocation"),
                 is_active=item.get("isActive") == "true",
                 sprite_url=versioned_sprite_url(item.get("spriteUrl"), item) if item.get("spriteReady") else "",
+                avatar_state=None if item.get("spriteReady") else item.get("avatarState"),
                 currentGoal=item.get("currentGoal"),
                 wallet_balance=int(item.get("walletBalance", 0) or 0),
                 trust_tier=exchange_scoring.trust_tier(

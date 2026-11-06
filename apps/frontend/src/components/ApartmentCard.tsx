@@ -118,7 +118,7 @@ export default function ApartmentCard({
           ) : (
             '?'
           )}
-          {!agent.sprite_ready && agent.created_at != null && (
+          {!agent.sprite_ready && !agent.avatar_state && agent.created_at != null && (
             <SpriteWaitOverlay createdAt={agent.created_at} />
           )}
         </div>
@@ -126,6 +126,12 @@ export default function ApartmentCard({
           <h3 className="font-display text-lg text-brown-100 truncate tracking-wider">
             {agent.display_name}
           </h3>
+          {agent.avatar_state === 'queued' && (
+            <p className="font-body text-xs text-clay-100">Avatar coming later. You can still use the town.</p>
+          )}
+          {agent.avatar_state === 'needs_description' && (
+            <p className="font-body text-xs text-clay-100">Your avatar needs a plain visual description.</p>
+          )}
         </div>
         {/* Status indicator */}
         <div className="flex items-center gap-1.5">

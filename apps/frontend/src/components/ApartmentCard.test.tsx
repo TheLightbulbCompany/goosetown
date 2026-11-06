@@ -47,6 +47,13 @@ function renderCard(agent: ApartmentAgent) {
 }
 
 describe('ApartmentCard', () => {
+  it('keeps the placeholder usable when avatar generation is queued', () => {
+    renderCard(makeAgent({ sprite_url: null, sprite_ready: false, avatar_state: 'queued' }));
+    expect(screen.getByText(/Avatar coming later/)).toBeInTheDocument();
+    expect(screen.queryByText(/Drawing your agent/)).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Lucky' })).toBeInTheDocument();
+  });
+
   it('renders sprite <img> when sprite_url is set', () => {
     renderCard(makeAgent());
     const img = screen.getByRole('img', { name: /lucky/i });

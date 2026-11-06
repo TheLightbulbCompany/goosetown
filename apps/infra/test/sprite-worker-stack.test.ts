@@ -58,6 +58,7 @@ function buildTestApp(env: string, withAlarmTopic = false): Template {
   // full shape so `as any` cast on DatabaseTables remains consistent.
   const tables = {
     agents: makeTable("agents"),
+    users: makeTable("users"),
     instances: makeTable("instances"),
     relationships: makeTable("relationships"),
     conversations: makeTable("conversations"),
@@ -370,5 +371,16 @@ test.each(["dev", "prod"])("%s worker emits canonical sprite URLs", (env) => {
         Name: "SPRITE_CDN_URL", Value: `https://assets${suffix}.goosetown.thelightbulb.company`,
       })]),
     })]),
+  });
+});
+
+test("sprite worker can atomically reserve only PixelLab quota rows", () => {
+  buildTestApp("prod").hasResourceProperties("AWS::IAM::Policy", {
+    PolicyDocument: { Statement: Match.arrayWith([Match.objectLike({
+      Action: "dynamodb:UpdateItem",
+      Resource: { "Fn::Join": ["", Match.arrayWith([Match.stringLikeRegexp(":table/goosetown-prod-users$")])] },
+      Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["__pixellab_quota__:*"] } },
+    })]) },
+
   });
 });
