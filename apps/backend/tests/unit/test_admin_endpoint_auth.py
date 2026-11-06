@@ -105,14 +105,14 @@ def test_allowlisted_admin_is_accepted(client, monkeypatch):
         app.dependency_overrides.clear()
 
 
-def test_authenticated_user_allowed_when_no_allowlist_configured(client, dev_env):
-    """Unset ADMIN_USER_IDS keeps existing dev ergonomics — but not anonymously."""
+def test_authenticated_user_denied_when_no_allowlist_configured(client, dev_env):
+    """An empty allowlist does not grant admin access."""
     from main import app
 
     _override_user(app, OTHER_UID)
     try:
         resp = client.post("/api/v1/town/admin/regenerate-sprite/PROBE")
-        assert resp.status_code == 404
+        assert resp.status_code == 403
     finally:
         app.dependency_overrides.clear()
 

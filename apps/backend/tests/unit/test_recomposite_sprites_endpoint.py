@@ -30,7 +30,7 @@ def client():
 @patch("core.config.settings")
 def test_recomposite_is_dev_only(mock_settings, client):
     mock_settings.ENVIRONMENT = "prod"
-    mock_settings.ADMIN_USER_IDS = ""
+    mock_settings.ADMIN_USER_IDS = "user_admin_test"
     resp = client.post("/api/v1/town/admin/recomposite-sprites")
     assert resp.status_code == 403
 
@@ -40,7 +40,7 @@ def test_recomposite_is_dev_only(mock_settings, client):
 @patch("core.config.settings")
 def test_recomposite_queues_only_agents_with_a_pixellab_character(mock_settings, mock_table, mock_resume, client):
     mock_settings.ENVIRONMENT = "dev"
-    mock_settings.ADMIN_USER_IDS = ""
+    mock_settings.ADMIN_USER_IDS = "user_admin_test"
     mock_table.return_value.scan.return_value = {
         "Items": [
             {"id": "a1", "pixellabCharacterId": "char1", "displayName": "Alice"},
@@ -58,7 +58,7 @@ def test_recomposite_queues_only_agents_with_a_pixellab_character(mock_settings,
 @patch("core.config.settings")
 def test_regenerate_is_dev_only(mock_settings, client):
     mock_settings.ENVIRONMENT = "prod"
-    mock_settings.ADMIN_USER_IDS = ""
+    mock_settings.ADMIN_USER_IDS = "user_admin_test"
     resp = client.post("/api/v1/town/admin/regenerate-sprite/abc")
     assert resp.status_code == 403
 
@@ -68,7 +68,7 @@ def test_regenerate_is_dev_only(mock_settings, client):
 @patch("core.config.settings")
 def test_regenerate_404_when_agent_missing(mock_settings, mock_ts, mock_resume, client):
     mock_settings.ENVIRONMENT = "dev"
-    mock_settings.ADMIN_USER_IDS = ""
+    mock_settings.ADMIN_USER_IDS = "user_admin_test"
     mock_ts.return_value.get_town_agent_by_id.return_value = None
     resp = client.post("/api/v1/town/admin/regenerate-sprite/nope")
     assert resp.status_code == 404
@@ -79,7 +79,7 @@ def test_regenerate_404_when_agent_missing(mock_settings, mock_ts, mock_resume, 
 @patch("core.config.settings")
 def test_regenerate_kicks_off_for_valid_agent(mock_settings, mock_ts, mock_resume, client):
     mock_settings.ENVIRONMENT = "dev"
-    mock_settings.ADMIN_USER_IDS = ""
+    mock_settings.ADMIN_USER_IDS = "user_admin_test"
     mock_ts.return_value.get_town_agent_by_id.return_value = {
         "id": "510b22c3",
         "displayName": "Sherlock Holmes",

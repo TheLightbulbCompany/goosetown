@@ -50,6 +50,7 @@ export class ApiStack extends cdk.Stack {
       logGroup: authorizerLogGroup,
       environment: {
         CLERK_ISSUER: props.secrets.clerkIssuer.secretName,
+        CLERK_AUTHORIZED_PARTIES: env === "prod" ? "https://goosetown.thelightbulb.company" : "https://dev.goosetown.thelightbulb.company",
         TOWN_TOKEN_SECRET: props.secrets.townTokenSecret.secretName,
       },
       // Lambda code is in apps/infra/lambda/ws-authorizer/index.py.
