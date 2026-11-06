@@ -33,6 +33,9 @@ export class AuthStack extends cdk.Stack {
       secretName: `goosetown/${env}/clerk_secret_key`,
       description: "Clerk secret key for GooseTown",
     });
+    // Keep the previous automatic cross-stack export while deployed consumers
+    // migrate away from it. This exports the ARN, never the secret value.
+    this.exportValue(clerkSecretKey.secretArn);
 
     const townTokenSecret = new secretsmanager.Secret(
       this,
