@@ -121,6 +121,38 @@ class Member:
         return signature
 
 
+def member_binary():
+    """Prefer the standalone Goose dependency without changing the host CLI."""
+    import shutil
+    from pathlib import Path
+    private = Path.home() / ".goosetown" / "bin" / "lightbulb"
+    if private.exists():
+        if not private.is_file() or not os.access(private, os.X_OK):
+            raise MemberError("The standalone ~/.goosetown/bin/lightbulb binary is not executable")
+        return str(private)
+    binary = shutil.which("lightbulb")
+    if not binary:
+        raise MemberError(
+            "Lightbulb standalone binary is required before browser confirmation. "
+            "Install the official release into ~/.goosetown/bin/lightbulb, then run goosetown join again."
+        )
+    return binary
+
+
+def member_environment(member_home):
+    import sys
+    from pathlib import Path
+    # On macOS Security.framework locates the login Keychain through HOME.
+    # State/config/roster and agent discovery still use explicit member --home
+    # (released CLI embed::start/boot), not the person's default daemon home.
+    home = (os.environ.get("HOME") or str(Path.home())) if sys.platform == "darwin" else str(member_home)
+    env = {"HOME": home, "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+    for name in ("LIGHTBULB_CONNECT_DEBUG_NO_DEFAULT_RELAYS", "LIGHTBULB_CONNECT_DEBUG_NO_TELEMETRY", "LIGHTBULB_API"):
+        if name in os.environ:
+            env[name] = os.environ[name]
+    return env
+
+
 class ManagedMember:
     """One owned enrollment helper; the persistent key stays in a town-only home."""
 
@@ -136,14 +168,11 @@ class ManagedMember:
 
     def __enter__(self):
         import secrets
-        import shutil
         import subprocess
         import tempfile
         import time
 
-        binary = shutil.which("lightbulb")
-        if not binary:
-            raise MemberError("Lightbulb CLI is required for automatic town enrollment")
+        binary = member_binary()
         try:
             import fcntl
 
@@ -211,17 +240,7 @@ class ManagedMember:
             )
             os.chmod(sessions, 0o600)
             token = secrets.token_urlsafe(32)
-            env = {
-                "HOME": str(self.home),
-                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-            }
-            for name in (
-                "LIGHTBULB_CONNECT_DEBUG_NO_DEFAULT_RELAYS",
-                "LIGHTBULB_CONNECT_DEBUG_NO_TELEMETRY",
-                "LIGHTBULB_API",
-            ):
-                if name in os.environ:
-                    env[name] = os.environ[name]
+            env = member_environment(self.home)
             self.sockdir = tempfile.mkdtemp(prefix="goosetown-member-", dir="/tmp")
             socket_path = os.path.join(self.sockdir, "sock")
             self.process = subprocess.Popen(
