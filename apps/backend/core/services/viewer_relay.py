@@ -28,22 +28,30 @@ class ViewerRelay:
         self._pending: Optional[dict] = None
         self._pending_event: Optional[asyncio.Event] = None
         self._worker_task: Optional[asyncio.Task] = None
+        self._seed_task: Optional[asyncio.Task] = None
+        self._seed_removed: set[str] = set()
 
     def register_viewer(self, connection_id: str) -> None:
         """Add a browser viewer connection to the broadcast set."""
         self._viewer_connections.add(connection_id)
+        if hasattr(self, "_seed_removed"):
+            self._seed_removed.discard(connection_id)
         logger.info("Viewer registered: %s (%d total)", connection_id, len(self._viewer_connections))
 
     def unregister_viewer(self, connection_id: str) -> None:
         """Remove a browser viewer connection."""
         self._viewer_connections.discard(connection_id)
+        if getattr(self, "_seed_task", None) is not None and not self._seed_task.done():
+            self._seed_removed.add(connection_id)
         logger.info("Viewer unregistered: %s (%d remaining)", connection_id, len(self._viewer_connections))
 
-    def seed_from_dynamodb(self) -> None:
-        """Read all viewer connections from DynamoDB to seed the in-memory set.
+    @staticmethod
+    def _read_viewer_connections() -> set[str]:
+        """Read a paginated snapshot without mutating event-loop-owned state.
 
         Paginated — walks the table until all viewer-type connections are loaded.
         """
+        connections: set[str] = set()
         try:
             import core.dynamo as dynamo
 
@@ -52,33 +60,58 @@ class ViewerRelay:
                 "FilterExpression": "connectionType = :t",
                 "ExpressionAttributeValues": {":t": "viewer"},
             }
-            total = 0
             while True:
                 resp = table.scan(**scan_kwargs)
                 for item in resp.get("Items", []):
                     conn_id = item.get("connectionId")
                     if conn_id:
-                        self._viewer_connections.add(conn_id)
-                        total += 1
+                        connections.add(conn_id)
                 last_key = resp.get("LastEvaluatedKey")
                 if not last_key:
                     break
                 scan_kwargs["ExclusiveStartKey"] = last_key
-            logger.info("Seeded %d viewer connections from DynamoDB", total)
+            return connections
         except Exception as e:
             logger.warning("Failed to seed viewer connections from DynamoDB: %s", e)
+            return connections
+
+    def seed_from_dynamodb(self) -> None:
+        """Synchronous seed helper for callers outside the async startup path."""
+        connections = self._read_viewer_connections()
+        self._viewer_connections.update(connections)
+        logger.info("Seeded %d viewer connections from DynamoDB", len(connections))
+
+    async def _seed_viewers(self) -> None:
+        try:
+            connections = await asyncio.to_thread(self._read_viewer_connections)
+            if self._running:
+                # A disconnect observed while the snapshot was loading takes
+                # precedence over its stale row; new registrations are retained.
+                connections.difference_update(self._seed_removed)
+                self._viewer_connections.update(connections)
+                logger.info("Seeded %d viewer connections from DynamoDB", len(connections))
+        finally:
+            self._seed_removed.clear()
 
     async def start(self) -> None:
         """Start the relay: connect to game server and begin listening."""
         self._running = True
         self._pending_event = asyncio.Event()
         self._worker_task = asyncio.create_task(self._broadcast_worker())
-        self.seed_from_dynamodb()
+        self._seed_removed.clear()
+        self._seed_task = asyncio.create_task(self._seed_viewers())
         self._listen_task = asyncio.create_task(self._run_loop())
 
     async def stop(self) -> None:
         """Stop the relay and close connections."""
         self._running = False
+        if self._seed_task:
+            self._seed_task.cancel()
+            try:
+                await self._seed_task
+            except asyncio.CancelledError:
+                pass
+            self._seed_task = None
         if self._listen_task:
             self._listen_task.cancel()
             try:
