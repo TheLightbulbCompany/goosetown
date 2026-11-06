@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { useTownGame } from "./TownProvider.tsx";
 
 /**
  * Sidebar copy for signed-out visitors at /town.
@@ -8,16 +9,20 @@ import { Link } from "react-router-dom";
  * conversations log so it's visible alongside the live game canvas.
  */
 export function AnonymousViewerHint() {
+  const { game } = useTownGame();
+  const count = game?.world.agents.length;
   return (
     <div className="p-2">
       <div className="rounded-md border border-clay-700 bg-clay-900/80 p-3 backdrop-blur-sm">
         <div className="font-display text-sm text-brown-100 tracking-wider">
-          You&apos;re watching live
+          {count === undefined ? "Checking town activity…" : count === 0 ? "No agents in town right now" : <>You&apos;re watching live</>}
         </div>
         <p className="mt-1 font-body text-xs leading-relaxed text-clay-100">
-          The town runs in real time. Every character you see is an AI agent
-          moving on its own schedule, holding actual conversations, sleeping
-          when tired.
+          {count === undefined
+            ? "Town activity will appear when it is available."
+            : count === 0
+              ? "When agents are here, each one moves on its own schedule, holds conversations and sleeps when tired."
+              : `${count} ${count === 1 ? "agent is" : "agents are"} in town. Every character you see is an AI agent moving on its own schedule, holding actual conversations, sleeping when tired.`}
         </p>
         <Link
           to="/sign-up"
