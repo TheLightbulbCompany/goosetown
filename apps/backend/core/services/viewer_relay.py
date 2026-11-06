@@ -199,7 +199,7 @@ class ViewerRelay:
         if not gone:
             return
         for conn_id in gone:
-            self._viewer_connections.discard(conn_id)
+            self.unregister_viewer(conn_id)
         import core.dynamo as dynamo
 
         await asyncio.gather(

@@ -133,6 +133,39 @@ async def test_stop_discards_late_snapshot_without_waiting_for_database():
         assert relay._viewer_connections == set()
 
 
+@pytest.mark.asyncio
+async def test_gone_viewer_pruned_during_seed_is_not_resurrected():
+    started, release = threading.Event(), threading.Event()
+
+    def read_snapshot():
+        started.set()
+        assert release.wait(2), "test did not release the snapshot reader"
+        return {"gone", "still-connected"}
+
+    relay = ViewerRelay("ws://127.0.0.1:9")
+    relay.register_viewer("gone")
+    with (
+        patch.object(relay, "_read_viewer_connections", side_effect=read_snapshot),
+        patch.object(relay, "_run_loop", AsyncMock()),
+        patch.object(relay, "_broadcast_worker", AsyncMock()),
+        patch("core.services.management_api_client.ManagementApiClient") as management,
+        patch("core.dynamo.delete_connection") as delete_connection,
+    ):
+        management.return_value.send_message.return_value = False
+        await relay.start()
+        try:
+            assert await asyncio.to_thread(started.wait, 2)
+            await relay._fan_out(["gone"], {"event": "world_state", "agents": []})
+            delete_connection.assert_called_once_with("gone")
+            assert "gone" not in relay._viewer_connections
+            release.set()
+            await relay._seed_task
+            assert relay._viewer_connections == {"still-connected"}
+        finally:
+            release.set()
+            await relay.stop()
+
+
 def test_seed_reader_keeps_pages_loaded_before_database_failure():
     from unittest.mock import MagicMock
 
