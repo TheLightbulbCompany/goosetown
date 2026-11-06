@@ -71,7 +71,7 @@ function buildTestApp(env: "dev" | "prod" = "dev"): { template: Template } {
     connectionsTable,
     secrets: secrets as any,
     vpc,
-    backendUrl: `https://api-${env}.goosetown.isol8.co`,
+    backendUrl: `https://api${env === "prod" ? "" : "-dev"}.goosetown.thelightbulb.company`,
   });
 
   return { template: Template.fromStack(stack) };
@@ -293,4 +293,11 @@ describe("ApiStack — WS Lambda shared secret wiring", () => {
     expect(source).toMatch(/WS_LAMBDA_SECRET_NAME/);
     expect(source).toMatch(/get_secret_value/);
   });
+});
+
+test.each(["dev", "prod"] as const)("%s leaves existing canonical WebSocket resources unmanaged", (env) => {
+  const template = buildTestApp(env).template;
+  template.resourceCountIs("AWS::ApiGatewayV2::DomainName", 0);
+  template.resourceCountIs("AWS::ApiGatewayV2::ApiMapping", 0);
+  template.resourceCountIs("AWS::Route53::RecordSet", 0);
 });

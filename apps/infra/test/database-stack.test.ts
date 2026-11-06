@@ -258,3 +258,17 @@ describe("DatabaseStack — provider-subscriptions table (Wave 2 ProviderDirecto
     expect(pitr).toBeFalsy();
   });
 });
+
+
+describe("production table recovery coverage", () => {
+  test("every production table enables PITR while dev remains disabled", () => {
+    for (const env of ["prod", "dev"]) {
+      const tables = Object.values(buildTestApp(env).findResources("AWS::DynamoDB::Table")) as any[];
+      expect(tables).toHaveLength(14);
+      for (const table of tables) {
+        expect(table.Properties.PointInTimeRecoverySpecification?.PointInTimeRecoveryEnabled ?? false)
+          .toBe(env === "prod");
+      }
+    }
+  });
+});

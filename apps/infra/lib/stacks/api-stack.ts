@@ -1,3 +1,4 @@
+import { canonicalHost, canonicalCertificateArn, canonicalZoneId, canonicalZoneName } from "./canonical-domain";
 import * as cdk from "aws-cdk-lib";
 import * as apigatewayv2 from "aws-cdk-lib/aws-apigatewayv2";
 import { WebSocketLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
@@ -99,7 +100,7 @@ export class ApiStack extends cdk.Stack {
     });
 
     // No VPC config — this Lambda only calls public endpoints
-    // (DynamoDB, the public ALB at api-{env}.goosetown.isol8.co,
+    // (DynamoDB, the public ALB at canonical GooseTown API,
     // CloudWatch Logs). Putting it in a VPC was forcing AWS to provision
     // Lambda VPC ENIs, which detach asynchronously (20-45 min) on every
     // immutable property change. CloudFormation tried to delete the
@@ -118,7 +119,7 @@ export class ApiStack extends cdk.Stack {
       environment: {
         CONNECTIONS_TABLE: props.connectionsTable.tableName,
         BACKEND_URL:
-          props.backendUrl ?? `http://api-${env}.goosetown.isol8.co`,
+          props.backendUrl ?? `https://${canonicalHost("api", env)}`,
         // #427: shared secret proving to the backend that this request came
         // from the API Gateway integration and not the public internet.
         WS_LAMBDA_SECRET_NAME: props.secrets.wsLambdaSecret.secretName,
@@ -140,7 +141,7 @@ export class ApiStack extends cdk.Stack {
     });
 
     const backendUrl =
-      props.backendUrl ?? `http://api-${env}.goosetown.isol8.co`;
+      props.backendUrl ?? `https://${canonicalHost("api", env)}`;
 
     // No VPC config — see DisconnectFunction above for the same rationale.
     const defaultFn = new lambda_.Function(this, "DefaultRouteFunction", {
@@ -256,30 +257,8 @@ export class ApiStack extends cdk.Stack {
       );
     }
 
-    // ─── Custom Domain (ws-{env}.goosetown.isol8.co) ─────────────────
-    if (props.certificate && props.hostedZone) {
-      const domainName = new apigatewayv2.DomainName(this, "WsDomain", {
-        domainName: `ws-${env}.goosetown.isol8.co`,
-        certificate: props.certificate,
-      });
-
-      new apigatewayv2.ApiMapping(this, "WsApiMapping", {
-        api: wsApi,
-        domainName,
-        stage,
-      });
-
-      new route53.ARecord(this, "WsDnsRecord", {
-        zone: props.hostedZone,
-        recordName: `ws-${env}.goosetown.isol8.co`,
-        target: route53.RecordTarget.fromAlias(
-          new route53Targets.ApiGatewayv2DomainProperties(
-            domainName.regionalDomainName,
-            domainName.regionalHostedZoneId,
-          )
-        ),
-      });
-    }
+    // Existing canonical resources remain unmanaged pending reviewed adoption.
+    // Never delete and recreate working public records as part of this stack.
 
     // ─── Outputs ─────────────────────────────────────────────────────
     new cdk.CfnOutput(this, "WebSocketApiId", {

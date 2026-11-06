@@ -32,7 +32,7 @@ describe("StorageStack — sprite bucket CORS allow-list", () => {
         CorsRules: Match.arrayWith([
           Match.objectLike({
             AllowedOrigins: Match.arrayWith([
-              "https://dev.goosetown.isol8.co",
+              "https://dev.goosetown.thelightbulb.company",
               "http://localhost:5173",
             ]),
           }),
@@ -49,7 +49,7 @@ describe("StorageStack — sprite bucket CORS allow-list", () => {
         CorsRules: Match.arrayWith([
           Match.objectLike({
             AllowedOrigins: Match.arrayWith([
-              "https://goosetown.isol8.co",
+              "https://goosetown.thelightbulb.company",
               "http://localhost:5173",
             ]),
           }),
@@ -90,7 +90,7 @@ describe("StorageStack — sprite bucket CORS allow-list", () => {
     ) as any;
     const rules = sprite?.Properties?.CorsConfiguration?.CorsRules ?? [];
     for (const r of rules) {
-      expect(r.AllowedOrigins).not.toContain("https://dev.goosetown.isol8.co");
+      expect(r.AllowedOrigins).not.toContain("https://dev.goosetown.thelightbulb.company");
       expect(r.AllowedOrigins).not.toContain("*");
     }
   });
@@ -106,7 +106,7 @@ describe("StorageStack — CloudFront ResponseHeadersPolicy CORS", () => {
           CorsConfig: Match.objectLike({
             AccessControlAllowOrigins: Match.objectLike({
               Items: Match.arrayWith([
-                "https://dev.goosetown.isol8.co",
+                "https://dev.goosetown.thelightbulb.company",
                 "http://localhost:5173",
               ]),
             }),
@@ -125,7 +125,7 @@ describe("StorageStack — CloudFront ResponseHeadersPolicy CORS", () => {
           CorsConfig: Match.objectLike({
             AccessControlAllowOrigins: Match.objectLike({
               Items: Match.arrayWith([
-                "https://goosetown.isol8.co",
+                "https://goosetown.thelightbulb.company",
                 "http://localhost:5173",
               ]),
             }),

@@ -1,3 +1,4 @@
+import { canonicalHost } from "./canonical-domain";
 import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
@@ -103,9 +104,7 @@ export class WorldgmStack extends cdk.Stack {
         // the backend's TOWN_WS_URL — residents run inside AWS but connect via
         // the API-Gateway WS exactly like remote agents).
         TOWN_WS_URL:
-          env === "prod"
-            ? "wss://ws-prod.goosetown.isol8.co"
-            : "wss://ws-dev.goosetown.isol8.co",
+          `wss://${canonicalHost("ws", env)}`,
         // Resident (seed) agents. Enabled on both envs (prod seeding decided
         // 2026-06-11). The slate differs: dev runs the historical/archetype
         // cast; prod runs the real-public-figures cast (personas_prod.py).

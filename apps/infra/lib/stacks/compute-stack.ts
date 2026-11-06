@@ -1,3 +1,4 @@
+import { canonicalHost, frontendOrigin, canonicalZoneId, canonicalZoneName } from "./canonical-domain";
 import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
@@ -147,28 +148,23 @@ export class ComputeStack extends cdk.Stack {
         EXCHANGE_DELIVERY_SEC: env === "prod" ? "3600" : "180",
         EXCHANGE_REVIEW_SEC: env === "prod" ? "1800" : "120",
         SPRITE_S3_BUCKET: props.spriteBucket.bucketName,
-        SPRITE_CDN_URL: `https://assets-${env}.goosetown.isol8.co`,
+        SPRITE_CDN_URL: `https://${canonicalHost("assets", env)}`,
+        RUNTIME_BINDING_ORIGIN: `https://${canonicalHost("api", env)}`,
         CORS_ORIGINS: env === "prod"
-          ? "https://goosetown.isol8.co"
-          : "https://dev.goosetown.isol8.co,http://localhost:3000,http://localhost:5173",
+          ? frontendOrigin(env)
+          : `${frontendOrigin(env)},http://localhost:3000,http://localhost:5173`,
         ...(props.gameServerUrl && {
           GAME_SERVER_URL: `ws://${props.gameServerUrl}:8080`,
         }),
-        TOWN_WS_URL: env === "prod"
-          ? "wss://ws-prod.goosetown.isol8.co"
-          : "wss://ws-dev.goosetown.isol8.co",
-        TOWN_API_URL: env === "prod"
-          ? "https://api-prod.goosetown.isol8.co/api/v1"
-          : "https://api-dev.goosetown.isol8.co/api/v1",
+        TOWN_WS_URL: `wss://${canonicalHost("ws", env)}`,
+        TOWN_API_URL: `https://${canonicalHost("api", env)}/api/v1`,
         // Using the custom-domain string avoids an Fn.importValue cross-stack
         // reference from ComputeStack to ApiStack — which would be circular
         // because ApiStack already depends on ComputeStack via fargateTaskRole,
         // and Compute deploys before Api on fresh environments.
         // The ApiStack export (goosetown-${env}-management-api-url) is kept in
         // place for at least one week of clean prod runtime before removal.
-        WS_MANAGEMENT_API_URL: env === "prod"
-          ? "https://ws-prod.goosetown.isol8.co"
-          : "https://ws-dev.goosetown.isol8.co",
+        WS_MANAGEMENT_API_URL: `https://${canonicalHost("ws", env)}`,
         // Operator step (one-time, post-merge): after creating Resend audiences
         // (one for dev, one for prod), replace these TBD strings and redeploy.
         // Until populated, /landing/signup returns 503 with a server log
@@ -298,17 +294,9 @@ export class ComputeStack extends cdk.Stack {
     }
 
     // Fargate Service
-    // SINGLE-TASK (both envs) — INTERIM, pre-launch. The sprite pipeline's
-    // SpriteQueue(max_concurrent=1) throttle is PER-PROCESS, but with >1 backend
-    // replica each gets its own queue, so the real global concurrency is N. Each
-    // pipeline's animation batch (3 anims × 4 dirs = up to 12 jobs) already brushes
-    // PixelLab Tier-2's 10-concurrent-job cap; two replicas at once blow past it and
-    // PixelLab 429s silently drop animations (observed 2026-06-12: 12/19 residents
-    // seeded with missing idle/talking). Pinning prod to 1 task makes generation
-    // globally serial until the durable single-worker sprite pipeline decouples
-    // generation from the backend. REVERT to HA (desired 2, minCapacity 2,
-    // maxCapacity 12, minHealthyPercent 100) once that worker ships and before real
-    // launch traffic — single-task means ~30s downtime per deploy + no replica HA.
+    // Desired count remains one. Production rolls with a temporary overlapping
+    // task to retain a healthy backend; the dedicated sprite worker owns generation.
+    // This is not multi-replica high availability outside a deployment.
     const isProd = env === "prod";
     this.service = new ecs.FargateService(this, "Service", {
       serviceName: `goosetown-${env}-backend`,
@@ -318,7 +306,8 @@ export class ComputeStack extends cdk.Stack {
       assignPublicIp: false,
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       circuitBreaker: { rollback: true },
-      minHealthyPercent: 0,
+      minHealthyPercent: 100,
+      maxHealthyPercent: 200,
     });
 
     this.service.attachToApplicationTargetGroup(targetGroup);
@@ -490,16 +479,8 @@ export class ComputeStack extends cdk.Stack {
       );
     }
 
-    // DNS record: api-{env}.goosetown.isol8.co -> ALB
-    if (props.hostedZone) {
-      new route53.ARecord(this, "ApiDnsRecord", {
-        zone: props.hostedZone,
-        recordName: `api-${env}.goosetown.isol8.co`,
-        target: route53.RecordTarget.fromAlias(
-          new route53Targets.LoadBalancerTarget(this.alb)
-        ),
-      });
-    }
+    // Existing canonical resources remain unmanaged pending reviewed adoption.
+    // Never delete and recreate working public records as part of this stack.
 
     // Outputs
     new cdk.CfnOutput(this, "AlbDnsName", {

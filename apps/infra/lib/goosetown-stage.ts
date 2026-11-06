@@ -1,3 +1,4 @@
+import { canonicalHost } from "./stacks/canonical-domain";
 import * as cdk from "aws-cdk-lib";
 import { Construct } from "constructs";
 import { NetworkStack } from "./stacks/network-stack";
@@ -104,7 +105,7 @@ export class GooseTownStage extends cdk.Stage {
       fargateTaskRole: compute.service.taskDefinition.taskRole,
       vpc: network.vpc,
       // Pass as string to avoid circular dependency (ApiStack already depends on ComputeStack via fargateTaskRole)
-      backendUrl: `https://api-${env}.goosetown.isol8.co`,
+      backendUrl: `https://${canonicalHost("api", env)}`,
       certificate: dns.certificate,
       hostedZone: dns.hostedZone,
     });

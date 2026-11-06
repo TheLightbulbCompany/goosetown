@@ -70,6 +70,9 @@ export class DatabaseStack extends cdk.Stack {
       partitionKey: { name: "id", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy,
+      pointInTimeRecoverySpecification: {
+        pointInTimeRecoveryEnabled: env === "prod",
+      },
     });
 
     instances.addGlobalSecondaryIndex({
@@ -89,6 +92,9 @@ export class DatabaseStack extends cdk.Stack {
       sortKey: { name: "agentBId", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy,
+      pointInTimeRecoverySpecification: {
+        pointInTimeRecoveryEnabled: env === "prod",
+      },
     });
 
     // Conversations table
@@ -97,6 +103,9 @@ export class DatabaseStack extends cdk.Stack {
       partitionKey: { name: "id", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy,
+      pointInTimeRecoverySpecification: {
+        pointInTimeRecoveryEnabled: env === "prod",
+      },
     });
 
     conversations.addGlobalSecondaryIndex({
@@ -129,6 +138,9 @@ export class DatabaseStack extends cdk.Stack {
       },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy,
+      pointInTimeRecoverySpecification: {
+        pointInTimeRecoveryEnabled: env === "prod",
+      },
     });
 
     // Owner chats table (private owner ↔ agent DMs)

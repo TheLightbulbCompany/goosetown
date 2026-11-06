@@ -1,3 +1,5 @@
+> **Migration warning:** This historical runbook contains retired `goosetown.isol8.co` routes and potentially destructive recovery procedures. Use the current domain-migration record and a reviewed restore plan; do not execute old domain or table-replacement commands.
+
 # GooseTown Infrastructure Runbook
 
 Target audience: on-call engineer (or a future Claude session). Assumes familiarity with AWS CLI but not this repo.

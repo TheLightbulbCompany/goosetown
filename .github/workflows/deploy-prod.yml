@@ -1,0 +1,29 @@
+name: Production deploy (disabled pending adoption)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  deploy:
+    # Deliberately disabled until adoption, scoped IAM and release review pass.
+    if: ${{ false }}
+    environment: Production
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: apps/infra/package-lock.json
+      - run: npm ci
+        working-directory: apps/infra
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
+      - run: npx cdk deploy 'prod/*' --require-approval never
+        working-directory: apps/infra

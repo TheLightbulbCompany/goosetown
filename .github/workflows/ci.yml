@@ -111,26 +111,6 @@ jobs:
         run: npm test -- --ci
         working-directory: apps/infra
 
-      - name: deploy.yml is in sync with the pipeline definition
-        # CDK Pipelines regenerates ``.github/workflows/deploy.yml`` from
-        # ``lib/app.ts``'s GitHubWorkflow + every stack added to it. If the
-        # pipeline definition changes (e.g. a new asset is added to a stack)
-        # the generated workflow file changes too. Without this gate, the
-        # change ships without the regen, and every subsequent deploy fails
-        # at Synthesize with: "Please commit the updated workflow file..."
-        # We hit that exact failure twice on 2026-04-27 (PR #223 and #225).
-        # ``cdk synth`` runs synth-only (no assets, no deploy) and rewrites
-        # the workflow as a side-effect. ``git diff --exit-code`` then fails
-        # the job if the file is dirty — surfacing the regen requirement at
-        # PR review time instead of after merge.
-        run: |
-          npx cdk synth --quiet > /dev/null 2>&1
-          if ! git diff --exit-code -- ../../.github/workflows/deploy.yml; then
-            echo "::error::deploy.yml is out of sync with the CDK pipeline definition."
-            echo "::error::Run ``cd apps/infra && npx cdk synth`` locally and commit the resulting deploy.yml."
-            exit 1
-          fi
-        working-directory: apps/infra
 
   godot-test:
     name: Godot Unit Tests

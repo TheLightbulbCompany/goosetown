@@ -1,3 +1,4 @@
+import { canonicalHost, frontendOrigin, canonicalZoneId, canonicalZoneName } from "./canonical-domain";
 import * as cdk from "aws-cdk-lib";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
@@ -30,8 +31,8 @@ export class StorageStack extends cdk.Stack {
     // because the frontend dev server uses it for both envs.
     const allowedOrigins =
       env === "prod"
-        ? ["https://goosetown.isol8.co", "http://localhost:5173"]
-        : ["https://dev.goosetown.isol8.co", "http://localhost:5173"];
+        ? [frontendOrigin(env), "http://localhost:5173"]
+        : [frontendOrigin(env), "http://localhost:5173"];
 
     // S3 bucket for sprites.
     //
@@ -218,7 +219,7 @@ export class StorageStack extends cdk.Stack {
     });
 
     // CloudFront distribution with S3 bucket origin (OAC managed automatically)
-    const domainName = `assets-${env}.goosetown.isol8.co`;
+    const domainName = canonicalHost("assets", env);
     this.distribution = new cloudfront.Distribution(this, "Distribution", {
       comment: `GooseTown ${env} sprites`,
       defaultBehavior: {
@@ -237,16 +238,8 @@ export class StorageStack extends cdk.Stack {
       }),
     });
 
-    // DNS record: assets-{env}.goosetown.isol8.co -> CloudFront
-    if (props.hostedZone) {
-      new route53.ARecord(this, "AssetsDnsRecord", {
-        zone: props.hostedZone,
-        recordName: domainName,
-        target: route53.RecordTarget.fromAlias(
-          new route53Targets.CloudFrontTarget(this.distribution)
-        ),
-      });
-    }
+    // Existing canonical resources remain unmanaged pending reviewed adoption.
+    // Never delete and recreate working public records as part of this stack.
 
     // Outputs
     new cdk.CfnOutput(this, "SpriteBucketName", {
