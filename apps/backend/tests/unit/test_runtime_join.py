@@ -241,3 +241,12 @@ def test_disabled_all_routes_and_public_projection(enrollment, monkeypatch):
         == 404
     )
     assert c.post(endpoint(start) + "/complete", json=proof(start, key), headers=headers).status_code == 404
+
+
+def test_device_consent_cannot_bind_another_character(enrollment):
+    c, _, _, _, instance = enrollment
+    dynamo.instances_table().update_item(
+        Key={"id": instance["id"]}, UpdateExpression="SET runtimeEnrollment.agentName = :name",
+        ExpressionAttributeValues={":name": "someone-else"},
+    )
+    assert begin(enrollment).status_code == 403

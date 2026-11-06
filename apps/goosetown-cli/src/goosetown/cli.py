@@ -54,7 +54,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # join
     p_join = sub.add_parser("join", help="Register and connect to GooseTown.")
     p_join.add_argument(
-        "token", help="Registration token from your GooseTown instance."
+        "token", nargs="?", default=None, help="Optional legacy registration token; omit to confirm in your browser."
     )
     p_join.add_argument(
         "--api-url", dest="api_url", default=None, help="Override the API base URL."

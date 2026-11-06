@@ -149,6 +149,7 @@ export class ComputeStack extends cdk.Stack {
         EXCHANGE_REVIEW_SEC: env === "prod" ? "1800" : "120",
         SPRITE_S3_BUCKET: props.spriteBucket.bucketName,
         SPRITE_CDN_URL: `https://${canonicalHost("assets", env)}`,
+        TOWN_BROWSER_ORIGIN: frontendOrigin(env),
         RUNTIME_BINDING_ORIGIN: `https://${canonicalHost("api", env)}`,
         CORS_ORIGINS: env === "prod"
           ? frontendOrigin(env)

@@ -31,7 +31,9 @@ def test_mint_scoped_expiring_and_replaced(dynamodb_tables, monkeypatch):
     assert len(secret) == 43
     row = dynamo.instances_table().get_item(Key={"id": instance["id"]}, ConsistentRead=True)["Item"]
     assert row["runtimeEnrollment"] == {
-        "ownerId": "owner", "secretHash": hashlib.sha256(secret.encode()).hexdigest(), "expiresAt": 1600,
+        "ownerId": "owner",
+        "secretHash": hashlib.sha256(secret.encode()).hexdigest(),
+        "expiresAt": 1600,
         "audience": audience(),
     }
     second = unpack(mint_join_token(instance["id"], "owner", instance["townToken"]))
@@ -87,7 +89,7 @@ def test_onboarding_refreshes_expired_and_revoked_town_token(dynamodb_tables, mo
     assert dynamo.instances_table().get_item(Key={"id": instance["id"]})["Item"]["townToken"] == fresh
 
 
-def test_same_second_revocation_asks_to_retry(dynamodb_tables, monkeypatch):
+def test_same_second_revocation_waits_for_safe_issue_time(dynamodb_tables, monkeypatch):
     import time
 
     app = FastAPI()
@@ -96,7 +98,13 @@ def test_same_second_revocation_asks_to_retry(dynamodb_tables, monkeypatch):
     TownService().create_instance("owner")
     dynamo.users_table().put_item(Item={"userId": "owner", "tokenRevokedAt": int(time.time()) * 1000 + 999})
     monkeypatch.setattr(settings, "RUNTIME_BINDING_ENABLED", True)
-    assert TestClient(app).post("/api/v1/town/instance").status_code == 409
+    response = TestClient(app).post("/api/v1/town/instance")
+    assert response.status_code == 200
+    from core.town_token import verify_town_token
+
+    fresh = verify_town_token(unpack(response.json()["join_token"])["town_token"])
+    revoked = dynamo.users_table().get_item(Key={"userId": "owner"})["Item"]["tokenRevokedAt"]
+    assert fresh and fresh["iat"] * 1000 >= revoked
 
 
 def test_repeated_onboarding_preserves_valid_town_token_and_rotates_grant(dynamodb_tables, monkeypatch):
@@ -139,22 +147,24 @@ def test_refresh_loses_compare_and_swap_without_overwriting(dynamodb_tables, mon
         Key={"id": instance["id"]}, UpdateExpression="SET townToken = :t", ExpressionAttributeValues={":t": stale}
     )
     table = dynamo.instances_table()
-    original = table.update_item
+    client = dynamo.get_client().meta.client
+    original = client.transact_write_items
 
     def race(**kwargs):
-        if kwargs.get("UpdateExpression") == "SET townToken = :token":
-            original(
-                Key={"id": instance["id"]}, UpdateExpression="SET townToken = :new",
+        if "TransactItems" in kwargs:
+            table.update_item(
+                Key={"id": instance["id"]},
+                UpdateExpression="SET townToken = :new",
                 ExpressionAttributeValues={":new": "winner"},
             )
         return original(**kwargs)
 
     monkeypatch.setattr("core.dynamo.instances_table", lambda: table)
-    monkeypatch.setattr(table, "update_item", race)
+    monkeypatch.setattr(client, "transact_write_items", race)
     monkeypatch.setattr(settings, "RUNTIME_BINDING_ENABLED", True)
     app = FastAPI()
     app.include_router(router, prefix="/api/v1/town")
     app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="owner")
-    assert TestClient(app).post("/api/v1/town/instance").status_code == 409
+    assert TestClient(app).post("/api/v1/town/instance").status_code == 503
     row = table.get_item(Key={"id": instance["id"]}, ConsistentRead=True)["Item"]
     assert row["townToken"] == "winner" and "runtimeEnrollment" not in row

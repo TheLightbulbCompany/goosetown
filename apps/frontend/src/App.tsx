@@ -24,6 +24,7 @@ import InteriorRoute from './components/InteriorRoute.tsx';
 import SignInPage from './pages/SignIn.tsx';
 import SignUpPage from './pages/SignUp.tsx';
 import { Landing } from './pages/Landing.tsx';
+import Connect from './pages/Connect.tsx';
 
 const API_URL = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000/api/v1';
 
@@ -231,10 +232,11 @@ export default function App() {
       const agent = positions?.[focus.toLowerCase()];
       if (agent && bridge?.setCamera) {
         bridge.setCamera(agent.x, agent.y, 2.5);
+        if (params.get('arriving')) toast.success(`${agent.display} arrived — this is your agent.`);
         console.log('[GooseTown] focused camera on', agent.display, 'at', agent.x, agent.y);
         return;
       }
-      if (attempt < 50) {
+      if (attempt < (params.get('arriving') ? 200 : 50)) {
         setTimeout(() => tryFocus(attempt + 1), 300);
       } else {
         toast.warn(`${focus} isn't currently in town`);
@@ -260,6 +262,8 @@ export default function App() {
   // backdrop instead of Landing — otherwise signed-in users see the
   // landing page flash for ~1s before the redirect (isSignedIn is
   // undefined until ``authLoaded`` flips to true).
+  if (location.pathname === '/connect') return <Connect />;
+
   if (location.pathname === '/') {
     if (!authLoaded) {
       return <div className="fixed inset-0 bg-clay-900" aria-hidden />;

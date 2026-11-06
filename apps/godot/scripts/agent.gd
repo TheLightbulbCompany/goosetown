@@ -16,7 +16,7 @@ const SHEET_HEIGHT: int = 384  # 4 * 96
 
 const DEFAULT_FPS: float = 8.0
 const DEFAULT_FRAME_COUNT: int = 6
-const SHADOW_TEXTURE: Texture2D = preload("res://assets/sprites/shadow_placeholder.png")
+const SHADOW_TEXTURE: Texture2D = preload("res://assets/sprites/arrival_placeholder.svg")
 
 # Direction → row index in spritesheet
 const DIR_ROW: Dictionary = {
@@ -351,7 +351,7 @@ func setup(id: String, url: String, x: float, y: float, facing_json: String, dis
 	if sprite_url != "" and not OS.has_feature("headless"):
 		load_sprite(sprite_url, "walk")
 	elif not OS.has_feature("headless"):
-		# No sprite URL — use shadow placeholder
+		# No sprite URL — use temporary goose
 		set_spritesheet(SHADOW_TEXTURE, "walk")
 
 	_update_sprite_frame()
@@ -760,10 +760,10 @@ func load_sprite(url: String, anim_name: String = "walk") -> void:
 func _load_sprite_with_retry(url: String, anim_name: String, attempt: int):
 	if attempt >= _SPRITE_LOAD_MAX_ATTEMPTS:
 		push_warning(
-			"Sprite load failed after %d attempts for agent %s anim=%s (%s) — falling back to shadow placeholder"
+			"Sprite load failed after %d attempts for agent %s anim=%s (%s) — falling back to temporary goose"
 			% [_SPRITE_LOAD_MAX_ATTEMPTS, agent_id, anim_name, url]
 		)
-		# Shadow fallback only for walk. Non-walk anims just go missing
+		# Temporary character fallback only for walk. Non-walk anims just go missing
 		# (the agent will fall back to `walk` at the _physics_process level).
 		if anim_name == "walk":
 			set_spritesheet(SHADOW_TEXTURE, "walk")

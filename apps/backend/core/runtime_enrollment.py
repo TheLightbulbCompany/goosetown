@@ -3,6 +3,7 @@
 The consuming transaction must enforce owner/instance, expiry, and initial binding
 (revision zero, no existing binding); this helper only issues the capability.
 """
+
 import base64
 import hashlib
 import json
@@ -21,7 +22,7 @@ class EnrollmentStateChanged(Exception):
     """Instance credentials changed during onboarding."""
 
 
-def mint_join_token(instance_id: str, owner_id: str, town_token: str) -> str:
+def mint_join_token(instance_id: str, owner_id: str, town_token: str, *, agent_name: str | None = None) -> str:
     secret = secrets.token_urlsafe(32)
     grant = {
         "secretHash": hashlib.sha256(secret.encode("ascii")).hexdigest(),
@@ -29,6 +30,8 @@ def mint_join_token(instance_id: str, owner_id: str, town_token: str) -> str:
         "expiresAt": int(time.time()) + TTL_SECONDS,
         "audience": audience(),
     }
+    if agent_name is not None:
+        grant["agentName"] = agent_name
     try:
         dynamo.instances_table().update_item(
             Key={"id": instance_id},

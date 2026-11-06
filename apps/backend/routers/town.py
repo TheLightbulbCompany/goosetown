@@ -1142,9 +1142,11 @@ async def get_apartment(
 @router.post("/instance")
 async def get_or_create_instance(
     auth: AuthContext = Depends(get_current_user),
+    enrollment_agent_name: str | None = None,
 ):
     """Get existing instance or create a new one. Returns town_token."""
     from core.config import settings
+    from core.services.user_service import UserService
     import asyncio
     import time
 
@@ -1153,6 +1155,7 @@ async def get_or_create_instance(
 
     service = TownService()
     try:
+        UserService().get_or_create(auth.user_id)
         instance = service.get_active_instance(auth.user_id)
         if not instance:
             instance = service.create_instance(auth.user_id)
@@ -1251,7 +1254,7 @@ async def get_or_create_instance(
         from core.runtime_enrollment import EnrollmentStateChanged, mint_join_token
 
         try:
-            response["join_token"] = mint_join_token(instance["id"], auth.user_id, instance["townToken"])
+            response["join_token"] = mint_join_token(instance["id"], auth.user_id, instance["townToken"], agent_name=enrollment_agent_name)
         except EnrollmentStateChanged as exc:
             raise HTTPException(status_code=409, detail="Onboarding changed; please retry") from exc
     return response
@@ -2368,3 +2371,7 @@ router.include_router(runtime_join_router)
 from routers.runtime_session import router as runtime_session_router  # noqa: E402
 
 router.include_router(runtime_session_router)
+
+from routers.device_join import router as device_join_router  # noqa: E402
+
+router.include_router(device_join_router)

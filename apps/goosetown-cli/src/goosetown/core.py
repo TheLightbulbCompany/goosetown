@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 from goosetown.activities import LOCATION_ACTIVITIES
-from goosetown.config import load_config, parse_goosetown_md, state_dir
+from goosetown.config import default_agent_dir, load_config, parse_goosetown_md, state_dir
 from goosetown.ipc import ipc_send
 
 # ---------------------------------------------------------------------------
@@ -534,14 +534,40 @@ def cmd_join(args: argparse.Namespace) -> None:
     from contextlib import nullcontext
     from .member_binding import ManagedMember, MemberError
 
-    agent_dir = Path(os.environ.get("AGENT_DIR", str(Path.cwd())))
+    device = not args.token
+    if device:
+        selected = Path.home() / ".goosetown" / "active-agent"
+        args.name = args.name or (selected.read_text().strip() if selected.exists() else "visitor")
+        args.appearance = args.appearance or "A friendly goose with a blue scarf"
+        args.personality = args.personality or "Curious and kind"
+        # Dedicated public town home, independent of the caller's project.
+        import re
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{1,50}", args.name):
+            _die("Invalid agent name.")
+        agent_dir = Path.home() / ".goosetown" / "agents" / args.name
+        agent_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.environ["AGENT_DIR"] = str(agent_dir)
+        os.environ["DISPLAY_NAME"] = args.name
+    else:
+        agent_dir = default_agent_dir()
     managed = "GOOSETOWN_MEMBER_FD" not in os.environ and (
-        args.token.startswith("gtj_") or (agent_dir / ".goosetown" / "member" / "state").exists()
+        device or args.token.startswith("gtj_") or (agent_dir / ".goosetown" / "member" / "state").exists()
     )
     try:
         api_url = os.environ.get("TOWN_API_URL") or args.api_url or _DEFAULT_API_URL
         with ManagedMember(agent_dir, api_url) if managed else nullcontext(None) as member:
+            if device:
+                if member is not None:
+                    member.check_support(api_url)
+                from .device_join import authorize, cached_credential
+                from .runtime_join import EnrollmentError
+                try:
+                    args.token = cached_credential(api_url, agent_dir) or authorize(api_url, args)
+                except EnrollmentError as exc:
+                    _die("Town confirmation failed.", str(exc))
             _cmd_join(args, member)
+            if device:
+                (Path.home() / ".goosetown" / "active-agent").write_text(args.name + "\n")
     except (MemberError, OSError) as exc:
         _die("Runtime enrollment failed.", str(exc) if isinstance(exc, MemberError) else "Cannot initialize local member.")
 
@@ -553,7 +579,7 @@ def _cmd_join(args: argparse.Namespace, managed_member=None) -> None:
 
     import urllib.request
 
-    agent_dir = Path(os.environ.get("AGENT_DIR", str(Path.cwd())))
+    agent_dir = default_agent_dir()
     # Prefer env-var override (injected by --dev/--prod) then explicit flag
     api_url = os.environ.get("TOWN_API_URL") or args.api_url or _DEFAULT_API_URL
     ws_url = os.environ.get("TOWN_WS_URL", _DEFAULT_WS_URL)
@@ -700,6 +726,8 @@ def _cmd_join(args: argparse.Namespace, managed_member=None) -> None:
         f"harness: {harness}\n"
     )
 
+    cfg_path.chmod(0o600)
+
     life_path = agent_dir / "TOWN_LIFE.md"
     if not life_path.exists():
         life_path.write_text(
@@ -784,7 +812,7 @@ def cmd_status(args: argparse.Namespace) -> None:  # noqa: ARG001
     live daemon process backs it, surface ``status=stopped`` so the agent
     knows to re-join rather than acting on stale world data.
     """
-    agent_dir = Path(os.environ.get("AGENT_DIR", str(Path.cwd())))
+    agent_dir = default_agent_dir()
     cfg_path = agent_dir / "GOOSETOWN.md"
 
     if not cfg_path.exists():
@@ -849,7 +877,7 @@ def cmd_act(args: argparse.Namespace) -> None:
     _ensure_websockets()
     _require_websockets("act")
 
-    agent_dir = Path(os.environ.get("AGENT_DIR", str(Path.cwd())))
+    agent_dir = default_agent_dir()
     config = load_config(agent_dir)
     agent_name = config.get("agent", "")
     sd = state_dir(agent_name)
@@ -1255,7 +1283,7 @@ def cmd_provider(args: argparse.Namespace) -> None:
     _ensure_websockets()
     _require_websockets("provider")
 
-    agent_dir = Path(os.environ.get("AGENT_DIR", str(Path.cwd())))
+    agent_dir = default_agent_dir()
     config = load_config(agent_dir)
     agent_name = config.get("agent", "")
     sd = state_dir(agent_name)
@@ -1321,7 +1349,7 @@ def cmd_leave(args: argparse.Namespace) -> None:
 
     import time
 
-    agent_dir = Path(os.environ.get("AGENT_DIR", str(Path.cwd())))
+    agent_dir = default_agent_dir()
     config = load_config(agent_dir)
     agent_name = config.get("agent", "")
     sd = state_dir(agent_name)
@@ -1553,7 +1581,7 @@ def cmd_daemon_resume(agent_name: str) -> int:
     # Wake time passed — remove alarm and try to start the daemon.
     alarm_file.unlink(missing_ok=True)
 
-    agent_dir = Path(os.environ.get("AGENT_DIR", str(Path.cwd())))
+    agent_dir = default_agent_dir()
     cfg_path = agent_dir / "GOOSETOWN.md"
     if not cfg_path.exists():
         print(json.dumps({"error": "GOOSETOWN.md not found. Cannot resume daemon."}))

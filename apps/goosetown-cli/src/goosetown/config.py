@@ -24,6 +24,20 @@ def parse_goosetown_md(path: Path) -> dict:
     return config
 
 
+def default_agent_dir() -> Path:
+    """Resolve the selected town home while preserving explicit legacy homes."""
+    if os.environ.get("AGENT_DIR"):
+        return Path(os.environ["AGENT_DIR"])
+    if (Path.cwd() / "GOOSETOWN.md").exists():
+        return Path.cwd()
+    selected = Path.home() / ".goosetown" / "active-agent"
+    import re
+    name = selected.read_text().strip() if selected.exists() else "visitor"
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,50}", name):
+        raise ValueError("Invalid selected town agent")
+    return Path.home() / ".goosetown" / "agents" / name
+
+
 def load_config(agent_dir: Path | None = None) -> dict:
     """Load config from GOOSETOWN.md.
 
@@ -35,11 +49,11 @@ def load_config(agent_dir: Path | None = None) -> dict:
     import json
 
     if agent_dir is None:
-        agent_dir = Path(os.environ.get("AGENT_DIR", str(Path.cwd())))
+        agent_dir = default_agent_dir()
     cfg_path = agent_dir / "GOOSETOWN.md"
     if not cfg_path.exists():
         payload = {
-            "error": "GOOSETOWN.md not found. Run 'goosetown join <token>' first."
+            "error": "GOOSETOWN.md not found. Run 'goosetown join' first."
         }
         print(json.dumps(payload))
         sys.exit(1)

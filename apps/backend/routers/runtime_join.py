@@ -140,6 +140,7 @@ async def start(body: StartRequest, token_info: tuple = Depends(_town_auth)):
     grant = instance.get("runtimeEnrollment", {})
     if (
         body.enrollment_token is None
+        or grant.get("agentName", body.agent_name) != body.agent_name
         or grant.get("ownerId") != owner
         or grant.get("audience") != binding.audience()
         or int(grant.get("expiresAt", 0)) <= now
@@ -234,3 +235,9 @@ async def finish(actor_id: str, request_id: str, body: FinishRequest, token_info
         "state": "ready", "actor_id": actor_id, "revision": result["binding"]["revision"],
         "runtime_session_required": settings.RUNTIME_SESSION_ENFORCEMENT_ENABLED,
     }
+
+
+@router.post("/runtime-join/check")
+async def check_credential(token_info: tuple = Depends(_town_auth)):
+    _principal(token_info)
+    return {"valid": True}

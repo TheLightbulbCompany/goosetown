@@ -7,6 +7,7 @@ logger = logging.getLogger(__name__)
 
 
 class Settings:
+    TOWN_BROWSER_ORIGIN: str = os.getenv("TOWN_BROWSER_ORIGIN", "https://goosetown.thelightbulb.company")
     RUNTIME_SESSION_ENFORCEMENT_ENABLED: bool = (
         os.getenv("RUNTIME_SESSION_ENFORCEMENT_ENABLED", "false").lower() == "true"
     )
