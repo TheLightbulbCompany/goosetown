@@ -1,3 +1,5 @@
+> **Migration warning:** This historical runbook references retired `goosetown.isol8.co` URLs. Confirm current canonical hosts and obtain an approved operational plan before running reset steps.
+
 # Runbook: Game Server Reset
 
 **Severity**: SEV-2 (production), SEV-3 (dev)

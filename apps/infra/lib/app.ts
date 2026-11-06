@@ -7,6 +7,7 @@ import {
   GitHubActionStep,
   StackCapabilities,
   JobPermission,
+  JsonPatch,
 } from "cdk-pipelines-github";
 import { GooseTownStage } from "./goosetown-stage";
 
@@ -23,7 +24,7 @@ const vercelEnv = {
 // ---------------------------------------------------------------------------
 // CDK Pipeline (generates .github/workflows/deploy.yml)
 // ---------------------------------------------------------------------------
-const pipeline = new GitHubWorkflow(app, "goosetown-pipeline", {
+const makePipeline = (name: string, workflowPath: string) => new GitHubWorkflow(app, name, {
   synth: new ShellStep("Synth", {
     installCommands: [
       "corepack enable",
@@ -39,13 +40,23 @@ const pipeline = new GitHubWorkflow(app, "goosetown-pipeline", {
   awsCreds: AwsCredentials.fromOpenIdConnect({
     gitHubActionRoleArn: "arn:aws:iam::877352799272:role/goosetown-github-actions",
   }),
-  workflowPath: "../../.github/workflows/deploy.yml",
+  workflowPath,
+  workflowTriggers: { workflowDispatch: {} },
 });
+const devPipeline = makePipeline("goosetown-dev-pipeline", "../../.github/workflows/deploy.yml");
+const prodPipeline = makePipeline("goosetown-prod-pipeline", "../../.github/workflows/deploy-prod.yml");
+// Every generated asset and deploy job depends on Build-Synth. Guard it before
+// any credentialed job, in addition to the environment on production stages.
+devPipeline.workflowFile.patch(JsonPatch.add("/jobs/Build-Synth/if", "${{ github.ref == 'refs/heads/main' }}"));
+prodPipeline.workflowFile.patch(
+  JsonPatch.add("/jobs/Build-Synth/if", "${{ github.ref == 'refs/heads/main' }}"),
+  JsonPatch.add("/jobs/Build-Synth/environment", "Production"),
+);
 
 // ---------------------------------------------------------------------------
-// Dev stage — auto-deploy infra + frontend on merge to main
+// Dev stage — manual dev-only deployment
 // ---------------------------------------------------------------------------
-pipeline.addStageWithGitHubOptions(
+devPipeline.addStageWithGitHubOptions(
   new GooseTownStage(app, "dev", { env: awsEnv, environment: "dev" }),
   {
     stackCapabilities: [
@@ -66,24 +77,20 @@ pipeline.addStageWithGitHubOptions(
             env: {
               ...vercelEnv,
               VITE_CLERK_PUBLISHABLE_KEY: "${{ secrets.VITE_CLERK_PUBLISHABLE_KEY_DEV }}",
-              VITE_BACKEND_URL: "https://api-dev.goosetown.isol8.co/api/v1",
-              VITE_WS_URL: "wss://ws-dev.goosetown.isol8.co",
+              VITE_BACKEND_URL: "https://api-dev.goosetown.thelightbulb.company/api/v1",
+              VITE_WS_URL: "wss://ws-dev.goosetown.thelightbulb.company",
             },
           },
           {
-            // Tag the Preview deploy with this workflow run's commit SHA so
-            // the prod-side re-alias step (see DeployVercelProd) can find
-            // *this exact* deploy via the Vercel metadata filter rather
-            // than picking up an unrelated Preview from a parallel PR or
-            // manual deploy.
+            // Tag this preview with its source commit for release provenance.
             name: "Deploy to Vercel (Preview)",
             id: "vercel-deploy-dev",
             run: 'DEPLOY_URL=$(vercel deploy --prebuilt --meta githubCommitSha=$GITHUB_SHA --token=$VERCEL_TOKEN) && echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT',
             env: vercelEnv,
           },
           {
-            name: "Alias to dev.goosetown.isol8.co",
-            run: "vercel alias ${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }} dev.goosetown.isol8.co --token=$VERCEL_TOKEN",
+            name: "Alias to dev.goosetown.thelightbulb.company",
+            run: "vercel alias ${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }} dev.goosetown.thelightbulb.company --token=$VERCEL_TOKEN",
             env: vercelEnv,
           },
           {
@@ -96,7 +103,7 @@ pipeline.addStageWithGitHubOptions(
             // the ResponseHeadersPolicy to all responses including errors.
             name: "Smoke-test sprite CORP header",
             run: [
-              'HEADERS=$(curl -sI "https://assets-dev.goosetown.isol8.co/_corp-check.png")',
+              'HEADERS=$(curl -sI "https://assets-dev.goosetown.thelightbulb.company/_corp-check.png")',
               'echo "$HEADERS" | grep -qi "^cross-origin-resource-policy: *cross-origin" || { echo "FAIL: CORP header missing or wrong on sprite CDN"; echo "$HEADERS"; exit 1; }',
               'echo "OK: sprite CDN has Cross-Origin-Resource-Policy: cross-origin"',
             ].join("\n"),
@@ -108,19 +115,20 @@ pipeline.addStageWithGitHubOptions(
 );
 
 // ---------------------------------------------------------------------------
-// Prod stage — auto-deploys after dev succeeds.
-// (The manual approval gate was removed 2026-04-19; reinstate by passing
-// `pre: [approvalStep]` to addStageWithGitHubOptions when a gate is needed.)
+// Production has a separate manual workflow and Production environment.
+// Environment protection, OIDC trust and dev alias safety must be verified before enabling.
 // ---------------------------------------------------------------------------
-pipeline.addStageWithGitHubOptions(
+prodPipeline.addStageWithGitHubOptions(
   new GooseTownStage(app, "prod", { env: awsEnv, environment: "prod" }),
   {
+    gitHubEnvironment: { name: "Production" },
     stackCapabilities: [
       StackCapabilities.NAMED_IAM,
       StackCapabilities.AUTO_EXPAND,
     ],
     post: [
       new GitHubActionStep("DeployVercelProd", {
+        githubEnvironment: "Production",
         jobSteps: [
           { name: "Checkout", uses: "actions/checkout@v4" },
           { name: "Setup pnpm", uses: "pnpm/action-setup@v4" },
@@ -133,8 +141,8 @@ pipeline.addStageWithGitHubOptions(
             env: {
               ...vercelEnv,
               VITE_CLERK_PUBLISHABLE_KEY: "${{ secrets.VITE_CLERK_PUBLISHABLE_KEY_PROD }}",
-              VITE_BACKEND_URL: "https://api-prod.goosetown.isol8.co/api/v1",
-              VITE_WS_URL: "wss://ws-prod.goosetown.isol8.co",
+              VITE_BACKEND_URL: "https://api.goosetown.thelightbulb.company/api/v1",
+              VITE_WS_URL: "wss://ws.goosetown.thelightbulb.company",
             },
           },
           {
@@ -144,46 +152,9 @@ pipeline.addStageWithGitHubOptions(
             env: vercelEnv,
           },
           {
-            // Root cause: `dev.goosetown.isol8.co` is registered on the
-            // Vercel project with `gitBranch=null`, which makes Vercel
-            // auto-alias it to every Production deploy. So the dev-target
-            // Preview built in DeployVercelDev (the right bundle for dev)
-            // gets silently overwritten by the Production deploy that
-            // just ran above, leaving dev pointed at the prod-target
-            // bundle with prod API URLs baked in. Symptom: "Failed to
-            // fetch" everywhere on dev, conversations sidebar empty,
-            // agents can't connect.
-            //
-            // This step re-pins dev back to the Preview deploy from this
-            // workflow run. We run it BEFORE the apex alias step (which
-            // is known to fail intermittently on cert issuance — see
-            // docs/superpowers/test-runs/2026-05-06-prod-restoration-
-            // summary.md) so dev correctness doesn't depend on the prod
-            // apex alias succeeding.
-            //
-            // Permanent fix is one Vercel API call to set `gitBranch` on
-            // the dev domain so prod deploys don't auto-alias it.
-            name: "Re-alias dev.goosetown.isol8.co (workaround for prod auto-alias clobber)",
-            run: [
-              // Filter by the metadata key the dev step stamped on the
-              // Preview deploy, so we pin to *this workflow run's* dev
-              // build — not whatever Preview happens to be newest at the
-              // Vercel project level (which could be from a parallel PR
-              // or manual deploy and would silently mis-alias dev).
-              'DEV_PREVIEW=$(curl -fsS -H "Authorization: Bearer $VERCEL_TOKEN" "https://api.vercel.com/v6/deployments?projectId=$VERCEL_PROJECT_ID&teamId=$VERCEL_ORG_ID&target=preview&state=READY&limit=1&meta-githubCommitSha=$GITHUB_SHA" | jq -r ".deployments[0].url")',
-              'if [ -z "$DEV_PREVIEW" ] || [ "$DEV_PREVIEW" = "null" ]; then echo "no Preview deploy found for commit $GITHUB_SHA"; exit 1; fi',
-              'echo "Re-aliasing dev.goosetown.isol8.co to https://$DEV_PREVIEW (commit $GITHUB_SHA)"',
-              'vercel alias "https://$DEV_PREVIEW" dev.goosetown.isol8.co --token=$VERCEL_TOKEN',
-            ].join("\n"),
-            env: vercelEnv,
-          },
-          {
-            // Apex alias runs LAST so dev correctness above doesn't depend
-            // on this step succeeding. The apex alias has been known to
-            // fail intermittently on ACM cert issuance — see
-            // docs/superpowers/test-runs/2026-05-06-prod-restoration-summary.md.
-            name: "Alias to goosetown.isol8.co",
-            run: "vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} goosetown.isol8.co --token=$VERCEL_TOKEN",
+            // Production domain; dev alias must be independently protected before enabling.
+            name: "Alias to goosetown.thelightbulb.company",
+            run: "vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} goosetown.thelightbulb.company --token=$VERCEL_TOKEN",
             env: vercelEnv,
           },
         ],

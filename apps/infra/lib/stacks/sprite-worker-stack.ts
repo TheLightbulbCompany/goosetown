@@ -1,3 +1,4 @@
+import { canonicalHost } from "./canonical-domain";
 import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
@@ -91,11 +92,11 @@ export class SpriteWorkerStack extends cdk.Stack {
         ENVIRONMENT: env,
         DYNAMODB_TABLE_PREFIX: `goosetown-${env}`,
         SPRITE_S3_BUCKET: props.spriteBucket.bucketName,
-        SPRITE_CDN_URL: `https://assets-${env}.goosetown.isol8.co`,
+        SPRITE_CDN_URL: `https://${canonicalHost("assets", env)}`,
         SPRITE_JOBS_QUEUE_NAME: `goosetown-${env}-sprite-jobs`,
         // Inline custom-domain string, NOT an Fn.importValue — same rationale
         // as compute-stack's WS_MANAGEMENT_API_URL (avoids cross-stack cycles).
-        BACKEND_INTERNAL_URL: `https://api-${env}.goosetown.isol8.co`,
+        BACKEND_INTERNAL_URL: `https://${canonicalHost("api", env)}`,
         // Global PixelLab animation concurrency (each animation = up to 4
         // jobs). Dev and prod share ONE PixelLab account (decision 2026-06-12:
         // no second account; enterprise tier may change this later), so the

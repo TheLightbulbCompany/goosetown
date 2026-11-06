@@ -71,7 +71,7 @@ function buildTestApp(env: "dev" | "prod" = "dev"): { template: Template } {
     connectionsTable,
     secrets: secrets as any,
     vpc,
-    backendUrl: `https://api-${env}.goosetown.isol8.co`,
+    backendUrl: `https://api${env === "prod" ? "" : "-dev"}.goosetown.thelightbulb.company`,
   });
 
   return { template: Template.fromStack(stack) };
@@ -292,5 +292,12 @@ describe("ApiStack — WS Lambda shared secret wiring", () => {
     expect(source).toMatch(/x-ws-lambda-secret/);
     expect(source).toMatch(/WS_LAMBDA_SECRET_NAME/);
     expect(source).toMatch(/get_secret_value/);
+  });
+});
+
+test.each(["dev", "prod"] as const)("%s exposes the canonical WebSocket domain", (env) => {
+  const suffix = env === "prod" ? "" : "-dev";
+  buildTestApp(env).template.hasResourceProperties("AWS::ApiGatewayV2::DomainName", {
+    DomainName: `ws${suffix}.goosetown.thelightbulb.company`,
   });
 });

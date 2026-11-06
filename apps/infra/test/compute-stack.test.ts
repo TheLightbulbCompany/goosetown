@@ -164,10 +164,11 @@ describe("ComputeStack — dev rolling-update config", () => {
     });
   });
 
-  test("dev ECS service has MinimumHealthyPercent=0", () => {
+  test("dev ECS service keeps one healthy task while a replacement starts", () => {
     template.hasResourceProperties("AWS::ECS::Service", {
       DeploymentConfiguration: Match.objectLike({
-        MinimumHealthyPercent: 0,
+        MinimumHealthyPercent: 100,
+        MaximumPercent: 200,
       }),
     });
   });
@@ -205,10 +206,11 @@ describe("ComputeStack — prod rolling-update config", () => {
     });
   });
 
-  test("prod ECS service has MinimumHealthyPercent=0 (single task can't sustain 100% during a roll)", () => {
+  test("prod ECS service keeps one healthy task while a replacement starts", () => {
     template.hasResourceProperties("AWS::ECS::Service", {
       DeploymentConfiguration: Match.objectLike({
-        MinimumHealthyPercent: 0,
+        MinimumHealthyPercent: 100,
+        MaximumPercent: 200,
       }),
     });
   });
@@ -333,7 +335,7 @@ describe("ComputeStack — WS_MANAGEMENT_API_URL env var is a literal string", (
     const { template } = buildTestApp("dev");
     const templateJson = JSON.stringify(template.toJSON());
     // Should contain the custom-domain literal, not a CF intrinsic import
-    expect(templateJson).toContain("ws-dev.goosetown.isol8.co");
+    expect(templateJson).toContain("ws-dev.goosetown.thelightbulb.company");
   });
 
   test("prod WS_MANAGEMENT_API_URL resolves to ws-prod custom domain string", () => {
@@ -341,8 +343,8 @@ describe("ComputeStack — WS_MANAGEMENT_API_URL env var is a literal string", (
     const templateJson = JSON.stringify(template.toJSON());
     // Env-suffixed custom-domain literal (ws-prod, matching the dev case),
     // not a CF intrinsic import. compute-stack.ts builds
-    // "https://ws-prod.goosetown.isol8.co" for prod.
-    expect(templateJson).toContain("ws-prod.goosetown.isol8.co");
+    // "https://ws.goosetown.thelightbulb.company" for prod.
+    expect(templateJson).toContain("ws.goosetown.thelightbulb.company");
   });
 });
 
@@ -553,5 +555,18 @@ describe("ComputeStack — WAF (regional, on ALB)", () => {
       }
     }
     expect(foundCommonRuleSet).toBe(true);
+  });
+});
+
+test.each(["dev", "prod"])("%s backend advertises canonical API and WebSocket", (env) => {
+  const suffix = env === "prod" ? "" : "-dev";
+  const { template } = buildTestApp(env);
+  template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+    ContainerDefinitions: Match.arrayWith([Match.objectLike({
+      Environment: Match.arrayWith([
+        Match.objectLike({ Name: "TOWN_WS_URL", Value: `wss://ws${suffix}.goosetown.thelightbulb.company` }),
+        Match.objectLike({ Name: "TOWN_API_URL", Value: `https://api${suffix}.goosetown.thelightbulb.company/api/v1` }),
+      ]),
+    })]),
   });
 });

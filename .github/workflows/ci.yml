@@ -125,8 +125,8 @@ jobs:
         # PR review time instead of after merge.
         run: |
           npx cdk synth --quiet > /dev/null 2>&1
-          if ! git diff --exit-code -- ../../.github/workflows/deploy.yml; then
-            echo "::error::deploy.yml is out of sync with the CDK pipeline definition."
+          if ! git diff --exit-code -- ../../.github/workflows/deploy.yml ../../.github/workflows/deploy-prod.yml; then
+            echo "::error::Generated deploy workflows are out of sync with the CDK pipeline definition."
             echo "::error::Run ``cd apps/infra && npx cdk synth`` locally and commit the resulting deploy.yml."
             exit 1
           fi
@@ -174,9 +174,7 @@ jobs:
         run: pnpm --filter @goosetown/frontend run test:e2e
         env:
           E2E_BASE_URL: https://dev.goosetown.thelightbulb.company
-          # dev.goosetown.thelightbulb.company points at a preview deployment, which
-          # Vercel Authentication gates with a 401. The bypass cookie in
-          # playwright.config.ts needs this secret to get through.
+          # The optional bypass supports protected Vercel preview deployments.
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
       - name: Upload Playwright report on failure
         if: failure()

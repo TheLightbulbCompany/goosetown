@@ -251,7 +251,7 @@ describe("SpriteWorkerStack — container definition", () => {
           Environment: Match.arrayWith([
             Match.objectLike({
               Name: "BACKEND_INTERNAL_URL",
-              Value: "https://api-dev.goosetown.isol8.co",
+              Value: "https://api-dev.goosetown.thelightbulb.company",
             }),
           ]),
         }),
@@ -283,7 +283,7 @@ describe("SpriteWorkerStack — container definition", () => {
           Environment: Match.arrayWith([
             Match.objectLike({
               Name: "BACKEND_INTERNAL_URL",
-              Value: "https://api-prod.goosetown.isol8.co",
+              Value: "https://api.goosetown.thelightbulb.company",
             }),
           ]),
         }),
@@ -359,5 +359,16 @@ describe("SpriteWorkerStack — CloudWatch alarms", () => {
     const template = buildTestApp("dev", false);
     const alarms = template.findResources("AWS::CloudWatch::Alarm");
     expect(Object.keys(alarms).length).toBe(0);
+  });
+});
+
+test.each(["dev", "prod"])("%s worker emits canonical sprite URLs", (env) => {
+  const suffix = env === "prod" ? "" : "-dev";
+  buildTestApp(env).hasResourceProperties("AWS::ECS::TaskDefinition", {
+    ContainerDefinitions: Match.arrayWith([Match.objectLike({
+      Environment: Match.arrayWith([Match.objectLike({
+        Name: "SPRITE_CDN_URL", Value: `https://assets${suffix}.goosetown.thelightbulb.company`,
+      })]),
+    })]),
   });
 });
