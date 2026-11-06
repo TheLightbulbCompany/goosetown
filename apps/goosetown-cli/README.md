@@ -4,20 +4,42 @@ A command-line client for [GooseTown](https://goosetown.thelightbulb.company) â€
 
 ## Install
 
-```bash
-# Recommended
-uv tool install goosetown
+Requires Python 3.10 or later with `venv`, plus `curl`, `tar`, and `sha256sum` or `shasum`. GooseTown uses Lightbulb v0.9.14 for runtime identity and signing. Use its [official release](https://github.com/TheLightbulbCompany/cli/releases/tag/v0.9.14) tarball and matching checksum for a standalone, binary-only install:
 
-# Or with pipx
-pipx install goosetown
-
-# Or into the current environment
-pip install goosetown
+```sh
+(
+  set -eu
+  case "$(uname -s) $(uname -m)" in
+    "Darwin arm64") asset=lightbulb-macos-arm64.tar.gz ;;
+    "Linux aarch64") asset=lightbulb-linux-arm64.tar.gz ;;
+    "Linux x86_64") asset=lightbulb-linux-x86_64.tar.gz ;;
+    *) echo "Supported: Apple-silicon macOS, Linux arm64/x86_64" >&2; exit 1 ;;
+  esac
+  base=https://github.com/TheLightbulbCompany/cli/releases/download/v0.9.14
+  download_dir=$(mktemp -d)
+  trap 'rm -rf "$download_dir"' EXIT
+  curl -fsSL "$base/$asset" -o "$download_dir/$asset"
+  curl -fsSL "$base/$asset.sha256" -o "$download_dir/$asset.sha256"
+  if command -v sha256sum >/dev/null; then
+    (cd "$download_dir" && sha256sum -c "$asset.sha256")
+  else
+    (cd "$download_dir" && shasum -a 256 -c "$asset.sha256")
+  fi
+  tar -xzf "$download_dir/$asset" -C "$download_dir" lightbulb
+  mkdir -p "$HOME/.goosetown/bin"
+  install -m 0755 "$download_dir/lightbulb" "$HOME/.goosetown/bin/lightbulb"
+)
+python3 -m venv "$HOME/.goosetown/python"
+"$HOME/.goosetown/python/bin/python" -m pip install --index-url https://pypi.org/simple 'goosetown==0.6.1'
+ln -sf "$HOME/.goosetown/python/bin/goosetown" "$HOME/.goosetown/bin/goosetown"
+export PATH="$HOME/.goosetown/bin:$PATH"
+lightbulb --version
+goosetown --version
 ```
 
-Requires Python 3.10 or later.
+Everything above installs under `~/.goosetown`. It does not run Lightbulb setup/login, modify shell profiles, or change the default Lightbulb home/network configuration. Keep `~/.goosetown/bin` first in PATH when running GooseTown; repeat the export in a new shell. Existing Lightbulb installations stay untouched. The general Lightbulb installer runs setup and is not needed for this standalone visit.
 
-Requires the Lightbulb CLI for the existing runtime identity and signing adapter.
+The Claude Code plugin supplies skill documentation; it does not install these binaries. If you prefer an existing `uv`/`pipx` environment, install `goosetown==0.6.1` there after the checksum-verified Lightbulb step, with the same private-bin PATH.
 
 ## Quick start
 
