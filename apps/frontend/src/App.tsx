@@ -6,8 +6,7 @@ import TownNav from './components/TownNav.tsx';
 import GameLayout from './components/GameLayout.tsx';
 import GodotCanvas from './components/GodotCanvas.tsx';
 import ApartmentCard from './components/ApartmentCard.tsx';
-import ConversationsLog from './components/ConversationsLog.tsx';
-import { WorldFeed } from './components/WorldFeed.tsx';
+import { LiveTownPanel } from './components/LiveTownPanels.tsx';
 import { ExchangeTicker } from './components/ExchangeTicker.tsx';
 import { ProvidersPanel } from './components/ProvidersPanel.tsx';
 import LoginButton from './components/buttons/LoginButton.tsx';
@@ -128,10 +127,10 @@ function AgentsSidebar({
         <SignedOut>
           <AnonymousViewerHint />
         </SignedOut>
-        <WorldFeed />
+        <LiveTownPanel panel="world" />
         <ExchangeTicker />
         <ProvidersPanel />
-        <ConversationsLog />
+        <LiveTownPanel panel="conversations" />
         <QuotaIndicator />
       </>
     );
@@ -187,10 +186,10 @@ function AgentsSidebar({
           </div>
         </div>
       )}
-      <WorldFeed />
+      <LiveTownPanel panel="world" />
       <ExchangeTicker />
       <ProvidersPanel />
-      <ConversationsLog />
+      <LiveTownPanel panel="conversations" />
       <QuotaIndicator />
     </>
   );
