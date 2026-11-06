@@ -67,8 +67,8 @@ export class ComputeStack extends cdk.Stack {
     });
 
     // Grant execution role access to secrets (for container env injection)
-    Object.values(props.secrets).forEach((secret) => {
-      secret.grantRead(executionRole);
+    Object.entries(props.secrets).forEach(([name, secret]) => {
+      if (name !== "clerkSecretKey") secret.grantRead(executionRole);
     });
 
     // Task role (app-level permissions)
@@ -86,8 +86,8 @@ export class ComputeStack extends cdk.Stack {
     props.spriteBucket.grantReadWrite(taskRole);
 
     // Grant secrets read to task role too (for runtime SDK access)
-    Object.values(props.secrets).forEach((secret) => {
-      secret.grantRead(taskRole);
+    Object.entries(props.secrets).forEach(([name, secret]) => {
+      if (name !== "clerkSecretKey") secret.grantRead(taskRole);
     });
 
     // Durable sprite pipeline: backend produces to the sprite-jobs queue.
@@ -137,6 +137,7 @@ export class ComputeStack extends cdk.Stack {
       environment: {
         AWS_REGION: "us-east-1",
         ENVIRONMENT: env,
+        CLERK_AUTHORIZED_PARTIES: env === "prod" ? "https://goosetown.thelightbulb.company" : "https://dev.goosetown.thelightbulb.company",
         DYNAMODB_TABLE_PREFIX: `goosetown-${env}`,
         // Exchange timing knobs (core/services/exchange_service.py reads these).
         // Prod keeps the production defaults; dev uses short windows so the
@@ -181,9 +182,6 @@ export class ComputeStack extends cdk.Stack {
       },
       secrets: {
         CLERK_ISSUER: ecs.Secret.fromSecretsManager(props.secrets.clerkIssuer),
-        CLERK_SECRET_KEY: ecs.Secret.fromSecretsManager(
-          props.secrets.clerkSecretKey
-        ),
         TOWN_TOKEN_SECRET: ecs.Secret.fromSecretsManager(
           props.secrets.townTokenSecret
         ),

@@ -792,15 +792,15 @@ async def require_admin_user(auth: AuthContext = Depends(get_current_user)) -> A
     spends real PixelLab credits and ``recomposite-sprites`` fans out across
     every agent in the table.
 
-    Now: a valid Clerk JWT is required, and if ``ADMIN_USER_IDS`` is configured
-    the caller must additionally be on that allowlist. Declaring this via
+    Now: a valid Clerk JWT is required, and the caller must be on the ``ADMIN_USER_IDS`` allowlist.
+    An empty allowlist denies all callers. Declaring this via
     ``Depends`` also makes the HTTPBearer security scheme show up in the OpenAPI
     spec, so the schema stops advertising these routes as public.
     """
     from core.config import settings
 
     allowlist = {uid.strip() for uid in settings.ADMIN_USER_IDS.split(",") if uid.strip()}
-    if allowlist and auth.user_id not in allowlist:
+    if auth.user_id not in allowlist:
         logger.warning("Admin endpoint denied for non-admin user %s", auth.user_id)
         raise HTTPException(status_code=403, detail="admin access required")
     return auth
