@@ -60,7 +60,7 @@ test.describe('GooseTown smoke', () => {
     // ResponseHeadersPolicy so we can assert the header without needing a
     // known-live agent sprite.
     const resp = await request.head(
-      'https://assets-dev.goosetown.isol8.co/_smoke-check.png',
+      'https://assets-dev.goosetown.thelightbulb.company/_smoke-check.png',
     );
     const corp = resp.headers()['cross-origin-resource-policy'];
     expect(corp).toBe('cross-origin');

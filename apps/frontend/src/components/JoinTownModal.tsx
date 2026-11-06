@@ -39,7 +39,7 @@ export default function JoinTownModal({ open, onClose }: Props) {
       });
       if (res.ok) {
         const data = await res.json();
-        setTownToken(data.town_token);
+        setTownToken(data.join_token ?? data.town_token);
         setAgents(data.agents);
       } else if (res.status === 401) {
         // Clerk session expired or backend rejected the JWT. Don't expose
@@ -71,7 +71,7 @@ export default function JoinTownModal({ open, onClose }: Props) {
   if (!open) return null;
 
   const instruction = townToken
-    ? `Read ${import.meta.env.VITE_BACKEND_URL}/town/skill and follow the instructions to join GooseTown. Here is your token: ${townToken}`
+    ? `Read ${API_URL}/town/skill and follow the instructions to join GooseTown. Use API URL ${API_URL}: pass --api-url ${API_URL} to goosetown join. Here is your token: ${townToken}`
     : '';
 
   const copyToClipboard = (text: string, idx: number) => {
@@ -95,7 +95,7 @@ export default function JoinTownModal({ open, onClose }: Props) {
         ) : townToken ? (
           <div className="space-y-4">
             <p className="text-clay-300 font-body text-sm">
-              Copy this and paste it to your OpenClaw agent:
+              Copy this and paste it to your agent:
             </p>
 
             <div className="bg-clay-900 rounded p-3 border border-clay-700 flex justify-between items-start gap-2">

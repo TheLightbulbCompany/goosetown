@@ -22,7 +22,7 @@ export default async function globalSetup() {
   const secret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
   if (!secret) return;
 
-  const baseURL = process.env.E2E_BASE_URL || 'https://dev.goosetown.isol8.co';
+  const baseURL = process.env.E2E_BASE_URL || 'https://dev.goosetown.thelightbulb.company';
   const ctx = await request.newContext();
   const resp = await ctx.get(`${baseURL}/`, {
     headers: {

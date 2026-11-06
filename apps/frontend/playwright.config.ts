@@ -9,10 +9,10 @@ import { fileURLToPath } from 'node:url';
  * regression guard. Override with the ``E2E_BASE_URL`` env var when running
  * against a local dev server or prod.
  */
-const BASE_URL = process.env.E2E_BASE_URL || 'https://dev.goosetown.isol8.co';
+const BASE_URL = process.env.E2E_BASE_URL || 'https://dev.goosetown.thelightbulb.company';
 
 /**
- * Vercel Deployment Protection bypass. ``dev.goosetown.isol8.co`` is aliased
+ * Vercel Deployment Protection bypass. ``dev.goosetown.thelightbulb.company`` is aliased
  * to a *preview* deployment (the 2026-06-09 branch-scoping fix made CI's
  * ``vercel alias`` the domain's sole owner), and Vercel Authentication gates
  * preview deployments — without a bypass every request gets a 401

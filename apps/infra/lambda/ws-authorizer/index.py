@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import struct
+import time
 import urllib.request
 
 import boto3
@@ -100,14 +101,16 @@ def _verify_rs256(message_bytes, signature_bytes, n_int, e_int):
     return True
 
 _jwks_cache = {}
+JWKS_CACHE_TTL_SECONDS = 300
 
 def _get_jwks(jwks_url):
-    if jwks_url in _jwks_cache:
-        return _jwks_cache[jwks_url]
+    cached = _jwks_cache.get(jwks_url)
+    if cached and time.monotonic() < cached[0]:
+        return cached[1]
     req = urllib.request.Request(jwks_url, headers={"User-Agent": "GooseTown-Authorizer/1.0"})
     with urllib.request.urlopen(req, timeout=5) as resp:
         data = json.loads(resp.read())
-    _jwks_cache[jwks_url] = data
+    _jwks_cache[jwks_url] = (time.monotonic() + JWKS_CACHE_TTL_SECONDS, data)
     return data
 
 def _verify_clerk_jwt(token, clerk_issuer):
@@ -125,6 +128,8 @@ def _verify_clerk_jwt(token, clerk_issuer):
     except Exception:
         return None
 
+    if not isinstance(header, dict) or not isinstance(payload, dict):
+        return None
     if header.get("alg") != "RS256":
         logger.warning("Unsupported JWT algorithm: %s", header.get("alg"))
         return None
@@ -135,8 +140,20 @@ def _verify_clerk_jwt(token, clerk_issuer):
 
     # Verify expiry
     now = int(_time.time())
-    if payload.get("exp", 0) < now:
+    if type(payload.get("exp")) is not int or payload["exp"] <= now:
         logger.warning("JWT expired")
+        return None
+
+    if type(payload.get("nbf")) is not int or payload["nbf"] > now:
+        return None
+    if "iat" in payload and (type(payload["iat"]) is not int or payload["iat"] > now):
+        return None
+    if not isinstance(payload.get("sub"), str) or not payload["sub"]:
+        return None
+    allowed = {x.strip() for x in os.environ.get("CLERK_AUTHORIZED_PARTIES", "").split(",") if x.strip()}
+    if not allowed or not isinstance(payload.get("azp"), str) or payload["azp"] not in allowed:
+        return None
+    if payload.get("aud"):
         return None
 
     # Verify issuer
@@ -153,8 +170,10 @@ def _verify_clerk_jwt(token, clerk_issuer):
         return None
 
     rsa_key = None
-    for key in jwks.get("keys", []):
-        if key.get("kid") == kid and key.get("kty") == "RSA":
+    if not isinstance(jwks, dict) or not isinstance(jwks.get("keys"), list):
+        return None
+    for key in jwks["keys"]:
+        if isinstance(key, dict) and key.get("kid") == kid and key.get("kty") == "RSA":
             rsa_key = key
             break
     if not rsa_key:
@@ -162,8 +181,13 @@ def _verify_clerk_jwt(token, clerk_issuer):
         return None
 
     # Verify signature
-    n_int = _b64url_to_int(rsa_key["n"])
-    e_int = _b64url_to_int(rsa_key["e"])
+    try:
+        n_int = _b64url_to_int(rsa_key["n"])
+        e_int = _b64url_to_int(rsa_key["e"])
+        if n_int <= 0 or e_int <= 0:
+            return None
+    except (KeyError, TypeError, ValueError):
+        return None
     message = (header_b64 + "." + payload_b64).encode("ascii")
     if not _verify_rs256(message, signature, n_int, e_int):
         logger.warning("JWT signature verification failed")
