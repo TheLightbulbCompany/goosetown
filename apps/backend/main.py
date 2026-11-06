@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import logging
+from asyncio import to_thread
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
@@ -105,7 +106,7 @@ async def _reconnect_active_agents() -> None:
     service = TownService()
 
     try:
-        agents = service.get_all_active_agents()
+        agents = await to_thread(service.get_all_active_agents)
     except Exception:
         logger.warning("Failed to query active agents on startup", exc_info=True)
         return
@@ -132,7 +133,7 @@ async def _reconnect_active_agents() -> None:
                 location_context = "apartment"
             else:
                 location_context = "town"
-            service.update_agent_context(agent_id, location_context, current_location)
+            await to_thread(service.update_agent_context, agent_id, location_context, current_location)
 
         # Repopulate in-memory ws_manager so incoming WebSocket messages
         # from the daemon (which survived the backend restart via API Gateway)
@@ -193,7 +194,7 @@ async def _reconnect_active_agents() -> None:
         activity = get_activity(current_activity_name)
         if not activity:
             # Unknown activity — clear it
-            service.update_agent_activity(agent_id, None, None)
+            await to_thread(service.update_agent_activity, agent_id, None, None)
             continue
 
         started_at = float(agent.get("activityStartedAt", 0))

@@ -226,7 +226,7 @@ async def restore_inactivity_timers() -> int:
     """
     service = TownService()
     try:
-        convs = service.get_active_conversations()
+        convs = await asyncio.to_thread(service.get_active_conversations)
     except Exception:
         logger.warning("restore_inactivity_timers: failed to query active conversations", exc_info=True)
         return 0
