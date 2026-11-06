@@ -7,9 +7,7 @@ The shared secret (TOWN_TOKEN_SECRET) is used by both:
 - Backend: to generate tokens during opt-in / instance creation
 - Lambda authorizer: to verify tokens on WebSocket $connect
 
-New tokens carry a 30-day ``exp`` claim. Legacy tokens without ``exp`` still
-verify successfully (logged at WARNING) so we can roll out gradually; the
-fail-closed flip will land once the in-the-wild population has rotated.
+Tokens must have integer issue and expiry times and pass revocation checks.
 """
 
 import base64
@@ -77,13 +75,7 @@ def sign_town_token(
 def verify_town_token(token: str) -> dict | None:
     """Verify an HMAC-signed town token.
 
-    Returns the payload dict (``uid``, ``iid``, plus optional ``iat``/``exp``)
-    if valid, ``None`` otherwise.
-
-    Tokens with an ``exp`` in the past are rejected. Tokens missing ``exp``
-    entirely are accepted for backward compatibility but logged at WARNING so
-    we can monitor the legacy population shrinking before flipping to
-    fail-closed.
+    Returns a validated payload or None. Revocation-store failures deny access.
     """
     parts = token.split(".")
     if len(parts) != 2:
@@ -107,45 +99,23 @@ def verify_town_token(token: str) -> dict | None:
     except Exception:
         return None
 
-    exp = payload.get("exp")
-    if exp is None:
-        logger.warning(
-            "legacy token used, no exp (uid=%s iid=%s)",
-            payload.get("uid"),
-            payload.get("iid"),
-        )
-    else:
-        try:
-            if int(exp) < int(time.time()):
-                return None
-        except (TypeError, ValueError):
-            # Malformed exp claim — treat as invalid.
+    now = int(time.time())
+    if not isinstance(payload, dict) or any(
+        not isinstance(payload.get(k), str) or not payload[k] for k in ("uid", "iid")
+    ):
+        return None
+    iat, exp = payload.get("iat"), payload.get("exp")
+    if type(iat) is not int or type(exp) is not int or iat > now or exp <= now or exp <= iat:
+        return None
+    # Public anonymous viewer tokens have no owner to revoke.
+    if payload["uid"] == "anonymous" and payload["iid"] == "anonymous-viewer":
+        return payload
+    try:
+        from core.services.user_service import UserService
+
+        if UserService().is_token_revoked(payload["uid"], iat * 1000):
             return None
-
-    # User-level token revocation. Stateless: every verify call loads the
-    # user record and rejects tokens whose iat is before the revoke timestamp.
-    # Returning users mint a fresh token via POST /town/instance.
-    iat = payload.get("iat")
-    if iat is not None:
-        try:
-            from core.services.user_service import UserService  # local to avoid circular import
-
-            iat_ms = int(iat) * 1000
-            if UserService().is_token_revoked(payload["uid"], iat_ms):
-                # Logs uid + iat only — neither is a credential. Token bytes never logged.
-                logger.warning(  # noqa: E501  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
-                    "auth rejection: issued before revocation (uid=%s iat=%s)",
-                    payload.get("uid"),
-                    iat,
-                )
-                return None
-        except Exception as exc:
-            # Fail-open on transient DDB errors. Log for ops visibility.
-            # uid + exception text only — token bytes never logged.
-            logger.warning(  # noqa: E501  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
-                "auth revocation check failed (uid=%s): %s — passing through",
-                payload.get("uid"),
-                exc,
-            )
-
+    except Exception:
+        logger.warning("Town token revocation check unavailable; denying request")
+        return None
     return payload

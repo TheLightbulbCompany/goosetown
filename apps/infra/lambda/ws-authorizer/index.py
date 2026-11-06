@@ -31,9 +31,7 @@ def _b64url_decode(s):
 def _verify_town_token(token, secret):
     """Verify HMAC-signed town token. Returns payload dict or None.
 
-    Tokens with an ``exp`` in the past are rejected. Tokens missing ``exp``
-    are accepted for backward compatibility (logged at WARNING) — must stay
-    in sync with backend ``core/town_token.py:verify_town_token``.
+    Requires nonempty identity and integer issue/expiry times.
     """
     parts = token.split(".")
     if len(parts) != 2:
@@ -52,17 +50,29 @@ def _verify_town_token(token, secret):
             return None
     except Exception:
         return None
-    exp = payload.get("exp")
-    if exp is None:
-        logger.warning("legacy town token used, no exp (uid=%s iid=%s)", payload.get("uid"), payload.get("iid"))
-    else:
-        import time as _time
-        try:
-            if int(exp) < int(_time.time()):
-                return None
-        except (TypeError, ValueError):
-            return None
+    if not isinstance(payload, dict) or any(
+        not isinstance(payload.get(k), str) or not payload[k] for k in ("uid", "iid")
+    ):
+        return None
+    now = int(time.time())
+    iat, exp = payload.get("iat"), payload.get("exp")
+    if type(iat) is not int or type(exp) is not int or iat > now or exp <= now or exp <= iat:
+        return None
     return payload
+
+
+def _town_token_not_revoked(payload):
+    # Anonymous viewers have no owner or revocation record.
+    if payload["uid"] == "anonymous" and payload["iid"] == "anonymous-viewer":
+        return True
+    response = boto3.client("dynamodb").get_item(
+        TableName=os.environ["USERS_TABLE"],
+        Key={"userId": {"S": payload["uid"]}},
+        ConsistentRead=True,
+        ProjectionExpression="tokenRevokedAt",
+    )
+    revoked = response.get("Item", {}).get("tokenRevokedAt")
+    return revoked is None or payload["iat"] * 1000 >= int(revoked["N"])
 
 def _b64url_to_int(s):
     """Decode a base64url-encoded big-endian unsigned integer."""
@@ -227,7 +237,7 @@ def handler(event, context):
     try:
         town_secret = _get_secret(os.environ["TOWN_TOKEN_SECRET"])
         payload = _verify_town_token(token, town_secret)
-        if payload:
+        if payload and _town_token_not_revoked(payload):
             user_id = payload.get("uid", "town-agent")
             logger.info("Town token verified for user %s", user_id)
             return generate_policy(user_id, "Allow", method_arn)

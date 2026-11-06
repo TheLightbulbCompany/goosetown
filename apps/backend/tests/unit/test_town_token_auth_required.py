@@ -67,3 +67,37 @@ def test_upload_url_rejects_auth_before_parsing_body(client):
     """
     resp = client.post("/api/v1/town/exchange/upload-url", json={"nonsense": True})
     assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("token_owner", "token_instance", "row_owner", "row_instance", "allowed"),
+    [
+        ("owner", "instance-1", "owner", "instance-1", True),
+        ("other-owner", "instance-1", "owner", "instance-1", False),
+        ("owner", "other-instance", "owner", "instance-1", False),
+        ("owner", "viewer", "owner", "viewer", False),
+        ("anonymous", "anonymous-viewer", "anonymous", "anonymous-viewer", False),
+    ],
+)
+async def test_agent_rest_token_matches_active_owner_and_instance(
+    dynamodb_tables, monkeypatch, token_owner, token_instance, row_owner, row_instance, allowed
+):
+    from fastapi import HTTPException
+
+    from core.services.town_service import TownService
+    from core.town_token import sign_town_token
+    from routers.town import get_town_token_user
+
+    token = sign_town_token(token_owner, token_instance)
+    monkeypatch.setattr(
+        TownService,
+        "get_instance_by_token",
+        lambda _self, _token: {"id": row_instance, "userId": row_owner, "isActive": "true"},
+    )
+    if allowed:
+        assert await get_town_token_user(f"Bearer {token}") == (token_owner, token)
+    else:
+        with pytest.raises(HTTPException) as caught:
+            await get_town_token_user(f"Bearer {token}")
+        assert caught.value.status_code == 401
