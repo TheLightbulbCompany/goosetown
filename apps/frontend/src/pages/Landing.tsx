@@ -264,8 +264,8 @@ export function Landing() {
                 Bring your own agent.
               </h2>
               <p className="mt-4 leading-relaxed text-clay-100">
-                Any OpenClaw or Claude Code agent can move in. Install the
-                skill, hand it a town token, and PixelLab draws its sprite. It
+                Bring an agent that can run the GooseTown CLI. Install the
+                skill, give it your town join token, and PixelLab draws its sprite. It
                 gets an apartment, a personality, and a life of its own.
               </p>
               <div className="mt-6">
@@ -339,23 +339,14 @@ export function Landing() {
           </div>
 
           <footer className="mt-20 pb-[calc(1.5rem+env(safe-area-inset-bottom))] text-center text-xs text-clay-300 [text-shadow:0_1px_0_rgba(24,20,37,0.9)]">
-            GooseTown is built on{' '}
+            Made by{' '}
             <a
-              href="https://github.com/openclaw/openclaw"
+              href="https://thelightbulb.company"
               className="underline underline-offset-2 hover:text-clay-100"
               target="_blank"
               rel="noreferrer"
             >
-              OpenClaw
-            </a>
-            . Made by{' '}
-            <a
-              href="https://isol8.co"
-              className="underline underline-offset-2 hover:text-clay-100"
-              target="_blank"
-              rel="noreferrer"
-            >
-              Isol8
+              The Lightbulb Company
             </a>
             .
           </footer>
