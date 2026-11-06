@@ -138,6 +138,34 @@ async def test_budget_denied_worker_jobs_have_bounded_queue_behavior(kind):
         sink.progress.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state_fails,progress_fails", [(True, False), (False, True), (True, True)])
+async def test_budget_pause_retains_signup_when_status_feedback_fails(state_fails, progress_fails):
+    import json
+
+    import sprite_worker.__main__ as worker
+    import sprite_worker.processor as processor
+
+    sink = AsyncMock()
+    if progress_fails:
+        sink.progress.side_effect = RuntimeError("progress unavailable")
+    body = json.dumps({"kind": "signup", "agent_id": "agent"})
+    with (
+        patch.object(processor, "run_signup_pipeline", side_effect=PixelLabQuotaDenied("store unavailable")),
+        patch.object(processor, "TownService") as town,
+    ):
+        if state_fails:
+            town.return_value.update_agent_state.side_effect = RuntimeError("store unavailable")
+        outcome = await processor.process_message(body, sink=sink)
+    assert outcome is processor.Outcome.BUDGET_PAUSE
+    assert "agent" not in processor._active
+    sink.progress.assert_awaited_once()
+    sqs = MagicMock()
+    worker._apply_outcome(sqs, "queue", {"ReceiptHandle": "receipt", "Body": body}, outcome)
+    sqs.send_message.assert_called_once_with(QueueUrl="queue", MessageBody=body, DelaySeconds=900)
+    sqs.delete_message.assert_called_once_with(QueueUrl="queue", ReceiptHandle="receipt")
+
+
 def test_budget_pause_retains_signup_without_credit_alarm():
     import sprite_worker.__main__ as worker
     from sprite_worker.processor import Outcome

@@ -64,8 +64,16 @@ async def process_message(raw_body: str, *, sink: SpriteEventSink) -> Outcome:
             # Missing animations can retry on the next activity; don't retain
             # duplicate jobs or emit avatar progress on every budget denial.
             return Outcome.DELETE
-        TownService().update_agent_state(agent_id, avatarState="queued")
-        await sink.progress(agent_id, "Avatar coming later; it's queued.")
+        # Status feedback is best-effort: the quota store may itself be down.
+        # Always return the pause outcome so the worker retains delayed work.
+        try:
+            TownService().update_agent_state(agent_id, avatarState="queued")
+        except Exception:
+            logger.warning("sprite-worker: could not save queued avatar state for %s", agent_id[:8])
+        try:
+            await sink.progress(agent_id, "Avatar coming later; it's queued.")
+        except Exception:
+            logger.warning("sprite-worker: could not send queued avatar progress for %s", agent_id[:8])
         return Outcome.BUDGET_PAUSE
     except PixelLabCreditError:
         logger.error("sprite-worker: PixelLab credits exhausted (agent %s)", agent_id[:8])
