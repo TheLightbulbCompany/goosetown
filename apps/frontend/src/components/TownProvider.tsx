@@ -1,6 +1,7 @@
 import { ReactNode, createContext, useContext, useCallback } from 'react';
 import { ClerkProvider, useAuth } from '@clerk/clerk-react';
 import { useTownState } from '../hooks/useTownState';
+import { townAgentCount } from '../lib/townActivity';
 import type { TownGameState } from '../types/town';
 import type { EconomyTickerEntry } from '../lib/economyTicker';
 
@@ -22,7 +23,7 @@ export function useTownGame() {
 
 /** Agents in town per /town/state (or the WS feed); 0 until the first frame. */
 export function useAgentCount(): number {
-  return useTownGame().game?.world.agents.length ?? 0;
+  return townAgentCount(useTownGame().game) ?? 0;
 }
 
 function TownStateProvider({ children }: { children: ReactNode }) {

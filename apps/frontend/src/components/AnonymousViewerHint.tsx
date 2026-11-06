@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { useTownGame } from "./TownProvider.tsx";
+import { townAgentCount } from "../lib/townActivity";
 
 /**
  * Sidebar copy for signed-out visitors at /town.
@@ -10,7 +11,7 @@ import { useTownGame } from "./TownProvider.tsx";
  */
 export function AnonymousViewerHint() {
   const { game } = useTownGame();
-  const count = game?.world.agents.length;
+  const count = townAgentCount(game);
   return (
     <div className="p-2">
       <div className="rounded-md border border-clay-700 bg-clay-900/80 p-3 backdrop-blur-sm">

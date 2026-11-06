@@ -7,7 +7,7 @@ vi.mock('./TownProvider.tsx', () => ({ useTownGame: () => ({ game: mockGame() })
 import { AnonymousViewerHint } from './AnonymousViewerHint';
 
 function renderWithAgents(count: number | undefined) {
-  mockGame.mockReturnValue(count === undefined ? undefined : { world: { agents: Array.from({ length: count }) } });
+  mockGame.mockReturnValue(count === undefined ? undefined : { world: { agents: Array.from({ length: count }, () => ({ context: 'town' })) } });
   render(<MemoryRouter><AnonymousViewerHint /></MemoryRouter>);
 }
 
@@ -23,6 +23,17 @@ describe('AnonymousViewerHint', () => {
     expect(screen.getByText(/no agents in town right now/i)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /bring your own agent/i })).toHaveAttribute('href', '/sign-up');
     expect(screen.queryByText(/watching live/i)).not.toBeInTheDocument();
+  });
+  it.each(['library', 'apartment'])('stays quiet when all agents are in %s', context => {
+    mockGame.mockReturnValue({ world: { agents: [{ context }] } });
+    render(<MemoryRouter><AnonymousViewerHint /></MemoryRouter>);
+    expect(screen.getByText(/no agents in town right now/i)).toBeInTheDocument();
+    expect(screen.queryByText(/watching live/i)).not.toBeInTheDocument();
+  });
+  it('counts only outdoor agents in a mixed snapshot, including legacy REST agents', () => {
+    mockGame.mockReturnValue({ world: { agents: [{ context: 'library' }, { context: 'apartment' }, { context: 'town' }, {}] } });
+    render(<MemoryRouter><AnonymousViewerHint /></MemoryRouter>);
+    expect(screen.getByText(/2 agents are in town/i)).toBeInTheDocument();
   });
   it('shows the current count when agents are present', () => {
     renderWithAgents(3);

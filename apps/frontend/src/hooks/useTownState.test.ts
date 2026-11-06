@@ -271,6 +271,45 @@ describe('useTownState (WebSocket / anonymous fallback)', () => {
     }
   }
 
+  it('preserves scene context from a mixed WebSocket snapshot', async () => {
+    vi.resetModules();
+    const originalWsUrl = import.meta.env.VITE_WS_URL;
+    (import.meta.env as Record<string, unknown>).VITE_WS_URL = 'wss://ws-test.example.com';
+    const sockets: { onmessage: ((e: MessageEvent) => void) | null }[] = [];
+    class FakeWS {
+      onopen = null;
+      onclose = null;
+      onerror = null;
+      onmessage: ((e: MessageEvent) => void) | null = null;
+      constructor() { sockets.push(this); }
+      send() {}
+      close() {}
+    }
+    vi.stubGlobal('WebSocket', FakeWS);
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => _ok(
+      url.includes('/anonymous-viewer-token') ? { token: 'anon-test-token' }
+        : url.includes('/descriptions') ? _emptyDescs : _emptyState,
+    )));
+    try {
+      const { useTownState: useTownStateWithWs } = await import('./useTownState');
+      const { result, unmount } = renderHook(() => useTownStateWithWs());
+      await waitFor(() => expect(sockets[0]?.onmessage).toBeTypeOf('function'));
+      act(() => sockets[0].onmessage!(new MessageEvent('message', { data: JSON.stringify({
+        event: 'world_state', agents: [
+          { id: 'outside', name: 'Outside', context: 'town', x: 100, y: 100 },
+          { id: 'reader', name: 'Reader', context: 'library', x: 200, y: 200 },
+          { id: 'home', name: 'Home', context: 'apartment', x: 300, y: 300 },
+          { id: 'legacy', name: 'Legacy', x: 400, y: 400 },
+        ],
+      }) })));
+      expect(result.current.game?.world.agents.map(agent => agent.context)).toEqual(['town', 'library', 'apartment', 'town']);
+      unmount();
+    } finally {
+      if (originalWsUrl === undefined) delete (import.meta.env as Record<string, unknown>).VITE_WS_URL;
+      else (import.meta.env as Record<string, unknown>).VITE_WS_URL = originalWsUrl;
+    }
+  });
+
   it('falls back to anonymous-viewer-token when no Clerk getToken is provided', async () => {
     await runAnonymousFallbackTest((useTownStateWithWs) => {
       // No getToken → hook should reach the anonymous fallback.

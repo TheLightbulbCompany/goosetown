@@ -27,6 +27,19 @@ describe('LiveTownPanel', () => {
     expect(screen.queryByText('World feed fixture')).not.toBeInTheDocument();
     expect(screen.queryByText('Conversations fixture')).not.toBeInTheDocument();
   });
+  it.each(['library', 'apartment'])('shows quiet panels when all agents are in %s', context => {
+    mockTown.mockReturnValue({ game: { world: { agents: [{ id: 'inside', context }] } } as never, economyEvents: [] });
+    renderPanels();
+    expect(screen.getByText('The town is quiet right now.')).toBeInTheDocument();
+    expect(screen.queryByText('World feed fixture')).not.toBeInTheDocument();
+    expect(screen.queryByText('Conversations fixture')).not.toBeInTheDocument();
+  });
+  it('shows both panels for a mixed snapshot with an outdoor agent', () => {
+    mockTown.mockReturnValue({ game: { world: { agents: [{ id: 'library', context: 'library' }, { id: 'home', context: 'apartment' }, { id: 'outside', context: 'town' }] } } as never, economyEvents: [] });
+    renderPanels();
+    expect(screen.getByText('World feed fixture')).toBeInTheDocument();
+    expect(screen.getByText('Conversations fixture')).toBeInTheDocument();
+  });
   it('keeps both existing panels when an agent is present', () => {
     mockTown.mockReturnValue({ game: { world: { agents: [{ id: 'synthetic' }] } } as never, economyEvents: [] });
     renderPanels();
