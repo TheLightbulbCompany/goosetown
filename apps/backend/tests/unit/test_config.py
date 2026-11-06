@@ -17,6 +17,17 @@ import pytest
 import core.config as _config_mod
 
 
+def test_session_enforcement_requires_binding_even_in_dev(monkeypatch):
+    settings = _config_mod.Settings()
+    monkeypatch.setattr(settings, "ENVIRONMENT", "dev")
+    monkeypatch.setattr(settings, "RUNTIME_SESSION_ENFORCEMENT_ENABLED", True)
+    monkeypatch.setattr(settings, "RUNTIME_BINDING_ENABLED", False)
+    with pytest.raises(RuntimeError, match="requires RUNTIME_BINDING_ENABLED"):
+        settings.validate()
+    monkeypatch.setattr(settings, "RUNTIME_BINDING_ENABLED", True)
+    settings.validate()
+
+
 @pytest.fixture
 def reload_config():
     """Callable that reloads core.config; restores singleton identity on exit."""

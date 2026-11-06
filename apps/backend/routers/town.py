@@ -9,6 +9,7 @@ Serves two sets of endpoints:
 import asyncio
 import logging
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1143,6 +1144,7 @@ async def get_or_create_instance(
     auth: AuthContext = Depends(get_current_user),
 ):
     """Get existing instance or create a new one. Returns town_token."""
+    from core.config import settings
     import asyncio
     import time
 
@@ -1233,7 +1235,7 @@ async def get_or_create_instance(
 
     agents = service.get_instance_agents(instance["id"])
 
-    return {
+    response = {
         "town_token": instance.get("townToken"),
         "apartment_unit": instance.get("apartmentUnit"),
         "agents": [
@@ -1245,6 +1247,14 @@ async def get_or_create_instance(
             for a in agents
         ],
     }
+    if settings.RUNTIME_BINDING_ENABLED:
+        from core.runtime_enrollment import EnrollmentStateChanged, mint_join_token
+
+        try:
+            response["join_token"] = mint_join_token(instance["id"], auth.user_id, instance["townToken"])
+        except EnrollmentStateChanged as exc:
+            raise HTTPException(status_code=409, detail="Onboarding changed; please retry") from exc
+    return response
 
 
 @router.post("/instance/revoke", status_code=204)
@@ -1831,8 +1841,7 @@ class WsMessageRequest(BaseModel):
 _ws_message_adapter: TypeAdapter[WsMessage] = TypeAdapter(WsMessage)
 
 
-@router.post("/ws-message", dependencies=[Depends(require_ws_lambda_secret)])
-async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
+async def _handle_ws_message_inner(request: WsMessageRequest, raw_request: Request):
     """Receive forwarded WebSocket messages from API Gateway $default Lambda.
 
     Auth: shared-secret gate (``x-ws-lambda-secret``) as a dependency, so it
@@ -1890,6 +1899,50 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
             {"event": "pong" if registered else "reconnect"},
         )
         return {"statusCode": 200}
+
+    # Check the current binding before any agent action or clean-leave side effect.
+    if settings.RUNTIME_SESSION_ENFORCEMENT_ENABLED and (
+        msg_type in ("town_agent_act", "town_agent_sleep") or "cmd" in body
+    ):
+        from core.services.daemon_mailbox import get_daemon_mailbox
+        from routers.runtime_session import validate_live
+
+        conn = ws_manager.get_by_connection(request.connectionId)
+        try:
+            claims = conn.runtime_session_claims if conn else None
+            valid = bool(
+                claims
+                and claims.get("actor_id") == conn.agent_id
+                and claims.get("uid") == conn.user_id
+                and claims.get("iid") == conn.instance_id
+                and validate_live(claims)
+            )
+        except Exception:
+            valid = False
+        if not valid:
+            mailbox = get_daemon_mailbox()
+            request_id = body.get("request_id")
+            if (
+                msg_type == "town_agent_act"
+                and isinstance(request_id, str)
+                and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", request_id)
+            ):
+                mailbox.notify_connection(
+                    request.connectionId,
+                    {
+                        "event": "action_result",
+                        "request_id": request_id,
+                        "status": "rejected",
+                        "error": "invalid_runtime_session",
+                    },
+                )
+            mailbox.notify_connection(
+                request.connectionId, {"event": "error", "message": "runtime session expired or revoked"}
+            )
+            mailbox.disconnect(request.connectionId)
+            # Keep the registry entry until the disconnect handler removes the
+            # corresponding Godot agent; all further acts remain denied.
+            return {"statusCode": 401, "error": "invalid_runtime_session", "_action_ack_sent": True}
 
     # Clean-leave signal from the daemon before it closes the socket.
     # Sets `leaving_cleanly` on the in-memory AgentConnection so the
@@ -1974,7 +2027,7 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
                 request.connectionId,
                 {"event": "busy", "reason": "transitioning"},
             )
-            return {"statusCode": 200}
+            return {"statusCode": 200, "rejected": "transitioning"}
 
         gs_client = get_game_server_client()
         logger.debug(
@@ -1996,7 +2049,7 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
                 # correctly rejected with ``already_in_X``.
                 for _step in _transition_path(agent_conn.location_context, destination):
                     if not await _handle_context_transition(request.connectionId, _step, agent_conn):
-                        break
+                        return {"statusCode": 200, "rejected": "transition_failed"}
             else:
                 # If the destination lives in a different context than the
                 # agent is currently in, transparently transition first and
@@ -2018,7 +2071,7 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
                         transition_dest = "residence"
                     transitioned = await _handle_context_transition(request.connectionId, transition_dest, agent_conn)
                     if not transitioned:
-                        return {"statusCode": 200}
+                        return {"statusCode": 200, "rejected": "transition_failed"}
                     # _handle_context_transition updates the ws_manager in-place,
                     # so agent_conn.location_context now reflects the new context.
                     # NOTE: cross-interior moves (e.g. apartment → library spot)
@@ -2032,6 +2085,10 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
                     )
                 except Exception as exc:
                     logger.warning("[agent:%s] Move command failed: %s", agent_conn.agent_id[:8], exc)
+                    # A transport failure may occur after the game server received
+                    # the command. Do not report either dispatch success or a
+                    # definite rejection with no effect.
+                    return {"statusCode": 200, "uncertain": "move_dispatch"}
         elif action == "chat":
             await _handle_chat(request.connectionId, body, agent_conn)
         elif action == "say":
@@ -2163,6 +2220,52 @@ async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
     return {"statusCode": 200}
 
 
+@router.post("/ws-message", dependencies=[Depends(require_ws_lambda_secret)])
+async def handle_ws_message(request: WsMessageRequest, raw_request: Request):
+    """Emit a correlated transport result after enforced action processing."""
+    from core.config import settings
+
+    body = request.body
+    request_id = body.get("request_id")
+    ack = (
+        settings.RUNTIME_SESSION_ENFORCEMENT_ENABLED
+        and body.get("type") == "town_agent_act"
+        and isinstance(request_id, str)
+        and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", request_id)
+    )
+    if settings.RUNTIME_SESSION_ENFORCEMENT_ENABLED and body.get("type") == "town_agent_act" and not ack:
+        return {"statusCode": 400, "error": "missing_action_request_id"}
+    try:
+        result = await _handle_ws_message_inner(request, raw_request)
+    except HTTPException:
+        if ack:
+            from core.services.daemon_mailbox import get_daemon_mailbox
+
+            get_daemon_mailbox().notify_connection(
+                request.connectionId,
+                {"event": "action_result", "request_id": request_id, "status": "rejected", "error": "invalid_action"},
+            )
+        raise
+    if ack and not result.pop("_action_ack_sent", False):
+        from core.services.daemon_mailbox import get_daemon_mailbox
+
+        detail = result.get("body")
+        rejected = (
+            result.get("statusCode", 200) >= 400
+            or bool(result.get("rejected"))
+            or (isinstance(detail, dict) and detail.get("status") == "rejected")
+        )
+        uncertain = bool(result.get("uncertain"))
+        message = {"event": "action_result", "request_id": request_id,
+                   "status": "uncertain" if uncertain else "rejected" if rejected else "accepted"}
+        if uncertain:
+            message["error"] = "action_delivery_uncertain"
+        elif rejected:
+            message["error"] = "action_rejected"
+        get_daemon_mailbox().notify_connection(request.connectionId, message)
+    return result
+
+
 # ===========================================================================
 # Internal seam: sprite worker → backend
 # ===========================================================================
@@ -2252,3 +2355,16 @@ from core.services.conversation_service import (  # noqa: E402, F401
     _handle_join_conversation,
     _handle_say,
 )
+
+# Account-authorized runtime binding (feature-flagged; disabled by default).
+from routers.runtime_binding import router as runtime_binding_router  # noqa: E402
+
+router.include_router(runtime_binding_router)
+
+from routers.runtime_join import router as runtime_join_router  # noqa: E402
+
+router.include_router(runtime_join_router)
+
+from routers.runtime_session import router as runtime_session_router  # noqa: E402
+
+router.include_router(runtime_session_router)

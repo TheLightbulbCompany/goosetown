@@ -170,6 +170,11 @@ class TownDaemon:
         self._agent_name = agent_name
         self._state_dir = state_dir
         self._workspace_path = workspace_path
+        self._runtime_session = None
+        self._runtime_lock = None
+        self._runtime_authenticated = False
+        self._runtime_reconnect_event = None
+        self._action_results = {}
 
         self._state_file = state_dir / "state.json"
         self._alarm_file = state_dir / "alarm.json"
@@ -344,7 +349,11 @@ class TownDaemon:
         """Dispatch a town_event payload to the appropriate handler."""
         event = data.get("event", "")
 
-        if event == "connected":
+        if event == "action_result":
+            future = self._action_results.get(data.get("request_id"))
+            if future is not None and not future.done() and data.get("status") in ("accepted", "rejected", "uncertain"):
+                future.set_result(data)
+        elif event == "connected":
             self._on_connected(data)
         elif event == "sprite_ready":
             self._on_sprite_ready(data)
@@ -441,6 +450,10 @@ class TownDaemon:
 
     def _on_connected(self, data: dict) -> None:
         """Handle the initial connected event from the server."""
+        if self._runtime_session is not None:
+            if data.get("agent", {}).get("id") != self._runtime_session["actor_id"]:
+                return
+            self._runtime_authenticated = True
         # Preserve the exchange jobs cache across reconnects — it's local
         # knowledge (wallet, jobs, deliverables) the server won't resend.
         exchange = self.state.get("exchange")
@@ -2154,6 +2167,95 @@ class TownDaemon:
     # WebSocket
     # ------------------------------------------------------------------
 
+    async def _refresh_runtime_credential(self):
+        import asyncio
+        from goosetown.member_binding import ManagedMember
+        from goosetown.runtime_join import request_runtime_session
+
+        old = self._runtime_session
+        if not old or not old["managed"] or self._workspace_path is None:
+            raise AuthFailure("Runtime session requires rejoin.")
+        def renew():
+            with ManagedMember(self._workspace_path, old["api_url"]) as member:
+                return request_runtime_session(old["api_url"], self._token, old["actor_id"], member)
+        try:
+            fresh = await asyncio.to_thread(renew)
+        except Exception as exc:
+            # The outer daemon loop retries temporary member/HTTP outages
+            # with backoff. Actions still require a new connected ACK.
+            raise ConnectionError("Runtime session renewal failed.") from exc
+        fresh["managed"] = True
+        self._runtime_session = fresh
+
+    async def _ensure_runtime_session(self):
+        """Refresh and authenticate a replacement socket before allowing a town action."""
+        import asyncio
+        import websockets
+
+        if self._runtime_lock is None:
+            self._runtime_lock = asyncio.Lock()
+        async with self._runtime_lock:
+            old = self._runtime_session
+            if old is None:
+                return
+            if not self._runtime_authenticated:
+                raise AuthFailure("Runtime session is not authenticated.")
+            if old["expires_at"] > int(time.time()) + 60:
+                return
+            self._runtime_authenticated = False
+            old_ws = self.ws
+            new_ws = None
+            reconnect_event = asyncio.Event()
+            self._runtime_reconnect_event = reconnect_event
+            try:
+                await self._refresh_runtime_credential()
+                fresh = self._runtime_session
+                url = f"{self._ws_url}?type=agent&token={self._token}"
+                kwargs = {"ping_interval":30, "ping_timeout":10}
+                header = ("Authorization", f"Bearer {self._token}")
+                try:
+                    new_ws = await websockets.connect(url, additional_headers=[header], **kwargs)
+                except TypeError:
+                    new_ws = await websockets.connect(url, extra_headers=[header], **kwargs)
+                await new_ws.send(json.dumps({"type":"town_agent_connect", "token":self._token,
+                    "agent_name":self._agent_name, "runtime_session_token":fresh["runtime_session_token"]}))
+                deadline = asyncio.get_running_loop().time() + 15
+                while True:
+                    data = json.loads(await asyncio.wait_for(new_ws.recv(), timeout=max(0, deadline - asyncio.get_running_loop().time())))
+                    if data.get("event") == "connected":
+                        if data.get("agent", {}).get("id") != fresh["actor_id"]:
+                            raise AuthFailure("Runtime actor mismatch.")
+                        break
+                    if data.get("event") in ("error", "auth_error"):
+                        raise AuthFailure("Runtime session rejected.")
+                self.ws = new_ws
+                self._on_connected(data)
+                if old_ws is not None:
+                    await old_ws.close()
+            except Exception:
+                if new_ws is not None:
+                    await new_ws.close()
+                # Never use the previous connection after a failed refresh.
+                self._runtime_session = {**self._runtime_session, "expires_at": 0}
+                # Wake the listener and existing reconnect/backoff loop even
+                # if renewal failed before opening a replacement socket.
+                if old_ws is not None:
+                    await old_ws.close()
+                raise
+            finally:
+                reconnect_event.set()
+                self._runtime_reconnect_event = None
+
+    async def _runtime_renewal_loop(self):
+        import asyncio
+        while self.running:
+            await asyncio.sleep(10)
+            if self._runtime_session is not None and self._runtime_session["expires_at"] <= int(time.time()) + 60:
+                try:
+                    await self._ensure_runtime_session()
+                except Exception:
+                    self._runtime_authenticated = False
+
     async def connect_ws(self) -> None:
         """Connect to GooseTown WebSocket and send the connect message."""
         import logging
@@ -2167,6 +2269,9 @@ class TownDaemon:
             )
             sys.exit(1)
 
+        self._runtime_authenticated = False
+        if self._runtime_session is not None and self._runtime_session["expires_at"] <= int(time.time()) + 60:
+            await self._refresh_runtime_credential()
         url = f"{self._ws_url}?type=agent&token={self._token}"
         log.info("Connecting to %s...", self._ws_url)
 
@@ -2195,15 +2300,10 @@ class TownDaemon:
             log.error("WebSocket connection failed: %s", exc)
             raise
 
-        await self.ws.send(
-            json.dumps(
-                {
-                    "type": "town_agent_connect",
-                    "token": self._token,
-                    "agent_name": self._agent_name,
-                }
-            )
-        )
+        connect = {"type": "town_agent_connect", "token": self._token, "agent_name": self._agent_name}
+        if self._runtime_session is not None:
+            connect["runtime_session_token"] = self._runtime_session["runtime_session_token"]
+        await self.ws.send(json.dumps(connect))
         # Fresh connection: start the pong deadline now so the keepalive loop
         # doesn't immediately judge a just-opened socket as half-open, and clear
         # _ever_ponged so the timeout-reconnect re-arms only after a pong on THIS
@@ -2237,9 +2337,18 @@ class TownDaemon:
                     # idle timer is kept warm separately by the 120s app-level
                     # keepalive ping. This long timeout is only a safety net to
                     # re-check ``self.running``; it never reconnects on its own.
-                    raw = await asyncio.wait_for(
-                        self.ws.recv(), timeout=self._RECV_SAFETY_TIMEOUT_SEC
-                    )
+                    current_ws = self.ws
+                    try:
+                        raw = await asyncio.wait_for(
+                            current_ws.recv(), timeout=self._RECV_SAFETY_TIMEOUT_SEC
+                        )
+                    except Exception:
+                        reconnect_event = self._runtime_reconnect_event
+                        if reconnect_event is not None:
+                            await reconnect_event.wait()
+                        if current_ws is not self.ws:
+                            continue
+                        raise
                 except asyncio.TimeoutError:
                     continue
                 try:
@@ -2269,6 +2378,7 @@ class TownDaemon:
                 except json.JSONDecodeError:
                     log.warning("Invalid JSON from server: %s", str(raw)[:100])
         except Exception as exc:
+            self._runtime_authenticated = False
             if _is_auth_failure(exc):
                 raise AuthFailure(str(exc)) from exc
             log.warning("WebSocket disconnected: %s", exc)
@@ -2287,10 +2397,22 @@ class TownDaemon:
             return self.state
 
         if action == "act":
+            if self._runtime_session is not None:
+                try:
+                    await self._ensure_runtime_session()
+                except Exception:
+                    return {"error": "Runtime session renewal failed. Rejoin GooseTown to authorize again."}
             payload = cmd.get("payload", {})
             if not self.ws:
                 return {"error": "not connected"}
-            msg = json.dumps({"type": "town_agent_act", **payload})
+            action_result = None
+            request_id = None
+            if self._runtime_session is not None:
+                import secrets
+                request_id = secrets.token_urlsafe(18)
+                action_result = asyncio.get_running_loop().create_future()
+                self._action_results[request_id] = action_result
+            msg = json.dumps({**payload, "type": "town_agent_act", **({"request_id": request_id} if request_id else {})})
             import logging as _logging
 
             _log = _logging.getLogger("town_daemon")
@@ -2311,6 +2433,8 @@ class TownDaemon:
                 # Reject move synchronously so the agent's own decision
                 # loop doesn't have to know to gate on activity.
                 if self.state.get("active_conversation"):
+                    if request_id:
+                        self._action_results.pop(request_id, None)
                     active_conv_id = self.state["active_conversation"].get(
                         "conv_id", "?"
                     )
@@ -2348,21 +2472,44 @@ class TownDaemon:
                 self._exchange_outcome = exchange_outcome_future
                 self._pending_exchange_payload = dict(payload)
 
+            def clear_pending_outcomes():
+                for future, attribute in ((chat_outcome_future, "_chat_outcome"),
+                                          (move_outcome_future, "_move_outcome"),
+                                          (exchange_outcome_future, "_exchange_outcome")):
+                    if future is not None:
+                        if not future.done():
+                            future.cancel()
+                        if getattr(self, attribute) is future:
+                            setattr(self, attribute, None)
+                            if attribute == "_move_outcome":
+                                self._pending_move_destination = None
+                            elif attribute == "_exchange_outcome":
+                                self._pending_exchange_payload = None
+
             _log.info("Sending via WS: %s", msg[:100])
             try:
                 await self.ws.send(msg)
             except Exception:
-                # On send failure, clear any exchange outcome state we set up
-                # so stale futures / payloads don't leak into the next invocation.
-                # Chat and move outcome futures are left as-is (their callers
-                # already handle cancellation / timeout in the finally blocks
-                # below). Exchange outcome is extra state we must clean up here
-                # because we never reach the exchange_outcome_future branch.
-                if exchange_outcome_future is not None:
-                    self._exchange_outcome = None
-                    self._pending_exchange_payload = None
-                raise
+                clear_pending_outcomes()
+                if request_id:
+                    self._action_results.pop(request_id, None)
+                return {"error": "Action delivery uncertain; check town state before retrying."}
             _log.info("WS send complete")
+            if action_result is not None:
+                ack = None
+                try:
+                    ack = await asyncio.wait_for(action_result, timeout=15)
+                except asyncio.TimeoutError:
+                    return {"error": "Action delivery uncertain; check town state before retrying."}
+                finally:
+                    self._action_results.pop(request_id, None)
+                    if ack is None or ack["status"] != "accepted":
+                        clear_pending_outcomes()
+                if ack["status"] == "rejected":
+                    return {"status": "rejected", "reason": ack.get("error", "action_rejected")}
+                if ack["status"] == "uncertain":
+                    return {"status": "uncertain", "error": "Action outcome is uncertain; check town state before retrying.", "reason": ack.get("error", "dispatch_uncertain")}
+
 
             if payload.get("action") == "end_conversation":
                 # Optimistic local clear: the agent initiated the end, so treat
@@ -2626,6 +2773,7 @@ class TownDaemon:
                 return
 
             keepalive_task = asyncio.create_task(self._keepalive_loop())
+            renewal_task = asyncio.create_task(self._runtime_renewal_loop())
             socket_task = (
                 asyncio.create_task(self.run_socket_server()) if serve_socket else None
             )
@@ -2633,10 +2781,11 @@ class TownDaemon:
                 await ws_task
             finally:
                 keepalive_task.cancel()
+                renewal_task.cancel()
                 if socket_task is not None:
                     socket_task.cancel()
                 try:
-                    tasks = [keepalive_task]
+                    tasks = [keepalive_task, renewal_task]
                     if socket_task is not None:
                         tasks.append(socket_task)
                     await asyncio.gather(*tasks, return_exceptions=True)
@@ -2699,6 +2848,21 @@ def daemon_main() -> None:
         state_dir=sd,
         workspace_path=workspace_path,
     )
+    fd_text = os.environ.pop("GOOSETOWN_RUNTIME_SESSION_FD", None)
+    if fd_text is not None:
+        try:
+            with os.fdopen(int(fd_text), "rb") as stream:
+                raw = stream.read(8193)
+            if len(raw) > 8192:
+                raise ValueError("credential too large")
+            session = json.loads(raw)
+            if set(session) != {"runtime_session_token", "expires_at", "actor_id", "api_url", "managed"} or not isinstance(session["runtime_session_token"], str) or not session["runtime_session_token"].startswith("gtrs_") or type(session["expires_at"]) is not int or session["expires_at"] <= int(time.time()) or not isinstance(session["actor_id"], str) or not isinstance(session["api_url"], str) or type(session["managed"]) is not bool:
+                raise ValueError("invalid runtime credential")
+            daemon._runtime_session = session
+        except (OSError, ValueError, TypeError, KeyError):
+            print(json.dumps({"error": "Invalid runtime session; rejoin GooseTown."}))
+            sys.exit(1)
+
 
     def _shutdown(sig, frame):  # noqa: ARG001
         daemon.running = False

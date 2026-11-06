@@ -408,7 +408,7 @@ def _clear_daemon_state(sd: Path) -> None:
             pass
 
 
-def _start_daemon(config: dict, agent_dir: Path) -> dict:
+def _start_daemon(config: dict, agent_dir: Path, runtime_session=None) -> dict:
     """Spawn the daemon subprocess and wait for it to write state.json."""
     import time
 
@@ -418,6 +418,8 @@ def _start_daemon(config: dict, agent_dir: Path) -> dict:
 
     pid_file = sd / "daemon.pid"
     if pid_file.exists() and _is_daemon_alive(sd):
+        if runtime_session is not None:
+            _die("Runtime enrollment failed.", "Stop the existing daemon before rejoining.")
         state_file = sd / "state.json"
         if state_file.exists():
             try:
@@ -443,14 +445,32 @@ def _start_daemon(config: dict, agent_dir: Path) -> dict:
     # from GOOSETOWN.md via load_config; default keeps older configs working.
     env["TOWN_HARNESS"] = config.get("harness", _DEFAULT_HARNESS)
 
-    with open(log_path, "a") as log_fh:
-        proc = subprocess.Popen(
-            [sys.executable, "-m", "goosetown", "_daemon"],
-            stdout=subprocess.DEVNULL,
-            stderr=log_fh,
-            start_new_session=True,
-            env=env,
-        )
+    read_fd = write_fd = None
+    try:
+        if runtime_session is not None:
+            read_fd, write_fd = os.pipe()
+            env["GOOSETOWN_RUNTIME_SESSION_FD"] = str(read_fd)
+            encoded = json.dumps(runtime_session, separators=(",", ":")).encode()
+            if len(encoded) > 8192:
+                raise ValueError("runtime credential too large")
+        with open(log_path, "a") as log_fh:
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "goosetown", "_daemon"],
+                stdout=subprocess.DEVNULL,
+                stderr=log_fh,
+                start_new_session=True,
+                env=env,
+                pass_fds=(read_fd,) if read_fd is not None else (),
+            )
+        if write_fd is not None:
+            with os.fdopen(write_fd, "wb") as stream:
+                write_fd = None
+                stream.write(encoded)
+    finally:
+        if read_fd is not None:
+            os.close(read_fd)
+        if write_fd is not None:
+            os.close(write_fd)
 
     state_file = sd / "state.json"
     for _ in range(30):
@@ -510,6 +530,23 @@ def _ensure_daemon(config: dict, agent_dir: Path) -> None:
 
 
 def cmd_join(args: argparse.Namespace) -> None:
+    """Register this agent, automatically starting a town-only member when needed."""
+    from contextlib import nullcontext
+    from .member_binding import ManagedMember, MemberError
+
+    agent_dir = Path(os.environ.get("AGENT_DIR", str(Path.cwd())))
+    managed = "GOOSETOWN_MEMBER_FD" not in os.environ and (
+        args.token.startswith("gtj_") or (agent_dir / ".goosetown" / "member" / "state").exists()
+    )
+    try:
+        api_url = os.environ.get("TOWN_API_URL") or args.api_url or _DEFAULT_API_URL
+        with ManagedMember(agent_dir, api_url) if managed else nullcontext(None) as member:
+            _cmd_join(args, member)
+    except (MemberError, OSError) as exc:
+        _die("Runtime enrollment failed.", str(exc) if isinstance(exc, MemberError) else "Cannot initialize local member.")
+
+
+def _cmd_join(args: argparse.Namespace, managed_member=None) -> None:
     """Register this agent with GooseTown and start the daemon."""
     _ensure_websockets()
     _require_websockets("join")
@@ -520,7 +557,31 @@ def cmd_join(args: argparse.Namespace) -> None:
     # Prefer env-var override (injected by --dev/--prod) then explicit flag
     api_url = os.environ.get("TOWN_API_URL") or args.api_url or _DEFAULT_API_URL
     ws_url = os.environ.get("TOWN_WS_URL", _DEFAULT_WS_URL)
-    token = args.token
+    from .member_binding import Member, MemberError
+    from .runtime_join import EnrollmentError, enroll_if_requested, unpack_join_token
+
+    try:
+        token, enrollment_token = unpack_join_token(args.token)
+    except EnrollmentError as exc:
+        _die("Runtime enrollment failed.", str(exc))
+
+    fd_text = os.environ.pop("GOOSETOWN_MEMBER_FD", None)
+    try:
+        if fd_text is not None:
+            managed_member = Member.from_fd(int(fd_text))
+        if managed_member is not None:
+            managed_member.check_support(api_url)
+    except (MemberError, ValueError) as exc:
+        _die("Runtime enrollment failed.", str(exc))
+
+    def enroll(name):
+        try:
+            result = enroll_if_requested(api_url, token, name, enrollment_token, managed_member)
+            if result is not None:
+                result["managed"] = fd_text is None
+            return result
+        except EnrollmentError as exc:
+            _die("Runtime enrollment failed.", str(exc))
 
     agent_name = args.name or os.environ.get("AGENT_NAME", "")
     display_name = os.environ.get("DISPLAY_NAME", agent_name)
@@ -587,6 +648,12 @@ def cmd_join(args: argparse.Namespace) -> None:
             detail = {"raw": raw}
         if exc.code == 400 and "already registered" in str(detail):
             cfg_path = agent_dir / "GOOSETOWN.md"
+            existing = load_config(agent_dir) if cfg_path.exists() else None
+            if existing and existing.get("agent") != agent_name:
+                _die("Runtime enrollment failed.", "This workspace belongs to another GooseTown agent.")
+            if _is_daemon_alive(state_dir(agent_name)) and (not existing or existing.get("token") != token):
+                _die("Runtime enrollment failed.", "Stop the existing GooseTown daemon before changing its token.")
+            runtime_session = enroll(agent_name)
             if not cfg_path.exists():
                 agent_dir.mkdir(parents=True, exist_ok=True)
                 cfg_path.write_text(
@@ -598,8 +665,12 @@ def cmd_join(args: argparse.Namespace) -> None:
                     f"workspace_path: {agent_dir}\n"
                     f"harness: {harness}\n"
                 )
+            elif existing.get("token") != token:
+                lines = cfg_path.read_text().splitlines()
+                lines = [line for line in lines if not line.strip().startswith("token:")]
+                cfg_path.write_text("\n".join(lines) + f"\ntoken: {token}\n")
             config = load_config(agent_dir)
-            state = _start_daemon(config, agent_dir)
+            state = _start_daemon(config, agent_dir, runtime_session)
             _maybe_register_provider(config, agent_dir, provider_payload)
             _out(state)
             return
@@ -611,6 +682,8 @@ def cmd_join(args: argparse.Namespace) -> None:
         _die(
             "Registration failed — server did not return agent_id.", json.dumps(result)
         )
+
+    runtime_session = enroll(result.get("agent_name", agent_name))
 
     ws_url_resp = result.get("ws_url", ws_url)
     api_url_resp = result.get("api_url", api_url)
@@ -653,6 +726,8 @@ def cmd_join(args: argparse.Namespace) -> None:
     sd.mkdir(parents=True, exist_ok=True)
 
     if _is_daemon_alive(sd) and (sd / "daemon.sock").exists():
+        if runtime_session is not None:
+            _die("Runtime enrollment failed.", "Stop the existing daemon before rejoining.")
         state_file = sd / "state.json"
         if state_file.exists():
             try:
@@ -662,7 +737,7 @@ def cmd_join(args: argparse.Namespace) -> None:
             except json.JSONDecodeError:
                 pass
 
-    initial_state = _start_daemon(config, agent_dir)
+    initial_state = _start_daemon(config, agent_dir, runtime_session)
     # Wave 2: one-shot provider setup — after the daemon is up, send the
     # provider_register act (best-effort; the agent is already in town).
     _maybe_register_provider(config, agent_dir, provider_payload)

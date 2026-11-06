@@ -7,6 +7,11 @@ logger = logging.getLogger(__name__)
 
 
 class Settings:
+    RUNTIME_SESSION_ENFORCEMENT_ENABLED: bool = (
+        os.getenv("RUNTIME_SESSION_ENFORCEMENT_ENABLED", "false").lower() == "true"
+    )
+    RUNTIME_BINDING_ENABLED: bool = os.getenv("RUNTIME_BINDING_ENABLED", "false").lower() == "true"
+    RUNTIME_BINDING_ORIGIN: str = os.getenv("RUNTIME_BINDING_ORIGIN", "https://api.goosetown.thelightbulb.company")
     AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
     DYNAMODB_TABLE_PREFIX: str = os.getenv("DYNAMODB_TABLE_PREFIX", "goosetown")
     CLERK_ISSUER: str = os.getenv("CLERK_ISSUER", "https://clerk.thelightbulb.company")
@@ -71,6 +76,8 @@ class Settings:
 
     def validate(self) -> None:
         """Validate required env vars. Raises RuntimeError in non-dev environments if critical vars are missing."""
+        if self.RUNTIME_SESSION_ENFORCEMENT_ENABLED and not self.RUNTIME_BINDING_ENABLED:
+            raise RuntimeError("RUNTIME_SESSION_ENFORCEMENT_ENABLED requires RUNTIME_BINDING_ENABLED")
         if self.ENVIRONMENT == "dev":
             return
 
