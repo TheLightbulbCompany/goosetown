@@ -151,6 +151,10 @@ export class ComputeStack extends cdk.Stack {
         SPRITE_CDN_URL: `https://${canonicalHost("assets", env)}`,
         TOWN_BROWSER_ORIGIN: frontendOrigin(env),
         RUNTIME_BINDING_ORIGIN: `https://${canonicalHost("api", env)}`,
+        // Device join is the configured GooseTown release in both environments.
+        // Keep proof enforcement paired with binding across every CDK rollout.
+        RUNTIME_BINDING_ENABLED: "true",
+        RUNTIME_SESSION_ENFORCEMENT_ENABLED: "true",
         CORS_ORIGINS: env === "prod"
           ? frontendOrigin(env)
           : `${frontendOrigin(env)},http://localhost:3000,http://localhost:5173`,
