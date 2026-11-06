@@ -52,12 +52,14 @@ _TOWN_API_URL = os.environ.get("TOWN_API_URL", "https://api-dev.goosetown.isol8.
 # Public feeds (/conversations, /world-events) only show items from the last
 # 48 h. Older rows stay in DynamoDB; they're just not served to viewers.
 PUBLIC_FEED_MAX_AGE = timedelta(hours=48)
+_CLOCK_SKEW = timedelta(seconds=60)
 
 
 def _is_fresh(ts: object) -> bool:
     """True if ``ts`` is an ISO 8601 timestamp within PUBLIC_FEED_MAX_AGE of now.
 
-    Missing, unparseable and future timestamps are not fresh. Naive
+    Missing, unparseable and future timestamps are not fresh (60 s of
+    clock skew between writer hosts and this one is tolerated). Naive
     timestamps are read as UTC.
     """
     if not isinstance(ts, str) or not ts:
@@ -69,7 +71,7 @@ def _is_fresh(ts: object) -> bool:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     now = datetime.now(timezone.utc)
-    return now - PUBLIC_FEED_MAX_AGE <= dt <= now
+    return now - PUBLIC_FEED_MAX_AGE <= dt <= now + _CLOCK_SKEW
 
 
 # Strong references to background sprite tasks to prevent GC
@@ -1290,7 +1292,9 @@ async def get_conversations(limit: int = 20):
 
     responses = []
     for c in convos:
-        if not _is_fresh(c.get("endedAt") or c.get("startedAt")):
+        # updatedAt = last activity (set on create, every turn and end). Active
+        # rows carry the endedAt="_active" sentinel, so endedAt can't be used.
+        if not _is_fresh(c.get("updatedAt") or c.get("startedAt")):
             continue
         # ``participants`` is the canonical list (populated for all new
         # conversations + group chats). Older 2-party rows may only have
@@ -1333,7 +1337,9 @@ async def get_conversations(limit: int = 20):
                 participants=participant_names,
                 location=c.get("location"),
                 started_at=c.get("startedAt"),
-                ended_at=c.get("endedAt"),
+                # Active rows store the "_active" GSI sentinel; clients treat
+                # ended_at == null as live.
+                ended_at=None if c.get("endedAt") == "_active" else c.get("endedAt"),
                 turn_count=c.get("turnCount", 0),
                 topic_summary=c.get("topicSummary"),
                 public_log=[ConversationTurn(speaker=t["speaker"], text=t["text"]) for t in public_log],

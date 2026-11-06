@@ -7,7 +7,6 @@
  */
 
 import { useEffect, useState } from 'react';
-import { isFresh } from '../convTime.ts';
 
 const API_URL = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000/api/v1';
 
@@ -60,8 +59,7 @@ export function useConversations(limit: number = 20): {
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data: ConversationsResponse = await resp.json();
         if (cancelled) return;
-        // Defensive: the backend already drops >48 h items; never show stale ones.
-        setConversations((data.conversations ?? []).filter((c) => isFresh(c.ended_at ?? c.started_at)));
+        setConversations(data.conversations ?? []);
         setError(null);
       } catch (e) {
         if (cancelled) return;

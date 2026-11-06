@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { timeAgo, conversationDuration, isFresh } from './convTime';
+import { timeAgo, conversationDuration } from './convTime';
 
 const NOW = Date.parse('2026-06-06T12:00:00Z');
 
@@ -45,21 +45,5 @@ describe('conversationDuration', () => {
 
   it('returns empty string when start is missing', () => {
     expect(conversationDuration(null, null, NOW)).toBe('');
-  });
-});
-
-describe('isFresh', () => {
-  it('accepts timestamps within the last 48 h', () => {
-    expect(isFresh('2026-06-06T11:00:00Z', NOW)).toBe(true);
-    expect(isFresh('2026-06-04T12:00:00Z', NOW)).toBe(true);
-  });
-
-  it('rejects old, future, missing and invalid timestamps', () => {
-    expect(isFresh('2026-06-04T11:59:00Z', NOW)).toBe(false);
-    expect(isFresh('2026-02-18T12:00:00Z', NOW)).toBe(false);
-    expect(isFresh('2026-06-06T12:01:00Z', NOW)).toBe(false);
-    expect(isFresh(null, NOW)).toBe(false);
-    expect(isFresh(undefined, NOW)).toBe(false);
-    expect(isFresh('not a date', NOW)).toBe(false);
   });
 });

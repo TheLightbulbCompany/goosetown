@@ -29,14 +29,14 @@ function _errResponse(status: number): Response {
 const SAMPLE_EVENTS = [
   {
     eventId: 'e1',
-    timestamp: new Date(Date.now() - 60 * 60_000).toISOString(),
+    timestamp: '2026-05-10T10:00:00Z',
     tag: 'weather.storm',
     summary: 'rain begins',
     location: 'plaza',
   },
   {
     eventId: 'e2',
-    timestamp: new Date(Date.now() - 2 * 60 * 60_000).toISOString(),
+    timestamp: '2026-05-10T09:00:00Z',
     tag: 'ambient.cat',
     summary: 'cat at cafe',
     location: null,
@@ -71,23 +71,6 @@ describe('useWorldFeed', () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.events).toEqual(SAMPLE_EVENTS);
     expect(result.current.error).toBeNull();
-  });
-
-  it('drops events older than 48 h, in the future, or with bad timestamps', async () => {
-    const hoursAgo = (h: number) => new Date(Date.now() - h * 60 * 60_000).toISOString();
-    (fetch as ReturnType<typeof vi.fn>).mockResolvedValue(
-      _okResponse([
-        { ...SAMPLE_EVENTS[0], eventId: 'fresh', timestamp: hoursAgo(47) },
-        { ...SAMPLE_EVENTS[0], eventId: 'old', timestamp: hoursAgo(24 * 108) },
-        { ...SAMPLE_EVENTS[0], eventId: 'future', timestamp: hoursAgo(-1) },
-        { ...SAMPLE_EVENTS[0], eventId: 'bad', timestamp: 'nope' },
-      ]),
-    );
-
-    const { result } = renderHook(() => useWorldFeed());
-
-    await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.events.map((e) => e.eventId)).toEqual(['fresh']);
   });
 
   it('passes the limit param into the URL', async () => {

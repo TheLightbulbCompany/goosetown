@@ -53,7 +53,7 @@ describe('useConversations', () => {
         participant_a: 'A',
         participant_b: 'B',
         location: 'cafe',
-        started_at: new Date(Date.now() - 60_000).toISOString(),
+        started_at: '2026-04-18T00:00:00Z',
         ended_at: null,
         turn_count: 2,
         topic_summary: null,

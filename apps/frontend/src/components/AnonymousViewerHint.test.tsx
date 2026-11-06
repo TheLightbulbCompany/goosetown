@@ -3,7 +3,7 @@ import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
 const mockGame = vi.fn();
-vi.mock('./TownProvider.tsx', () => ({ useTownGame: () => ({ game: mockGame(), economyEvents: [] }) }));
+vi.mock('./TownProvider.tsx', () => ({ useAgentCount: () => mockGame()?.world.agents.length ?? 0 }));
 
 import { AnonymousViewerHint } from './AnonymousViewerHint';
 

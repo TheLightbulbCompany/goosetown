@@ -447,23 +447,42 @@ class TestConversationsEndpoint:
         assert conv["participants"] == ["Rachel", "Ross"]
 
     def test_hides_conversations_older_than_48h_or_with_bad_timestamps(self, client, dynamodb_tables):
-        """Public feed shows only the last 48 h. Stale, future and unparseable
-        rows stay in the table but are not served."""
+        """Public feed shows only conversations with activity (updatedAt) in the
+        last 48 h. Stale, future and unparseable rows stay in the table but are
+        not served."""
+        from core.services.town_service import TownService
+
+        _seed_agent(dynamodb_tables, "agent-a", agent_name="a", display_name="Agent A")
+        _seed_agent(dynamodb_tables, "agent-b", agent_name="b", display_name="Agent B")
+        # A live chat created through the real code path (endedAt="_active").
+        live = TownService().create_active_conversation("agent-a", "agent-b", "cafe", "hi", "Agent A")
+
+        old = _iso_ago(days=108)
         future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
         rows = {
             "recent-ended": {},
-            "recent-active": {"status": "active", "ended_at": None},
-            "old-ended": {"started_at": _iso_ago(days=108), "ended_at": _iso_ago(days=108)},
-            "old-active": {"status": "active", "started_at": _iso_ago(hours=49), "ended_at": None},
-            "future": {"started_at": future, "ended_at": future},
-            "invalid": {"started_at": "garbage", "ended_at": None},
+            # Started 3 days ago but someone spoke a minute ago: still live.
+            "long-active": {
+                "status": "active",
+                "started_at": _iso_ago(days=3),
+                "ended_at": "_active",
+                "updated_at": _iso_ago(minutes=1),
+            },
+            "stuck-active": {"status": "active", "started_at": old, "ended_at": "_active", "updated_at": old},
+            "old-ended": {"started_at": old, "ended_at": old, "updated_at": old},
+            "future": {"started_at": future, "ended_at": future, "updated_at": future},
+            "invalid": {"started_at": "garbage", "ended_at": "garbage", "updated_at": "garbage"},
         }
         for conv_id, kw in rows.items():
             _seed_conversation(dynamodb_tables, conv_id, participant_a="a", participant_b="b", **kw)
 
         resp = client.get("/api/v1/town/conversations")
         assert resp.status_code == 200
-        assert sorted(c["id"] for c in resp.json()["conversations"]) == ["recent-active", "recent-ended"]
+        by_id = {c["id"]: c for c in resp.json()["conversations"]}
+        assert sorted(by_id) == sorted([live["id"], "long-active", "recent-ended"])
+        # The "_active" sentinel is served as null so clients show it as live.
+        assert by_id[live["id"]]["ended_at"] is None
+        assert by_id["recent-ended"]["ended_at"] is not None
 
 
 def test_is_fresh_rejects_missing_and_non_string_timestamps():
@@ -471,7 +490,10 @@ def test_is_fresh_rejects_missing_and_non_string_timestamps():
 
     assert _is_fresh(_iso_ago(hours=1))
     assert _is_fresh(_iso_ago(hours=1).replace("+00:00", "Z"))
-    for bad in (None, "", 123, "2026-13-45", _iso_ago(hours=49)):
+    # Up to 60 s of writer clock skew is tolerated; beyond that is "future".
+    assert _is_fresh((datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat())
+    future = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+    for bad in (None, "", 123, "2026-13-45", "_active", _iso_ago(hours=49), future):
         assert not _is_fresh(bad)
 
 

@@ -31,5 +31,8 @@ describe("Landing", () => {
     // and lives above the fold — must always be present and routed correctly.
     const visitLink = screen.getByRole("link", { name: /visit the town/i });
     expect(visitLink).toHaveAttribute("href", "/town");
+
+    // No TownProvider state = 0 agents: never claim "live now".
+    expect(screen.queryByText(/live now/i)).toBeNull();
   });
 });
