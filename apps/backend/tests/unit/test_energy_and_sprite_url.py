@@ -50,6 +50,7 @@ def _make_conn(agent_id: str = "agent-1") -> SimpleNamespace:
         user_id="user-1",
         agent_name="lucky",
         agent_id=agent_id,
+        runtime_session_claims=None,
         instance_id="inst-1",
         location_context="town",
         exhausted_rejections=0,
