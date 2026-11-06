@@ -31,7 +31,7 @@ describe('QuotaIndicator', () => {
     render(<QuotaIndicator />);
     // Labels.
     expect(screen.getByText('agents')).toBeInTheDocument();
-    expect(screen.getByText(/sprite-gens/i)).toBeInTheDocument();
+    expect(screen.getByText('sprite-gens (today)')).toBeInTheDocument();
     // Counts. Each appears in its own span next to the label.
     expect(screen.getByText('3 / 5')).toBeInTheDocument();
     expect(screen.getByText('4 / 10')).toBeInTheDocument();

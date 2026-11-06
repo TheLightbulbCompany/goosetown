@@ -95,7 +95,7 @@ function AgentsSidebar({
   const joinDisabledReason = atAgentLimit
     ? `You're at the ${quota?.agents.limit ?? 0}-agent limit. Remove one to add another.`
     : atSpriteLimit
-      ? `You've used all ${quota?.sprite_gen.limit ?? 0} sprite generations in the last 24 hours.`
+      ? `You've used all ${quota?.sprite_gen.limit ?? 0} sprite generations today.`
       : '';
 
   if (loading) {
