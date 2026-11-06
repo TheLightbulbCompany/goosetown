@@ -155,7 +155,8 @@ jobs:
 
   e2e-smoke:
     name: E2E Smoke (dev)
-    runs-on: ubuntu-latest
+    # Pin a Playwright-supported image instead of the moving ubuntu-latest.
+    runs-on: ubuntu-24.04
     # Only run on main-bound PRs so feature-branch noise doesn't hit the
     # shared dev environment. Skips itself cleanly when dev is down.
     if: github.base_ref == 'main'
@@ -172,9 +173,9 @@ jobs:
       - name: Run Playwright smoke tests
         run: pnpm --filter @goosetown/frontend run test:e2e
         env:
-          E2E_BASE_URL: https://dev.goosetown.isol8.co
-          # dev.goosetown.isol8.co points at a preview deployment, which
-          # Vercel Authentication gates with a 401. The bypass header in
+          E2E_BASE_URL: https://dev.goosetown.thelightbulb.company
+          # dev.goosetown.thelightbulb.company points at a preview deployment, which
+          # Vercel Authentication gates with a 401. The bypass cookie in
           # playwright.config.ts needs this secret to get through.
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
       - name: Upload Playwright report on failure

@@ -5,7 +5,7 @@
 // Uses Pixel 5 profile (chromium-based) because CDP touch dispatch needs Chromium.
 import { test, expect, devices } from '@playwright/test';
 
-const DEV_URL = 'https://dev.goosetown.isol8.co';
+const DEV_URL = 'https://dev.goosetown.thelightbulb.company';
 
 // Guard: skipped unless explicitly requested, so CI's plain `playwright test`
 // never runs this against the live dev environment.
