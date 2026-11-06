@@ -110,7 +110,12 @@ def test_connected_action_rechecks_binding_and_storage_failure(enrollment, monke
 
     invalid = msg(
         "bad",
-        {"type": "town_agent_connect", "agent_name": "visitor", "token": town_token, "runtime_session_token": "bad"},
+        {
+            "type": "town_agent_connect",
+            "agent_name": "visitor",
+            "token": town_token,
+            "runtime_session_token": "bad",  # nosec B105: deliberately malformed credential for denial test
+        },
     )
     assert invalid.json()["statusCode"] == 401
     result = msg(
