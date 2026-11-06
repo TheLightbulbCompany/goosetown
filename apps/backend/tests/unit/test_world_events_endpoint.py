@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+
+
+def _ago(**delta) -> str:
+    """ISO timestamp ``delta`` before now (events must be <48 h old to be served)."""
+    return (datetime.now(timezone.utc) - timedelta(**delta)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+NOW_ISH = _ago(minutes=5)
 
 
 @pytest.fixture
@@ -27,14 +36,14 @@ def test_world_events_returns_public_events(mock_table_fn, client):
         "Items": [
             {
                 "eventId": "e1",
-                "timestamp": "2026-05-10T10:00:00Z",
+                "timestamp": _ago(hours=1),
                 "tag": "weather.storm",
                 "summary": "rain begins",
                 "envBucket": "dev",
             },
             {
                 "eventId": "e2",
-                "timestamp": "2026-05-10T09:00:00Z",
+                "timestamp": _ago(hours=2),
                 "tag": "ambient.cat",
                 "summary": "cat at cafe",
                 "envBucket": "dev",
@@ -59,14 +68,14 @@ def test_world_events_returns_public_events(mock_table_fn, client):
 def test_world_events_filters_personal_events(mock_table_fn, client):
     mock_table_fn.return_value.query.return_value = {
         "Items": [
-            {"eventId": "e1", "timestamp": "t1", "tag": "weather.storm", "envBucket": "dev"},
+            {"eventId": "e1", "timestamp": _ago(hours=1), "tag": "weather.storm", "envBucket": "dev"},
             {
                 "eventId": "e2",
-                "timestamp": "t2",
+                "timestamp": _ago(hours=2),
                 "tag": "personal.alice.opportunity",
                 "envBucket": "dev",
             },
-            {"eventId": "e3", "timestamp": "t3", "tag": "ambient.cat", "envBucket": "dev"},
+            {"eventId": "e3", "timestamp": _ago(hours=3), "tag": "ambient.cat", "envBucket": "dev"},
         ]
     }
     resp = client.get("/api/v1/town/world-events")
@@ -131,7 +140,7 @@ def test_world_events_response_shape(mock_table_fn, client):
         "Items": [
             {
                 "eventId": "evt-abc",
-                "timestamp": "2026-05-10T12:00:00Z",
+                "timestamp": NOW_ISH,
                 "tag": "arc.chapter_open",
                 "summary": "A new chapter begins",
                 "location": "plaza",
@@ -143,7 +152,7 @@ def test_world_events_response_shape(mock_table_fn, client):
     assert resp.status_code == 200
     entry = resp.json()[0]
     assert entry["eventId"] == "evt-abc"
-    assert entry["timestamp"] == "2026-05-10T12:00:00Z"
+    assert entry["timestamp"] == NOW_ISH
     assert entry["tag"] == "arc.chapter_open"
     assert entry["summary"] == "A new chapter begins"
     assert entry["location"] == "plaza"
@@ -156,7 +165,7 @@ def test_world_events_optional_fields_none(mock_table_fn, client):
         "Items": [
             {
                 "eventId": "evt-min",
-                "timestamp": "2026-05-10T08:00:00Z",
+                "timestamp": _ago(hours=3),
                 "tag": "system.tick",
                 "envBucket": "dev",
             }
@@ -167,3 +176,27 @@ def test_world_events_optional_fields_none(mock_table_fn, client):
     entry = resp.json()[0]
     assert entry["summary"] is None
     assert entry["location"] is None
+
+
+# ---------------------------------------------------------------------------
+# Freshness: only items from the last 48 h are served
+# ---------------------------------------------------------------------------
+
+
+@patch("core.dynamo.world_events_table")
+def test_world_events_hides_stale_missing_invalid_and_future(mock_table_fn, client):
+    future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    mock_table_fn.return_value.query.return_value = {
+        "Items": [
+            {"eventId": "recent", "timestamp": _ago(hours=47), "tag": "ambient.cat"},
+            {"eventId": "old", "timestamp": _ago(days=108), "tag": "ambient.cat"},
+            {"eventId": "just-old", "timestamp": _ago(hours=49), "tag": "ambient.cat"},
+            {"eventId": "missing", "tag": "ambient.cat"},
+            {"eventId": "empty", "timestamp": "", "tag": "ambient.cat"},
+            {"eventId": "invalid", "timestamp": "not-a-date", "tag": "ambient.cat"},
+            {"eventId": "future", "timestamp": future, "tag": "ambient.cat"},
+        ]
+    }
+    resp = client.get("/api/v1/town/world-events")
+    assert resp.status_code == 200
+    assert [e["eventId"] for e in resp.json()] == ["recent"]

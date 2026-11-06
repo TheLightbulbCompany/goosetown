@@ -12,11 +12,22 @@ fixture.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from fastapi.testclient import TestClient
 
 TEST_USER_ID = "user_test_123"
 OTHER_USER_ID = "user_other_456"
+
+
+def _iso_ago(**delta) -> str:
+    return (datetime.now(timezone.utc) - timedelta(**delta)).isoformat()
+
+
+# /conversations hides rows older than 48 h, so seeded rows default to "just now".
+RECENT_START = _iso_ago(minutes=10)
+RECENT_END = _iso_ago(minutes=5)
 
 
 # ---------------------------------------------------------------------------
@@ -89,9 +100,9 @@ def _seed_conversation(
     location: str = "cafe",
     status: str = "ended",
     public_log: list | None = None,
-    started_at: str = "2026-04-17T00:00:00Z",
-    ended_at: str = "2026-04-17T00:05:00Z",
-    updated_at: str = "2026-04-17T00:05:00Z",
+    started_at: str = RECENT_START,
+    ended_at: str | None = RECENT_END,
+    updated_at: str = RECENT_END,
     participants: list | None = None,
 ):
     """Seed a conversation row.
@@ -278,9 +289,8 @@ class TestConversationsEndpoint:
                 f"conv-{i}",
                 participant_a="agent-a",
                 participant_b="agent-b",
-                started_at=f"2026-04-17T00:0{i}:00Z",
-                ended_at=f"2026-04-17T00:0{i + 1}:00Z",
-                updated_at=f"2026-04-17T00:0{i + 1}:00Z",
+                started_at=_iso_ago(minutes=20 - i),
+                ended_at=_iso_ago(minutes=19 - i),
             )
 
         resp = client.get("/api/v1/town/conversations?limit=3")
@@ -435,6 +445,34 @@ class TestConversationsEndpoint:
         assert resp.status_code == 200
         conv = resp.json()["conversations"][0]
         assert conv["participants"] == ["Rachel", "Ross"]
+
+    def test_hides_conversations_older_than_48h_or_with_bad_timestamps(self, client, dynamodb_tables):
+        """Public feed shows only the last 48 h. Stale, future and unparseable
+        rows stay in the table but are not served."""
+        future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        rows = {
+            "recent-ended": {},
+            "recent-active": {"status": "active", "ended_at": None},
+            "old-ended": {"started_at": _iso_ago(days=108), "ended_at": _iso_ago(days=108)},
+            "old-active": {"status": "active", "started_at": _iso_ago(hours=49), "ended_at": None},
+            "future": {"started_at": future, "ended_at": future},
+            "invalid": {"started_at": "garbage", "ended_at": None},
+        }
+        for conv_id, kw in rows.items():
+            _seed_conversation(dynamodb_tables, conv_id, participant_a="a", participant_b="b", **kw)
+
+        resp = client.get("/api/v1/town/conversations")
+        assert resp.status_code == 200
+        assert sorted(c["id"] for c in resp.json()["conversations"]) == ["recent-active", "recent-ended"]
+
+
+def test_is_fresh_rejects_missing_and_non_string_timestamps():
+    from routers.town import _is_fresh
+
+    assert _is_fresh(_iso_ago(hours=1))
+    assert _is_fresh(_iso_ago(hours=1).replace("+00:00", "Z"))
+    for bad in (None, "", 123, "2026-13-45", _iso_ago(hours=49)):
+        assert not _is_fresh(bad)
 
 
 # ---------------------------------------------------------------------------

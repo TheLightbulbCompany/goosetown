@@ -49,3 +49,12 @@ export function conversationDuration(
   }
   return `lasted ${humanizeSeconds((end - start) / 1000)}`;
 }
+
+/** Public feeds only show items from the last 48 h (mirrors the backend). */
+export const FEED_MAX_AGE_MS = 48 * 60 * 60 * 1000;
+
+/** True if `iso` is a valid timestamp within FEED_MAX_AGE_MS and not in the future. */
+export function isFresh(iso: string | null | undefined, now: number = Date.now()): boolean {
+  const t = parse(iso ?? null);
+  return t != null && t <= now && now - t <= FEED_MAX_AGE_MS;
+}

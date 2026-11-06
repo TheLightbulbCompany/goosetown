@@ -10,6 +10,7 @@ import asyncio
 import logging
 import os
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -47,6 +48,29 @@ router = APIRouter()
 
 _TOWN_WS_URL = os.environ.get("TOWN_WS_URL", "wss://ws-dev.goosetown.isol8.co")
 _TOWN_API_URL = os.environ.get("TOWN_API_URL", "https://api-dev.goosetown.isol8.co/api/v1")
+
+# Public feeds (/conversations, /world-events) only show items from the last
+# 48 h. Older rows stay in DynamoDB; they're just not served to viewers.
+PUBLIC_FEED_MAX_AGE = timedelta(hours=48)
+
+
+def _is_fresh(ts: object) -> bool:
+    """True if ``ts`` is an ISO 8601 timestamp within PUBLIC_FEED_MAX_AGE of now.
+
+    Missing, unparseable and future timestamps are not fresh. Naive
+    timestamps are read as UTC.
+    """
+    if not isinstance(ts, str) or not ts:
+        return False
+    try:
+        dt = datetime.fromisoformat(ts)
+    except ValueError:
+        return False
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    return now - PUBLIC_FEED_MAX_AGE <= dt <= now
+
 
 # Strong references to background sprite tasks to prevent GC
 _background_sprite_tasks: set = set()
@@ -1266,6 +1290,8 @@ async def get_conversations(limit: int = 20):
 
     responses = []
     for c in convos:
+        if not _is_fresh(c.get("endedAt") or c.get("startedAt")):
+            continue
         # ``participants`` is the canonical list (populated for all new
         # conversations + group chats). Older 2-party rows may only have
         # ``participantAId``/``participantBId`` — fall back to those.
@@ -1617,7 +1643,7 @@ async def list_world_events(limit: int = 50):
             location=i.get("location"),
         )
         for i in items
-        if not i["tag"].startswith("personal.")
+        if not i["tag"].startswith("personal.") and _is_fresh(i.get("timestamp"))
     ]
     return public[:limit]
 

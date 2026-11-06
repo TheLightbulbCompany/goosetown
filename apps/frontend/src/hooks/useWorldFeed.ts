@@ -7,6 +7,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { isFresh } from '../convTime.ts';
 
 const API_URL = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000/api/v1';
 
@@ -41,7 +42,8 @@ export function useWorldFeed({ pollIntervalMs = 10_000, limit = 50 }: UseWorldFe
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = (await resp.json()) as WorldEvent[];
         if (cancelled) return;
-        setEvents(data);
+        // Defensive: the backend already drops >48 h items; never show stale ones.
+        setEvents(data.filter((e) => isFresh(e.timestamp)));
         setError(null);
       } catch (err) {
         if (cancelled) return;

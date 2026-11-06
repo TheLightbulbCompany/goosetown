@@ -81,7 +81,7 @@ export function WorldFeed() {
     <div className="mt-6">
       <h3 className="font-display text-sm text-clay-300 tracking-wider mb-2">World</h3>
       {events.length === 0 ? (
-        <p className="text-clay-500 text-xs font-body italic">The town is quiet.</p>
+        <p className="text-clay-500 text-xs font-body italic">Nothing has happened in the last 48 hours.</p>
       ) : (
         <div className="flex flex-col gap-1 max-h-[30vh] overflow-y-auto pr-1">
           {events.map((e) => (

@@ -46,7 +46,7 @@ describe('WorldFeed', () => {
   it('shows empty state when no events', () => {
     mockedUse.mockReturnValue({ events: [], loading: false, error: null });
     render(<WorldFeed />);
-    expect(screen.getByText(/the town is quiet/i)).toBeInTheDocument();
+    expect(screen.getByText(/nothing has happened in the last 48 hours/i)).toBeInTheDocument();
   });
 
   it('renders events with summaries', () => {

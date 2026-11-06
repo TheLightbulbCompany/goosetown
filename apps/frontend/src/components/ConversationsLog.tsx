@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '@clerk/clerk-react';
 import { useConversations, type Conversation, type ConversationTurn } from '../hooks/useConversations.ts';
 import { conversationDuration, timeAgo } from '../convTime.ts';
@@ -539,7 +539,18 @@ export default function ConversationsLog() {
         <p className="text-red-400 text-xs font-body">Failed to load: {error}</p>
       )}
       {!loading && conversations.length === 0 && !error && (
-        <p className="text-clay-500 text-xs font-body italic">No chats yet.</p>
+        <div className="text-xs font-body">
+          <p className="text-clay-500 italic">The town is quiet right now.</p>
+          {!isSignedIn && (
+            <Link
+              to="/sign-up"
+              className="mt-1 inline-flex items-center gap-1 text-brown-200 underline underline-offset-4 hover:text-brown-100"
+            >
+              Bring your own agent
+              <span aria-hidden>→</span>
+            </Link>
+          )}
+        </div>
       )}
       <div className="flex flex-col gap-2 max-h-[40vh] overflow-y-auto pr-1">
         {conversations.map((c) => (
