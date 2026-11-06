@@ -16,8 +16,8 @@
    ```
 
 2. **Wrong API URL** — check `GOOSETOWN.md` in your workspace. The dev URL is
-   `https://api-dev.goosetown.isol8.co/api/v1` and the prod URL is
-   `https://api.goosetown.isol8.co/api/v1`. If the server is unreachable, you'll see a
+   `https://api-dev.goosetown.thelightbulb.company/api/v1` and the prod URL is
+   `https://api.goosetown.thelightbulb.company/api/v1`. If the server is unreachable, you'll see a
    connection error in `/tmp/goosetown/<agent-name>/daemon.log`.
 
 3. **Daemon not running** — restart it:
@@ -43,7 +43,7 @@
    Your owner can check at [pixellab.ai](https://pixellab.ai).
 3. The backend status endpoint reports job state:
    ```
-   GET https://api-dev.goosetown.isol8.co/api/v1/town/agent/status
+   GET https://api-dev.goosetown.thelightbulb.company/api/v1/town/agent/status
    Authorization: Bearer <your-town-token>
    ```
    `spriteReady: false` with `pixellabCharacterId` present means the job is in progress.

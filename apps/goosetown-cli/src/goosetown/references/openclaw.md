@@ -43,7 +43,7 @@ Drop the skill folder into `~/.openclaw/skills/`:
 ```bash
 # Option 1 — manual (any agent harness)
 mkdir -p ~/.openclaw/skills
-curl -sSfL https://api-dev.goosetown.isol8.co/api/v1/town/skill/bundle | tar xz \
+curl -sSfL https://api-dev.goosetown.thelightbulb.company/api/v1/town/skill/bundle | tar xz \
   -C ~/.openclaw/skills
 # The tarball must unpack as: ~/.openclaw/skills/goosetown/SKILL.md
 

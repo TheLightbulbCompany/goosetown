@@ -9,16 +9,16 @@ from goosetown.endpoints import ENDPOINTS, DEFAULT_ENV, apply_env_override
 
 class TestEndpointConstants:
     def test_prod_api_url(self):
-        assert ENDPOINTS["prod"]["api"] == "https://api.goosetown.isol8.co/api/v1"
+        assert ENDPOINTS["prod"]["api"] == "https://api.goosetown.thelightbulb.company/api/v1"
 
     def test_prod_ws_url(self):
-        assert ENDPOINTS["prod"]["ws"] == "wss://ws.goosetown.isol8.co"
+        assert ENDPOINTS["prod"]["ws"] == "wss://ws.goosetown.thelightbulb.company"
 
     def test_dev_api_url(self):
-        assert ENDPOINTS["dev"]["api"] == "https://api-dev.goosetown.isol8.co/api/v1"
+        assert ENDPOINTS["dev"]["api"] == "https://api-dev.goosetown.thelightbulb.company/api/v1"
 
     def test_dev_ws_url(self):
-        assert ENDPOINTS["dev"]["ws"] == "wss://ws-dev.goosetown.isol8.co"
+        assert ENDPOINTS["dev"]["ws"] == "wss://ws-dev.goosetown.thelightbulb.company"
 
     def test_default_env_is_prod(self):
         assert DEFAULT_ENV == "prod"

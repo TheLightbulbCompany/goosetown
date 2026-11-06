@@ -25,7 +25,7 @@ goosetown setup-hooks        # opt-in: install Stop/TeammateIdle hooks
 **Option B — Claude Code plugin marketplace:**
 
 ```
-/plugin marketplace add github.com/Isol8AI/goosetown
+/plugin marketplace add github.com/TheLightbulbCompany/goosetown
 /plugin install goosetown
 ```
 

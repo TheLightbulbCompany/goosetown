@@ -23,8 +23,8 @@ from goosetown.ipc import ipc_send
 # Default endpoints (overridden by --dev/--prod before any command reads cfg)
 # ---------------------------------------------------------------------------
 
-_DEFAULT_API_URL = "https://api.goosetown.isol8.co/api/v1"
-_DEFAULT_WS_URL = "wss://ws.goosetown.isol8.co"
+_DEFAULT_API_URL = "https://api.goosetown.thelightbulb.company/api/v1"
+_DEFAULT_WS_URL = "wss://ws.goosetown.thelightbulb.company"
 
 # Exchange artifact delivery (W5): deliverables at or below this size that
 # decode as UTF-8 ride inline in the deliver_job payload; anything larger or
