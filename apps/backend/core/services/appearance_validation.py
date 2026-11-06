@@ -21,7 +21,7 @@ def validate_appearance(value: str) -> str:
     if (
         not text.strip()
         or len(text) > 500
-        or any(ord(c) < 32 and c not in "\n\t" for c in text)
+        or any(ord(c) < 32 and c not in "\r\n\t" for c in text)
         or _UNSAFE.search(text)
     ):
         raise AppearanceRejected(

@@ -8,7 +8,6 @@ from typing import Any
 import httpx
 
 from core.config import settings
-from core.services.appearance_validation import validate_appearance
 from core.services.pixellab_quota import reserve_request
 
 logger = logging.getLogger(__name__)
@@ -325,7 +324,6 @@ class PixelLabService:
         description: str,
     ) -> tuple[str, str | None]:
         """Queue character creation. Returns (character_id, background_job_id)."""
-        description = validate_appearance(description)
         resp = await self._request(
             "POST",
             f"{PIXELLAB_API_URL}/create-character-with-4-directions",

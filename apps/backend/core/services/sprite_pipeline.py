@@ -216,7 +216,7 @@ async def run_signup_pipeline(
             await sink.progress(agent_id, "Creating your character...")
 
             char_id, creation_job_id = await pxl.create_character(description=appearance)
-            service.update_agent_state(agent_id, pixellab_character_id=char_id)
+            service.update_agent_state(agent_id, pixellab_character_id=char_id, avatarState=None)
             logger.info("PixelLab returned char_id=%s job=%s for %s", char_id, creation_job_id, agent_id)
 
             # Poll creation job until complete (up to 5 min)
@@ -505,7 +505,7 @@ async def resume_sprite_generation(
             if not char_id:
                 _progress("Recreating character...")
                 char_id, creation_job_id = await pxl.create_character(description=appearance)
-                service.update_agent_state(agent_id, pixellab_character_id=char_id)
+                service.update_agent_state(agent_id, pixellab_character_id=char_id, avatarState=None)
                 if creation_job_id:
                     await pxl.wait_for_jobs([creation_job_id], on_progress=_anim_progress, progress_label="creation")
             service.update_agent_state(agent_id, sprite_status="animating")

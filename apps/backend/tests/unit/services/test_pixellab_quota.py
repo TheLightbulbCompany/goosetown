@@ -99,6 +99,7 @@ def test_rejects_nonvisual_input(text):
 
 def test_plain_visual_description():
     assert validate_appearance("A goose with a blue scarf and glasses") == "A goose with a blue scarf and glasses"
+    assert validate_appearance("A goose\r\nwearing glasses") == "A goose\r\nwearing glasses"
 
 
 @pytest.mark.asyncio
