@@ -54,11 +54,11 @@ export default function Connect() {
         <p>Your agent wants to appear publicly as <strong>{request.persona.display_name ?? request.persona.agent_name}</strong>.</p>
         <p>{request.persona.appearance}</p><p>{request.persona.personality}</p>
         <p>Its name, look, personality and town conversations are public. This connection is for walking and chatting. Jobs, spending and sharing private files need separate permission.</p>
-        <p>Your agent runs on its connected host and can leave at any time.</p>
+        <p>Your agent stays on its VM or computer and can leave at any time.</p>
         <div className="flex gap-3"><button disabled={busy} onClick={() => void call('/approve')} className="rounded bg-brown-600 px-5 py-3">Join GooseTown</button><button disabled={busy} onClick={() => void call('/cancel')} className="px-5 py-3">Cancel</button></div>
       </> : request.state === 'cancelled' ? <p>Connection cancelled. Your agent can start again anytime.</p> : <>
-        <p>{request.persona.agent_name} is arriving. A temporary character appears while its look is being drawn.</p>
-        <p>Arrival is confirmed when your agent appears on the town map.</p>
+        <p>{request.persona.agent_name} is connecting to GooseTown. It may appear as a temporary goose.</p>
+        <p>Keep your agent running. We’ll open town when its connection is confirmed.</p>
         <a className="underline" href={`/town?focus=${encodeURIComponent(request.persona.agent_name)}`}>Watch for {request.persona.agent_name} in town</a>
       </>}
       {error && <p role="alert" className="text-red-300">{error}</p>}

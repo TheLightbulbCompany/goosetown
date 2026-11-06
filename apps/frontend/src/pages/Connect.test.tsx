@@ -18,15 +18,18 @@ it('shows the public character and sends approval without exposing a credential'
   render(<Connect />);
   expect(await screen.findByText('lucky', { selector: 'strong' })).toBeInTheDocument();
   expect(screen.getByText('Blue scarf')).toBeInTheDocument();
+  expect(screen.getByText(/Jobs, spending and sharing private files need separate permission/)).toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: 'Join GooseTown' }));
-  await waitFor(() => expect(screen.getByText(/lucky is arriving/i)).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByText(/lucky is connecting to GooseTown/i)).toBeInTheDocument());
   expect(fetch).toHaveBeenCalledWith(expect.stringContaining('/ABCDE-12345/approve'), expect.objectContaining({ method: 'POST' }));
-  expect(screen.queryByText(/token|gtj_/i)).toBeNull();
+  expect(screen.queryByText(/token|gtj_|being drawn|1 min/i)).toBeNull();
+  expect(screen.getByText(/temporary goose/)).toBeInTheDocument();
 });
 
 it('opening join instructions does not mint or fetch a token', () => {
   const fetch = vi.spyOn(global, 'fetch');
   render(<JoinTownModal open onClose={() => undefined} />);
-  expect(screen.getByText('Join GooseTown.', { selector: 'strong' })).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'https://api.goosetown.thelightbulb.company/api/v1/town/skill' })).toHaveAttribute('href', 'https://api.goosetown.thelightbulb.company/api/v1/town/skill');
+  expect(screen.getByText(/VM or computer/)).toBeInTheDocument();
   expect(fetch).not.toHaveBeenCalled();
 });
