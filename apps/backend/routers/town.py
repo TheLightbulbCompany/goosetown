@@ -123,7 +123,15 @@ async def get_town_token_user(
         raise HTTPException(status_code=401, detail="Invalid token signature")
 
     service = TownService()
-    instance = service.get_instance_by_token(token)
+    if payload.get("scope") == "actor":
+        from core import dynamo
+        instance = dynamo.instances_table().get_item(Key={"id": payload["iid"]}, ConsistentRead=True).get("Item")
+        actor = service.get_town_agent_by_id(payload["aid"], consistent=True)
+        if (not actor or actor.get("userId") != payload["uid"]
+                or actor.get("instanceId") != payload["iid"] or actor.get("isActive") != "true"):
+            raise HTTPException(401, "Approved actor unavailable")
+    else:
+        instance = service.get_instance_by_token(token)
     if (
         payload["iid"] in {"viewer", "anonymous-viewer"}
         or not instance
@@ -466,6 +474,15 @@ async def register_agent(
 ):
     """Register a new agent in GooseTown. Authenticated via town_token."""
     user_id, token = token_info
+    from core.town_token import verify_town_token
+    claims = verify_town_token(token)
+    if claims and claims.get("scope") == "actor":
+        # Device consent already created the public actor under Clerk auth.
+        # No caller-supplied character fields or registration side effects run.
+        actor = TownService().get_town_agent_by_id(claims["aid"], consistent=True)
+        if not actor or actor.get("agentName") != request.agent_name:
+            raise HTTPException(403, "This connection cannot register another actor")
+        raise HTTPException(400, f"Agent '{request.agent_name}' already registered")
 
     if request.appearance:
         from core.services.appearance_validation import AppearanceRejected, validate_appearance
@@ -491,6 +508,8 @@ async def register_agent(
         display_name=request.display_name,
         personality_summary=request.personality[:200] if request.personality else None,
     )
+
+    service.update_agent_state(agent["id"], appearance=request.appearance)
 
     # One-time signup grant for the Exchange (non-fatal — self-heals on first wallet use).
     try:
@@ -606,6 +625,8 @@ async def get_agent_status(
     agent = service.get_agent_by_name(user_id, agent_name)
     if not agent:
         raise HTTPException(404, "Agent not found")
+    from core.town_token import require_actor_scope
+    require_actor_scope(token_info[1], agent["id"])
 
     # Already done
     if agent.get("spriteReady") and agent.get("spriteUrl"):
@@ -1145,12 +1166,12 @@ async def get_or_create_instance(
     enrollment_agent_name: str | None = None,
 ):
     """Get existing instance or create a new one. Returns town_token."""
-    from core.config import settings
-    from core.services.user_service import UserService
     import asyncio
     import time
 
     from core import dynamo
+    from core.config import settings
+    from core.services.user_service import UserService
     from core.town_token import sign_town_token, verify_town_token
 
     service = TownService()
@@ -1254,7 +1275,8 @@ async def get_or_create_instance(
         from core.runtime_enrollment import EnrollmentStateChanged, mint_join_token
 
         try:
-            response["join_token"] = mint_join_token(instance["id"], auth.user_id, instance["townToken"], agent_name=enrollment_agent_name)
+            response["join_token"] = mint_join_token(
+                instance["id"], auth.user_id, instance["townToken"], agent_name=enrollment_agent_name)
         except EnrollmentStateChanged as exc:
             raise HTTPException(status_code=409, detail="Onboarding changed; please retry") from exc
     return response
@@ -1512,7 +1534,10 @@ async def exchange_upload_url(
     """
     from core.config import settings
 
-    user_id, _ = token_info
+    user_id, credential = token_info
+    from core.town_token import verify_town_token
+    if (verify_town_token(credential) or {}).get("scope") == "actor":
+        raise HTTPException(403, "Public town connection does not authorize file sharing")
     if not settings.SPRITE_S3_BUCKET:
         raise HTTPException(503, "Artifact storage is not configured")
 
@@ -1973,6 +1998,12 @@ async def _handle_ws_message_inner(request: WsMessageRequest, raw_request: Reque
             return {"statusCode": 400, "error": "unknown_connection"}
 
         action = body.get("action", "")
+        claims = agent_conn.runtime_session_claims or {}
+        if claims.get("device_id") and action not in {
+            "move", "chat", "say", "idle", "end_conversation", "join_conversation",
+            "context_transition", "activity", "reply_owner", "set_goal", "complete_goal", "describe_stance",
+        }:
+            return {"statusCode": 403, "error": "public_connection_scope"}
 
         # Energy soft-gate: an exhausted agent (energy=0) can only idle or
         # disconnect. Every other act is rejected with an explicit event so the

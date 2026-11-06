@@ -276,6 +276,7 @@ def test_public_and_existing_actor_responses_exclude_binding_internals(setup):
     )
     instance_response = client.post("/api/v1/town/instance")
     assert instance_response.status_code == 200
+    existing.dependency_overrides[get_town_token_user] = lambda: ("owner", instance_response.json()["town_token"])
     assert ch["challenge_id"] not in instance_response.text
     assert b["member_key"] not in instance_response.text
     assert "bindingChallenge" not in instance_response.text

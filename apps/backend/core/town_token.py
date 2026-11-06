@@ -53,6 +53,8 @@ def sign_town_token(
     *,
     issued_at: int | None = None,
     ttl_seconds: int = TOKEN_TTL_SECONDS,
+    actor_id: str | None = None,
+    device_id: str | None = None,
 ) -> str:
     """Create an HMAC-signed town token with a 30-day expiry.
 
@@ -61,10 +63,12 @@ def sign_town_token(
     """
     iat = int(issued_at if issued_at is not None else time.time())
     exp = iat + ttl_seconds
-    payload = json.dumps(
-        {"uid": user_id, "iid": instance_id, "iat": iat, "exp": exp},
-        separators=(",", ":"),
-    )
+    claims = {"uid": user_id, "iid": instance_id, "iat": iat, "exp": exp}
+    if actor_id is not None:
+        claims.update({"scope": "actor", "aid": actor_id})
+        if device_id is not None:
+            claims["device_id"] = device_id
+    payload = json.dumps(claims, separators=(",", ":"))
     payload_b64 = _b64url_encode(payload.encode())
     secret = _get_town_token_secret()
     sig = hmac.new(secret.encode(), payload_b64.encode(), hashlib.sha256).digest()
@@ -104,6 +108,11 @@ def verify_town_token(token: str) -> dict | None:
         not isinstance(payload.get(k), str) or not payload[k] for k in ("uid", "iid")
     ):
         return None
+    if "scope" in payload or "aid" in payload or "device_id" in payload:
+        if payload.get("scope") != "actor" or not isinstance(payload.get("aid"), str) or not payload["aid"]:
+            return None
+        if "device_id" in payload and (not isinstance(payload["device_id"], str) or not payload["device_id"]):
+            return None
     iat, exp = payload.get("iat"), payload.get("exp")
     if type(iat) is not int or type(exp) is not int or iat > now or exp <= now or exp <= iat:
         return None
@@ -119,3 +128,15 @@ def verify_town_token(token: str) -> dict | None:
         logger.warning("Town token revocation check unavailable; denying request")
         return None
     return payload
+
+
+def require_actor_scope(token: str, actor_id: str) -> dict:
+    """An actor credential never inherits the account's other actors."""
+    from fastapi import HTTPException
+
+    claims = verify_town_token(token)
+    if not claims:
+        raise HTTPException(401, "Invalid town credential")
+    if claims.get("scope") == "actor" and claims["aid"] != actor_id:
+        raise HTTPException(403, "This connection only authorizes its approved actor")
+    return claims

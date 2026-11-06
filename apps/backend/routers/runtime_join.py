@@ -25,6 +25,7 @@ router = APIRouter(dependencies=[Depends(binding._enabled)])
 async def _town_auth(authorization: str | None = Header(default=None, alias="Authorization")):
     # Resolve lazily to keep the existing town router import acyclic.
     from routers.town import get_town_token_user
+
     return await get_town_token_user(authorization)
 
 
@@ -87,6 +88,9 @@ def _challenge_response(payload):
 def _request(actor_id, request_id, secret, token_info):
     owner, instance, issued = _principal(token_info)
     actor = binding._owned(actor_id, owner)
+    from core.town_token import require_actor_scope
+
+    require_actor_scope(token_info[1], actor_id)
     pending = actor.get("runtimeJoin", {})
     now = binding._now()
     if (
@@ -119,6 +123,9 @@ async def start(body: StartRequest, token_info: tuple = Depends(_town_auth)):
     if not found:
         raise HTTPException(404, "agent not found")
     actor = binding._owned(found["id"], owner)
+    from core.town_token import require_actor_scope
+
+    require_actor_scope(token_info[1], actor["id"])
     if actor.get("instanceId") not in (None, instance["id"]):
         raise HTTPException(404, "agent not found")
     binding._key(body.member_key)
@@ -130,7 +137,9 @@ async def start(body: StartRequest, token_info: tuple = Depends(_town_auth)):
         if active.get("memberKey") == body.member_key and active.get("sessionId") == body.session_id:
             # Existing state only: no new credentials, grants or liveness claim.
             return {
-                "state": "ready", "actor_id": actor["id"], "revision": int(actor["bindingRevision"]),
+                "state": "ready",
+                "actor_id": actor["id"],
+                "revision": int(actor["bindingRevision"]),
                 "runtime_session_required": settings.RUNTIME_SESSION_ENFORCEMENT_ENABLED,
             }
         raise HTTPException(409, "another runtime is connected")
@@ -150,16 +159,28 @@ async def start(body: StartRequest, token_info: tuple = Depends(_town_auth)):
     request_id, poll_secret = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
     expires = min(now + binding.TTL, int(grant["expiresAt"]))
     payload = {
-        "version": 1, "actor_id": actor["id"], "owner_id": owner,
-        "member_key": body.member_key, "session_id": body.session_id,
-        "audience": binding.audience(), "revision": 0,
-        "challenge_id": secrets.token_urlsafe(32), "issued_at": now, "expires_at": expires,
+        "version": 1,
+        "actor_id": actor["id"],
+        "owner_id": owner,
+        "member_key": body.member_key,
+        "session_id": body.session_id,
+        "audience": binding.audience(),
+        "revision": 0,
+        "challenge_id": secrets.token_urlsafe(32),
+        "issued_at": now,
+        "expires_at": expires,
     }
     pending = {
-        "requestId": request_id, "secretHash": _digest(poll_secret),
-        "enrollmentHash": grant["secretHash"], "instanceId": instance["id"],
-        "ownerId": owner, "expiresAt": expires, "memberKey": body.member_key,
-        "sessionId": body.session_id, "revision": 0, "challengeId": payload["challenge_id"],
+        "requestId": request_id,
+        "secretHash": _digest(poll_secret),
+        "enrollmentHash": grant["secretHash"],
+        "instanceId": instance["id"],
+        "ownerId": owner,
+        "expiresAt": expires,
+        "memberKey": body.member_key,
+        "sessionId": body.session_id,
+        "revision": 0,
+        "challengeId": payload["challenge_id"],
     }
     binding._update(
         actor["id"],
@@ -173,14 +194,25 @@ async def start(body: StartRequest, token_info: tuple = Depends(_town_auth)):
             "AND runtimeJoin.enrollmentHash = :grant))"
         ),
         ExpressionAttributeValues={
-            ":pending": pending, ":challenge": payload, ":owner": owner,
-            ":active": "true", ":iid": instance["id"], ":zero": 0, ":now": now,
-            ":key": body.member_key, ":session": body.session_id, ":grant": grant["secretHash"],
+            ":pending": pending,
+            ":challenge": payload,
+            ":owner": owner,
+            ":active": "true",
+            ":iid": instance["id"],
+            ":zero": 0,
+            ":now": now,
+            ":key": body.member_key,
+            ":session": body.session_id,
+            ":grant": grant["secretHash"],
         },
     )
     return {
-        "state": "approved", "actor_id": actor["id"], "request_id": request_id,
-        "poll_secret": poll_secret, "expires_at": expires, "challenge": _challenge_response(payload),
+        "state": "approved",
+        "actor_id": actor["id"],
+        "request_id": request_id,
+        "poll_secret": poll_secret,
+        "expires_at": expires,
+        "challenge": _challenge_response(payload),
     }
 
 
@@ -200,27 +232,38 @@ async def finish(actor_id: str, request_id: str, body: FinishRequest, token_info
         update["ConditionExpression"] += " AND instanceId = :iid AND attribute_not_exists(runtimeBinding)"
         update["ExpressionAttributeValues"][":iid"] = instance["id"]
         try:
-            dynamo.get_client().meta.client.transact_write_items(TransactItems=[
-                {"Update": {"TableName": dynamo.agents_table().name, "Key": {"id": actor_id}, **update}},
-                {"Update": {
-                    "TableName": dynamo.instances_table().name, "Key": {"id": instance["id"]},
-                    "UpdateExpression": "REMOVE runtimeEnrollment",
-                    "ConditionExpression": (
-                        "userId = :owner AND isActive = :active AND runtimeEnrollment.ownerId = :owner "
-                        "AND runtimeEnrollment.secretHash = :grant AND runtimeEnrollment.expiresAt > :now "
-                        "AND runtimeEnrollment.audience = :audience"
-                    ),
-                    "ExpressionAttributeValues": {
-                        ":owner": owner, ":active": "true", ":grant": pending["enrollmentHash"], ":now": now,
-                        ":audience": binding.audience(),
+            dynamo.get_client().meta.client.transact_write_items(
+                TransactItems=[
+                    {"Update": {"TableName": dynamo.agents_table().name, "Key": {"id": actor_id}, **update}},
+                    {
+                        "Update": {
+                            "TableName": dynamo.instances_table().name,
+                            "Key": {"id": instance["id"]},
+                            "UpdateExpression": "REMOVE runtimeEnrollment",
+                            "ConditionExpression": (
+                                "userId = :owner AND isActive = :active AND runtimeEnrollment.ownerId = :owner "
+                                "AND runtimeEnrollment.secretHash = :grant AND runtimeEnrollment.expiresAt > :now "
+                                "AND runtimeEnrollment.audience = :audience"
+                            ),
+                            "ExpressionAttributeValues": {
+                                ":owner": owner,
+                                ":active": "true",
+                                ":grant": pending["enrollmentHash"],
+                                ":now": now,
+                                ":audience": binding.audience(),
+                            },
+                        }
                     },
-                }},
-                {"ConditionCheck": {
-                    "TableName": dynamo.users_table().name, "Key": {"userId": owner},
-                    "ConditionExpression": "attribute_not_exists(tokenRevokedAt) OR tokenRevokedAt <= :issued",
-                    "ExpressionAttributeValues": {":issued": issued * 1000},
-                }},
-            ])
+                    {
+                        "ConditionCheck": {
+                            "TableName": dynamo.users_table().name,
+                            "Key": {"userId": owner},
+                            "ConditionExpression": "attribute_not_exists(tokenRevokedAt) OR tokenRevokedAt <= :issued",
+                            "ExpressionAttributeValues": {":issued": issued * 1000},
+                        }
+                    },
+                ]
+            )
         except ClientError as exc:
             if exc.response["Error"]["Code"] == "TransactionCanceledException":
                 reasons = exc.response.get("CancellationReasons", [])
@@ -229,10 +272,16 @@ async def finish(actor_id: str, request_id: str, body: FinishRequest, token_info
             raise
 
     result = binding._complete_for_owner(
-        actor_id, body, owner, join_request=pending, commit=commit,
+        actor_id,
+        body,
+        owner,
+        join_request=pending,
+        commit=commit,
     )
     return {
-        "state": "ready", "actor_id": actor_id, "revision": result["binding"]["revision"],
+        "state": "ready",
+        "actor_id": actor_id,
+        "revision": result["binding"]["revision"],
         "runtime_session_required": settings.RUNTIME_SESSION_ENFORCEMENT_ENABLED,
     }
 

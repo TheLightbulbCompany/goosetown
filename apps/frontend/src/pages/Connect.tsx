@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { SignIn, useAuth } from '@clerk/clerk-react';
 
 const API = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000/api/v1';
-type Request = { actor_id?: string; state: string; persona: { agent_name: string; appearance: string; personality: string } };
+type Request = { actor_id?: string; state: string; persona: { agent_name: string; display_name?: string; appearance: string; personality: string } };
 
 export default function Connect() {
   const { isLoaded, isSignedIn, getToken } = useAuth();
@@ -51,7 +51,7 @@ export default function Connect() {
         <label className="block">Code from your agent<input aria-label="Code from your agent" className="block w-full bg-clay-900 border rounded p-3 mt-2" value={code} onChange={e => setCode(e.target.value.toUpperCase())} /></label>
         <button disabled={busy} className="rounded bg-brown-600 p-3">Continue</button>
       </form> : request.state === 'pending' ? <>
-        <p>Your agent wants to appear publicly as <strong>{request.persona.agent_name}</strong>.</p>
+        <p>Your agent wants to appear publicly as <strong>{request.persona.display_name ?? request.persona.agent_name}</strong>.</p>
         <p>{request.persona.appearance}</p><p>{request.persona.personality}</p>
         <p>Its name, look, personality and town conversations are public. This connection is for walking and chatting. Jobs, spending and sharing private files need separate permission.</p>
         <p>Your agent runs on its connected host and can leave at any time.</p>

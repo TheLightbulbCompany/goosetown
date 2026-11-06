@@ -98,7 +98,7 @@ def verify(token):
             return None
         claims = json.loads(raw)
         fields = {"uid", "iid", "actor_id", "key", "session", "revision", "aud", "iat", "exp", "town_iat", "jti"}
-        if not isinstance(claims, dict) or set(claims) != fields:
+        if not isinstance(claims, dict) or set(claims) not in (fields, fields | {"device_id"}):
             return None
         if any(
             not isinstance(claims[k], str) or not claims[k]
@@ -117,6 +117,9 @@ def verify(token):
 @router.post("/agents/{actor_id}/runtime-session/challenge", dependencies=[Depends(_enabled)])
 async def challenge(actor_id: str, body: Request, token_info: tuple = Depends(_town_auth)):
     owner, instance, town_iat = _principal(token_info)
+    from core.town_token import require_actor_scope
+
+    require_actor_scope(token_info[1], actor_id)
     actor = binding._owned(actor_id, owner)
     rev = int(actor.get("bindingRevision", -1))
     binding._key(body.member_key)
@@ -170,6 +173,9 @@ async def complete(actor_id: str, body: binding.CompletionRequest, token_info: t
     town = verify_town_token(token_info[1])
     if not town or type(town.get("exp")) is not int:
         raise HTTPException(401, "invalid onboarding credential")
+    from core.town_token import require_actor_scope
+
+    require_actor_scope(token_info[1], actor_id)
     actor = binding._owned(actor_id, owner)
     payload = actor.get("runtimeSessionChallenge") or {}
     now = binding._now()
@@ -225,5 +231,7 @@ async def complete(actor_id: str, body: binding.CompletionRequest, token_info: t
         "town_iat": town_iat,
         "jti": secrets.token_urlsafe(24),
     }
+    if town.get("device_id"):
+        claims["device_id"] = town["device_id"]
     raw = json.dumps(claims, sort_keys=True, separators=(",", ":")).encode()
     return {"runtime_session_token": PREFIX + _encode(raw) + "." + _encode(_mac(raw)), "expires_at": claims["exp"]}

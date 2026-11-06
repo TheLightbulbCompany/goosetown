@@ -22,7 +22,9 @@ class EnrollmentStateChanged(Exception):
     """Instance credentials changed during onboarding."""
 
 
-def mint_join_token(instance_id: str, owner_id: str, town_token: str, *, agent_name: str | None = None) -> str:
+def mint_join_token(
+    instance_id: str, owner_id: str, town_token: str, *, agent_name: str | None = None, runtime_token: str | None = None
+) -> str:
     secret = secrets.token_urlsafe(32)
     grant = {
         "secretHash": hashlib.sha256(secret.encode("ascii")).hexdigest(),
@@ -43,5 +45,5 @@ def mint_join_token(instance_id: str, owner_id: str, town_token: str, *, agent_n
         if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
             raise EnrollmentStateChanged from exc
         raise
-    payload = json.dumps({"town_token": town_token, "enrollment_token": secret}, separators=(",", ":"))
+    payload = json.dumps({"town_token": runtime_token or town_token, "enrollment_token": secret}, separators=(",", ":"))
     return "gtj_" + base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
