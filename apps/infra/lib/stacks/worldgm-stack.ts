@@ -17,7 +17,7 @@ export interface WorldgmStackProps extends cdk.StackProps {
   environment: string;
   cluster: ecs.ICluster;
   vpc: ec2.IVpc;
-  /** Auth secrets subset needed by worldgm (Clerk + town token for any DDB access via TownService). */
+  /** Auth configuration and town token needed by WorldGM. */
   secrets: AuthSecrets;
   /** SNS topic for CloudWatch alarm actions. */
   alarmTopic?: sns.ITopic;
@@ -117,7 +117,6 @@ export class WorldgmStack extends cdk.Stack {
       },
       secrets: {
         CLERK_ISSUER: ecs.Secret.fromSecretsManager(props.secrets.clerkIssuer),
-        CLERK_SECRET_KEY: ecs.Secret.fromSecretsManager(props.secrets.clerkSecretKey),
         TOWN_TOKEN_SECRET: ecs.Secret.fromSecretsManager(props.secrets.townTokenSecret),
       },
     });
