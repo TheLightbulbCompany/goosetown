@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from core.config import settings
+from core.services.pixellab_quota import reserve_request
 
 logger = logging.getLogger(__name__)
 
@@ -280,6 +281,8 @@ class PixelLabService:
         last_exc: Exception | None = None
         client = _get_pixellab_client()
         for attempt in range(retries):
+            if method.upper() != "GET":
+                reserve_request()
             try:
                 resp = await client.request(method, url, headers=headers, json=json, timeout=timeout)
             except (httpx.TimeoutException, httpx.TransportError) as exc:

@@ -216,7 +216,7 @@ async def run_signup_pipeline(
             await sink.progress(agent_id, "Creating your character...")
 
             char_id, creation_job_id = await pxl.create_character(description=appearance)
-            service.update_agent_state(agent_id, pixellab_character_id=char_id)
+            service.update_agent_state(agent_id, pixellab_character_id=char_id, avatarState=None)
             logger.info("PixelLab returned char_id=%s job=%s for %s", char_id, creation_job_id, agent_id)
 
             # Poll creation job until complete (up to 5 min)
@@ -484,12 +484,12 @@ async def resume_sprite_generation(
     _resume_in_flight.add(agent_id)
 
     try:
-        pxl = PixelLabService()
         service = TownService()
 
         # Recover the existing spriteUrl from DynamoDB so we don't overwrite it
         # with "" if Phase C can't find a "walk" key in the animation dict.
         existing_agent = service.get_town_agent_by_id(agent_id)
+        pxl = PixelLabService()
         existing_sprite_url = (existing_agent or {}).get("spriteUrl", "")
 
         def _progress(status: str) -> None:
@@ -505,7 +505,7 @@ async def resume_sprite_generation(
             if not char_id:
                 _progress("Recreating character...")
                 char_id, creation_job_id = await pxl.create_character(description=appearance)
-                service.update_agent_state(agent_id, pixellab_character_id=char_id)
+                service.update_agent_state(agent_id, pixellab_character_id=char_id, avatarState=None)
                 if creation_job_id:
                     await pxl.wait_for_jobs([creation_job_id], on_progress=_anim_progress, progress_label="creation")
             service.update_agent_state(agent_id, sprite_status="animating")

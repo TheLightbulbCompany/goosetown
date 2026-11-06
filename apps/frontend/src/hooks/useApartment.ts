@@ -21,6 +21,7 @@ export interface ApartmentAgent {
   is_active: boolean;
   sprite_url: string | null;
   sprite_ready: boolean;
+  avatar_state?: string | null;
   created_at: number | null; // ms timestamp from backend
   currentGoal: string | null;
   wallet_balance?: number;

@@ -16,6 +16,8 @@ class Settings:
     CORS_ORIGINS: str = os.getenv("CORS_ORIGINS", "http://localhost:5173")
     ENVIRONMENT: str = os.getenv("ENVIRONMENT", "dev")
     PIXELLAB_API_KEY: str = os.getenv("PIXELLAB_API_KEY", "")
+    # Zero denies paid requests until an operator explicitly sets reviewed limits.
+    PIXELLAB_REQUESTS_PER_DAY: int = int(os.getenv("PIXELLAB_REQUESTS_PER_DAY", "0"))
     RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "")
     RESEND_AUDIENCE_ID: str = os.getenv("RESEND_AUDIENCE_ID", "")
     SPRITE_S3_BUCKET: str = os.getenv("SPRITE_S3_BUCKET", "")

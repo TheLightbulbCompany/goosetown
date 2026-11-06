@@ -20,11 +20,12 @@ import { SpriteWorkerStack } from "../lib/stacks/sprite-worker-stack";
 // Helpers — minimal dependency stubs so CDK synthesizes without real lookups.
 // ---------------------------------------------------------------------------
 
-function buildTestApp(env: string, withAlarmTopic = false): Template {
+function buildTestApp(env: string, withAlarmTopic = false, dailyRequests: unknown = 0): Template {
   const app = new cdk.App({
     context: {
       // Suppress asset bundling during synth
       "aws:cdk:bundling-stacks": [],
+      [`pixellabDailyRequests:${env}`]: dailyRequests,
     },
   });
 
@@ -58,6 +59,7 @@ function buildTestApp(env: string, withAlarmTopic = false): Template {
   // full shape so `as any` cast on DatabaseTables remains consistent.
   const tables = {
     agents: makeTable("agents"),
+    users: makeTable("users"),
     instances: makeTable("instances"),
     relationships: makeTable("relationships"),
     conversations: makeTable("conversations"),
@@ -371,4 +373,30 @@ test.each(["dev", "prod"])("%s worker emits canonical sprite URLs", (env) => {
       })]),
     })]),
   });
+});
+
+test("sprite worker can atomically reserve only PixelLab quota rows", () => {
+  buildTestApp("prod").hasResourceProperties("AWS::IAM::Policy", {
+    PolicyDocument: { Statement: Match.arrayWith([Match.objectLike({
+      Action: "dynamodb:UpdateItem",
+      Resource: { "Fn::Join": ["", Match.arrayWith([Match.stringLikeRegexp(":table/goosetown-prod-users$")])] },
+      Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["__pixellab_quota__:*"] } },
+    })]) },
+
+  });
+});
+
+
+test("daily request ceiling is explicitly configurable with a fail-closed default", () => {
+  for (const [limit, expected] of [[0, "0"], [7, "7"]] as const) {
+    buildTestApp("dev", false, limit).hasResourceProperties("AWS::ECS::TaskDefinition", {
+      ContainerDefinitions: Match.arrayWith([Match.objectLike({
+        Environment: Match.arrayWith([{ Name: "PIXELLAB_REQUESTS_PER_DAY", Value: expected }]),
+      })]),
+    });
+  }
+});
+
+test.each([-1, "unlimited", 1.5, Number.MAX_SAFE_INTEGER + 1])("invalid request ceiling %s fails synthesis", limit => {
+  expect(() => buildTestApp("dev", false, limit)).toThrow("nonnegative integer");
 });

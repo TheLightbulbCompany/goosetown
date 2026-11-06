@@ -42,6 +42,12 @@ export class SpriteWorkerStack extends cdk.Stack {
 
   constructor(scope: Construct, id: string, props: SpriteWorkerStackProps) {
     super(scope, id, props);
+    // Set -c pixellabDailyRequests:dev=N or :prod=N only after budget review.
+    const dailyRequests = String(this.node.tryGetContext(`pixellabDailyRequests:${props.environment}`) ?? 0);
+    if (!/^\d+$/.test(dailyRequests) || !Number.isSafeInteger(Number(dailyRequests))) {
+      throw new Error("PixelLab daily request ceiling must be a nonnegative integer");
+    }
+
     const env = props.environment;
 
     const dlq = new sqs.Queue(this, "SpriteJobsDlq", {
@@ -93,6 +99,7 @@ export class SpriteWorkerStack extends cdk.Stack {
         DYNAMODB_TABLE_PREFIX: `goosetown-${env}`,
         SPRITE_S3_BUCKET: props.spriteBucket.bucketName,
         SPRITE_CDN_URL: `https://${canonicalHost("assets", env)}`,
+        PIXELLAB_REQUESTS_PER_DAY: dailyRequests,
         SPRITE_JOBS_QUEUE_NAME: `goosetown-${env}-sprite-jobs`,
         // Inline custom-domain string, NOT an Fn.importValue — same rationale
         // as compute-stack's WS_MANAGEMENT_API_URL (avoids cross-stack cycles).
@@ -118,6 +125,12 @@ export class SpriteWorkerStack extends cdk.Stack {
     this.queue.grantConsumeMessages(taskDef.taskRole);
     this.queue.grantSendMessages(taskDef.taskRole); // boot-sweep re-enqueue
     props.tables.agents.grantReadWriteData(taskDef.taskRole);
+    // Only the dedicated request-counter rows; no user tokens/profile access.
+    taskDef.taskRole.addToPrincipalPolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:UpdateItem"],
+      resources: [props.tables.users.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["__pixellab_quota__:*" ] } },
+    }));
     props.spriteBucket.grantReadWrite(taskDef.taskRole);
     // PutMetricData has no resource-level scoping; namespace is by convention
     // (GooseTown/SpriteWorker) — same note as WorldgmStack.

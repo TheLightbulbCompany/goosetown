@@ -6,8 +6,10 @@ import enum
 import json
 import logging
 
+from core.services.pixellab_quota import PixelLabQuotaDenied
 from core.services.pixellab_service import PixelLabCreditError
 from core.services.sprite_pipeline import SpriteEventSink, run_animation_job, run_signup_pipeline
+from core.services.town_service import TownService
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +17,7 @@ logger = logging.getLogger(__name__)
 class Outcome(enum.Enum):
     DELETE = "delete"  # done (or permanently un-processable) — remove from queue
     RELEASE = "release"  # transient failure / duplicate-in-flight — let visibility lapse
+    BUDGET_PAUSE = "budget_pause"  # no provider call; retain work until limits reset
     CREDIT_PAUSE = "credit_pause"  # 402 — long visibility + metric; queue effectively pauses
 
 
@@ -56,6 +59,22 @@ async def process_message(raw_body: str, *, sink: SpriteEventSink) -> Outcome:
         else:
             await run_animation_job(agent_id, body.get("anim_name", ""), sink=sink)
         return Outcome.DELETE
+    except PixelLabQuotaDenied:
+        if kind == "animation":
+            # Missing animations can retry on the next activity; don't retain
+            # duplicate jobs or emit avatar progress on every budget denial.
+            return Outcome.DELETE
+        # Status feedback is best-effort: the quota store may itself be down.
+        # Always return the pause outcome so the worker retains delayed work.
+        try:
+            TownService().update_agent_state(agent_id, avatarState="queued")
+        except Exception:
+            logger.warning("sprite-worker: could not save queued avatar state for %s", agent_id[:8])
+        try:
+            await sink.progress(agent_id, "Avatar coming later; it's queued.")
+        except Exception:
+            logger.warning("sprite-worker: could not send queued avatar progress for %s", agent_id[:8])
+        return Outcome.BUDGET_PAUSE
     except PixelLabCreditError:
         logger.error("sprite-worker: PixelLab credits exhausted (agent %s)", agent_id[:8])
         return Outcome.CREDIT_PAUSE

@@ -460,6 +460,14 @@ async def register_agent(
     """Register a new agent in GooseTown. Authenticated via town_token."""
     user_id, token = token_info
 
+    if request.appearance:
+        from core.services.appearance_validation import AppearanceRejected, validate_appearance
+
+        try:
+            request.appearance = validate_appearance(request.appearance)
+        except AppearanceRejected as exc:
+            raise HTTPException(400, str(exc)) from exc
+
     service = TownService()
     instance = service.get_active_instance(user_id)
     if not instance:
@@ -1111,6 +1119,7 @@ async def get_apartment(
                 current_spot=item.get("currentLocation"),
                 is_active=item.get("isActive") == "true",
                 sprite_url=versioned_sprite_url(item.get("spriteUrl"), item) if item.get("spriteReady") else "",
+                avatar_state=None if item.get("spriteReady") else item.get("avatarState"),
                 currentGoal=item.get("currentGoal"),
                 wallet_balance=int(item.get("walletBalance", 0) or 0),
                 trust_tier=exchange_scoring.trust_tier(
