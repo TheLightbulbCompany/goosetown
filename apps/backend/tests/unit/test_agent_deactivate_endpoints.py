@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from core.quota import QuotaExceeded
 from main import app
 
 
@@ -55,7 +56,7 @@ def test_deactivate_succeeds_for_owner():
                 "routers.town.TownService.get_town_agent_by_id",
                 return_value=_agent_record(agent_id="agent-1", user_id="user-1"),
             ),
-            patch("routers.town.TownService.update_agent_state") as p_update,
+            patch("routers.town.TownService.set_agent_active") as p_set,
             patch("routers.town.get_town_agent_ws_manager"),
             patch("routers.town.get_game_server_client"),
         ):
@@ -68,11 +69,8 @@ def test_deactivate_succeeds_for_owner():
             body = r.json()
             assert body["isActive"] is False
             assert body["id"] == "agent-1"
-            # Service was called with isActive="false" (string) to match
-            # the existing schema (DDB stores isActive as a string).
-            p_update.assert_called_once()
-            kwargs = p_update.call_args.kwargs
-            assert kwargs.get("is_active") == "false"
+            # Goes through set_agent_active so the quota slot is released.
+            p_set.assert_called_once_with("agent-1", False)
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 
@@ -125,7 +123,7 @@ def test_deactivate_is_idempotent_when_already_inactive():
                 "routers.town.TownService.get_town_agent_by_id",
                 return_value=_agent_record(agent_id="agent-1", user_id="user-1", is_active="false"),
             ),
-            patch("routers.town.TownService.update_agent_state") as p_update,
+            patch("routers.town.TownService.set_agent_active") as p_set,
             patch("routers.town.get_town_agent_ws_manager"),
             patch("routers.town.get_game_server_client"),
         ):
@@ -138,7 +136,7 @@ def test_deactivate_is_idempotent_when_already_inactive():
             body = r.json()
             assert body["isActive"] is False
             # No update needed if already inactive.
-            p_update.assert_not_called()
+            p_set.assert_not_called()
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 
@@ -158,11 +156,7 @@ def test_reactivate_succeeds_for_owner_under_quota():
                 "routers.town.TownService.get_town_agent_by_id",
                 return_value=_agent_record(agent_id="agent-1", user_id="user-1", is_active="false"),
             ),
-            patch(
-                "routers.town.TownService.get_active_agents_for_user",
-                return_value=[{"id": f"a-{i}", "userId": "user-1"} for i in range(2)],
-            ),
-            patch("routers.town.TownService.update_agent_state") as p_update,
+            patch("routers.town.TownService.set_agent_active") as p_set,
         ):
             client = TestClient(app)
             r = client.post(
@@ -172,8 +166,7 @@ def test_reactivate_succeeds_for_owner_under_quota():
             assert r.status_code == 200, r.text
             body = r.json()
             assert body["isActive"] is True
-            p_update.assert_called_once()
-            assert p_update.call_args.kwargs.get("is_active") == "true"
+            p_set.assert_called_once_with("agent-1", True)
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 
@@ -189,10 +182,9 @@ def test_reactivate_returns_429_when_quota_full():
                 return_value=_agent_record(agent_id="agent-1", user_id="user-1", is_active="false"),
             ),
             patch(
-                "routers.town.TownService.get_active_agents_for_user",
-                return_value=[{"id": f"a-{i}", "userId": "user-1"} for i in range(5)],
+                "routers.town.TownService.set_agent_active",
+                side_effect=QuotaExceeded(kind="agents", limit=5, current=5),
             ),
-            patch("routers.town.TownService.update_agent_state"),
         ):
             client = TestClient(app)
             r = client.post(
@@ -200,6 +192,7 @@ def test_reactivate_returns_429_when_quota_full():
                 headers=_auth_headers(),
             )
             assert r.status_code == 429, r.text
+            assert r.json()["detail"]["current"] == 5
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 

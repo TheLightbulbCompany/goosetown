@@ -48,7 +48,6 @@ def test_get_or_create_lazy_creates_user(users_table_resource):
     user = svc.get_or_create("user_abc")
     assert user["userId"] == "user_abc"
     assert "createdAt" in user
-    assert user.get("sprite_jobs_24h", []) == []
 
 
 def test_get_or_create_returns_existing_user(users_table_resource):
@@ -99,15 +98,16 @@ def test_is_token_revoked_false_when_never_revoked(users_table_resource):
     assert svc.is_token_revoked("user_abc", int(time.time()) * 1000) is False
 
 
-def test_consume_sprite_quota_appends_to_window(users_table_resource):
-    from core.services.user_service import UserService
+def test_consume_sprite_quota_counts_today(users_table_resource):
+    from core.services.user_service import UserService, utc_day
 
     svc = UserService()
-    svc.get_or_create("user_abc")
+    svc.consume_sprite_quota("user_abc")
     svc.consume_sprite_quota("user_abc")
     user = svc.get_or_create("user_abc")
-    jobs = user.get("sprite_jobs_24h", [])
-    assert len(jobs) == 1
+    assert user["spriteDay"] == utc_day()
+    assert int(user["spriteCount"]) == 2
+    assert svc.sprites_used_today("user_abc") == 2
 
 
 def test_consume_sprite_quota_raises_at_limit(users_table_resource):
@@ -124,45 +124,124 @@ def test_consume_sprite_quota_raises_at_limit(users_table_resource):
     assert exc.value.current == SPRITE_QUOTA_DAILY
 
 
-def test_sprite_window_drops_entries_older_than_24h(users_table_resource):
+def test_sprite_counter_resets_on_new_utc_day(users_table_resource):
+    from core.services.user_service import SPRITE_QUOTA_DAILY, UserService
+
+    svc = UserService()
+    svc.get_or_create("user_abc")
+    users_table_resource.update_item(
+        Key={"userId": "user_abc"},
+        UpdateExpression="SET spriteDay = :d, spriteCount = :n",
+        ExpressionAttributeValues={":d": "2000-01-01", ":n": SPRITE_QUOTA_DAILY},
+    )
+    svc.consume_sprite_quota("user_abc")
+    assert svc.sprites_used_today("user_abc") == 1
+
+
+def test_request_straddling_midnight_cannot_rewind_the_new_day(users_table_resource):
+    """Review F1: a request whose clock still says day D must not reset a row
+    other requests already rolled to D+1 (and used up)."""
+    from datetime import datetime, timezone
+    from unittest.mock import patch
+
+    from core.services.user_service import SPRITE_QUOTA_DAILY, UserService
+
+    svc = UserService()
+    svc.get_or_create("user_abc")
+    users_table_resource.update_item(
+        Key={"userId": "user_abc"},
+        UpdateExpression="SET spriteDay = :d, spriteCount = :n",
+        ExpressionAttributeValues={":d": "2026-11-07", ":n": SPRITE_QUOTA_DAILY},
+    )
+
+    class LateClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 11, 6, 23, 59, 59, 990000, tzinfo=timezone.utc)
+
+    with patch("core.services.user_service.datetime", LateClock), pytest.raises(QuotaExceeded):
+        svc.consume_sprite_quota("user_abc")
+
+    user = svc.get_or_create("user_abc")
+    assert (user["spriteDay"], int(user["spriteCount"])) == ("2026-11-07", SPRITE_QUOTA_DAILY)
+
+
+def test_sprite_quota_retries_transaction_conflict(users_table_resource):
+    """Real DynamoDB rejects an UpdateItem on a row inside an in-flight
+    transaction (TransactionConflictException); moto never does, so inject it."""
+    from unittest.mock import patch
+
+    from botocore.exceptions import ClientError
+
+    import core.dynamo as dynamo_mod
+    from core.services.user_service import UserService
+
+    svc = UserService()
+    svc.get_or_create("user_abc")
+    client = dynamo_mod.users_table().meta.client
+    real = client.update_item
+    calls = {"n": 0}
+
+    def flaky(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ClientError({"Error": {"Code": "TransactionConflictException", "Message": "x"}}, "UpdateItem")
+        return real(**kwargs)
+
+    with patch.object(client, "update_item", side_effect=flaky):
+        svc.consume_sprite_quota("user_abc")
+    assert svc.sprites_used_today("user_abc") == 1
+
+
+def test_legacy_sprite_list_counts_only_today(users_table_resource):
+    """Rows from the old sliding-window code: today's entries carry over once, older ones don't."""
     from core.services.user_service import SPRITE_QUOTA_DAILY, SPRITE_QUOTA_WINDOW_MS, UserService
 
     svc = UserService()
     svc.get_or_create("user_abc")
-
-    # Pre-seed the user with N stale entries (older than 24h)
-    stale_ms = int(time.time() * 1000) - SPRITE_QUOTA_WINDOW_MS - 1000
+    now_ms = int(time.time() * 1000)
     users_table_resource.update_item(
         Key={"userId": "user_abc"},
-        UpdateExpression="SET sprite_jobs_24h = :stale",
+        UpdateExpression="SET sprite_jobs_24h = :jobs",
         ExpressionAttributeValues={
-            ":stale": [{"timestamp_ms": stale_ms}] * SPRITE_QUOTA_DAILY,
+            ":jobs": [{"timestamp_ms": now_ms}] * 3 + [{"timestamp_ms": now_ms - SPRITE_QUOTA_WINDOW_MS - 1000}] * 5
         },
     )
-    # consume_sprite_quota should drop them as outside the window and accept the new one
     svc.consume_sprite_quota("user_abc")
-    user = svc.get_or_create("user_abc")
-    jobs = user.get("sprite_jobs_24h", [])
-    assert len(jobs) == 1
+    assert svc.sprites_used_today("user_abc") == 4
+    assert "sprite_jobs_24h" not in svc.get_or_create("user_abc")
+
+    # A legacy user already at today's limit stays blocked.
+    users_table_resource.put_item(
+        Item={"userId": "user_full", "sprite_jobs_24h": [{"timestamp_ms": now_ms}] * SPRITE_QUOTA_DAILY}
+    )
+    with pytest.raises(QuotaExceeded):
+        svc.consume_sprite_quota("user_full")
 
 
-def test_check_agent_quota_passes_below_limit(users_table_resource):
-    from core.services.user_service import AGENT_QUOTA, UserService
+def test_concurrent_sprite_requests_never_exceed_daily_limit(users_table_resource, atomic_moto_requests):
+    """Fire 3x the limit at once: exactly SPRITE_QUOTA_DAILY succeed."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
 
-    svc = UserService()
-    # Should not raise
-    svc.check_agent_quota("user_abc", current_count=AGENT_QUOTA - 1)
+    from core.services.user_service import SPRITE_QUOTA_DAILY, UserService
 
+    n = SPRITE_QUOTA_DAILY * 3
+    barrier = threading.Barrier(n)
 
-def test_check_agent_quota_raises_at_limit(users_table_resource):
-    from core.services.user_service import AGENT_QUOTA, UserService
+    def attempt(_):
+        barrier.wait()
+        try:
+            UserService().consume_sprite_quota("user_abc")
+            return True
+        except QuotaExceeded:
+            return False
 
-    svc = UserService()
-    with pytest.raises(QuotaExceeded) as exc:
-        svc.check_agent_quota("user_abc", current_count=AGENT_QUOTA)
-    assert exc.value.kind == "agents"
-    assert exc.value.limit == AGENT_QUOTA
-    assert exc.value.current == AGENT_QUOTA
+    with ThreadPoolExecutor(max_workers=n) as pool:
+        results = list(pool.map(attempt, range(n)))
+
+    assert sum(results) == SPRITE_QUOTA_DAILY
+    assert UserService().sprites_used_today("user_abc") == SPRITE_QUOTA_DAILY
 
 
 def test_quota_constants():
