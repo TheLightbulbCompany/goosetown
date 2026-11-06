@@ -47,7 +47,6 @@ from typing import Protocol
 from core.services.daemon_bridge import _make_agent_event_callback, _send_to_daemon
 from core.services.game_server_client import get_game_server_client
 from core.services.phase_lattice import advance_phase
-from core.services.pixellab_quota import PixelLabQuotaDenied
 from core.services.pixellab_service import PixelLabCreditError
 from core.services.town_service import TownService
 
@@ -180,7 +179,7 @@ async def run_signup_pipeline(
             service.update_agent_state(agent_id, appearance=appearance)
             logger.info("run_signup_pipeline: promoted fallback appearance onto row for %s", agent_id)
 
-        pxl = PixelLabService(owner_id=agent.get("userId"))
+        pxl = PixelLabService()
 
         async def _anim_progress(status_str: str) -> None:
             await sink.progress(agent_id, status_str)
@@ -410,7 +409,7 @@ async def run_animation_job(agent_id: str, anim_name: str, *, sink: SpriteEventS
             logger.warning("run_animation_job: unknown animation %r for agent %s", anim_name, agent_id)
             return
 
-        pxl = PixelLabService(owner_id=agent.get("userId"))
+        pxl = PixelLabService()
         direction_frames = await pxl.generate_animation(char_id, anim_name)
         if not direction_frames:
             # generate_animation returns {} on an all-jobs timeout/failure
@@ -490,7 +489,7 @@ async def resume_sprite_generation(
         # Recover the existing spriteUrl from DynamoDB so we don't overwrite it
         # with "" if Phase C can't find a "walk" key in the animation dict.
         existing_agent = service.get_town_agent_by_id(agent_id)
-        pxl = PixelLabService(owner_id=(existing_agent or {}).get("userId"))
+        pxl = PixelLabService()
         existing_sprite_url = (existing_agent or {}).get("spriteUrl", "")
 
         def _progress(status: str) -> None:
@@ -603,9 +602,6 @@ async def resume_sprite_generation(
 
         logger.info("Sprite recovery completed for agent %s", agent_id)
 
-    except PixelLabQuotaDenied:
-        TownService().update_agent_state(agent_id, avatarState="queued")
-        _send_to_daemon(agent_id, {"event": "sprite_progress", "status": "Avatar coming later; generation is queued."})
     except PixelLabCreditError:
         raise
     except Exception:

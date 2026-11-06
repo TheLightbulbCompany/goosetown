@@ -20,11 +20,12 @@ import { SpriteWorkerStack } from "../lib/stacks/sprite-worker-stack";
 // Helpers — minimal dependency stubs so CDK synthesizes without real lookups.
 // ---------------------------------------------------------------------------
 
-function buildTestApp(env: string, withAlarmTopic = false): Template {
+function buildTestApp(env: string, withAlarmTopic = false, dailyRequests: unknown = 0): Template {
   const app = new cdk.App({
     context: {
       // Suppress asset bundling during synth
       "aws:cdk:bundling-stacks": [],
+      [`pixellabDailyRequests:${env}`]: dailyRequests,
     },
   });
 
@@ -383,4 +384,19 @@ test("sprite worker can atomically reserve only PixelLab quota rows", () => {
     })]) },
 
   });
+});
+
+
+test("daily request ceiling is explicitly configurable with a fail-closed default", () => {
+  for (const [limit, expected] of [[0, "0"], [7, "7"]] as const) {
+    buildTestApp("dev", false, limit).hasResourceProperties("AWS::ECS::TaskDefinition", {
+      ContainerDefinitions: Match.arrayWith([Match.objectLike({
+        Environment: Match.arrayWith([{ Name: "PIXELLAB_REQUESTS_PER_DAY", Value: expected }]),
+      })]),
+    });
+  }
+});
+
+test.each([-1, "unlimited", 1.5, Number.MAX_SAFE_INTEGER + 1])("invalid request ceiling %s fails synthesis", limit => {
+  expect(() => buildTestApp("dev", false, limit)).toThrow("nonnegative integer");
 });

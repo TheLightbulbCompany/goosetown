@@ -5,7 +5,8 @@ import unicodedata
 
 _UNSAFE = re.compile(
     r"https?://|www\.|<[^>]*>|```|[{}]|"
-    r"\b(?:ignore|override|disregard)\s+(?:all\s+|any\s+)?(?:previous|prior|system|instructions)|"
+    r"\b(?:ignore|override|disregard)\s+(?:all\s+|any\s+)?"
+    r"(?:instructions|(?:previous|prior|system)\s+(?:instructions|prompts?|messages?))\b|"
     r"\b(?:system\s*prompt|developer\s*message|execute\s+code|run\s+(?:command|script))\b",
     re.IGNORECASE,
 )
@@ -17,7 +18,12 @@ class AppearanceRejected(ValueError):
 
 def validate_appearance(value: str) -> str:
     text = unicodedata.normalize("NFKC", value)
-    if not text.strip() or len(text) > 500 or any(ord(c) < 32 for c in text) or _UNSAFE.search(text):
+    if (
+        not text.strip()
+        or len(text) > 500
+        or any(ord(c) < 32 and c not in "\n\t" for c in text)
+        or _UNSAFE.search(text)
+    ):
         raise AppearanceRejected(
             "Use a plain visual description under 500 characters, without links, code or instructions"
         )
