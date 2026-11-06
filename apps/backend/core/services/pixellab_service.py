@@ -8,6 +8,8 @@ from typing import Any
 import httpx
 
 from core.config import settings
+from core.services.appearance_validation import validate_appearance
+from core.services.pixellab_quota import reserve_request
 
 logger = logging.getLogger(__name__)
 
@@ -250,8 +252,9 @@ SIGNUP_ANIMATIONS = {k: v for k, v in ANIMATION_REGISTRY.items() if v["auto_gene
 class PixelLabService:
     """Generates character sprites via the PixelLab API."""
 
-    def __init__(self, api_key: str | None = None):
+    def __init__(self, api_key: str | None = None, *, owner_id: str | None = None):
         self.api_key = api_key or settings.PIXELLAB_API_KEY
+        self.owner_id = owner_id
 
     async def _request(
         self,
@@ -280,6 +283,8 @@ class PixelLabService:
         last_exc: Exception | None = None
         client = _get_pixellab_client()
         for attempt in range(retries):
+            if method.upper() != "GET":
+                reserve_request(self.owner_id)
             try:
                 resp = await client.request(method, url, headers=headers, json=json, timeout=timeout)
             except (httpx.TimeoutException, httpx.TransportError) as exc:
@@ -321,6 +326,7 @@ class PixelLabService:
         description: str,
     ) -> tuple[str, str | None]:
         """Queue character creation. Returns (character_id, background_job_id)."""
+        description = validate_appearance(description)
         resp = await self._request(
             "POST",
             f"{PIXELLAB_API_URL}/create-character-with-4-directions",

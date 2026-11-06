@@ -117,6 +117,12 @@ export class SpriteWorkerStack extends cdk.Stack {
     this.queue.grantConsumeMessages(taskDef.taskRole);
     this.queue.grantSendMessages(taskDef.taskRole); // boot-sweep re-enqueue
     props.tables.agents.grantReadWriteData(taskDef.taskRole);
+    // Only the dedicated request-counter rows; no user tokens/profile access.
+    taskDef.taskRole.addToPrincipalPolicy(new iam.PolicyStatement({
+      actions: ["dynamodb:UpdateItem"],
+      resources: [props.tables.users.tableArn],
+      conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["__pixellab_quota__:*" ] } },
+    }));
     props.spriteBucket.grantReadWrite(taskDef.taskRole);
     // PutMetricData has no resource-level scoping; namespace is by convention
     // (GooseTown/SpriteWorker) — same note as WorldgmStack.

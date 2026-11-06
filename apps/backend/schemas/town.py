@@ -164,6 +164,7 @@ class ApartmentAgentState(BaseModel):
     facing_y: float = 1.0
     current_spot: Optional[str] = None
     is_active: bool = True
+    avatar_state: Optional[str] = None
     sprite_url: Optional[str] = None
     currentGoal: Optional[str] = None
     wallet_balance: int = 0

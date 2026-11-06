@@ -58,6 +58,7 @@ function buildTestApp(env: string, withAlarmTopic = false): Template {
   // full shape so `as any` cast on DatabaseTables remains consistent.
   const tables = {
     agents: makeTable("agents"),
+    users: makeTable("users"),
     instances: makeTable("instances"),
     relationships: makeTable("relationships"),
     conversations: makeTable("conversations"),
@@ -359,5 +360,16 @@ describe("SpriteWorkerStack — CloudWatch alarms", () => {
     const template = buildTestApp("dev", false);
     const alarms = template.findResources("AWS::CloudWatch::Alarm");
     expect(Object.keys(alarms).length).toBe(0);
+  });
+});
+
+
+test("sprite worker can atomically reserve only PixelLab quota rows", () => {
+  buildTestApp("prod").hasResourceProperties("AWS::IAM::Policy", {
+    PolicyDocument: { Statement: Match.arrayWith([Match.objectLike({
+      Action: "dynamodb:UpdateItem",
+      Resource: { "Fn::Join": ["", Match.arrayWith([Match.stringLikeRegexp(":table/goosetown-prod-users$")])] },
+      Condition: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["__pixellab_quota__:*"] } },
+    })]) },
   });
 });
