@@ -1132,50 +1132,96 @@ async def get_apartment(
     return ApartmentResponse(agents=agents, activity=[])
 
 
-def _token_uid(town_token: str) -> str | None:
-    """Best-effort decode of the 'uid' field from a signed town_token.
-    Returns None on malformed input — no signature verification here, the
-    caller only uses this to detect uid drift before re-signing.
-    """
-    import base64
-    import json
-
-    try:
-        payload_b64 = town_token.split(".", 1)[0]
-        pad = "=" * (-len(payload_b64) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(payload_b64 + pad))
-        return payload.get("uid")
-    except Exception:
-        return None
-
-
 @router.post("/instance")
 async def get_or_create_instance(
     auth: AuthContext = Depends(get_current_user),
 ):
     """Get existing instance or create a new one. Returns town_token."""
-    from core.town_token import sign_town_token
+    import asyncio
+    import time
+
+    from core import dynamo
+    from core.town_token import sign_town_token, verify_town_token
 
     service = TownService()
     instance = service.get_active_instance(auth.user_id)
 
     if not instance:
         instance = service.create_instance(auth.user_id)
-    else:
-        # Re-sign the stored token when it's missing, legacy-unsigned, or
-        # signed for a different uid (e.g. userId column reassigned since).
-        stored = instance.get("townToken", "")
-        needs_resign = "." not in stored or _token_uid(stored) != auth.user_id
-        if needs_resign:
-            instance["townToken"] = sign_town_token(auth.user_id, instance["id"])
-            from core import dynamo
-
-            table = dynamo.instances_table()
-            table.update_item(
-                Key={"id": instance["id"]},
-                UpdateExpression="SET townToken = :t",
-                ExpressionAttributeValues={":t": instance["townToken"]},
+    # The user-index lookup is eventually consistent. Confirm ownership and
+    # activity from the authoritative row before returning a credential.
+    try:
+        instance = dynamo.instances_table().get_item(Key={"id": instance["id"]}, ConsistentRead=True).get("Item")
+        if not instance or instance.get("userId") != auth.user_id or instance.get("isActive") != "true":
+            raise HTTPException(status_code=409, detail="Instance changed; retry")
+        user = dynamo.users_table().get_item(Key={"userId": auth.user_id}, ConsistentRead=True).get("Item", {})
+        revoked_at = user.get("tokenRevokedAt")
+        if revoked_at is not None:
+            revoked_at = int(revoked_at)
+        stored = instance.get("townToken")
+        claims = verify_town_token(stored) if isinstance(stored, str) else None
+        if not claims or claims.get("uid") != auth.user_id or claims.get("iid") != instance["id"]:
+            now = int(time.time())
+            if revoked_at is not None and now * 1000 < revoked_at:
+                # Seconds-granularity iat cannot represent a time later than a
+                # revocation within the current second. Wait for that boundary,
+                # then reread the authoritative value before signing.
+                await asyncio.sleep(min(1.05, max(0.0, (revoked_at // 1000 + 1) - time.time()) + 0.02))
+                user = dynamo.users_table().get_item(Key={"userId": auth.user_id}, ConsistentRead=True).get("Item", {})
+                revoked_at = user.get("tokenRevokedAt")
+                if revoked_at is not None:
+                    revoked_at = int(revoked_at)
+                now = int(time.time())
+                if revoked_at is not None and now * 1000 < revoked_at:
+                    raise HTTPException(
+                        status_code=503, detail="Token refresh pending; retry", headers={"Retry-After": "1"}
+                    )
+            token = sign_town_token(auth.user_id, instance["id"], issued_at=now)
+            user_condition = "attribute_not_exists(tokenRevokedAt)"
+            user_values = {}
+            if revoked_at is not None:
+                user_condition = "tokenRevokedAt = :revoked"
+                user_values = {":revoked": revoked_at}
+            update_condition = "userId = :owner AND isActive = :active AND "
+            values = {":owner": auth.user_id, ":active": "true", ":new": token}
+            if stored is None:
+                update_condition += "attribute_not_exists(townToken)"
+            else:
+                update_condition += "townToken = :old"
+                values[":old"] = stored
+            check = {
+                "TableName": dynamo.users_table().name,
+                "Key": {"userId": auth.user_id},
+                "ConditionExpression": user_condition,
+            }
+            if user_values:
+                check["ExpressionAttributeValues"] = user_values
+            dynamo.get_client().meta.client.transact_write_items(
+                TransactItems=[
+                    {"ConditionCheck": check},
+                    {
+                        "Update": {
+                            "TableName": dynamo.instances_table().name,
+                            "Key": {"id": instance["id"]},
+                            "UpdateExpression": "SET townToken = :new",
+                            "ConditionExpression": update_condition,
+                            "ExpressionAttributeValues": values,
+                        }
+                    },
+                ]
             )
+            instance["townToken"] = token
+        # A transient read failure or a revoke during refresh must not turn
+        # into a successful response carrying an unusable credential.
+        checked = verify_town_token(instance["townToken"])
+        if not checked or checked.get("uid") != auth.user_id or checked.get("iid") != instance["id"]:
+            raise HTTPException(
+                status_code=503, detail="Token refresh unavailable; retry", headers={"Retry-After": "1"}
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=503, detail="Token refresh unavailable; retry", headers={"Retry-After": "1"})
 
     agents = service.get_instance_agents(instance["id"])
 

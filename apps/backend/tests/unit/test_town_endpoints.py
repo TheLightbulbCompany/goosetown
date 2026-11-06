@@ -837,6 +837,149 @@ class TestProfileEndpoints:
 
 
 class TestInstanceEndpoint:
+    def _instance(self, client, dynamodb_tables):
+        from core.town_token import verify_town_token
+
+        response = client.post("/api/v1/town/instance")
+        assert response.status_code == 200
+        token = response.json()["town_token"]
+        instance_id = verify_town_token(token)["iid"]
+        return dynamodb_tables.Table("goosetown-instances"), instance_id, token
+
+    @pytest.mark.parametrize("kind", ["expired", "malformed", "wrong_instance", "wrong_owner"])
+    def test_invalid_cached_token_is_replaced(self, client, dynamodb_tables, kind):
+        import time
+
+        from core.town_token import sign_town_token, verify_town_token
+
+        table, instance_id, _ = self._instance(client, dynamodb_tables)
+        now = int(time.time())
+        invalid = {
+            "expired": sign_town_token(TEST_USER_ID, instance_id, issued_at=now - 100, ttl_seconds=1),
+            "malformed": "not.a.valid.token",
+            "wrong_instance": sign_town_token(TEST_USER_ID, "different-instance"),
+            "wrong_owner": sign_town_token(OTHER_USER_ID, instance_id),
+        }[kind]
+        table.update_item(
+            Key={"id": instance_id}, UpdateExpression="SET townToken = :v", ExpressionAttributeValues={":v": invalid}
+        )
+        response = client.post("/api/v1/town/instance")
+        assert response.status_code == 200, response.text
+        fresh = response.json()["town_token"]
+        assert fresh != invalid
+        assert verify_town_token(fresh)["iid"] == instance_id
+        assert table.get_item(Key={"id": instance_id}, ConsistentRead=True)["Item"]["townToken"] == fresh
+
+    def test_same_second_revocation_retries_then_refreshes(self, client, dynamodb_tables, monkeypatch):
+        import asyncio
+        import time
+
+        from core.town_token import verify_town_token
+
+        table, instance_id, original = self._instance(client, dynamodb_tables)
+        now = int(time.time())
+        users = dynamodb_tables.Table("goosetown-users")
+        users.put_item(Item={"userId": TEST_USER_ID, "tokenRevokedAt": now * 1000 + 500})
+        clock = [now + 0.7]
+        monkeypatch.setattr(time, "time", lambda: clock[0])
+
+        async def advance(delay):
+            assert 0 < delay <= 1.05
+            clock[0] = now + 1.1
+
+        monkeypatch.setattr(asyncio, "sleep", advance)
+        response = client.post("/api/v1/town/instance")
+        assert response.status_code == 200, response.text
+        fresh = response.json()["town_token"]
+        assert fresh != original
+        assert table.get_item(Key={"id": instance_id})["Item"]["townToken"] == fresh
+        assert verify_town_token(fresh)["iat"] == now + 1
+
+    def test_clock_not_advanced_returns_retry(self, client, dynamodb_tables, monkeypatch):
+        import asyncio
+        import time
+
+        table, instance_id, original = self._instance(client, dynamodb_tables)
+        now = int(time.time())
+        dynamodb_tables.Table("goosetown-users").put_item(
+            Item={"userId": TEST_USER_ID, "tokenRevokedAt": now * 1000 + 500}
+        )
+        monkeypatch.setattr(time, "time", lambda: now + 0.7)
+
+        async def no_advance(_delay):
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", no_advance)
+        response = client.post("/api/v1/town/instance")
+        assert response.status_code == 503
+        assert response.headers["Retry-After"] == "1"
+        assert table.get_item(Key={"id": instance_id})["Item"]["townToken"] == original
+
+    def test_revocation_store_unavailable_fails_closed(self, client, dynamodb_tables, monkeypatch):
+        from core import dynamo
+
+        self._instance(client, dynamodb_tables)
+
+        class BrokenUsers:
+            def get_item(self, **_kwargs):
+                raise RuntimeError("synthetic outage")
+
+        monkeypatch.setattr(dynamo, "users_table", lambda: BrokenUsers())
+        response = client.post("/api/v1/town/instance")
+        assert response.status_code == 503
+        assert "town_token" not in response.json()
+
+    def test_previously_revoked_token_is_refreshed(self, client, dynamodb_tables):
+        import time
+
+        from core.town_token import sign_town_token, verify_town_token
+
+        table, instance_id, _ = self._instance(client, dynamodb_tables)
+        now = int(time.time())
+        old = sign_town_token(TEST_USER_ID, instance_id, issued_at=now - 30)
+        table.update_item(
+            Key={"id": instance_id}, UpdateExpression="SET townToken = :v", ExpressionAttributeValues={":v": old}
+        )
+        dynamodb_tables.Table("goosetown-users").put_item(
+            Item={"userId": TEST_USER_ID, "tokenRevokedAt": (now - 1) * 1000}
+        )
+        response = client.post("/api/v1/town/instance")
+        assert response.status_code == 200, response.text
+        assert verify_town_token(response.json()["town_token"])["iat"] >= now
+
+    def test_revoke_during_refresh_is_not_returned(self, client, dynamodb_tables, monkeypatch):
+        import time
+
+        from core import town_token
+
+        table, instance_id, _ = self._instance(client, dynamodb_tables)
+        table.update_item(
+            Key={"id": instance_id}, UpdateExpression="SET townToken = :v", ExpressionAttributeValues={":v": "invalid"}
+        )
+        sign = town_token.sign_town_token
+
+        def race(*args, **kwargs):
+            dynamodb_tables.Table("goosetown-users").put_item(
+                Item={"userId": TEST_USER_ID, "tokenRevokedAt": int(time.time() * 1000)}
+            )
+            return sign(*args, **kwargs)
+
+        monkeypatch.setattr(town_token, "sign_town_token", race)
+        response = client.post("/api/v1/town/instance")
+        assert response.status_code == 503
+        assert table.get_item(Key={"id": instance_id})["Item"]["townToken"] == "invalid"
+
+    def test_stale_index_cannot_return_another_owners_instance(self, client, dynamodb_tables, monkeypatch):
+        from core.services.town_service import TownService
+
+        table, instance_id, _ = self._instance(client, dynamodb_tables)
+        table.update_item(
+            Key={"id": instance_id}, UpdateExpression="SET userId = :v", ExpressionAttributeValues={":v": OTHER_USER_ID}
+        )
+        monkeypatch.setattr(TownService, "get_active_instance", lambda *_: {"id": instance_id})
+        response = client.post("/api/v1/town/instance")
+        assert response.status_code == 409
+
     def test_creates_instance_for_new_user_and_returns_token(self, client, dynamodb_tables):
         resp = client.post("/api/v1/town/instance")
         assert resp.status_code == 200
