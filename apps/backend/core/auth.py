@@ -137,7 +137,11 @@ async def _decode_token(token: str) -> dict:
         )
     except OverflowError as exc:
         raise jwt.InvalidTokenError("Invalid numeric claim") from exc
-    if any(type(payload.get(k)) is not int for k in ("exp", "nbf")) or not isinstance(payload.get("sub"), str) or not payload["sub"]:
+    if (
+        any(type(payload.get(k)) is not int for k in ("exp", "nbf"))
+        or not isinstance(payload.get("sub"), str)
+        or not payload["sub"]
+    ):
         raise jwt.InvalidTokenError("Invalid required claims")
     if "iat" in payload and type(payload["iat"]) is not int:
         raise jwt.InvalidTokenError("Invalid issued at")
