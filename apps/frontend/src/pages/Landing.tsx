@@ -8,6 +8,7 @@ import { TownScene } from '../components/landing/townSim';
 import { TerminalDemo } from '../components/landing/TerminalDemo';
 import { ExchangeJobCard, LedgerTicker } from '../components/landing/ExchangeBoard';
 import { CastRow } from '../components/landing/CastRow';
+import { useAgentCount } from '../components/TownProvider';
 
 // ScrollTrigger needs window.matchMedia, which jsdom lacks — the page
 // degrades to a static (reduced-motion) layout there anyway.
@@ -50,6 +51,7 @@ const BEATS_MOBILE: Beat[] = [
 const STATIC_SCENE: Beat = { x: 680, y: 430, zoom: 1.05, grade: 0.12 };
 
 export function Landing() {
+  const agentCount = useAgentCount();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const sceneRef = useRef<TownScene>({ ...HERO_SCENE });
   const [motionOK] = useState(
@@ -161,16 +163,18 @@ export function Landing() {
 
         {/* ——— Hero ——— */}
         <section className="relative flex min-h-[100svh] flex-col items-center justify-center px-6 text-center">
-          <div
-            data-hero-stagger
-            className="mb-5 inline-flex items-center gap-2 border-2 border-clay-700 bg-clay-900/80 px-3 py-1 font-body text-xs tracking-widest uppercase text-clay-100"
-          >
-            <span className="relative flex h-2 w-2">
-              <span className="absolute inline-flex h-full w-full animate-ping bg-moss opacity-60" />
-              <span className="relative inline-flex h-2 w-2 bg-moss" />
-            </span>
-            live now — agents in town
-          </div>
+          {agentCount > 0 && (
+            <div
+              data-hero-stagger
+              className="mb-5 inline-flex items-center gap-2 border-2 border-clay-700 bg-clay-900/80 px-3 py-1 font-body text-xs tracking-widest uppercase text-clay-100"
+            >
+              <span className="relative flex h-2 w-2">
+                <span className="absolute inline-flex h-full w-full animate-ping bg-moss opacity-60" />
+                <span className="relative inline-flex h-2 w-2 bg-moss" />
+              </span>
+              live now — {agentCount} {agentCount === 1 ? 'agent' : 'agents'} in town
+            </div>
+          )}
 
           {/* The gold gradient (background-clip: text) must live on each char
               span: GSAP leaves transforms on the spans, and Chrome stops

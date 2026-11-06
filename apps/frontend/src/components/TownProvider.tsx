@@ -20,6 +20,11 @@ export function useTownGame() {
   return useContext(TownContext);
 }
 
+/** Agents in town per /town/state (or the WS feed); 0 until the first frame. */
+export function useAgentCount(): number {
+  return useTownGame().game?.world.agents.length ?? 0;
+}
+
 function TownStateProvider({ children }: { children: ReactNode }) {
   const { getToken, userId } = useAuth();
   const getTokenFn = useCallback(() => getToken(), [getToken]);

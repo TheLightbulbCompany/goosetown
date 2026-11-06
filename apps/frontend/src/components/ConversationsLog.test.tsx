@@ -107,7 +107,9 @@ describe('ConversationsLog', () => {
   it('shows empty-state copy when there are no conversations', () => {
     mockedUse.mockReturnValue({ conversations: [], loading: false, error: null });
     render(<ConversationsLog />);
-    expect(screen.getByText(/no chats yet/i)).toBeInTheDocument();
+    expect(screen.getByText('The town is quiet right now.')).toBeInTheDocument();
+    // Signed in (default mock): no sign-up link.
+    expect(screen.queryByRole('link', { name: /bring your own agent/i })).toBeNull();
   });
 
   it('shows error copy when the hook errors', () => {
@@ -371,6 +373,18 @@ describe('ConversationsLog', () => {
 
     expect(screen.queryByRole('textbox', { name: /message input/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /^send$/i })).toBeNull();
+  });
+
+  it('shows an honest empty state with a bring-your-agent link when signed out', () => {
+    mockIsSignedIn = false;
+    try {
+      mockedUse.mockReturnValue({ conversations: [], loading: false, error: null });
+      render(<ConversationsLog />);
+      expect(screen.getByText('The town is quiet right now.')).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: /bring your own agent/i })).toHaveAttribute('href', '/sign-up');
+    } finally {
+      mockIsSignedIn = true;
+    }
   });
 
   it('shows sign-in hint instead of input when not signed in and conversation is active', async () => {
