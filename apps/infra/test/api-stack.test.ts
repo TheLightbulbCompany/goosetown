@@ -79,6 +79,8 @@ function buildTestApp(env: "dev" | "prod" = "dev"): { template: Template } {
     backendUrl: `https://api${env === "prod" ? "" : "-dev"}.goosetown.thelightbulb.company`,
   });
 
+  cdk.Tags.of(stack).add("Project", "goosetown");
+  cdk.Tags.of(stack).add("Environment", env);
   return { template: Template.fromStack(stack) };
 }
 
@@ -300,11 +302,38 @@ describe("ApiStack — WS Lambda shared secret wiring", () => {
   });
 });
 
-test.each(["dev", "prod"] as const)("%s leaves existing canonical WebSocket resources unmanaged", (env) => {
+test.each(["dev", "prod"] as const)("%s preserves the canonical WebSocket import identities and properties", (env) => {
   const template = buildTestApp(env).template;
-  template.resourceCountIs("AWS::ApiGatewayV2::DomainName", 0);
-  template.resourceCountIs("AWS::ApiGatewayV2::ApiMapping", 0);
+  const document = template.toJSON();
+  const domainName = env === "prod" ? "ws.goosetown.thelightbulb.company" : "ws-dev.goosetown.thelightbulb.company";
+  template.resourceCountIs("AWS::ApiGatewayV2::DomainName", 1);
+  template.resourceCountIs("AWS::ApiGatewayV2::ApiMapping", 1);
   template.resourceCountIs("AWS::Route53::RecordSet", 0);
+  expect(document.Resources.CanonicalWsDomain).toEqual({
+    Type: "AWS::ApiGatewayV2::DomainName",
+    DeletionPolicy: "Retain",
+    UpdateReplacePolicy: "Retain",
+    Properties: {
+      DomainName: domainName,
+      DomainNameConfigurations: [{
+        CertificateArn: "arn:aws:acm:us-east-1:877352799272:certificate/817898d5-f4b1-4385-8343-2b317ba439a8",
+        EndpointType: "REGIONAL", IpAddressType: "ipv4", SecurityPolicy: "TLS_1_2",
+      }],
+      RoutingMode: "API_MAPPING_ONLY",
+    },
+  });
+  const apiLogicalId = Object.keys(template.findResources("AWS::ApiGatewayV2::Api"))[0];
+  const stageLogicalId = Object.keys(template.findResources("AWS::ApiGatewayV2::Stage"))[0];
+  expect(document.Resources.CanonicalWsMapping).toEqual({
+    Type: "AWS::ApiGatewayV2::ApiMapping",
+    DeletionPolicy: "Retain",
+    UpdateReplacePolicy: "Retain",
+    Properties: {
+      ApiId: { Ref: apiLogicalId }, DomainName: { Ref: "CanonicalWsDomain" }, Stage: { Ref: stageLogicalId },
+    },
+  });
+  expect(document.Resources[stageLogicalId].Properties.StageName).toBe(env);
+  expect(document.Resources[apiLogicalId].Properties.Tags).toEqual({ Environment: env, Project: "goosetown" });
 });
 
 describe("town token revocation", () => {

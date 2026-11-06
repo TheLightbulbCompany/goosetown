@@ -1,4 +1,4 @@
-import { canonicalHost, canonicalCertificateArn, canonicalZoneId, canonicalZoneName } from "./canonical-domain";
+import { canonicalHost, canonicalCertificateArn } from "./canonical-domain";
 import * as cdk from "aws-cdk-lib";
 import * as apigatewayv2 from "aws-cdk-lib/aws-apigatewayv2";
 import { WebSocketLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
@@ -10,7 +10,6 @@ import * as lambda_ from "aws-cdk-lib/aws-lambda";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as path from "path";
 import * as route53 from "aws-cdk-lib/aws-route53";
-import * as route53Targets from "aws-cdk-lib/aws-route53-targets";
 import { Construct } from "constructs";
 import { AuthSecrets } from "./auth-stack";
 
@@ -261,8 +260,31 @@ export class ApiStack extends cdk.Stack {
       );
     }
 
-    // Existing canonical resources remain unmanaged pending reviewed adoption.
-    // Never delete and recreate working public records as part of this stack.
+    // Match the existing resources adopted by CloudFormation import. Keep these
+    // logical IDs stable so later deployments retain the working WS endpoint.
+    const canonicalDomain = new apigatewayv2.CfnDomainName(this, "CanonicalWsDomain", {
+      domainName: canonicalHost("ws", env),
+      domainNameConfigurations: [{
+        certificateArn: canonicalCertificateArn,
+        endpointType: "REGIONAL",
+        ipAddressType: "ipv4",
+        securityPolicy: "TLS_1_2",
+      }],
+      routingMode: "API_MAPPING_ONLY",
+    });
+    canonicalDomain.overrideLogicalId("CanonicalWsDomain");
+    canonicalDomain.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
+    // The imported domain is untagged; do not apply inherited stack tags.
+    cdk.Tags.of(canonicalDomain).remove("Project");
+    cdk.Tags.of(canonicalDomain).remove("Environment");
+
+    const canonicalMapping = new apigatewayv2.CfnApiMapping(this, "CanonicalWsMapping", {
+      apiId: wsApi.apiId,
+      domainName: canonicalDomain.ref,
+      stage: (stage.node.defaultChild as apigatewayv2.CfnStage).ref,
+    });
+    canonicalMapping.overrideLogicalId("CanonicalWsMapping");
+    canonicalMapping.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
 
     // ─── Outputs ─────────────────────────────────────────────────────
     new cdk.CfnOutput(this, "WebSocketApiId", {

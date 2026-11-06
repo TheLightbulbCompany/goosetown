@@ -3,12 +3,26 @@ import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { DnsStack } from "../lib/stacks/dns-stack";
 import { StorageStack } from "../lib/stacks/storage-stack";
+import { AuthStack } from "../lib/stacks/auth-stack";
 import { canonicalHost, frontendOrigin } from "../lib/stacks/canonical-domain";
 
 test("canonical names distinguish production and development", () => {
   expect(canonicalHost("api", "prod")).toBe("api.goosetown.thelightbulb.company");
   expect(canonicalHost("ws", "dev")).toBe("ws-dev.goosetown.thelightbulb.company");
   expect(frontendOrigin("prod")).toBe("https://goosetown.thelightbulb.company");
+});
+
+test.each(["dev", "prod"])("%s preserves the legacy Clerk secret ARN export during consumer migration", (env) => {
+  const app = new cdk.App();
+  const stack = new AuthStack(app, `goosetown-${env}-auth`, {
+    stackName: `goosetown-${env}-auth`, environment: env,
+    env: { account: "877352799272", region: "us-east-1" },
+  });
+  const doc = Template.fromStack(stack).toJSON();
+  expect(doc.Outputs.ExportsOutputRefClerkSecretKeyD166F6BCC6EDCA8A).toEqual({
+    Value: { Ref: "ClerkSecretKeyD166F6BC" },
+    Export: { Name: `goosetown-${env}-auth:ExportsOutputRefClerkSecretKeyD166F6BCC6EDCA8A` },
+  });
 });
 
 test.each(["dev", "prod"])("%s sprite distribution uses only the canonical alias", (env) => {
