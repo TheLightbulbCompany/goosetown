@@ -7,12 +7,16 @@ or claim handling fails here instead of in production sign-in.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import time
 from unittest.mock import AsyncMock, patch
 
 import jwt
 import pytest
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import HTTPException
 
@@ -58,11 +62,26 @@ async def test_future_nbf_rejected():
         await auth._decode_token(_token(nbf=int(time.time()) + 3600))
 
 
-async def test_hs256_with_public_key_rejected():
-    """Algorithm-confusion: an HS256 token must not verify against the RS256 key."""
-    forged = jwt.encode({"sub": "attacker"}, "s" * 32, algorithm="HS256", headers={"kid": "k1"})
+def _b64(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+async def test_hs256_signed_with_public_key_rejected():
+    """Algorithm confusion: HS256 token HMAC'd with the RS256 public key PEM must not verify."""
+    pem = _KEY.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+    header = _b64(json.dumps({"alg": "HS256", "typ": "JWT", "kid": "k1"}).encode())
+    payload = _b64(json.dumps({"sub": "attacker", "iss": settings.CLERK_ISSUER, "exp": int(time.time()) + 60}).encode())
+    sig = _b64(hmac.new(pem, f"{header}.{payload}".encode(), hashlib.sha256).digest())
     with pytest.raises(jwt.InvalidAlgorithmError):
-        await auth._decode_token(forged)
+        await auth._decode_token(f"{header}.{payload}.{sig}")
+
+
+@pytest.mark.parametrize("aud", ["https://wrong.example", None])
+async def test_wrong_or_missing_audience_rejected(aud):
+    with patch.object(settings, "CLERK_AUDIENCE", "https://goosetown.example"):
+        token = _token(aud=aud)  # aud=None drops the claim
+        with pytest.raises((jwt.InvalidAudienceError, jwt.MissingRequiredClaimError)):
+            await auth._decode_token(token)
 
 
 async def test_unknown_kid_rejected():
