@@ -154,7 +154,7 @@ async def _handle_agent_connect(request, ws_manager):
 
     # Verify town_token
     payload = verify_town_token(token)
-    if not payload:
+    if not payload or payload.get("iid") in {"viewer", "anonymous-viewer"}:
         logger.warning("Invalid town_token for agent connect: %s", agent_name)
         return {"statusCode": 401, "error": "invalid_token"}
 

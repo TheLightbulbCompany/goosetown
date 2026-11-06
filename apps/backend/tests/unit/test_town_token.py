@@ -27,6 +27,12 @@ from core.town_token import (
 )
 
 
+@pytest.fixture(autouse=True)
+def revocation_store_available():
+    with patch("core.services.user_service.UserService.is_token_revoked", return_value=False):
+        yield
+
+
 def _decode_payload(token: str) -> dict:
     payload_b64, _ = token.split(".")
     return json.loads(_b64url_decode(payload_b64))
@@ -119,21 +125,8 @@ def test_verify_token_with_malformed_exp_returns_none():
 # ---------------------------------------------------------------------------
 
 
-def test_verify_legacy_token_without_exp_succeeds(caplog):
-    token = _make_legacy_token("user-legacy", "instance-legacy")
-
-    with caplog.at_level(logging.WARNING, logger="core.town_token"):
-        payload = verify_town_token(token)
-
-    assert payload is not None
-    assert payload["uid"] == "user-legacy"
-    assert payload["iid"] == "instance-legacy"
-    assert "exp" not in payload
-    # The legacy population is monitored via this WARNING — keep the substring
-    # in the assertion stable for log-based dashboards.
-    legacy_records = [r for r in caplog.records if "legacy token" in r.getMessage()]
-    assert legacy_records, "expected a legacy-token WARNING"
-    assert legacy_records[0].levelno == logging.WARNING
+def test_verify_legacy_token_without_exp_is_rejected():
+    assert verify_town_token(_make_legacy_token("user-legacy", "instance-legacy")) is None
 
 
 # ---------------------------------------------------------------------------

@@ -41,6 +41,10 @@ function buildTestApp(env: "dev" | "prod" = "dev"): { template: Template } {
     `goosetown-${env}-connections`
   );
 
+  const usersTable = dynamodb.Table.fromTableName(
+    depsStack, "UsersTable", `goosetown-${env}-users`
+  );
+
   const makeSecret = (logicalId: string, name: string) =>
     secretsmanager.Secret.fromSecretNameV2(depsStack, logicalId, name);
 
@@ -69,6 +73,7 @@ function buildTestApp(env: "dev" | "prod" = "dev"): { template: Template } {
     environment: env,
     env: { account: "123456789012", region: "us-east-1" },
     connectionsTable,
+    usersTable,
     secrets: secrets as any,
     vpc,
     backendUrl: `https://api${env === "prod" ? "" : "-dev"}.goosetown.thelightbulb.company`,
@@ -300,4 +305,20 @@ test.each(["dev", "prod"] as const)("%s leaves existing canonical WebSocket reso
   template.resourceCountIs("AWS::ApiGatewayV2::DomainName", 0);
   template.resourceCountIs("AWS::ApiGatewayV2::ApiMapping", 0);
   template.resourceCountIs("AWS::Route53::RecordSet", 0);
+});
+
+describe("town token revocation", () => {
+  test("authorizer can read the users table", () => {
+    const { template } = buildTestApp("prod");
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      FunctionName: "goosetown-prod-ws-authorizer",
+      Environment: { Variables: Match.objectLike({ USERS_TABLE: "goosetown-prod-users" }) },
+    });
+    template.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: { Statement: Match.arrayWith([Match.objectLike({
+        Action: "dynamodb:GetItem", Effect: "Allow",
+        Resource: Match.arrayWith([{ "Fn::Join": ["", Match.arrayWith([Match.stringLikeRegexp("goosetown-prod-users")])] }]),
+      })]) },
+    });
+  });
 });
