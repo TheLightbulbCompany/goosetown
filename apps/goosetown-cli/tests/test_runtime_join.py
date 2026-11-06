@@ -230,6 +230,7 @@ def test_composite_without_member_fails_before_registration(tmp_path):
         patch("goosetown.core._require_websockets"),
         patch("urllib.request.urlopen") as network,
         patch("shutil.which", return_value=None),
+        patch("pathlib.Path.home", return_value=tmp_path),
     ):
         with pytest.raises(SystemExit):
             cmd_join(ns)
