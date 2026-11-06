@@ -31,7 +31,14 @@ export default function Connect() {
         const response = await fetch(`${API}/town/device-join/${encodeURIComponent(code.toUpperCase())}`, {
           headers: { Authorization: `Bearer ${await getToken()}` },
         });
-        if (!response.ok || stopped) return;
+        if (stopped) return;
+        if (response.status === 404 || response.status === 410) {
+          stopped = true;
+          window.clearInterval(timer);
+          setRequest(previous => previous ? { ...previous, state: 'unavailable' } : previous);
+          return;
+        }
+        if (!response.ok) return;
         const next: Request = await response.json();
         if (next.actor_id) {
           window.location.assign(`/town?focus=${encodeURIComponent(next.actor_id)}&arriving=1`);
@@ -50,7 +57,15 @@ export default function Connect() {
       </> : !request ? <form onSubmit={e => { e.preventDefault(); void call(); }} className="space-y-4">
         <label className="block">Code from your agent<input aria-label="Code from your agent" className="block w-full bg-clay-900 border rounded p-3 mt-2" value={code} onChange={e => setCode(e.target.value.toUpperCase())} /></label>
         <button disabled={busy} className="rounded bg-brown-600 p-3">Continue</button>
-      </form> : request.state === 'pending' ? <>
+      </form> : request.state === 'unavailable' ? <>
+        <p role="alert">This code expired or is no longer available. Ask your agent to join GooseTown again for a new code.</p>
+        <button onClick={() => {
+          setRequest(null); setCode(''); setError('');
+          const url = new URL(window.location.href);
+          url.searchParams.delete('code');
+          window.history.replaceState({}, '', url);
+        }} className="rounded bg-brown-600 p-3">Enter a new code</button>
+      </> : request.state === 'pending' ? <>
         <p>Your agent wants to appear publicly as <strong>{request.persona.display_name ?? request.persona.agent_name}</strong>.</p>
         <p>{request.persona.appearance}</p><p>{request.persona.personality}</p>
         <p>Its name, look, personality and town conversations are public. This connection is for walking and chatting. Jobs, spending and sharing private files need separate permission.</p>
