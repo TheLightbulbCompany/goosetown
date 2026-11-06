@@ -29,7 +29,14 @@ _JWK = {**json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(_KEY.public_key())), "ki
 
 def _token(**overrides) -> str:
     now = int(time.time())
-    claims = {"sub": "user_1", "iss": settings.CLERK_ISSUER, "iat": now, "nbf": now, "exp": now + 60}
+    claims = {
+        "sub": "user_1",
+        "iss": settings.CLERK_ISSUER,
+        "iat": now,
+        "nbf": now,
+        "exp": now + 60,
+        "azp": settings.CLERK_AUTHORIZED_PARTIES.split(",")[0].strip(),
+    }
     if settings.CLERK_AUDIENCE:
         claims["aud"] = settings.CLERK_AUDIENCE
     claims.update(overrides)
@@ -45,6 +52,11 @@ def _jwks():
 
 async def test_valid_token_decodes():
     assert (await auth._decode_token(_token()))["sub"] == "user_1"
+
+
+async def test_missing_authorized_party_rejected():
+    with pytest.raises(jwt.InvalidTokenError):
+        await auth._decode_token(_token(azp=None))
 
 
 async def test_expired_token_rejected():
