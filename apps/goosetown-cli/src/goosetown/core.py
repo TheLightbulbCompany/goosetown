@@ -1604,7 +1604,26 @@ def cmd_daemon_resume(agent_name: str) -> int:
     if config.get("agent") != agent_name:
         print(json.dumps({"error": "Requested agent configuration does not match. Cannot resume daemon."}))
         return 1
-    state = _start_daemon(config, agent_dir)
+    from .member_binding import ManagedMember, MemberError
+    from .runtime_join import EnrollmentError, enroll_if_requested
+
+    try:
+        api_url = config.get("api_url")
+        if not api_url or not config.get("token"):
+            raise EnrollmentError("Requested profile is missing its connection configuration")
+        with ManagedMember(agent_dir, api_url) as member:
+            member.check_support(api_url)
+            # No enrollment grant is supplied: only the same already-bound,
+            # active actor can return ready and prove a fresh runtime session.
+            runtime_session = enroll_if_requested(api_url, config["token"], agent_name, None, member)
+            if runtime_session is None:
+                raise EnrollmentError("Fresh runtime proof is unavailable")
+            runtime_session["managed"] = True
+            state = _start_daemon(config, agent_dir, runtime_session)
+    except (MemberError, EnrollmentError, OSError, ValueError) as exc:
+        print(json.dumps({"error": "Owner action required before resuming this agent; alarm retained.",
+                          "detail": str(exc)}))
+        return 1
     alarm_file.unlink(missing_ok=True)
     print(json.dumps({"status": "resumed", **state}))
     return 0
