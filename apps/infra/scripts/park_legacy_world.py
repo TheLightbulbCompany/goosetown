@@ -16,6 +16,7 @@ from pathlib import Path
 
 ACCOUNT = "877352799272"
 REGION = "us-east-1"
+EXECUTION_ROLE = f"arn:aws:iam::{ACCOUNT}:role/cdk-hnb659fds-cfn-exec-role-{ACCOUNT}-{REGION}"
 SERVICE = "ServiceD69D759B"
 REMOVE_SERVICES = {
     "ServiceTaskCountTarget23E25614": "AWS::ApplicationAutoScaling::ScalableTarget",
@@ -147,6 +148,11 @@ def unchanged_parameters(template, existing, details):
         raise ValueError("Change set would alter existing stack tags")
 
 
+def execution_role(existing):
+    if existing.get("RoleARN") != EXECUTION_ROLE:
+        raise ValueError("Stack must retain its existing CDK execution role")
+
+
 def main():
     import boto3
 
@@ -172,6 +178,7 @@ def main():
     for stack in stacks:
         current = deployed(cf, stack)
         existing = cf.describe_stacks(StackName=stack)["Stacks"][0]
+        execution_role(existing)
         if any(p.get("NoEcho") for p in current.get("Parameters", {}).values()):
             raise ValueError("Opaque parameters require separate review")
         proposed, changes = transform(stack, current)

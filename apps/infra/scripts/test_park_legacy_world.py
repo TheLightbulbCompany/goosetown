@@ -1,9 +1,15 @@
 import copy
 import unittest
-from park_legacy_world import transform, unchanged_parameters
+from park_legacy_world import EXECUTION_ROLE, execution_role, transform, unchanged_parameters
 
 
 class ParkingTests(unittest.TestCase):
+    def test_requires_existing_cdk_execution_role_without_broadening_caller_permissions(self):
+        execution_role({"RoleARN": EXECUTION_ROLE})
+        for stack in ({}, {"RoleARN": "arn:aws:iam::877352799272:role/other"}):
+            with self.assertRaisesRegex(ValueError, "execution role"):
+                execution_role(stack)
+
     def test_services_only_changes_count_and_removes_known_autoscaling(self):
         template = {
             "Resources": {
