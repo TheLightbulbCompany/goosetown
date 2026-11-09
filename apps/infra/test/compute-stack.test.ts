@@ -23,7 +23,7 @@ import { ComputeStack } from "../lib/stacks/compute-stack";
 // so ComputeStack can synthesize without real AWS lookups.
 // ---------------------------------------------------------------------------
 
-function buildTestApp(env: string): {
+function buildTestApp(env: string, paused = false): {
   app: cdk.App;
   computeStack: ComputeStack;
   template: Template;
@@ -109,6 +109,7 @@ function buildTestApp(env: string): {
   const computeStack = new ComputeStack(app, `goosetown-${env}-compute`, {
     stackName: `goosetown-${env}-compute`,
     environment: env,
+    ...{ paused },
     env: { account: "123456789012", region: "us-east-1" },
     vpc,
     cluster: fixtureCluster,
@@ -582,5 +583,18 @@ test.each(["dev", "prod"])("%s backend keeps device binding and runtime proof en
         { Name: "RUNTIME_SESSION_ENFORCEMENT_ENABLED", Value: "true" },
       ]),
     })]),
+  });
+});
+
+
+describe("Paused backend", () => {
+  test("cannot restart or autoscale on a deploy while preserving task identity and logs", () => {
+    const {template}=buildTestApp("prod",true);
+    template.hasResourceProperties("AWS::ECS::Service",{DesiredCount:0,ServiceName:"goosetown-prod-backend"});
+    template.resourceCountIs("AWS::ApplicationAutoScaling::ScalableTarget",0);
+    template.resourceCountIs("AWS::ApplicationAutoScaling::ScalingPolicy",0);
+    template.resourceCountIs("AWS::ECS::TaskDefinition",1);
+    template.resourceCountIs("AWS::ElasticLoadBalancingV2::LoadBalancer",1);
+    template.hasResourceProperties("AWS::S3::Bucket",{BucketName:"goosetown-prod-alb-logs"});
   });
 });

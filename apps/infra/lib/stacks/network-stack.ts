@@ -7,6 +7,8 @@ import { Construct } from "constructs";
 
 export interface NetworkStackProps extends cdk.StackProps {
   environment: string;
+  /** Legacy world is parked; a deployment must not restart its workers. */
+  paused?: boolean;
   /** SNS topic for CloudWatch alarm actions. Wired by ObservabilityStack. */
   alarmTopic?: sns.ITopic;
 }
@@ -23,7 +25,7 @@ export class NetworkStack extends cdk.Stack {
       // Single NAT in every env. This is a deliberate cost-over-HA call:
       // a NAT-AZ outage takes down private-subnet egress until AWS recovers
       // the AZ, and we accept that in exchange for ~$32/mo per extra NAT.
-      natGateways: 1,
+      natGateways: props.paused ? 0 : 1,
       subnetConfiguration: [
         {
           cidrMask: 24,
@@ -63,7 +65,7 @@ export class NetworkStack extends cdk.Stack {
     // NAT port-exhaustion alarm. Port allocation errors signal traffic bursts
     // rather than AZ loss, so `notBreaching` on missing data avoids false
     // alarms during quiet periods.
-    if (props.alarmTopic) {
+    if (props.alarmTopic && !props.paused) {
       const natErrorAlarm = new cloudwatch.Alarm(this, "NatPortErrorAlarm", {
         alarmName: `goosetown-${props.environment}-nat-port-exhaustion`,
         metric: new cloudwatch.Metric({

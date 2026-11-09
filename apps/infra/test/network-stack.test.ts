@@ -166,3 +166,17 @@ describe("NetworkStack — free Gateway VPC endpoints (DynamoDB + S3)", () => {
     expect(gatewayEndpoints.length).toBe(2);
   });
 });
+
+
+describe("Paused legacy world network", () => {
+  test("removes paid NAT but preserves VPC, subnets and free data endpoints", () => {
+    const app=new cdk.App();
+    const stack=new NetworkStack(app,"paused-net",{environment:"dev",env:{account:"123456789012",region:"us-east-1"},...{paused:true}});
+    const t=Template.fromStack(stack);
+    t.resourceCountIs("AWS::EC2::NatGateway",0);
+    t.resourceCountIs("AWS::EC2::EIP",0);
+    t.resourceCountIs("AWS::EC2::VPC",1);
+    t.resourceCountIs("AWS::EC2::Subnet",4);
+    t.resourceCountIs("AWS::EC2::VPCEndpoint",2);
+  });
+});

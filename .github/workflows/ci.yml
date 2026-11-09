@@ -107,6 +107,8 @@ jobs:
       - name: Install
         run: npm ci
         working-directory: apps/infra
+      - name: Parking transition preservation tests
+        run: python3 -m unittest discover -s apps/infra/scripts -p 'test_park_legacy_world.py'
       - name: Test (Jest — CDK assertions)
         run: npm test -- --ci
         working-directory: apps/infra

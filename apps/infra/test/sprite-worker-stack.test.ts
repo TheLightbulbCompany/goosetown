@@ -20,7 +20,7 @@ import { SpriteWorkerStack } from "../lib/stacks/sprite-worker-stack";
 // Helpers — minimal dependency stubs so CDK synthesizes without real lookups.
 // ---------------------------------------------------------------------------
 
-function buildTestApp(env: string, withAlarmTopic = false, dailyRequests: unknown = 0): Template {
+function buildTestApp(env: string, withAlarmTopic = false, dailyRequests: unknown = 0, paused=false): Template {
   const app = new cdk.App({
     context: {
       // Suppress asset bundling during synth
@@ -94,6 +94,7 @@ function buildTestApp(env: string, withAlarmTopic = false, dailyRequests: unknow
   const stack = new SpriteWorkerStack(app, `goosetown-${env}-sprite-worker`, {
     stackName: `goosetown-${env}-sprite-worker`,
     environment: env,
+    ...{paused},
     env: { account: "123456789012", region: "us-east-1" },
     vpc,
     cluster,
@@ -399,4 +400,11 @@ test("daily request ceiling is explicitly configurable with a fail-closed defaul
 
 test.each([-1, "unlimited", 1.5, Number.MAX_SAFE_INTEGER + 1])("invalid request ceiling %s fails synthesis", limit => {
   expect(() => buildTestApp("dev", false, limit)).toThrow("nonnegative integer");
+});
+
+
+test("paused sprite worker retains durable queue and does not restart",()=>{
+  const template=buildTestApp("prod",true,0,true);
+  template.hasResourceProperties("AWS::ECS::Service",{DesiredCount:0});
+  template.resourceCountIs("AWS::SQS::Queue",2);
 });

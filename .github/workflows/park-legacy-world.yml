@@ -1,0 +1,71 @@
+name: Park legacy world (scoped change sets)
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [dev, prod]
+        default: dev
+        required: true
+      phase:
+        type: choice
+        options: [services, network]
+        default: services
+        required: true
+      mode:
+        type: choice
+        options: [plan, execute]
+        default: plan
+        required: true
+      reviewed_changesets:
+        description: 'Execute only: reviewed JSON map of stack names to change-set ARNs (null for unchanged)'
+        type: string
+        default: '{}'
+permissions:
+  contents: read
+concurrency:
+  group: goose-parking-${{ inputs.environment }}
+  cancel-in-progress: false
+jobs:
+  park:
+    runs-on: ubuntu-24.04
+    environment: Production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install boto3==1.40.70
+      - name: Verify parking-only transformation
+        run: python -m unittest discover -s apps/infra/scripts -p 'test_park_legacy_world.py'
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
+          role-session-name: goose-parking
+          inline-session-policy: >-
+            {"Version":"2012-10-17","Statement":[
+              {"Effect":"Allow","Action":["cloudformation:GetTemplate","cloudformation:DescribeStacks","cloudformation:DescribeStackEvents","cloudformation:DescribeChangeSet","cloudformation:CreateChangeSet","cloudformation:ExecuteChangeSet"],"Resource":[
+                "arn:aws:cloudformation:us-east-1:877352799272:stack/goosetown-${{ inputs.environment }}-compute/*",
+                "arn:aws:cloudformation:us-east-1:877352799272:stack/goosetown-${{ inputs.environment }}-gameserver/*",
+                "arn:aws:cloudformation:us-east-1:877352799272:stack/goosetown-${{ inputs.environment }}-sprite-worker/*",
+                "arn:aws:cloudformation:us-east-1:877352799272:stack/goosetown-${{ inputs.environment }}-worldgm/*",
+                "arn:aws:cloudformation:us-east-1:877352799272:stack/goosetown-${{ inputs.environment }}-network/*",
+                "arn:aws:cloudformation:us-east-1:877352799272:changeSet/goose-park-*/*"]},
+              {"Effect":"Allow","Action":["ecs:ListServices","ecs:DescribeServices","ecs:ListTasks","ecs:DescribeTasks","application-autoscaling:DescribeScalableTargets"],"Resource":"*"}
+            ]}
+      - name: Plan or execute only reviewed parking transitions
+        env:
+          PARK_ENV: ${{ inputs.environment }}
+          PARK_PHASE: ${{ inputs.phase }}
+          PARK_MODE: ${{ inputs.mode }}
+          REVIEWED_CHANGESETS: ${{ inputs.reviewed_changesets }}
+        run: python apps/infra/scripts/park_legacy_world.py --environment "$PARK_ENV" --phase "$PARK_PHASE" --mode "$PARK_MODE" --receipt parking-receipt.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: parking-receipt-${{ inputs.environment }}-${{ inputs.phase }}-${{ inputs.mode }}
+          path: parking-receipt.json

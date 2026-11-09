@@ -18,7 +18,7 @@ import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as sns from "aws-cdk-lib/aws-sns";
 import { GameServerStack } from "../lib/stacks/gameserver-stack";
 
-function buildTestApp(): { template: Template } {
+function buildTestApp(paused=false): { template: Template } {
   const app = new cdk.App();
 
   const depsStack = new cdk.Stack(app, "deps", {
@@ -46,6 +46,7 @@ function buildTestApp(): { template: Template } {
   const stack = new GameServerStack(app, "goosetown-dev-gameserver", {
     stackName: "goosetown-dev-gameserver",
     environment: "dev",
+    ...{paused},
     env: { account: "123456789012", region: "us-east-1" },
     vpc,
     cluster: fixtureCluster,
@@ -153,4 +154,11 @@ describe("GameServerStack — Fargate service config", () => {
       DesiredCount: 1,
     });
   });
+});
+
+
+test("paused game server cannot be restarted by deployment",()=>{
+  const {template}=buildTestApp(true);
+  template.hasResourceProperties("AWS::ECS::Service",{DesiredCount:0});
+  template.resourceCountIs("AWS::CloudWatch::Alarm",0);
 });

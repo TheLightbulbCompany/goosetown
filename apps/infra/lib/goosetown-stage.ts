@@ -23,6 +23,9 @@ export class GooseTownStage extends cdk.Stage {
   constructor(scope: Construct, id: string, props: GooseTownStageProps) {
     super(scope, id, props);
     const env = props.environment;
+    // The legacy hosted world is paused while Lightbulb's voice product ships.
+    // Keep this in IaC: manual desired-count zero must survive every deployment.
+    const legacyWorldPaused = true;
 
     // IMPORTANT: Explicit stackName on every stack preserves existing CloudFormation
     // stack names when moving from app-scope to Stage-scope. Without this, CDK
@@ -42,6 +45,7 @@ export class GooseTownStage extends cdk.Stage {
     const network = new NetworkStack(this, `goosetown-${env}-network`, {
       stackName: `goosetown-${env}-network`,
       environment: env,
+      paused: legacyWorldPaused,
       alarmTopic: observability.snsTopic,
     });
     const database = new DatabaseStack(this, `goosetown-${env}-database`, {
@@ -76,6 +80,7 @@ export class GooseTownStage extends cdk.Stage {
       {
         stackName: `goosetown-${env}-gameserver`,
         environment: env,
+        paused: legacyWorldPaused,
         vpc: network.vpc,
         cluster: clusterStack.cluster,
         alarmTopic: observability.snsTopic,
@@ -85,6 +90,7 @@ export class GooseTownStage extends cdk.Stage {
     const compute = new ComputeStack(this, `goosetown-${env}-compute`, {
       stackName: `goosetown-${env}-compute`,
       environment: env,
+      paused: legacyWorldPaused,
       vpc: network.vpc,
       cluster: clusterStack.cluster,
       tables: database.tables,
@@ -140,6 +146,7 @@ export class GooseTownStage extends cdk.Stage {
     new SpriteWorkerStack(this, `goosetown-${env}-sprite-worker`, {
       stackName: `goosetown-${env}-sprite-worker`,
       environment: env,
+      paused: legacyWorldPaused,
       cluster: clusterStack.cluster,
       vpc: network.vpc,
       secrets: auth.secrets,

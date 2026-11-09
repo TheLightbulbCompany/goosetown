@@ -12,6 +12,8 @@ import { Construct } from "constructs";
 
 export interface GameServerStackProps extends cdk.StackProps {
   environment: string;
+  /** Legacy world is parked; a deployment must not restart its workers. */
+  paused?: boolean;
   vpc: ec2.IVpc;
   /** Shared ECS cluster from ClusterStack — both services run on the same cluster. */
   cluster: ecs.ICluster;
@@ -87,7 +89,7 @@ export class GameServerStack extends cdk.Stack {
     const service = new ecs.FargateService(this, "Service", {
       cluster,
       taskDefinition: taskDef,
-      desiredCount: 1,
+      desiredCount: props.paused ? 0 : 1,
       assignPublicIp: false,
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       circuitBreaker: { rollback: true },
@@ -105,7 +107,7 @@ export class GameServerStack extends cdk.Stack {
     // the service stops publishing CPU datapoints for 5 consecutive minutes —
     // at that point OpenClaw agents have exhausted their 5 reconnect attempts
     // and have dropped permanently. Operator response: restart per RUNBOOK.md.
-    if (props.alarmTopic) {
+    if (props.alarmTopic && !props.paused) {
       const taskMissingAlarm = new cloudwatch.Alarm(this, "GameServerTaskMissing", {
         alarmName: `goosetown-${env}-gameserver-task-missing`,
         // Container Insights is disabled on the shared cluster (cost — see

@@ -17,6 +17,8 @@ import { DatabaseTables } from "./database-stack";
 
 export interface SpriteWorkerStackProps extends cdk.StackProps {
   environment: string;
+  /** Legacy world is parked; a deployment must not restart its workers. */
+  paused?: boolean;
   cluster: ecs.ICluster;
   vpc: ec2.IVpc;
   secrets: AuthSecrets;
@@ -145,7 +147,7 @@ export class SpriteWorkerStack extends cdk.Stack {
       serviceName: `goosetown-${env}-sprite-worker`,
       cluster: props.cluster,
       taskDefinition: taskDef,
-      desiredCount: 1,
+      desiredCount: props.paused ? 0 : 1,
       // Stop-then-start on deploys: two concurrent workers would each run a
       // boot sweep + their own "global" semaphore, double-generating against
       // PixelLab during the overlap. A ~1 min generation gap is fine — jobs
@@ -157,7 +159,7 @@ export class SpriteWorkerStack extends cdk.Stack {
       circuitBreaker: { rollback: true },
     });
 
-    if (props.alarmTopic) {
+    if (props.alarmTopic && !props.paused) {
       const dlqAlarm = new cloudwatch.Alarm(this, "SpriteJobsDlqNotEmpty", {
         alarmName: `goosetown-${env}-sprite-jobs-dlq-not-empty`,
         metric: dlq.metricApproximateNumberOfMessagesVisible({ period: cdk.Duration.minutes(5) }),
