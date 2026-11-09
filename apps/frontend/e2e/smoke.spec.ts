@@ -1,4 +1,5 @@
-import { legacyWorldPaused } from "../../infra/lib/legacy-world";
+import { readFileSync } from "node:fs";
+const { legacyWorldPaused } = JSON.parse(readFileSync(new URL("../../../legacy-world.json", import.meta.url), "utf8"));
 import { test, expect } from '@playwright/test';
 
 /**

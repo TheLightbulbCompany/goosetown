@@ -1,4 +1,4 @@
-import { legacyWorldPaused } from "./legacy-world";
+const { legacyWorldPaused }: { legacyWorldPaused: boolean } = require("../../../legacy-world.json");
 import { canonicalHost } from "./stacks/canonical-domain";
 import * as cdk from "aws-cdk-lib";
 import { Construct } from "constructs";
