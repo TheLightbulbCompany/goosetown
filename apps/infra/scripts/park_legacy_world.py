@@ -206,20 +206,58 @@ def main():
 
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--environment", choices=("dev", "prod"), required=True)
-    p.add_argument("--phase", choices=("services", "network"), required=True)
+    p.add_argument("--phase", choices=("services", "network", "edge-prepare", "dns", "edge"), required=True)
     p.add_argument("--mode", choices=("inspect", "plan", "execute"), default="inspect")
     p.add_argument("--receipt", required=True)
     p.add_argument("--profile")
+    p.add_argument("--reviewed-dns-sha256", default="")
     args = p.parse_args()
     session = boto3.Session(profile_name=args.profile, region_name=REGION)
     if session.client("sts").get_caller_identity()["Account"] != ACCOUNT:
         raise ValueError("Wrong AWS account")
     cf = session.client("cloudformation")
+    reviewed = json.loads(os.environ.get("REVIEWED_CHANGESETS", "{}"))
+    edge = args.phase in {"edge-prepare", "dns", "edge"}
+    proof = None
+    if edge:
+        from retire_legacy_edge import AlreadyRetired, dns_operation, preflight
+
+        current = deployed(cf, f"goosetown-{args.environment}-compute")
+        stack = f"goosetown-{args.environment}-compute"
+        if args.mode == "execute" and args.phase != "dns" and set(reviewed) != {stack}:
+            raise ValueError("Provide exactly the reviewed compute stack-to-change-set map")
+        try:
+            proof = preflight(
+                session, args.environment, args.phase, current, reviewed.get(stack) if args.mode == "execute" else None
+            )
+        except AlreadyRetired as done:
+            receipt = {
+                "environment": args.environment,
+                "phase": args.phase,
+                "mode": args.mode,
+                **done.receipt,
+                "executed": False,
+            }
+            Path(args.receipt).write_text(json.dumps(receipt, indent=2))
+            print(json.dumps(receipt, indent=2))
+            return
+        if args.phase == "dns":
+            if args.mode == "inspect":
+                raise ValueError("DNS uses explicit read-only plan mode")
+            receipt = dns_operation(session, args.environment, args.mode, args.reviewed_dns_sha256, proof)
+            Path(args.receipt).write_text(json.dumps(receipt, indent=2))
+            print(json.dumps(receipt, indent=2))
+            return
     if args.phase == "network":
         parked(session.client("ecs"), session.client("application-autoscaling"), args.environment)
-    suffixes = ["network"] if args.phase == "network" else ["compute", "gameserver", "sprite-worker", "worldgm"]
+    suffixes = (
+        ["compute"]
+        if edge
+        else ["network"]
+        if args.phase == "network"
+        else ["compute", "gameserver", "sprite-worker", "worldgm"]
+    )
     stacks = [f"goosetown-{args.environment}-{suffix}" for suffix in suffixes]
-    reviewed = json.loads(os.environ.get("REVIEWED_CHANGESETS", "{}"))
     if args.mode == "execute" and set(reviewed) != set(stacks):
         raise ValueError("Provide exactly the reviewed stack-to-change-set map")
     receipts = []
@@ -230,10 +268,17 @@ def main():
         if any(p.get("NoEcho") for p in current.get("Parameters", {}).values()):
             raise ValueError("Opaque parameters require separate review")
         preserved_current, preserved = preserve_alarm_descriptions(stack, current, session.client("cloudwatch"))
-        proposed, changes = transform(stack, preserved_current)
+        if edge:
+            from retire_legacy_edge import transform_edge
+
+            proposed, changes = transform_edge(args.phase, stack, preserved_current)
+        else:
+            proposed, changes = transform(stack, preserved_current)
         receipt = {"stack": stack, "beforeSha256": digest(current), "afterSha256": digest(proposed), "changes": changes}
         if preserved:
             receipt["preservedAlarmDescriptions"] = preserved
+        if proof:
+            receipt["edgePreflight"] = proof
         receipts.append(receipt)
         if args.mode == "inspect":
             continue

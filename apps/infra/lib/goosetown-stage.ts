@@ -1,3 +1,4 @@
+const { legacyWorldPaused }: { legacyWorldPaused: boolean } = require("../../../legacy-world.json");
 import { canonicalHost } from "./stacks/canonical-domain";
 import * as cdk from "aws-cdk-lib";
 import { Construct } from "constructs";
@@ -23,9 +24,6 @@ export class GooseTownStage extends cdk.Stage {
   constructor(scope: Construct, id: string, props: GooseTownStageProps) {
     super(scope, id, props);
     const env = props.environment;
-    // The legacy hosted world is paused while Lightbulb's voice product ships.
-    // Keep this in IaC: manual desired-count zero must survive every deployment.
-    const legacyWorldPaused = true;
 
     // IMPORTANT: Explicit stackName on every stack preserves existing CloudFormation
     // stack names when moving from app-scope to Stage-scope. Without this, CDK

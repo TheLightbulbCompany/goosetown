@@ -140,7 +140,8 @@ jobs:
     # Pin a Playwright-supported image instead of the moving ubuntu-latest.
     runs-on: ubuntu-24.04
     # Only run on main-bound PRs so feature-branch noise doesn't hit the
-    # shared dev environment. Skips itself cleanly when dev is down.
+    # shared dev environment. World-only cases explicitly skip when the checked-in
+    # IaC paused flag is true; CDN smoke and offline service contracts still run.
     if: github.base_ref == 'main'
     steps:
       - uses: actions/checkout@v4

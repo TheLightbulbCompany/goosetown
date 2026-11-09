@@ -35,3 +35,46 @@ test("parking door is manual, scoped, and cannot enable the broad deploy", () =>
   expect(read("deploy.yml").jobs.deploy.if).toBe("${{ false }}");
   expect(read("deploy-prod.yml").jobs.deploy.if).toBe("${{ false }}");
 });
+
+test("edge retirement is main-only with separate reviewed phases and exact DNS delete authority", () => {
+  const workflow = read("retire-legacy-edge.yml");
+  expect(Object.keys(workflow.on)).toEqual(["workflow_dispatch"]);
+  expect(workflow.on.workflow_dispatch.inputs.phase.options).toEqual(["edge-prepare", "dns", "edge"]);
+  expect(workflow.on.workflow_dispatch.inputs.mode.default).toBe("plan");
+  expect(workflow.jobs.retire.if).toBe("github.ref == 'refs/heads/main'");
+  expect(workflow.jobs.retire.environment).toBe("Production");
+  const credential = workflow.jobs.retire.steps.find((step: any) => step.uses?.startsWith("aws-actions/configure-aws-credentials"));
+  const rendered = credential.with["inline-session-policy"]
+    .replace(/\$\{\{ inputs.environment ==.*?\}\}/g, "api-dev.goosetown.thelightbulb.company")
+    .replace(/\$\{\{ inputs.environment \}\}/g, "dev");
+  expect(rendered.length).toBeLessThanOrEqual(2048);
+  const policy = JSON.parse(rendered);
+  const dns = policy.Statement.find((statement: any) => statement.Action === "route53:ChangeResourceRecordSets");
+  expect(dns.Resource).toBe("arn:aws:route53:::hostedzone/Z09913772LJJ6H4X9JJX0");
+  expect(dns.Condition["ForAllValues:StringEquals"]).toEqual({
+    "route53:ChangeResourceRecordSetsNormalizedRecordNames": ["api-dev.goosetown.thelightbulb.company"],
+    "route53:ChangeResourceRecordSetsRecordTypes": ["A"],
+    "route53:ChangeResourceRecordSetsActions": ["DELETE"],
+  });
+  expect(JSON.stringify(policy.Statement[0].Resource)).toContain("stack/goosetown-dev-compute/");
+  expect(JSON.stringify(policy.Statement[0].Resource)).not.toContain("lightbulb-");
+  expect(JSON.stringify(policy)).not.toContain("secretsmanager:");
+  expect(JSON.stringify(policy)).not.toContain("iam:");
+  expect(read("deploy.yml").jobs.deploy.if).toBe("${{ false }}");
+  expect(read("deploy-prod.yml").jobs.deploy.if).toBe("${{ false }}");
+});
+
+
+test("live world acceptance shares the IaC pause ruling while CDN and offline checks remain", () => {
+  const state = JSON.parse(fs.readFileSync(path.join(root, "legacy-world.json"), "utf8"));
+  expect(state).toEqual({ legacyWorldPaused: true });
+  const stage = fs.readFileSync(path.join(root, "apps/infra/lib/goosetown-stage.ts"), "utf8");
+  expect(stage).toContain('require("../../../legacy-world.json")');
+  expect(stage.match(/paused: legacyWorldPaused/g)).toHaveLength(4);
+  const smoke = fs.readFileSync(path.join(root, "apps/frontend/e2e/smoke.spec.ts"), "utf8");
+  expect(smoke).toContain('new URL("../../../legacy-world.json", import.meta.url)');
+  expect(smoke.match(/test.skip\(legacyWorldPaused/g)).toHaveLength(2);
+  const cdn = smoke.slice(smoke.indexOf("test('sprite CDN"), smoke.indexOf("test('at least one"));
+  expect(cdn).not.toContain("test.skip");
+  expect(read("ci.yml").jobs["infra-test"]).toBeDefined();
+});

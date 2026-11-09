@@ -1,0 +1,75 @@
+name: Retire parked legacy edge (scoped plans)
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [dev, prod]
+        default: dev
+        required: true
+      phase:
+        type: choice
+        options: [edge-prepare, dns, edge]
+        default: edge-prepare
+        required: true
+      mode:
+        type: choice
+        options: [plan, execute]
+        default: plan
+        required: true
+      reviewed_changesets:
+        description: 'CFN execute only: exact independently reviewed stack/ARN JSON map'
+        type: string
+        default: '{}'
+      reviewed_dns_sha256:
+        description: 'DNS execute only: exact independently reviewed record hash'
+        type: string
+        default: ''
+permissions:
+  contents: read
+concurrency:
+  group: goose-parking-${{ inputs.environment }}
+  cancel-in-progress: false
+jobs:
+  retire:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment: Production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install boto3==1.40.70
+      - name: Verify exact edge and DNS transition guards
+        run: python -m unittest discover -s apps/infra/scripts -p 'test_retire_legacy_edge.py'
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-to-assume: arn:aws:iam::877352799272:role/goosetown-github-actions
+          role-session-name: goose-edge-retirement
+          inline-session-policy: >-
+            {"Version":"2012-10-17","Statement":[
+              {"Effect":"Allow","Action":["cloudformation:GetTemplate","cloudformation:DescribeStacks","cloudformation:DescribeStackEvents","cloudformation:DescribeChangeSet","cloudformation:CreateChangeSet","cloudformation:ExecuteChangeSet","cloudformation:ListStackResources"],"Resource":["arn:aws:cloudformation:us-east-1:877352799272:stack/goosetown-${{ inputs.environment }}-compute/*","arn:aws:cloudformation:us-east-1:877352799272:changeSet/goose-park-*/*"]},
+              {"Effect":"Allow","Action":["cloudformation:ListExports","ecs:ListServices","ecs:DescribeServices","ecs:ListTasks","ecs:DescribeTasks","application-autoscaling:DescribeScalableTargets","elasticloadbalancing:DescribeLoadBalancers","elasticloadbalancing:DescribeTargetGroups","elasticloadbalancing:DescribeTargetHealth","elasticloadbalancing:DescribeListeners","wafv2:GetWebACLForResource","wafv2:GetWebACL","wafv2:ListResourcesForWebACL","ec2:DescribeNetworkInterfaces","ec2:DescribeSecurityGroups","ec2:DescribeSecurityGroupReferences","route53:ListHostedZones","route53:ListResourceRecordSets","route53:GetChange"],"Resource":"*"},
+              {"Effect":"Allow","Action":"route53:ChangeResourceRecordSets","Resource":"arn:aws:route53:::hostedzone/Z09913772LJJ6H4X9JJX0","Condition":{"ForAllValues:StringEquals":{"route53:ChangeResourceRecordSetsNormalizedRecordNames":["${{ inputs.environment == 'dev' && 'api-dev.goosetown.thelightbulb.company' || 'api.goosetown.thelightbulb.company' }}"],"route53:ChangeResourceRecordSetsRecordTypes":["A"],"route53:ChangeResourceRecordSetsActions":["DELETE"]}}}
+            ]}
+      - name: Plan or execute only the independently reviewed transition
+        env:
+          RETIRE_ENV: ${{ inputs.environment }}
+          RETIRE_PHASE: ${{ inputs.phase }}
+          RETIRE_MODE: ${{ inputs.mode }}
+          REVIEWED_CHANGESETS: ${{ inputs.reviewed_changesets }}
+          DNS_HASH: ${{ inputs.reviewed_dns_sha256 }}
+        run: >-
+          python apps/infra/scripts/park_legacy_world.py --environment "$RETIRE_ENV"
+          --phase "$RETIRE_PHASE" --mode "$RETIRE_MODE" --reviewed-dns-sha256 "$DNS_HASH"
+          --receipt edge-retirement-receipt.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: edge-retirement-${{ inputs.environment }}-${{ inputs.phase }}-${{ inputs.mode }}
+          path: edge-retirement-receipt.json

@@ -594,7 +594,21 @@ describe("Paused backend", () => {
     template.resourceCountIs("AWS::ApplicationAutoScaling::ScalableTarget",0);
     template.resourceCountIs("AWS::ApplicationAutoScaling::ScalingPolicy",0);
     template.resourceCountIs("AWS::ECS::TaskDefinition",1);
-    template.resourceCountIs("AWS::ElasticLoadBalancingV2::LoadBalancer",1);
+    template.resourceCountIs("AWS::ElasticLoadBalancingV2::LoadBalancer",0);
     template.hasResourceProperties("AWS::S3::Bucket",{BucketName:"goosetown-prod-alb-logs"});
   });
+});
+
+
+test("parked world has no edge but retains forensic logs and its stopped service", () => {
+  const { template } = buildTestApp("prod", true);
+  for (const type of ["AWS::ElasticLoadBalancingV2::LoadBalancer", "AWS::ElasticLoadBalancingV2::Listener",
+    "AWS::ElasticLoadBalancingV2::TargetGroup", "AWS::WAFv2::WebACL", "AWS::WAFv2::WebACLAssociation"]) {
+    template.resourceCountIs(type, 0);
+  }
+  template.hasResourceProperties("AWS::ECS::Service", { DesiredCount: 0, HealthCheckGracePeriodSeconds: 0 });
+  template.resourceCountIs("AWS::S3::Bucket", 1);
+  expect(template.findResources("AWS::S3::BucketPolicy")).toEqual(buildTestApp("prod").template.findResources("AWS::S3::BucketPolicy"));
+  expect(template.toJSON().Outputs.AlbDnsName).toBeUndefined();
+  expect(JSON.stringify(template.toJSON())).not.toContain("ALB to Fargate");
 });
