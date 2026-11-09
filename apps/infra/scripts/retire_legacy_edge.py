@@ -246,6 +246,35 @@ def terminal_proof(session, environment, template, reviewed_change_set):
     return {**receipt, "physicalAbsenceVerified": True, "completedChangeSetId": reviewed_change_set}
 
 
+def security_group_consumers(ec2, alb_group, service_group):
+    """Fence rule references as well as ENIs before the earlier DNS deletion phase."""
+    if ec2.describe_security_group_references(GroupId=[alb_group])[
+        "SecurityGroupReferenceSet"
+    ]:
+        raise ValueError("ALB security group has cross-VPC/account rule references")
+    allowed = 0
+    for page in ec2.get_paginator("describe_security_groups").paginate():
+        for group in page["SecurityGroups"]:
+            for direction in ("IpPermissions", "IpPermissionsEgress"):
+                for permission in group.get(direction, []):
+                    for pair in permission.get("UserIdGroupPairs", []):
+                        if pair.get("GroupId") != alb_group:
+                            continue
+                        if (
+                            group["GroupId"] != service_group
+                            or direction != "IpPermissions"
+                            or permission.get("IpProtocol") != "tcp"
+                            or permission.get("FromPort") != 8000
+                            or permission.get("ToPort") != 8000
+                        ):
+                            raise ValueError(
+                                "ALB security group has an unexpected rule consumer"
+                            )
+                        allowed += 1
+    if allowed != 1:
+        raise ValueError("Expected exactly the owned service ingress reference")
+
+
 def preflight(session, environment, phase, template, reviewed_change_set=None):
     """No probes/invokes: only current control-plane metadata and zero-task guards."""
     parked(session.client("ecs"), session.client("application-autoscaling"), environment)
@@ -304,6 +333,7 @@ def preflight(session, environment, phase, template, reviewed_change_set=None):
         for interface in interfaces
     ):
         raise ValueError("ALB security group has another consumer")
+    security_group_consumers(session.client("ec2"), sg, resources["ServiceSecurityGroupC96ED6A7"]["PhysicalResourceId"])
     route53 = session.client("route53")
     name = host(environment)
     aliases = []

@@ -128,6 +128,39 @@ class EdgeTests(unittest.TestCase):
             HostedZoneId=edge.ROOT_ZONE, ChangeBatch={"Changes": [{"Action": "DELETE", "ResourceRecordSet": record}]}
         )
 
+    def test_rule_references_allow_only_the_owned_service_ingress(self):
+        ec2 = Mock()
+        ec2.describe_security_group_references.return_value = {
+            "SecurityGroupReferenceSet": []
+        }
+        ingress = {
+            "IpProtocol": "tcp",
+            "FromPort": 8000,
+            "ToPort": 8000,
+            "UserIdGroupPairs": [{"GroupId": "alb"}],
+        }
+        groups = [{"GroupId": "service", "IpPermissions": [ingress]}]
+        ec2.get_paginator.return_value.paginate.return_value = [
+            {"SecurityGroups": groups}
+        ]
+        edge.security_group_consumers(ec2, "alb", "service")
+        for direction in ("IpPermissions", "IpPermissionsEgress"):
+            with self.subTest(direction=direction):
+                groups.append(
+                    {"GroupId": "foreign", direction: [copy.deepcopy(ingress)]}
+                )
+                with self.assertRaisesRegex(ValueError, "unexpected rule consumer"):
+                    edge.security_group_consumers(ec2, "alb", "service")
+                groups.pop()
+        ingress["ToPort"] = 8001
+        with self.assertRaisesRegex(ValueError, "unexpected rule consumer"):
+            edge.security_group_consumers(ec2, "alb", "service")
+        ec2.describe_security_group_references.return_value = {
+            "SecurityGroupReferenceSet": [{"ReferencingVpcId": "peer"}]
+        }
+        with self.assertRaisesRegex(ValueError, "cross-VPC/account"):
+            edge.security_group_consumers(ec2, "alb", "service")
+
     @patch.object(edge, "parked")
     def test_fresh_alias_exports_associations_and_sg_consumers_are_fenced(self, parked):
         cf, elb, waf, ec2, route53, session = [Mock() for _ in range(6)]
@@ -143,6 +176,7 @@ class EdgeTests(unittest.TestCase):
         resources = [
             {"LogicalResourceId": "ALBAEE750D2", "PhysicalResourceId": "owned-alb"},
             {"LogicalResourceId": "ALBSecurityGroup8B8624F8", "PhysicalResourceId": "owned-sg"},
+            {"LogicalResourceId": "ServiceSecurityGroupC96ED6A7", "PhysicalResourceId": "service-sg"},
         ]
         exports = []
         cf.get_paginator.side_effect = lambda operation: Mock(
@@ -170,7 +204,30 @@ class EdgeTests(unittest.TestCase):
         ec2.describe_network_interfaces.return_value = {
             "NetworkInterfaces": [{"RequesterManaged": True, "Description": "ELB app/goosetown-dev/id"}]
         }
-        ec2.get_paginator.return_value.paginate.side_effect = lambda **_: [ec2.describe_network_interfaces.return_value]
+        ec2.describe_security_group_references.return_value = {
+            "SecurityGroupReferenceSet": []
+        }
+        ec2.get_paginator.side_effect = lambda operation: Mock(
+            paginate=lambda **_: [
+                ec2.describe_network_interfaces.return_value
+                if operation == "describe_network_interfaces"
+                else {
+                    "SecurityGroups": [
+                        {
+                            "GroupId": "service-sg",
+                            "IpPermissions": [
+                                {
+                                    "IpProtocol": "tcp",
+                                    "FromPort": 8000,
+                                    "ToPort": 8000,
+                                    "UserIdGroupPairs": [{"GroupId": "owned-sg"}],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        )
         record = {
             "Name": edge.host("dev"),
             "Type": "A",
@@ -191,6 +248,13 @@ class EdgeTests(unittest.TestCase):
         before = template()
         proof = edge.preflight(session, "dev", "edge-prepare", before)
         self.assertEqual(proof["dnsRecord"], record)
+        route53.get_paginator.reset_mock()
+        ec2.describe_security_group_references.return_value = {"SecurityGroupReferenceSet": [{"ReferencingVpcId": "peer"}]}
+        prepared_for_dns, _ = edge.transform_edge("edge-prepare", "goosetown-dev-compute", before)
+        with self.assertRaisesRegex(ValueError, "cross-VPC/account"):
+            edge.preflight(session, "dev", "dns", prepared_for_dns)
+        route53.get_paginator.assert_not_called()  # the consumer guard runs before the DNS phase
+        ec2.describe_security_group_references.return_value = {"SecurityGroupReferenceSet": []}
         prepared, _ = edge.transform_edge("edge-prepare", "goosetown-dev-compute", before)
         with self.assertRaisesRegex(ValueError, "DNS deletion"):
             edge.preflight(session, "dev", "edge", prepared)
