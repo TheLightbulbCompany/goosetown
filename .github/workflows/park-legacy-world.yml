@@ -55,7 +55,10 @@ jobs:
                 "arn:aws:cloudformation:us-east-1:877352799272:stack/goosetown-${{ inputs.environment }}-worldgm/*",
                 "arn:aws:cloudformation:us-east-1:877352799272:stack/goosetown-${{ inputs.environment }}-network/*",
                 "arn:aws:cloudformation:us-east-1:877352799272:changeSet/goose-park-*/*"]},
-              {"Effect":"Allow","Action":["ecs:ListServices","ecs:DescribeServices","ecs:ListTasks","ecs:DescribeTasks","application-autoscaling:DescribeScalableTargets"],"Resource":"*"}
+              {"Effect":"Allow","Action":["ecs:ListServices","ecs:DescribeServices","ecs:ListTasks","ecs:DescribeTasks","application-autoscaling:DescribeScalableTargets"],"Resource":"*"},
+              {"Effect":"Allow","Action":"cloudwatch:DescribeAlarms","Resource":[
+                "arn:aws:cloudwatch:us-east-1:877352799272:alarm:goosetown-${{ inputs.environment }}-sprite-jobs-backlog-age",
+                "arn:aws:cloudwatch:us-east-1:877352799272:alarm:goosetown-${{ inputs.environment }}-sprite-jobs-dlq-not-empty"]}
             ]}
       - name: Plan or execute only reviewed parking transitions
         env:

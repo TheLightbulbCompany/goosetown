@@ -32,6 +32,10 @@ REMOVE_NETWORK = {
     "VpcprivateSubnet2DefaultRouteBAC3C1C3": "AWS::EC2::Route",
     "NatPortErrorAlarmCC295C98": "AWS::CloudWatch::Alarm",
 }
+PRESERVE_ALARM_DESCRIPTIONS = {
+    "SpriteJobsBacklogAge8327B239": "sprite-jobs-backlog-age",
+    "SpriteJobsDlqNotEmpty809C2BF6": "sprite-jobs-dlq-not-empty",
+}
 
 
 def encoded(template):
@@ -40,6 +44,35 @@ def encoded(template):
 
 def digest(template):
     return hashlib.sha256(encoded(template).encode()).hexdigest()
+
+
+def preserve_alarm_descriptions(stack, template, cloudwatch):
+    """Repair only known GetTemplate em-dash loss, preserving actual alarm state."""
+    result = copy.deepcopy(template)
+    preserved = []
+    if not re.fullmatch(r"goosetown-(dev|prod)-sprite-worker", stack):
+        return result, preserved
+    environment = stack.split("-")[1]
+    for logical_id, suffix in PRESERVE_ALARM_DESCRIPTIONS.items():
+        resource = result["Resources"].get(logical_id, {})
+        expected_name = f"goosetown-{environment}-{suffix}"
+        properties = resource.get("Properties", {})
+        if resource.get("Type") != "AWS::CloudWatch::Alarm" or properties.get("AlarmName") != expected_name:
+            raise ValueError("Unexpected preserved alarm identity")
+        alarms = cloudwatch.describe_alarms(AlarmNames=[expected_name]).get("MetricAlarms", [])
+        if len(alarms) != 1 or alarms[0].get("AlarmName") != expected_name:
+            raise ValueError("Cannot verify preserved alarm identity")
+        original = properties.get("AlarmDescription")
+        live = alarms[0].get("AlarmDescription")
+        if not isinstance(original, str) or not isinstance(live, str):
+            raise ValueError("Preserved alarm descriptions must be strings")
+        if original == live:
+            continue
+        if "\u2014" not in live or original != live.replace("\u2014", "?"):
+            raise ValueError("Alarm description differs beyond known em-dash normalization")
+        properties["AlarmDescription"] = live
+        preserved.append({"id": logical_id, "descriptionSha256": hashlib.sha256(live.encode()).hexdigest()})
+    return result, preserved
 
 
 def transform(stack, template):
@@ -196,8 +229,11 @@ def main():
         execution_role(existing)
         if any(p.get("NoEcho") for p in current.get("Parameters", {}).values()):
             raise ValueError("Opaque parameters require separate review")
-        proposed, changes = transform(stack, current)
+        preserved_current, preserved = preserve_alarm_descriptions(stack, current, session.client("cloudwatch"))
+        proposed, changes = transform(stack, preserved_current)
         receipt = {"stack": stack, "beforeSha256": digest(current), "afterSha256": digest(proposed), "changes": changes}
+        if preserved:
+            receipt["preservedAlarmDescriptions"] = preserved
         receipts.append(receipt)
         if args.mode == "inspect":
             continue
