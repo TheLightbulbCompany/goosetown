@@ -1,9 +1,38 @@
 import copy
 import unittest
-from park_legacy_world import EXECUTION_ROLE, execution_role, transform, unchanged_parameters
+from unittest.mock import Mock
+
+from park_legacy_world import EXECUTION_ROLE, execution_role, parked, transform, unchanged_parameters
 
 
 class ParkingTests(unittest.TestCase):
+    def test_draining_standalone_task_blocks_nat_retirement(self):
+        ecs, scaling = Mock(), Mock()
+        services = [f"service-{i}" for i in range(4)]
+        ecs.get_paginator.return_value.paginate.return_value = [{"serviceArns": services}]
+        ecs.describe_services.return_value = {
+            "services": [{"serviceName": s, "desiredCount": 0, "runningCount": 0, "pendingCount": 0} for s in services]
+        }
+        ecs.list_tasks.side_effect = lambda **kw: {"taskArns": ["draining"] if kw["desiredStatus"] == "STOPPED" else []}
+        ecs.describe_tasks.return_value = {"tasks": [{"taskArn": "draining", "lastStatus": "RUNNING"}]}
+        scaling.describe_scalable_targets.return_value = {"ScalableTargets": []}
+        with self.assertRaisesRegex(ValueError, "draining"):
+            parked(ecs, scaling, "dev")
+        ecs.describe_tasks.return_value = {"tasks": [{"taskArn": "draining", "lastStatus": "STOPPED"}]}
+        parked(ecs, scaling, "dev")
+        ecs.list_tasks.side_effect = [
+            {"taskArns": []},
+            {"taskArns": []},
+            {"taskArns": ["done"], "nextToken": "second"},
+            {"taskArns": ["draining"]},
+        ]
+        ecs.describe_tasks.side_effect = [
+            {"tasks": [{"lastStatus": "STOPPED"}]},
+            {"tasks": [{"lastStatus": "DEPROVISIONING"}]},
+        ]
+        with self.assertRaisesRegex(ValueError, "draining"):
+            parked(ecs, scaling, "dev")
+
     def test_requires_existing_cdk_execution_role_without_broadening_caller_permissions(self):
         execution_role({"RoleARN": EXECUTION_ROLE})
         for stack in ({}, {"RoleARN": "arn:aws:iam::877352799272:role/other"}):

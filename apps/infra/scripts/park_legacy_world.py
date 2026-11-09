@@ -124,6 +124,21 @@ def parked(ecs, scaling, environment):
     for status in ("RUNNING", "PENDING"):
         if ecs.list_tasks(cluster=cluster, desiredStatus=status)["taskArns"]:
             raise ValueError("A standalone legacy task still needs network access")
+    token = None
+    while True:
+        request = {"cluster": cluster, "desiredStatus": "STOPPED", "maxResults": 100}
+        if token:
+            request["nextToken"] = token
+        page = ecs.list_tasks(**request)
+        if page["taskArns"]:
+            tasks = ecs.describe_tasks(cluster=cluster, tasks=page["taskArns"])
+            if tasks.get("failures") or len(tasks["tasks"]) != len(page["taskArns"]):
+                raise ValueError("Cannot verify draining legacy tasks")
+            if any(t.get("lastStatus") != "STOPPED" for t in tasks["tasks"]):
+                raise ValueError("A legacy task is still draining; wait before retiring NAT")
+        token = page.get("nextToken")
+        if not token:
+            break
     ids = [f"service/{cluster}/{s['serviceName']}" for s in services["services"]]
     if scaling.describe_scalable_targets(ServiceNamespace="ecs", ResourceIds=ids)["ScalableTargets"]:
         raise ValueError("Remove legacy autoscaling before retiring NAT")
