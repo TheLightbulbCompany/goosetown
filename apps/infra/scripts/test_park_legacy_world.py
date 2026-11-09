@@ -2,10 +2,69 @@ import copy
 import unittest
 from unittest.mock import Mock
 
-from park_legacy_world import EXECUTION_ROLE, execution_role, parked, transform, unchanged_parameters
+from park_legacy_world import (
+    EXECUTION_ROLE,
+    execution_role,
+    parked,
+    preserve_alarm_descriptions,
+    transform,
+    unchanged_parameters,
+)
 
 
 class ParkingTests(unittest.TestCase):
+    def test_preserves_only_two_verified_live_alarm_descriptions(self):
+        descriptions = {
+            "SpriteJobsBacklogAge8327B239": ("sprite-jobs-backlog-age", "Oldest job \u2014 worker paused."),
+            "SpriteJobsDlqNotEmpty809C2BF6": ("sprite-jobs-dlq-not-empty", "Dead letters \u2014 check logs."),
+        }
+        template = {
+            "Resources": {
+                logical: {
+                    "Type": "AWS::CloudWatch::Alarm",
+                    "Properties": {
+                        "AlarmName": f"goosetown-dev-{suffix}",
+                        "AlarmDescription": description.replace("\u2014", "?"),
+                        "Threshold": 3,
+                    },
+                }
+                for logical, (suffix, description) in descriptions.items()
+            }
+        }
+        cloudwatch = Mock()
+        by_name = {f"goosetown-dev-{suffix}": d for suffix, d in descriptions.values()}
+        cloudwatch.describe_alarms.side_effect = lambda AlarmNames: {
+            "MetricAlarms": [{"AlarmName": AlarmNames[0], "AlarmDescription": by_name[AlarmNames[0]]}]
+        }
+        original = copy.deepcopy(template)
+        proposed, receipt = preserve_alarm_descriptions("goosetown-dev-sprite-worker", template, cloudwatch)
+        expected = copy.deepcopy(template)
+        for logical, (_, description) in descriptions.items():
+            expected["Resources"][logical]["Properties"]["AlarmDescription"] = description
+        self.assertEqual(proposed, expected)
+        self.assertEqual(template, original)
+        self.assertEqual({r["id"] for r in receipt}, set(descriptions))
+        self.assertEqual(
+            preserve_alarm_descriptions("goosetown-dev-sprite-worker", proposed, cloudwatch), (proposed, [])
+        )
+        for mutation in ("different text", 123, None):
+            bad = copy.deepcopy(template)
+            bad["Resources"]["SpriteJobsBacklogAge8327B239"]["Properties"]["AlarmDescription"] = mutation
+            with self.assertRaises(ValueError):
+                preserve_alarm_descriptions("goosetown-dev-sprite-worker", bad, cloudwatch)
+        for field, value in (("Type", "AWS::S3::Bucket"), ("Properties", {"AlarmName": "other"})):
+            bad = copy.deepcopy(template)
+            bad["Resources"]["SpriteJobsBacklogAge8327B239"][field] = value
+            with self.assertRaisesRegex(ValueError, "identity"):
+                preserve_alarm_descriptions("goosetown-dev-sprite-worker", bad, cloudwatch)
+        cloudwatch.describe_alarms.side_effect = None
+        cloudwatch.describe_alarms.return_value = {"MetricAlarms": []}
+        with self.assertRaisesRegex(ValueError, "identity"):
+            preserve_alarm_descriptions("goosetown-dev-sprite-worker", template, cloudwatch)
+        cloudwatch.reset_mock()
+        self.assertEqual(preserve_alarm_descriptions("goosetown-dev-compute", template, cloudwatch), (template, []))
+        cloudwatch.describe_alarms.assert_not_called()
+
     def test_draining_standalone_task_blocks_nat_retirement(self):
         ecs, scaling = Mock(), Mock()
         services = [f"service-{i}" for i in range(4)]
