@@ -23,6 +23,8 @@ import { AuthSecrets } from "./auth-stack";
 
 export interface ComputeStackProps extends cdk.StackProps {
   environment: string;
+  /** Legacy world is parked; a deployment must not restart its workers. */
+  paused?: boolean;
   vpc: ec2.IVpc;
   /** Shared ECS cluster from ClusterStack — both services run on the same cluster. */
   cluster: ecs.ICluster;
@@ -307,7 +309,7 @@ export class ComputeStack extends cdk.Stack {
       serviceName: `goosetown-${env}-backend`,
       cluster,
       taskDefinition,
-      desiredCount: 1,
+      desiredCount: props.paused ? 0 : 1,
       assignPublicIp: false,
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       circuitBreaker: { rollback: true },
@@ -333,15 +335,17 @@ export class ComputeStack extends cdk.Stack {
     // held at exactly 1 (min=max=1) so the per-process SpriteQueue throttle is
     // also the global one. Dev keeps 1-3 headroom. Restore prod to 2-12 when the
     // durable sprite worker decouples generation from the backend.
-    const scaling = this.service.autoScaleTaskCount({
-      minCapacity: 1,
-      maxCapacity: isProd ? 1 : 3,
-    });
-    scaling.scaleOnCpuUtilization("CpuScaling", {
-      targetUtilizationPercent: 60,
-      scaleInCooldown: cdk.Duration.seconds(60),
-      scaleOutCooldown: cdk.Duration.seconds(60),
-    });
+    if (!props.paused) {
+      const scaling = this.service.autoScaleTaskCount({
+        minCapacity: 1,
+        maxCapacity: isProd ? 1 : 3,
+      });
+      scaling.scaleOnCpuUtilization("CpuScaling", {
+        targetUtilizationPercent: 60,
+        scaleInCooldown: cdk.Duration.seconds(60),
+        scaleOutCooldown: cdk.Duration.seconds(60),
+      });
+    }
 
     // ─── WAF (regional, attached to ALB) ──────────────────────────────────
     // Three managed rule groups + one rate-based rule. The primary attack
@@ -446,7 +450,7 @@ export class ComputeStack extends cdk.Stack {
     // is a tighter signal anyway — a task can be "running" but failing health
     // checks, which from the user's perspective is the same as missing.
     // Silently skipped when alarmTopic is absent (local synth / CI without observability stack).
-    if (props.alarmTopic) {
+    if (props.alarmTopic && !props.paused) {
       const taskMissingAlarm = new cloudwatch.Alarm(this, "BackendTaskMissing", {
         alarmName: `goosetown-${env}-backend-task-missing`,
         metric: targetGroup.metrics.healthyHostCount({
