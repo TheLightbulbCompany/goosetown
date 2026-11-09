@@ -63,3 +63,18 @@ test("edge retirement is main-only with separate reviewed phases and exact DNS d
   expect(read("deploy.yml").jobs.deploy.if).toBe("${{ false }}");
   expect(read("deploy-prod.yml").jobs.deploy.if).toBe("${{ false }}");
 });
+
+
+test("live world acceptance shares the IaC pause ruling while CDN and offline checks remain", () => {
+  const state = fs.readFileSync(path.join(root, "apps/infra/lib/legacy-world.ts"), "utf8");
+  expect(state).toContain("export const legacyWorldPaused = true");
+  const stage = fs.readFileSync(path.join(root, "apps/infra/lib/goosetown-stage.ts"), "utf8");
+  expect(stage).toContain('import { legacyWorldPaused } from "./legacy-world"');
+  expect(stage.match(/paused: legacyWorldPaused/g)).toHaveLength(4);
+  const smoke = fs.readFileSync(path.join(root, "apps/frontend/e2e/smoke.spec.ts"), "utf8");
+  expect(smoke).toContain('import { legacyWorldPaused } from "../../infra/lib/legacy-world"');
+  expect(smoke.match(/test.skip\(legacyWorldPaused/g)).toHaveLength(2);
+  const cdn = smoke.slice(smoke.indexOf("test('sprite CDN"), smoke.indexOf("test('at least one"));
+  expect(cdn).not.toContain("test.skip");
+  expect(read("ci.yml").jobs["infra-test"]).toBeDefined();
+});

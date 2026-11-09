@@ -4,7 +4,13 @@ import copy
 import json
 
 from botocore.exceptions import ClientError
-from park_legacy_world import deployed, digest, execution_role, parked, unchanged_parameters
+from park_legacy_world import (
+    deployed,
+    digest,
+    execution_role,
+    parked,
+    unchanged_parameters,
+)
 
 ROOT_ZONE = "Z09913772LJJ6H4X9JJX0"
 OLD_ZONE = "Z09248243AOUC775CDUI4"
@@ -249,7 +255,7 @@ def preflight(session, environment, phase, template, reviewed_change_set=None):
         for page in cf.get_paginator("list_stack_resources").paginate(StackName=f"goosetown-{environment}-compute")
         for r in page["StackResourceSummaries"]
     }
-    if phase == "edge" and "ALBAEE750D2" not in resources:
+    if phase == "edge" and "ALBAEE750D2" not in template["Resources"]:
         return terminal_proof(session, environment, template, reviewed_change_set)
     alb_arn = resources["ALBAEE750D2"]["PhysicalResourceId"]
     elb = session.client("elbv2")

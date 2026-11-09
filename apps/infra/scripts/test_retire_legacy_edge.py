@@ -268,6 +268,21 @@ class EdgeTests(unittest.TestCase):
             edge.terminal_proof(session, "dev", finished, "reviewed")
 
     @patch.object(edge, "parked")
+    @patch.object(edge, "terminal_proof", return_value={"alreadyRetired": True})
+    def test_current_template_selects_terminal_retry_despite_historical_deleted_alb(self, terminal, parked):
+        prepared, _ = edge.transform_edge("edge-prepare", "goosetown-dev-compute", template())
+        finished, _ = edge.transform_edge("edge", "goosetown-dev-compute", prepared)
+        session, cf = Mock(), Mock()
+        session.client.return_value = cf
+        cf.get_paginator.return_value.paginate.return_value = [{"StackResourceSummaries": [{
+            "LogicalResourceId": "ALBAEE750D2", "PhysicalResourceId": "historical-alb",
+            "ResourceStatus": "DELETE_COMPLETE",
+        }]}]
+        self.assertEqual(edge.preflight(session, "dev", "edge", finished, "reviewed"), {"alreadyRetired": True})
+        terminal.assert_called_once_with(session, "dev", finished, "reviewed")
+        cf.describe_load_balancers.assert_not_called()
+
+    @patch.object(edge, "parked")
     def test_live_targets_stop_preflight_before_dns_work(self, parked):
         session = Mock()
         cf, elb = Mock(), Mock()

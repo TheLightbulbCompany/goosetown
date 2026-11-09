@@ -1,3 +1,4 @@
+import { legacyWorldPaused } from "../../infra/lib/legacy-world";
 import { test, expect } from '@playwright/test';
 
 /**
@@ -16,6 +17,7 @@ test.describe('GooseTown smoke', () => {
   test('loads the town and renders the live or quiet sidebar', async ({
     page,
   }) => {
+    test.skip(legacyWorldPaused, 'Hosted world intentionally paused in IaC; offline zero-service contracts apply.');
     const consoleErrors: string[] = [];
     page.on('console', (msg) => {
       if (msg.type() === 'error') consoleErrors.push(msg.text());
@@ -64,6 +66,7 @@ test.describe('GooseTown smoke', () => {
   });
 
   test('at least one agent sprite renders in the canvas', async ({ page }) => {
+    test.skip(legacyWorldPaused, 'Hosted world intentionally paused in IaC; no live agents are expected.');
     // Regression guard for the JsBridge.call_js migration (security-hardening
     // sub-project #1). If the __gt_load_sprite handler or window.set() path
     // broke, no sprite ever gets uploaded to the Godot texture, so agents
