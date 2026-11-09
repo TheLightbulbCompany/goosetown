@@ -3,6 +3,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 import retire_legacy_edge as edge
+from botocore.exceptions import ClientError
+from park_legacy_world import EXECUTION_ROLE
 
 
 def template(env="dev"):
@@ -98,6 +100,7 @@ class EdgeTests(unittest.TestCase):
                 OtherConsumer={"Type": "AWS::S3::Bucket", "Properties": {"Target": {"Ref": "ALBAEE750D2"}}}
             ),
             lambda t: t["Resources"][edge.LEGACY_DNS]["Properties"].update(Name="api.thelightbulb.company."),
+            lambda t: t["Resources"]["Logs"].update(DependsOn=["ALBAEE750D2"]),
         ):
             bad = copy.deepcopy(prepared)
             mutate(bad)
@@ -195,6 +198,13 @@ class EdgeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "aliases"):
             edge.preflight(session, "dev", "edge-prepare", before)
         zones[edge.ROOT_ZONE].pop()
+        for target in ("goose-alb.", edge.host("dev")):
+            zones[edge.ROOT_ZONE].append(
+                {"Name": "dependent.example.", "Type": "CNAME", "ResourceRecords": [{"Value": target}]}
+            )
+            with self.assertRaisesRegex(ValueError, "aliases"):
+                edge.preflight(session, "dev", "edge-prepare", before)
+            zones[edge.ROOT_ZONE].pop()
         exports.append({"Value": "owned-alb"})
         with self.assertRaisesRegex(ValueError, "exported"):
             edge.preflight(session, "dev", "edge-prepare", before)
@@ -208,6 +218,54 @@ class EdgeTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(ValueError, "another consumer"):
             edge.preflight(session, "dev", "edge-prepare", before)
+
+    def test_terminal_retry_requires_completed_exact_receipt_and_physical_absence(self):
+        prepared, _ = edge.transform_edge("edge-prepare", "goosetown-dev-compute", template())
+        finished, _ = edge.transform_edge("edge", "goosetown-dev-compute", prepared)
+        cf, elb, ec2, waf, route53, session = [Mock() for _ in range(6)]
+        session.client.side_effect = lambda name: {
+            "cloudformation": cf,
+            "elbv2": elb,
+            "ec2": ec2,
+            "wafv2": waf,
+            "route53": route53,
+        }[name]
+        route53.get_paginator.return_value.paginate.return_value = [{"ResourceRecordSets": []}]
+        with self.assertRaises(edge.AlreadyRetired) as missing:
+            edge.terminal_proof(session, "dev", finished, None)
+        self.assertFalse(missing.exception.receipt["physicalAbsenceVerified"])
+        cf.describe_stacks.return_value = {"Stacks": [{"RoleARN": EXECUTION_ROLE}]}
+        physicals = {
+            "ALBAEE750D2": "old-alb",
+            "TargetGroup3D7CD9B8": "old-tg",
+            "ALBSecurityGroup8B8624F8": "old-sg",
+            "AlbWebAcl": "goosetown-dev-alb-waf|old-id|REGIONAL",
+        }
+        cf.describe_change_set.return_value = {
+            "StackName": "goosetown-dev-compute",
+            "ExecutionStatus": "EXECUTE_COMPLETE",
+            "Changes": [
+                {"ResourceChange": {"LogicalResourceId": name, "Action": "Remove", "PhysicalResourceId": value}}
+                for name, value in physicals.items()
+            ],
+        }
+        cf.get_template.return_value = {"TemplateBody": finished}
+
+        def missing_resource(code):
+            return ClientError({"Error": {"Code": code, "Message": "absent"}}, "Describe")
+
+        elb.describe_load_balancers.side_effect = missing_resource("LoadBalancerNotFound")
+        elb.describe_target_groups.side_effect = missing_resource("TargetGroupNotFound")
+        ec2.describe_security_groups.side_effect = missing_resource("InvalidGroup.NotFound")
+        waf.get_web_acl.side_effect = missing_resource("WAFNonexistentItemException")
+        self.assertTrue(edge.terminal_proof(session, "dev", finished, "reviewed")["physicalAbsenceVerified"])
+        waf.get_web_acl.side_effect = None
+        waf.get_web_acl.return_value = {"WebACL": {"Name": "still-present"}}
+        with self.assertRaisesRegex(ValueError, "physically exists"):
+            edge.terminal_proof(session, "dev", finished, "reviewed")
+        cf.describe_change_set.return_value["ExecutionStatus"] = "AVAILABLE"
+        with self.assertRaisesRegex(ValueError, "completed"):
+            edge.terminal_proof(session, "dev", finished, "reviewed")
 
     @patch.object(edge, "parked")
     def test_live_targets_stop_preflight_before_dns_work(self, parked):

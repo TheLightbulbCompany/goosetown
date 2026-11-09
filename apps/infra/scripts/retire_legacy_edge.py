@@ -3,7 +3,8 @@
 import copy
 import json
 
-from park_legacy_world import digest, parked
+from botocore.exceptions import ClientError
+from park_legacy_world import deployed, digest, execution_role, parked, unchanged_parameters
 
 ROOT_ZONE = "Z09913772LJJ6H4X9JJX0"
 OLD_ZONE = "Z09248243AOUC775CDUI4"
@@ -27,6 +28,14 @@ EGRESS = {
     "dev": "ALBSecurityGrouptodevgoosetowndevcomputeServiceSecurityGroupB7A01C538000E7CFDFCB",
     "prod": "ALBSecurityGrouptoprodgoosetownprodcomputeServiceSecurityGroupC945CF438000BDE68EDF",
 }
+
+
+class AlreadyRetired(ValueError):
+    """Recognizable no-action result when a prior execution receipt is needed."""
+
+    def __init__(self, receipt):
+        super().__init__("Edge already absent from template; no action; provide prior reviewed execution receipt")
+        self.receipt = receipt
 
 
 def host(environment):
@@ -102,12 +111,14 @@ def transform_edge(phase, stack, template):
         del resources[logical]
     service["LoadBalancers"] = []
     service["HealthCheckGracePeriodSeconds"] = 0
-    for resource in resources.values():
+    for logical, resource in resources.items():
         if "DependsOn" in resource:
             dependencies = resource["DependsOn"]
             dependencies = [dependencies] if isinstance(dependencies, str) else dependencies
             kept = [key for key in dependencies if key not in removals]
             if kept != dependencies:
+                if logical != SERVICE or set(dependencies) - set(kept) != {"ALBHttpsListenerF678A746"}:
+                    raise ValueError("Unreviewed resource depends on retired edge")
                 if kept:
                     resource["DependsOn"] = kept
                 else:
@@ -153,7 +164,83 @@ def records(client, zone):
     ]
 
 
-def preflight(session, environment, phase, template):
+def terminal_proof(session, environment, template, reviewed_change_set):
+    resources = template["Resources"]
+    service = resources.get(SERVICE, {}).get("Properties", {})
+    if (
+        any(key in resources for key in [*EDGE, INGRESS[environment], EGRESS[environment]])
+        or service.get("DesiredCount") != 0
+        or service.get("LoadBalancers") != []
+        or service.get("HealthCheckGracePeriodSeconds") != 0
+    ):
+        raise ValueError("Incomplete terminal edge template")
+    route53 = session.client("route53")
+    if any(r["Name"] == host(environment) for r in records(route53, ROOT_ZONE)) or any(
+        r["Name"] == f"api-{environment}.goosetown.isol8.co." for r in records(route53, OLD_ZONE)
+    ):
+        raise ValueError("Terminal edge still has DNS")
+    receipt = {
+        "alreadyRetired": True,
+        "allServicesAndTasksParked": True,
+        "canonicalAndLegacyDnsAbsent": True,
+        "physicalAbsenceVerified": False,
+    }
+    if not reviewed_change_set:
+        raise AlreadyRetired({**receipt, "status": "already_retired_no_action_requires_prior_receipt"})
+    cf = session.client("cloudformation")
+    stack = f"goosetown-{environment}-compute"
+    existing = cf.describe_stacks(StackName=stack)["Stacks"][0]
+    execution_role(existing)
+    details = cf.describe_change_set(StackName=stack, ChangeSetName=reviewed_change_set)
+    if (
+        details["StackName"] != stack
+        or details["ExecutionStatus"] != "EXECUTE_COMPLETE"
+        or digest(deployed(cf, stack, reviewed_change_set)) != digest(template)
+    ):
+        raise ValueError("Terminal template is not the exact reviewed completed transition")
+    unchanged_parameters(template, existing, details)
+    removed = {
+        c["ResourceChange"]["LogicalResourceId"]: c["ResourceChange"].get("PhysicalResourceId")
+        for c in details["Changes"]
+        if c["ResourceChange"]["Action"] == "Remove"
+    }
+
+    def absent(client, method, arguments, codes):
+        try:
+            getattr(client, method)(**arguments)
+        except ClientError as error:
+            if error.response.get("Error", {}).get("Code") in codes:
+                return
+            raise
+        raise ValueError("Retired edge resource still physically exists")
+
+    for key in ("ALBAEE750D2", "TargetGroup3D7CD9B8", "ALBSecurityGroup8B8624F8", "AlbWebAcl"):
+        if not removed.get(key):
+            raise AlreadyRetired({**receipt, "status": "already_retired_no_action_missing_physical_receipt"})
+    elb = session.client("elbv2")
+    absent(elb, "describe_load_balancers", {"LoadBalancerArns": [removed["ALBAEE750D2"]]}, {"LoadBalancerNotFound"})
+    absent(
+        elb, "describe_target_groups", {"TargetGroupArns": [removed["TargetGroup3D7CD9B8"]]}, {"TargetGroupNotFound"}
+    )
+    absent(
+        session.client("ec2"),
+        "describe_security_groups",
+        {"GroupIds": [removed["ALBSecurityGroup8B8624F8"]]},
+        {"InvalidGroup.NotFound"},
+    )
+    waf_identity = removed["AlbWebAcl"].split("|")
+    if len(waf_identity) != 3 or waf_identity[0] != f"goosetown-{environment}-alb-waf" or waf_identity[2] != "REGIONAL":
+        raise ValueError("Unexpected retired WAF receipt identity")
+    absent(
+        session.client("wafv2"),
+        "get_web_acl",
+        {"Name": waf_identity[0], "Id": waf_identity[1], "Scope": "REGIONAL"},
+        {"WAFNonexistentItemException"},
+    )
+    return {**receipt, "physicalAbsenceVerified": True, "completedChangeSetId": reviewed_change_set}
+
+
+def preflight(session, environment, phase, template, reviewed_change_set=None):
     """No probes/invokes: only current control-plane metadata and zero-task guards."""
     parked(session.client("ecs"), session.client("application-autoscaling"), environment)
     cf = session.client("cloudformation")
@@ -162,6 +249,8 @@ def preflight(session, environment, phase, template):
         for page in cf.get_paginator("list_stack_resources").paginate(StackName=f"goosetown-{environment}-compute")
         for r in page["StackResourceSummaries"]
     }
+    if phase == "edge" and "ALBAEE750D2" not in resources:
+        return terminal_proof(session, environment, template, reviewed_change_set)
     alb_arn = resources["ALBAEE750D2"]["PhysicalResourceId"]
     elb = session.client("elbv2")
     alb = elb.describe_load_balancers(LoadBalancerArns=[alb_arn])["LoadBalancers"][0]
@@ -216,7 +305,16 @@ def preflight(session, environment, phase, template):
         for zone in page["HostedZones"]:
             for record in records(route53, zone["Id"]):
                 dns = record.get("AliasTarget", {}).get("DNSName", "").lower().rstrip(".").removeprefix("dualstack.")
-                if dns == alb["DNSName"].lower().rstrip("."):
+                cname_targets = (
+                    [
+                        r.get("Value", "").lower().rstrip(".").removeprefix("dualstack.")
+                        for r in record.get("ResourceRecords", [])
+                    ]
+                    if record.get("Type") == "CNAME"
+                    else []
+                )
+                endpoints = {alb["DNSName"].lower().rstrip("."), name.lower().rstrip(".")}
+                if dns in endpoints or any(target in endpoints for target in cname_targets):
                     aliases.append((zone["Id"].split("/")[-1], record))
     current = [r for r in records(route53, ROOT_ZONE) if r["Name"] == name]
     if len(current) > 1 or any(r.get("Type") != "A" or set(r) != {"Name", "Type", "AliasTarget"} for r in current):

@@ -216,13 +216,31 @@ def main():
     if session.client("sts").get_caller_identity()["Account"] != ACCOUNT:
         raise ValueError("Wrong AWS account")
     cf = session.client("cloudformation")
+    reviewed = json.loads(os.environ.get("REVIEWED_CHANGESETS", "{}"))
     edge = args.phase in {"edge-prepare", "dns", "edge"}
     proof = None
     if edge:
-        from retire_legacy_edge import dns_operation, preflight
+        from retire_legacy_edge import AlreadyRetired, dns_operation, preflight
 
         current = deployed(cf, f"goosetown-{args.environment}-compute")
-        proof = preflight(session, args.environment, args.phase, current)
+        stack = f"goosetown-{args.environment}-compute"
+        if args.mode == "execute" and args.phase != "dns" and set(reviewed) != {stack}:
+            raise ValueError("Provide exactly the reviewed compute stack-to-change-set map")
+        try:
+            proof = preflight(
+                session, args.environment, args.phase, current, reviewed.get(stack) if args.mode == "execute" else None
+            )
+        except AlreadyRetired as done:
+            receipt = {
+                "environment": args.environment,
+                "phase": args.phase,
+                "mode": args.mode,
+                **done.receipt,
+                "executed": False,
+            }
+            Path(args.receipt).write_text(json.dumps(receipt, indent=2))
+            print(json.dumps(receipt, indent=2))
+            return
         if args.phase == "dns":
             if args.mode == "inspect":
                 raise ValueError("DNS uses explicit read-only plan mode")
@@ -240,7 +258,6 @@ def main():
         else ["compute", "gameserver", "sprite-worker", "worldgm"]
     )
     stacks = [f"goosetown-{args.environment}-{suffix}" for suffix in suffixes]
-    reviewed = json.loads(os.environ.get("REVIEWED_CHANGESETS", "{}"))
     if args.mode == "execute" and set(reviewed) != set(stacks):
         raise ValueError("Provide exactly the reviewed stack-to-change-set map")
     receipts = []
