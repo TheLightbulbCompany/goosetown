@@ -1,5 +1,6 @@
 import { canonicalHost, frontendOrigin, canonicalZoneId, canonicalZoneName } from "./canonical-domain";
 import * as cdk from "aws-cdk-lib";
+import { RegionInfo } from "aws-cdk-lib/region-info";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import { DockerImageAsset, Platform } from "aws-cdk-lib/aws-ecr-assets";
@@ -40,7 +41,7 @@ export interface ComputeStackProps extends cdk.StackProps {
 }
 
 export class ComputeStack extends cdk.Stack {
-  public readonly alb: elbv2.ApplicationLoadBalancer;
+  public readonly alb?: elbv2.ApplicationLoadBalancer;
   public readonly service: ecs.FargateService;
 
   constructor(scope: Construct, id: string, props: ComputeStackProps) {
@@ -217,14 +218,6 @@ export class ComputeStack extends cdk.Stack {
       },
     });
 
-    // ALB
-    this.alb = new elbv2.ApplicationLoadBalancer(this, "ALB", {
-      loadBalancerName: `goosetown-${env}`,
-      vpc: props.vpc,
-      internetFacing: true,
-      idleTimeout: cdk.Duration.seconds(300),
-    });
-
     // Access logging — needed for forensics on auth probes / rate-limit
     // decisions / WAF tuning. Bucket is per-env, 90-day lifecycle so we
     // don't grow indefinitely. CDK auto-attaches the AWS-managed bucket
@@ -250,54 +243,86 @@ export class ComputeStack extends cdk.Stack {
         env === "prod" ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
       autoDeleteObjects: env !== "prod",
     });
-    this.alb.logAccessLogs(albLogsBucket, `alb-${env}`);
+    if (props.paused) {
+      // Keep the existing forensic bucket policy byte-for-byte while its ALB
+      // is retired. These are the same grants logAccessLogs supplies below.
+      const account = RegionInfo.get(this.region).elbv2Account;
+      const delivery = new iam.ServicePrincipal("delivery.logs.amazonaws.com");
+      const objects = albLogsBucket.arnForObjects(`alb-${env}/AWSLogs/${this.account}/*`);
+      albLogsBucket.addToResourcePolicy(new iam.PolicyStatement({
+        actions: ["s3:PutObject"],
+        principals: [account ? new iam.AccountPrincipal(account) : new iam.ServicePrincipal("logdelivery.elasticloadbalancing.amazonaws.com")],
+        resources: [objects],
+      }));
+      albLogsBucket.addToResourcePolicy(new iam.PolicyStatement({
+        actions: ["s3:PutObject"], principals: [delivery], resources: [objects],
+        conditions: { StringEquals: { "s3:x-amz-acl": "bucket-owner-full-control" } },
+      }));
+      albLogsBucket.addToResourcePolicy(new iam.PolicyStatement({
+        actions: ["s3:GetBucketAcl"], principals: [delivery], resources: [albLogsBucket.bucketArn],
+      }));
+    }
 
-    // Target group with sticky sessions for WebSocket support
-    const targetGroup = new elbv2.ApplicationTargetGroup(this, "TargetGroup", {
-      targetGroupName: `goosetown-${env}-tg`,
-      vpc: props.vpc,
-      port: 8000,
-      protocol: elbv2.ApplicationProtocol.HTTP,
-      targetType: elbv2.TargetType.IP,
-      healthCheck: {
-        path: "/health",
-        interval: cdk.Duration.seconds(30),
-        // 10s (was 5) + unhealthy threshold 5 (was 3): tolerate transient
-        // event-loop busyness so the ALB doesn't reap an otherwise-healthy task
-        // (and any in-flight work on it) during a brief CPU spike. Paired with
-        // the 0.5->1 vCPU bump above, which is the fundamental fix.
-        timeout: cdk.Duration.seconds(10),
-        healthyThresholdCount: 2,
-        unhealthyThresholdCount: 5,
-      },
-      stickinessCookieDuration: cdk.Duration.hours(1),
-    });
-
-    // HTTPS listener if certificate is provided, otherwise HTTP
-    if (props.certificate) {
-      this.alb.addListener("HttpsListener", {
-        port: 443,
-        protocol: elbv2.ApplicationProtocol.HTTPS,
-        certificates: [props.certificate],
-        defaultTargetGroups: [targetGroup],
+    let targetGroup: elbv2.ApplicationTargetGroup | undefined;
+    if (!props.paused) {
+      // ALB
+      this.alb = new elbv2.ApplicationLoadBalancer(this, "ALB", {
+        loadBalancerName: `goosetown-${env}`,
+        vpc: props.vpc,
+        internetFacing: true,
+        idleTimeout: cdk.Duration.seconds(300),
       });
 
-      // HTTP redirect to HTTPS
-      this.alb.addListener("HttpRedirect", {
-        port: 80,
+      this.alb.logAccessLogs(albLogsBucket, `alb-${env}`);
+
+      // Target group with sticky sessions for WebSocket support
+      targetGroup = new elbv2.ApplicationTargetGroup(this, "TargetGroup", {
+        targetGroupName: `goosetown-${env}-tg`,
+        vpc: props.vpc,
+        port: 8000,
         protocol: elbv2.ApplicationProtocol.HTTP,
-        defaultAction: elbv2.ListenerAction.redirect({
-          protocol: "HTTPS",
-          port: "443",
-          permanent: true,
-        }),
+        targetType: elbv2.TargetType.IP,
+        healthCheck: {
+          path: "/health",
+          interval: cdk.Duration.seconds(30),
+          // 10s (was 5) + unhealthy threshold 5 (was 3): tolerate transient
+          // event-loop busyness so the ALB doesn't reap an otherwise-healthy task
+          // (and any in-flight work on it) during a brief CPU spike. Paired with
+          // the 0.5->1 vCPU bump above, which is the fundamental fix.
+          timeout: cdk.Duration.seconds(10),
+          healthyThresholdCount: 2,
+          unhealthyThresholdCount: 5,
+        },
+        stickinessCookieDuration: cdk.Duration.hours(1),
       });
-    } else {
-      this.alb.addListener("HttpListener", {
-        port: 80,
-        protocol: elbv2.ApplicationProtocol.HTTP,
-        defaultTargetGroups: [targetGroup],
-      });
+
+      // HTTPS listener if certificate is provided, otherwise HTTP
+      if (props.certificate) {
+        this.alb.addListener("HttpsListener", {
+          port: 443,
+          protocol: elbv2.ApplicationProtocol.HTTPS,
+          certificates: [props.certificate],
+          defaultTargetGroups: [targetGroup],
+        });
+
+        // HTTP redirect to HTTPS
+        this.alb.addListener("HttpRedirect", {
+          port: 80,
+          protocol: elbv2.ApplicationProtocol.HTTP,
+          defaultAction: elbv2.ListenerAction.redirect({
+            protocol: "HTTPS",
+            port: "443",
+            permanent: true,
+          }),
+        });
+      } else {
+        this.alb.addListener("HttpListener", {
+          port: 80,
+          protocol: elbv2.ApplicationProtocol.HTTP,
+          defaultTargetGroups: [targetGroup],
+        });
+      }
+
     }
 
     // Fargate Service
@@ -310,6 +335,7 @@ export class ComputeStack extends cdk.Stack {
       cluster,
       taskDefinition,
       desiredCount: props.paused ? 0 : 1,
+      healthCheckGracePeriod: props.paused ? cdk.Duration.seconds(0) : undefined,
       assignPublicIp: false,
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       circuitBreaker: { rollback: true },
@@ -317,7 +343,7 @@ export class ComputeStack extends cdk.Stack {
       maxHealthyPercent: 200,
     });
 
-    this.service.attachToApplicationTargetGroup(targetGroup);
+    if (targetGroup) this.service.attachToApplicationTargetGroup(targetGroup);
 
     // Auto-scaling on CPU. Prod gets 2-6 tasks (2 baseline for HA, 6 ceiling
     // protects budget on a runaway scrape); dev gets 1-3 (1 baseline so a
@@ -356,91 +382,94 @@ export class ComputeStack extends cdk.Stack {
     // KnownBadInputs default to BLOCK because they have very low FP rates;
     // CommonRuleSet promoted to BLOCK after >7 days of ALB access-log review
     // with no legitimate-traffic FPs observed (PR #216).
-    const albWaf = new wafv2.CfnWebACL(this, "AlbWebAcl", {
-      name: `goosetown-${env}-alb-waf`,
-      scope: "REGIONAL",
-      defaultAction: { allow: {} },
-      visibilityConfig: {
-        cloudWatchMetricsEnabled: true,
-        metricName: `goosetown-${env}-alb-waf`,
-        sampledRequestsEnabled: true,
-      },
-      rules: [
-        {
-          name: "AWSManagedRulesAmazonIpReputationList",
-          priority: 0,
-          overrideAction: { none: {} },
-          statement: {
-            managedRuleGroupStatement: {
-              vendorName: "AWS",
-              name: "AWSManagedRulesAmazonIpReputationList",
+    if (this.alb) {
+      const albWaf = new wafv2.CfnWebACL(this, "AlbWebAcl", {
+        name: `goosetown-${env}-alb-waf`,
+        scope: "REGIONAL",
+        defaultAction: { allow: {} },
+        visibilityConfig: {
+          cloudWatchMetricsEnabled: true,
+          metricName: `goosetown-${env}-alb-waf`,
+          sampledRequestsEnabled: true,
+        },
+        rules: [
+          {
+            name: "AWSManagedRulesAmazonIpReputationList",
+            priority: 0,
+            overrideAction: { none: {} },
+            statement: {
+              managedRuleGroupStatement: {
+                vendorName: "AWS",
+                name: "AWSManagedRulesAmazonIpReputationList",
+              },
+            },
+            visibilityConfig: {
+              cloudWatchMetricsEnabled: true,
+              metricName: "ip-reputation",
+              sampledRequestsEnabled: true,
             },
           },
-          visibilityConfig: {
-            cloudWatchMetricsEnabled: true,
-            metricName: "ip-reputation",
-            sampledRequestsEnabled: true,
-          },
-        },
-        {
-          name: "AWSManagedRulesKnownBadInputsRuleSet",
-          priority: 1,
-          overrideAction: { none: {} },
-          statement: {
-            managedRuleGroupStatement: {
-              vendorName: "AWS",
-              name: "AWSManagedRulesKnownBadInputsRuleSet",
+          {
+            name: "AWSManagedRulesKnownBadInputsRuleSet",
+            priority: 1,
+            overrideAction: { none: {} },
+            statement: {
+              managedRuleGroupStatement: {
+                vendorName: "AWS",
+                name: "AWSManagedRulesKnownBadInputsRuleSet",
+              },
+            },
+            visibilityConfig: {
+              cloudWatchMetricsEnabled: true,
+              metricName: "known-bad-inputs",
+              sampledRequestsEnabled: true,
             },
           },
-          visibilityConfig: {
-            cloudWatchMetricsEnabled: true,
-            metricName: "known-bad-inputs",
-            sampledRequestsEnabled: true,
-          },
-        },
-        {
-          name: "AWSManagedRulesCommonRuleSet",
-          priority: 2,
-          // BLOCK mode after >7 days FP review (PR #216). Access logs
-          // showed no legitimate traffic matching CommonRuleSet rules;
-          // promoted from COUNT to ``none: {}`` (default-BLOCK posture).
-          overrideAction: { none: {} },
-          statement: {
-            managedRuleGroupStatement: {
-              vendorName: "AWS",
-              name: "AWSManagedRulesCommonRuleSet",
+          {
+            name: "AWSManagedRulesCommonRuleSet",
+            priority: 2,
+            // BLOCK mode after >7 days FP review (PR #216). Access logs
+            // showed no legitimate traffic matching CommonRuleSet rules;
+            // promoted from COUNT to ``none: {}`` (default-BLOCK posture).
+            overrideAction: { none: {} },
+            statement: {
+              managedRuleGroupStatement: {
+                vendorName: "AWS",
+                name: "AWSManagedRulesCommonRuleSet",
+              },
+            },
+            visibilityConfig: {
+              cloudWatchMetricsEnabled: true,
+              metricName: "common-rules",
+              sampledRequestsEnabled: true,
             },
           },
-          visibilityConfig: {
-            cloudWatchMetricsEnabled: true,
-            metricName: "common-rules",
-            sampledRequestsEnabled: true,
-          },
-        },
-        {
-          name: "RateLimit2000Per5Min",
-          priority: 3,
-          action: { block: {} },
-          statement: {
-            rateBasedStatement: {
-              limit: 2000,
-              aggregateKeyType: "IP",
-              evaluationWindowSec: 300,
+          {
+            name: "RateLimit2000Per5Min",
+            priority: 3,
+            action: { block: {} },
+            statement: {
+              rateBasedStatement: {
+                limit: 2000,
+                aggregateKeyType: "IP",
+                evaluationWindowSec: 300,
+              },
+            },
+            visibilityConfig: {
+              cloudWatchMetricsEnabled: true,
+              metricName: "rate-limit",
+              sampledRequestsEnabled: true,
             },
           },
-          visibilityConfig: {
-            cloudWatchMetricsEnabled: true,
-            metricName: "rate-limit",
-            sampledRequestsEnabled: true,
-          },
-        },
-      ],
-    });
+        ],
+      });
 
-    new wafv2.CfnWebACLAssociation(this, "AlbWebAclAssociation", {
-      resourceArn: this.alb.loadBalancerArn,
-      webAclArn: albWaf.attrArn,
-    });
+      new wafv2.CfnWebACLAssociation(this, "AlbWebAclAssociation", {
+        resourceArn: this.alb.loadBalancerArn,
+        webAclArn: albWaf.attrArn,
+      });
+
+    }
 
     // CloudWatch alarm: fire if fewer healthy targets are registered with the
     // ALB than desired for 5+ minutes. We use HealthyHostCount (AWS/ApplicationELB
@@ -450,7 +479,7 @@ export class ComputeStack extends cdk.Stack {
     // is a tighter signal anyway — a task can be "running" but failing health
     // checks, which from the user's perspective is the same as missing.
     // Silently skipped when alarmTopic is absent (local synth / CI without observability stack).
-    if (props.alarmTopic && !props.paused) {
+    if (props.alarmTopic && !props.paused && targetGroup && this.alb) {
       const taskMissingAlarm = new cloudwatch.Alarm(this, "BackendTaskMissing", {
         alarmName: `goosetown-${env}-backend-task-missing`,
         metric: targetGroup.metrics.healthyHostCount({
@@ -473,7 +502,7 @@ export class ComputeStack extends cdk.Stack {
     }
 
     // Allow ALB to reach Fargate tasks
-    this.service.connections.allowFrom(
+    if (this.alb) this.service.connections.allowFrom(
       this.alb,
       ec2.Port.tcp(8000),
       "ALB to Fargate"
@@ -492,7 +521,7 @@ export class ComputeStack extends cdk.Stack {
     // Never delete and recreate working public records as part of this stack.
 
     // Outputs
-    new cdk.CfnOutput(this, "AlbDnsName", {
+    if (this.alb) new cdk.CfnOutput(this, "AlbDnsName", {
       value: this.alb.loadBalancerDnsName,
     });
     new cdk.CfnOutput(this, "ClusterName", {
