@@ -71,6 +71,8 @@ def transform(stack, template):
         if deps:
             deps = [deps] if isinstance(deps, str) else deps
             kept = [d for d in deps if d not in removed]
+            if kept == deps:
+                continue
             if kept:
                 resource["DependsOn"] = kept
             else:

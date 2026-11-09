@@ -24,6 +24,7 @@ class ParkingTests(unittest.TestCase):
                     },
                 },
                 "Role": {"Type": "AWS::IAM::Role", "Properties": {"Policies": [{"unchanged": True}]}},
+                "Dependent": {"Type": "AWS::S3::Bucket", "DependsOn": "Role"},
                 "Dns": {"Type": "AWS::Route53::RecordSet", "Properties": {"Name": "existing.example"}},
                 "Data": {"Type": "AWS::DynamoDB::Table", "DeletionPolicy": "Retain"},
                 "ServiceTaskCountTarget23E25614": {"Type": "AWS::ApplicationAutoScaling::ScalableTarget"},
